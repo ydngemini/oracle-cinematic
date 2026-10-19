@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearPrivateCaches } from './clearPrivateCaches.js';
 
 describe('clearPrivateCaches', () => {
@@ -13,5 +13,21 @@ describe('clearPrivateCaches', () => {
     expect(localStorage.getItem('oracle_tenant_id')).toBeNull();
     expect(localStorage.getItem('oracle_comms_templates_v1')).toBeNull();
     expect(localStorage.getItem('neoh.theme')).toBe('dark');
+  });
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('deletes the service-worker cache and staged capture originals', async () => {
+    const deleted = [];
+    vi.stubGlobal('indexedDB', {
+      deleteDatabase(name) {
+        deleted.push(name);
+        const req = {};
+        queueMicrotask(() => req.onsuccess?.());
+        return req;
+      },
+    });
+    await clearPrivateCaches();
+    expect(deleted).toEqual(['oracle-predictive-cache', 'neoh-capture']);
   });
 });

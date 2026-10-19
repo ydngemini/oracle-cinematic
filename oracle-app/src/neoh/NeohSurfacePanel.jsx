@@ -94,6 +94,7 @@ export function NeohSurfacePanel({
               undoing={channel.undoing}
               receipts={receipts}
               onReview={onNavigate ? () => { onCollapse(); onNavigate('automations'); } : undefined}
+              onChoose={(choice) => channel.send(choice.label, { type: choice.type, id: choice.id })}
             />
           )}
         </div>

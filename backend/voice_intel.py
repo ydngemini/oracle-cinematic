@@ -42,7 +42,9 @@ import record_access
 import sealed_text
 from db.connection import tenant_tx
 from intelligence_engine import IntelligenceInputError, negotiation_guidance
-from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
+import ai_budget
+from llm_gateway import SpendRefused, SpendUnavailable
+from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL
 from tenancy import Role, TenantContext, require_context
 import ws_hub
 
@@ -240,6 +242,8 @@ class VoiceJob:
     staged_path: Path
     original_filename: str
     job_id: str = ""
+    #: Which claim this is (counted at each claim, MAX_ATTEMPTS at most).
+    attempts: int = 1
 
 
 # The queue is the voice_walkthrough_jobs table (migration 0114). It used to be
@@ -249,6 +253,12 @@ class VoiceJob:
 # accepted and never processed (Mission 8 capacity audit).
 POLL_SECONDS = max(0.5, float(os.getenv("ORACLE_VOICE_POLL_SECONDS", "3") or 3))
 MAX_ATTEMPTS = 3
+#: How long a walkthrough whose AI budget could not be read waits before it
+#: can be claimed again (T18.07). The back-off is the job's, not a worker's
+#: (_claim_next waits it out, whichever worker asks): a worker's own sleep let
+#: a second worker re-claim the job at once, and its attempts went in about
+#: one back-off.
+BUDGET_RETRY_SECONDS = 30.0
 _PROCESS_STARTED_AT = None  # set when the worker pool starts
 _wake = asyncio.Event()
 _workers: list[asyncio.Task] = []
@@ -789,15 +799,28 @@ def _extract_json(text: str) -> Optional[dict]:
 
 async def _extract(transcript: str) -> Optional[dict]:
     """Structured extraction with the same primary→secondary fallback as
-    tour_generator. Returns None when both models fail — caller degrades."""
+    tour_generator. Returns None when both models fail — caller degrades.
+    Under the job's spend scope each call is held and metered (T18.07); a
+    budget refusal is raised, never a reason to ask the secondary model."""
     prompt = EXTRACTION_PROMPT.format(transcript=transcript)
-    raw = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 1024)
+    raw = await invoke_async(PRIMARY_MODEL, prompt, 1024)
     if not raw:
-        raw = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt, 1024)
+        raw = await invoke_async(SECONDARY_MODEL, prompt, 1024)
     return _extract_json(raw) if raw else None
 
 
-async def _process(job: VoiceJob) -> None:
+async def _process(job: VoiceJob) -> Optional[str]:
+    """Transcribe, extract and log one walkthrough. Returns the AI budget's
+    code when the brokerage's budget stopped the extraction (T18.07): the
+    agent's own words are still logged (transcription is local), without
+    extraction, and the job ends with that code — never as a success.
+
+    A budget that could not be read is not a refusal: SpendUnavailable is
+    raised before anything is logged, and _run_job queues the job again with
+    its audio — except on its last attempt, when the transcript is logged
+    without extraction under that code, as a refusal's is: the agent's own
+    words are never dropped."""
+    budget_code: Optional[str] = None
     try:
         transcript = await asyncio.to_thread(_transcribe, job.staged_path)
         # Before the extraction model or the dossier sees it (PCI DSS SAQ A).
@@ -807,8 +830,24 @@ async def _process(job: VoiceJob) -> None:
             logger.warning("Empty transcript for lead %s — nothing to log.", job.lead_id)
             return
 
-        extracted = await _extract(transcript)
-        if extracted is None:
+        # Spent from the brokerage's AI budget (T18.07): held before each call
+        # is sent, metered after.
+        try:
+            async with ai_budget.spending(job.ctx, "walkthrough"):
+                extracted = await _extract(transcript)
+        except SpendUnavailable:
+            if job.attempts < MAX_ATTEMPTS:
+                raise
+            budget_code = ai_budget.CODES["unknown"]
+            extracted = None
+            logger.info("Extraction for lead %s: the AI budget could not be read by the last attempt "
+                        "(%s) — logging the transcript only.", job.lead_id, budget_code)
+        except SpendRefused as refused:
+            budget_code = refused.code
+            extracted = None
+            logger.info("Extraction for lead %s stopped by the AI budget (%s) — logging the transcript only.",
+                        job.lead_id, refused.code)
+        if extracted is None and budget_code is None:
             logger.warning(
                 "Extraction failed for lead %s — logging raw transcript only.",
                 job.lead_id,
@@ -825,6 +864,8 @@ async def _process(job: VoiceJob) -> None:
             "source_filename": job.original_filename,
             "agent_id": job.ctx.agent_id,
         }
+        if budget_code:
+            payload["extraction_code"] = budget_code
         # Append-only dossier stream (migration 0008). RLS is live via tenant_tx;
         # tenant_id is still written explicitly because the column is NOT NULL.
         # 0154 (A01): the transcript and its extraction are stored only sealed.
@@ -855,6 +896,8 @@ async def _process(job: VoiceJob) -> None:
                 "summary": summary,
                 "sentiment": sentiment,
                 "price_adjustment": (extracted or {}).get("price_adjustment"),
+                # Why there is no extraction, when the AI budget stopped it.
+                "extraction_code": budget_code,
             },
             lead_id=job.lead_id, actor=job.ctx.agent_id,
         )
@@ -864,6 +907,41 @@ async def _process(job: VoiceJob) -> None:
         )
     finally:
         job.staged_path.unlink(missing_ok=True)
+    return budget_code
+
+
+async def _run_job(job: VoiceJob) -> None:
+    """Process one claimed walkthrough and record its terminal state. A
+    walkthrough whose extraction the AI budget stopped ends 'failed' with the
+    budget's code (its transcript was logged), not 'succeeded'. One whose
+    budget could not be read is queued again with its audio (_requeue), not
+    claimable for BUDGET_RETRY_SECONDS; this worker goes on to other jobs."""
+    try:
+        budget_code = await _process(job)
+        if budget_code:
+            await _finish(job.job_id, "failed",
+                          f"{budget_code}: transcript logged without AI extraction")
+        else:
+            await _finish(job.job_id, "succeeded")
+    except asyncio.CancelledError:
+        raise
+    except SpendUnavailable as unknown:
+        logger.warning("Voice job %s deferred: the AI budget could not be read (%s)",
+                       job.job_id, unknown.code)
+        try:
+            await _requeue(job.job_id, f"{unknown.code}: the brokerage's AI budget could not be "
+                                       "read, so the AI extraction has not run")
+        except Exception:  # noqa: BLE001 — still 'running': the restart sweep requeues it
+            logger.warning("could not requeue voice job %s; it is recovered at the next restart",
+                           job.job_id)
+    except Exception as exc:  # noqa: BLE001 — one bad job must not kill the worker
+        logger.exception(
+            "Voice job failed: lead=%s tenant=%s", job.lead_id, job.ctx.tenant_id
+        )
+        try:
+            await _finish(job.job_id, "failed", str(exc)[:500])
+        except Exception:  # noqa: BLE001
+            logger.debug("could not mark voice job %s failed", job.job_id)
 
 
 def _platform_ctx(agent_id: str) -> TenantContext:
@@ -878,7 +956,12 @@ async def _claim_next() -> Optional[VoiceJob]:
     """Atomically move the oldest queued walkthrough to `running`, write its
     audio to a temp file, and return the job. SKIP LOCKED keeps concurrent
     claimers on different rows. The job runs as its submitter, at their
-    current role — never more than they held."""
+    current role — never more than they held.
+
+    A queued row that carries a reason was deferred (_requeue: its AI budget
+    could not be read) and is not claimable until BUDGET_RETRY_SECONDS after
+    it was queued again — by any worker (T18.07). A new row, and one the
+    restart sweep requeued, carries none."""
     async with tenant_tx(_platform_ctx("voice-walkthrough-claim")) as conn:
         row = await conn.fetchrow(
             """
@@ -886,12 +969,14 @@ async def _claim_next() -> Optional[VoiceJob]:
                SET status = 'running', attempts = j.attempts + 1, updated_at = now()
              WHERE j.id = (SELECT id FROM voice_walkthrough_jobs
                             WHERE status = 'queued'
+                              AND (error IS NULL OR updated_at <= now() - make_interval(secs => $1))
                             ORDER BY created_at
                             FOR UPDATE SKIP LOCKED
                             LIMIT 1)
          RETURNING j.id::text AS id, j.tenant_id::text AS tenant_id, j.lead_id::text AS lead_id,
-                   j.created_by, j.original_filename, j.suffix, j.audio
-            """
+                   j.created_by, j.original_filename, j.suffix, j.audio, j.attempts
+            """,
+            float(BUDGET_RETRY_SECONDS),
         )
         if row is None:
             return None
@@ -910,6 +995,7 @@ async def _claim_next() -> Optional[VoiceJob]:
         ctx=TenantContext(agent_id=row["created_by"], tenant_id=row["tenant_id"], role=role),
         lead_id=row["lead_id"], staged_path=staged,
         original_filename=row["original_filename"], job_id=row["id"],
+        attempts=int(row["attempts"]),
     )
 
 
@@ -923,6 +1009,23 @@ async def _finish(job_id: str, status_value: str, error: Optional[str] = None) -
              WHERE id = $1::uuid
             """,
             job_id, status_value, error,
+        )
+
+
+async def _requeue(job_id: str, error: str) -> None:
+    """Queue a running job again with its audio, deferred: `error` is its
+    reason until it finishes (_finish overwrites it), and with it the claim
+    waits BUDGET_RETRY_SECONDS from now (updated_at) before any worker takes
+    it again. Its last attempt is never requeued: _process logs its
+    transcript instead."""
+    async with tenant_tx(_platform_ctx("voice-walkthrough-requeue")) as conn:
+        await conn.execute(
+            """
+            UPDATE voice_walkthrough_jobs
+               SET status = 'queued', error = $2, updated_at = now()
+             WHERE id = $1::uuid AND status = 'running'
+            """,
+            job_id, error,
         )
 
 
@@ -965,19 +1068,7 @@ async def _worker_loop(worker_id: int) -> None:
             except asyncio.TimeoutError:
                 pass
             continue
-        try:
-            await _process(job)
-            await _finish(job.job_id, "succeeded")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — one bad job must not kill the worker
-            logger.exception(
-                "Voice job failed: lead=%s tenant=%s", job.lead_id, job.ctx.tenant_id
-            )
-            try:
-                await _finish(job.job_id, "failed", str(exc)[:500])
-            except Exception:  # noqa: BLE001
-                logger.debug("could not mark voice job %s failed", job.job_id)
+        await _run_job(job)
 
 
 async def start_voice_workers() -> None:

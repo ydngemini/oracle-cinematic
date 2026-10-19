@@ -18,7 +18,7 @@ import { createAvatarStore } from './avatarFacts';
  *   · speaking only while audio is actually playing (nothing in the browser
  *     plays Neoh's voice today, so callers never pass it);
  *   · error for a real failure, with a reason (timeout, unavailable,
- *     interrupted, rejected, failed, send_refused); cancellation is idle with
+ *     interrupted, rejected, failed, send_refused, budget); cancellation is idle with
  *     reason "cancelled", not an error.
  *
  * Timers exist only to END states (an expiry, the end of a hysteresis wait).

@@ -1741,6 +1741,14 @@ async def accept_invite(body: AcceptInviteRequest, response: Response, request: 
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "An account with that email already exists."
             ) from None
+        except asyncpg.PostgresError as exc:
+            import seats
+
+            if seats.is_seat_limit(exc):
+                # Refused by 0161's trigger: the invitation stays pending (this
+                # transaction rolls back) and works once a seat is free.
+                raise seats.seat_limit_http(exc) from None
+            raise
 
         claimed = await conn.fetchrow(
             "SELECT tenant_id, email, invited_role FROM consume_brokerage_invitation($1, $2)",

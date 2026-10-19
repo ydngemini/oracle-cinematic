@@ -30,6 +30,52 @@ const POLL_MS = 4000;
 // refused.
 const MIN_USEFUL_PHOTOS = 8;
 
+// How each certification check reads to an operator (space_certification).
+const CHECK_STATUS_WORDS = {
+  passed: 'passed',
+  acceptable: 'below the verification target',
+  limited: 'limited',
+  failed: 'failed',
+  coverage_gap: 'gaps found',
+  missing: 'not measured',
+  invalid: 'measurement unusable',
+};
+
+/**
+ * The space's quality state (T12.09), kept apart from "ready": a space can be
+ * ready to view and still not verified. Reasons already listed as caveats are
+ * not repeated. Operators also get each check (the server sends `checks`
+ * only to them).
+ */
+function QualityCheck({ certification, alreadySaid = [] }) {
+  if (!certification?.label) return null;
+  const said = new Set(alreadySaid);
+  const reasons = (certification.reasons || []).filter((reason) => reason && !said.has(reason));
+  const checks = certification.checks ? Object.entries(certification.checks) : [];
+  return (
+    <div
+      className={styles.certification}
+      data-state={certification.state}
+      role="status"
+      aria-label="Quality check"
+    >
+      <p>{certification.label}</p>
+      {reasons.length ? (
+        <ul aria-label="Why">{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      ) : null}
+      {checks.length ? (
+        <ul aria-label="Quality checks">
+          {checks.map(([name, check]) => (
+            <li key={name}>
+              {`${check?.label || name}: ${CHECK_STATUS_WORDS[check?.status] || check?.status || 'unknown'}`}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function newKey() {
   try {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -74,6 +120,19 @@ export default function CaptureSessionPanel({
     );
     return () => { cancelled = true; };
   }, [ownerQS]);
+
+  // Once built, re-read the published space: its quality check compares the
+  // build with the property's current photos and video, which the build view
+  // cannot, and operators get each check there too.
+  useEffect(() => {
+    if (phase !== 'done' || !ownerQS) return undefined;
+    let cancelled = false;
+    crmGet(`/api/crm/space?${ownerQS}`).then(
+      (summary) => { if (!cancelled && summary?.published) setPublished(summary.published); },
+      () => { /* the build view's quality check stays shown */ },
+    );
+    return () => { cancelled = true; };
+  }, [phase, ownerQS]);
 
   // Poll while a build runs. Every setState is inside an async callback.
   useEffect(() => {
@@ -153,6 +212,11 @@ export default function CaptureSessionPanel({
   const enough = photoCount >= MIN_USEFUL_PHOTOS || videoCount > 0;
   const steps = Array.isArray(job?.steps) ? job.steps : [];
   const watching = phase === 'watching' || phase === 'starting';
+  // The published space's reading when it is this build's space; until the
+  // re-read lands (or if it fails), the build view's.
+  const builtCertification = published?.certification && published.media_id === job?.media_id
+    ? published.certification
+    : job?.certification;
 
   return (
     <section className={styles.panel} aria-labelledby="capture-session-title" data-space-phase={phase}>
@@ -228,6 +292,12 @@ export default function CaptureSessionPanel({
           {job?.floorplan === 'unavailable' ? ' A floor plan could not be made from this capture.' : ''}
         </p>
       )}
+
+      {/* Ready to view is not verified: the quality state, said apart. */}
+      {phase === 'done' && (
+        <QualityCheck certification={builtCertification} alreadySaid={job?.caveats || []} />
+      )}
+      {phase === 'idle' && <QualityCheck certification={published?.certification} />}
 
       {phase === 'failed' && job?.guidance?.length ? (
         <div className={styles.guidance}>

@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import recon_quality as rq  # noqa: E402
@@ -112,3 +114,70 @@ def test_every_limitation_has_a_customer_label():
         label = space_status.LIMITATION_LABELS[key]
         for word in ("PSNR", "SSIM", "COLMAP", "Gaussian", "splat", "GPU"):
             assert word.lower() not in label.lower(), label
+
+
+# ── invalid numbers are not measurements (T12.09, AC12.06) ──────────────────
+INF = float("inf")
+
+
+def test_infinite_or_out_of_range_numbers_are_not_measurements():
+    """A broken report must not read as a clean one: before, an infinite PSNR,
+    an SSIM of 7 and a registration ratio of 3.5 gave no caveat at all."""
+    v = rq.assess({"held_out": {"psnr": INF, "ssim": 7.0},
+                   "colmap": {"registration_ratio": 3.5}, "input_images": 150})
+    assert not v.blocked
+    assert "quality_unverified" in v.limitations, "nothing valid was measured"
+    assert set(v.metrics["invalid"]) == {"held_out_psnr", "held_out_ssim", "registration_ratio"}
+    for name in ("held_out_psnr", "held_out_ssim", "registration_ratio"):
+        assert name not in v.metrics, "an invalid number is never recorded as a value"
+
+
+def test_the_recorded_metrics_are_json_safe():
+    """jsonb refuses Infinity: one infinite number used to lose the whole
+    quality stage from the job's diagnostics."""
+    import json
+
+    v = rq.assess(_with(held_out__lpips=INF, roundtrip={"mean": {"sog_vs_pruned": INF}}))
+    json.dumps(v.metrics, allow_nan=False)
+    assert v.metrics["invalid"] == ["held_out_lpips"]
+
+
+@pytest.mark.parametrize("path, name", [
+    ("held_out__psnr=-2.0", "held_out_psnr"), ("held_out__psnr=180.0", "held_out_psnr"),
+    ("held_out__ssim=1.5", "held_out_ssim"), ("held_out__lpips=-0.3", "held_out_lpips"),
+    ("colmap__registration_ratio=-0.1", "registration_ratio"),
+    ("colmap__mean_reprojection_error_px=-1.0", "mean_reprojection_error_px"),
+    ("input_images=-4", "input_images"),
+])
+def test_out_of_range_values_are_flagged_invalid(path, name):
+    key, _, value = path.partition("=")
+    v = rq.assess(_with(**{key: float(value)}))
+    assert name in v.metrics["invalid"]
+    assert name not in {k for k in v.metrics if k != "invalid"}
+
+
+@pytest.mark.parametrize("key, value, name", [
+    ("colmap__registration_ratio", True, "registration_ratio"),
+    ("colmap__registration_ratio", "0.95", "registration_ratio"),
+    ("held_out__ssim", "0.95", "held_out_ssim"),
+    ("held_out__psnr", True, "held_out_psnr"),
+    ("input_images", "150", "input_images"),
+])
+def test_booleans_and_strings_are_not_measurements(key, value, name):
+    """float(True) is 1.0 and float("0.95") is 0.95: neither is a number an
+    instrument reported, so neither may pass as a perfect ratio or a target."""
+    v = rq.assess(_with(**{key: value}))
+    assert name in v.metrics["invalid"]
+    assert name not in {k for k in v.metrics if k != "invalid"}
+    assert rq.valid_measurement(name, value) == (None, True)
+
+
+def test_valid_numbers_still_gate_exactly_as_before():
+    assert rq.assess(_with(held_out__psnr=13.0)).blocked
+    assert rq.assess(_with(colmap__registration_ratio=0.15)).blocked
+    assert "invalid" not in rq.assess(GOOD).metrics
+
+
+def test_the_frame_count_is_recorded_beside_the_ratio():
+    """A ratio means nothing without the number of frames it is a ratio of."""
+    assert rq.assess(GOOD).metrics["input_images"] == 150

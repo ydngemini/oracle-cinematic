@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './SecureDossierPage.module.css';
 import { friendlyError } from '../lib/errorMessages';
 // Lazy: PlayCanvas is the heaviest thing this page can load, and a dossier
@@ -114,6 +114,35 @@ function money(value) {
 
 function humanize(text) {
   return String(text || '').replace(/_/g, ' ');
+}
+
+// A title finding's match_status is the submitter's claim about which property
+// the record belongs to (AC11.04); nothing checks it. `matched` and `released`
+// claim it is this one, and stay "Not verified" until a broker owner sets the
+// finding to `confirmed` (POST /api/intelligence/title/findings/{id}/review,
+// T11.03). `possible_match`, `unresolved` and any status this page does not
+// know are a possible match, confirmed or not (PortfolioTab tells the reviewer
+// so). Nothing on this page says verified.
+const POSSIBLE_MATCH = 'Possible match';
+const NOT_VERIFIED = 'Not verified';
+const CLAIMED_TITLE_MATCH = new Set(['matched', 'released']);
+
+function titleMatchFlag(finding) {
+  if (!CLAIMED_TITLE_MATCH.has(finding?.match_status)) return POSSIBLE_MATCH;
+  return finding.review_status === 'confirmed' ? null : NOT_VERIFIED;
+}
+
+// A released lien is not an outstanding claim; without this it reads as one.
+// released_at is a calendar date, so it is shown in UTC and never shifts a day.
+function releasedFlag(finding) {
+  if (finding?.match_status !== 'released' && !finding?.released_at) return null;
+  if (!finding.released_at) return 'Released';
+  const day = new Date(finding.released_at).toLocaleDateString(undefined, { timeZone: 'UTC' });
+  return `Released ${day}`;
+}
+
+function titleFlags(finding) {
+  return [titleMatchFlag(finding), releasedFlag(finding)].filter(Boolean);
 }
 
 function Section({ title, children }) {
@@ -295,6 +324,11 @@ export default function SecureDossierPage() {
               This walkable space is a stand-in, not a capture of this address.
             </p>
           )}
+          {/* Said before anyone steps inside: being viewable is not the same
+              as its quality having been checked (T12.09). */}
+          {tour.is_this_property !== false && tour.splat_label && (
+            <p className={styles.readonly}>{tour.splat_label}</p>
+          )}
         </Section>
       )}
 
@@ -310,6 +344,9 @@ export default function SecureDossierPage() {
             address={summary?.address || ''}
             title={summary?.address || 'Property tour'}
             isThisProperty={tour.is_this_property !== false}
+            // What the space may honestly be called, and why (T12.10).
+            splatLabel={tour.splat_label}
+            splatCaveats={tour.splat_caveats || []}
             onClose={() => setTourOpen(false)}
           />
         </Suspense>
@@ -384,11 +421,34 @@ export default function SecureDossierPage() {
           <ul className={styles.findings}>
             {assets.title_summary.map((finding, i) => (
               <li key={`${finding.finding_type}-${i}`}>
-                <span>{humanize(finding.finding_type)}</span>
+                <span>
+                  {humanize(finding.finding_type)}
+                  {/* A candidate record is never shown as a fact about this
+                      house. The space keeps the label its own word for screen
+                      readers and copy-paste. */}
+                  {titleFlags(finding).map((flag) => (
+                    <Fragment key={flag}>
+                      {' '}
+                      <small className={styles.findingFlag}>{flag}</small>
+                    </Fragment>
+                  ))}
+                </span>
                 {finding.amount != null && <span>{money(finding.amount)}</span>}
               </li>
             ))}
           </ul>
+          {assets.title_summary.some((f) => titleMatchFlag(f) === POSSIBLE_MATCH) && (
+            <p className={styles.caveat}>
+              A possible match is a public record that may belong to a
+              different property or owner.
+            </p>
+          )}
+          {assets.title_summary.some((f) => titleMatchFlag(f) === NOT_VERIFIED) && (
+            <p className={styles.caveat}>
+              Not verified: the search matched the record to this property,
+              but no one has confirmed the match yet.
+            </p>
+          )}
           {/* The backend attaches this warning to every row; it belongs on
               screen, not in a payload the homeowner never sees. */}
           <p className={styles.caveat}>

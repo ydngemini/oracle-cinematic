@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { crmGet } from '../state/useCrmApi';
+import { crmGet, crmPost } from '../state/useCrmApi';
 import { useAssistant } from './AssistantContext';
 import styles from './PortfolioTab.module.css';
 import { friendlyError } from '../lib/errorMessages';
@@ -54,10 +54,147 @@ function ProgressTrack({ title, stages }) {
   );
 }
 
+const REVIEW_STATE = { required: 'Awaiting review', confirmed: 'Confirmed', dismissed: 'Dismissed' };
+
+// The submitter's claim about which property the record belongs to. The
+// homeowner's dossier (SecureDossierPage titleMatchFlag) labels `matched` and
+// `released` "Not verified" until confirmed, and every other status "Possible
+// match" whatever the review says, so the reviewer must see which this is.
+const CLAIMED_TITLE_MATCH = new Set(['matched', 'released']);
+const TITLE_MATCH = {
+  matched: 'Matched (not verified)',
+  released: 'Released (not verified)',
+  possible_match: 'Possible match',
+  unresolved: 'Unresolved match',
+};
+const wholeDollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+/** What a reviewer decides on: the match claim and the record, never notes. */
+function titleEvidence(flag) {
+  return [
+    TITLE_MATCH[flag.match_status] || 'Possible match',
+    flag.record_id && `Record ${flag.record_id}`,
+    flag.amount != null && wholeDollars.format(Number(flag.amount)),
+    // Calendar dates, shown as sent so they never shift a day.
+    flag.recorded_at && `Recorded ${flag.recorded_at}`,
+    flag.released_at && `Released ${flag.released_at}`,
+  ].filter(Boolean).join(' · ');
+}
+
+function titleSubject(flag) {
+  return `${flag.label || 'Title finding'} on ${flag.property_key}`;
+}
+
+const DECISION_COPY = {
+  confirmed: {
+    prompt: 'Why this record belongs to this property',
+    effect: (flag) => (CLAIMED_TITLE_MATCH.has(flag.match_status)
+      ? 'The homeowner’s dossier then shows it without the “Not verified” label.'
+      : 'This is not a claimed match: the homeowner’s dossier keeps showing it as a “Possible match” after you confirm. Dismiss it if the record is not this property’s.'),
+    submit: 'Confirm finding',
+  },
+  dismissed: {
+    prompt: 'Why this record does not apply',
+    effect: () => 'The homeowner’s dossier will no longer list it.',
+    submit: 'Dismiss finding',
+  },
+};
+
+/**
+ * A broker owner's decision on one title finding (T11.03, F11.04). The server
+ * takes a reason of 8-500 characters once whitespace is collapsed, and refuses
+ * an agent, so an agent sees the state only. A saved decision, a 404 or a 409
+ * reloads the list, which drops this row, so their outcome goes to `onSettled`
+ * and the tab shows it; any other failure stays in the open form.
+ */
+function TitleFindingReview({ flag, canDecide, onSettled }) {
+  const [decision, setDecision] = useState(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  // Saved, and shown as such until the refreshed list drops the finding.
+  const [decided, setDecided] = useState(null);
+  const cleaned = reason.split(/\s+/).filter(Boolean).join(' ');
+  const status = decided || flag.review_status;
+  const state = REVIEW_STATE[status] || label(status);
+
+  if (!canDecide || !decision || decided) {
+    return (
+      <div className={styles.reviewActions}>
+        <span className={styles.reviewLabel}>{state}</span>
+        {canDecide && status === 'required' && (
+          <>
+            <button type="button" onClick={() => setDecision('confirmed')}>Confirm</button>
+            <button type="button" onClick={() => setDecision('dismissed')}>Dismiss</button>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  const copy = DECISION_COPY[decision];
+  const cancel = () => {
+    setDecision(null);
+    setReason('');
+    setError('');
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await crmPost(`/api/intelligence/title/findings/${encodeURIComponent(flag.finding_id)}/review`, {
+        decision,
+        reason: cleaned,
+      });
+      setDecided(decision);
+      onSettled({ findingId: flag.finding_id, subject: titleSubject(flag), text: `${REVIEW_STATE[decision]}.` });
+    } catch (failure) {
+      const message = friendlyError(failure, { fallback: 'The decision was not saved.' });
+      if (failure?.status === 404 || failure?.status === 409) {
+        // Someone else decided it, or it is gone: the list is stale either way.
+        cancel();
+        onSettled({ findingId: flag.finding_id, subject: titleSubject(flag), text: message, failed: true });
+      } else {
+        setError(message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fieldId = `title-review-${flag.finding_id}`;
+  return (
+    <form className={styles.reviewForm} onSubmit={submit}>
+      <label htmlFor={fieldId}>{copy.prompt}</label>
+      <textarea
+        id={fieldId}
+        rows={2}
+        maxLength={500}
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+      />
+      <small>{copy.effect(flag)} At least 8 characters.</small>
+      {error && <p role="alert">{error}</p>}
+      <div>
+        <button type="submit" disabled={busy || cleaned.length < 8}>{copy.submit}</button>
+        <button type="button" onClick={cancel} disabled={busy}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function canDecideTitle() {
+  const role = sessionStorage.getItem('oracle_role');
+  return role === 'broker_owner' || role === 'platform_admin';
+}
+
 export default function PortfolioTab() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  // The outcome of the latest title review. It lives here, not in the row:
+  // the reload that follows drops the decided finding's row.
+  const [titleNotice, setTitleNotice] = useState(null);
   const { requestCommand, setOpen } = useAssistant();
 
   const load = useCallback(async () => {
@@ -84,6 +221,11 @@ export default function PortfolioTab() {
   const refresh = () => {
     setRefreshing(true);
     void load();
+  };
+
+  const titleSettled = (notice) => {
+    setTitleNotice(notice);
+    refresh();
   };
 
   const metrics = data?.metrics || {};
@@ -275,14 +417,34 @@ export default function PortfolioTab() {
                     </div>
                     <span>{integer.format(intelligenceFlags.length)}</span>
                   </header>
+                  {titleNotice && (
+                    <div
+                      key={titleNotice.findingId}
+                      className={styles.reviewNotice}
+                      data-tone={titleNotice.failed ? 'error' : 'done'}
+                      role={titleNotice.failed ? 'alert' : 'status'}
+                    >
+                      <p><strong>{titleNotice.subject}</strong> {titleNotice.text}</p>
+                      <button type="button" onClick={() => setTitleNotice(null)}>Close</button>
+                    </div>
+                  )}
                   {intelligenceFlags.length === 0 ? (
                     <p className={styles.empty}>No active intelligence flags.</p>
                   ) : (
                     <ul className={styles.flagList}>
                       {intelligenceFlags.slice(0, 8).map((flag, index) => (
-                        <li key={`${flag.type}:${flag.property_key}:${index}`}>
+                        // A finding's own id keys its row, so an open review
+                        // form stays on its finding when the list refreshes.
+                        <li key={flag.finding_id || `${flag.type}:${flag.property_key}:${index}`}>
                           <span data-type={flag.type}>{flag.type}</span>
-                          <div><strong>{flag.label || flag.property_key}</strong><small>{flag.property_key}</small></div>
+                          <div>
+                            <strong>{flag.label || flag.property_key}</strong>
+                            <small>{flag.property_key}</small>
+                            {flag.type === 'TITLE' && <small className={styles.titleEvidence}>{titleEvidence(flag)}</small>}
+                          </div>
+                          {flag.type === 'TITLE' && flag.finding_id && (
+                            <TitleFindingReview flag={flag} canDecide={canDecideTitle()} onSettled={titleSettled} />
+                          )}
                         </li>
                       ))}
                     </ul>

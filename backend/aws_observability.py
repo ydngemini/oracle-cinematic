@@ -885,13 +885,22 @@ async def api_copilot_query(
         return JSONResponse({"error": "context too large"}, status_code=413)
     prompt = _build_copilot_prompt(message, body.context)
     reply = None
+    import ai_budget
+    from llm_gateway import SpendRefused
+
     try:
-        from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
-        reply = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 700)
-        if not reply:
-            reply = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt, 700)
+        # Spent from the asker's brokerage's AI budget (T18.07; a platform
+        # admin's from the platform tenant): held before each call, metered
+        # after. A refusal is answered as one, never a fallback.
+        async with ai_budget.spending(ctx, "ops_copilot"):
+            from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL
+            reply = await invoke_async(PRIMARY_MODEL, prompt, 700)
+            if not reply:
+                reply = await invoke_async(SECONDARY_MODEL, prompt, 700)
+    except SpendRefused as refused:
+        raise ai_budget.http_refusal(refused) from None
     except Exception as e:  # noqa: BLE001 — LLM/creds failures degrade to the client fallback
-        log.error("Copilot LLM error: %s", e)
+        log.error("Copilot LLM error: %s", type(e).__name__)
     if not reply:
         return JSONResponse({"reply": None, "error": "llm_unavailable"}, status_code=503)
     return JSONResponse({"reply": reply.strip(), "model": "bedrock"})

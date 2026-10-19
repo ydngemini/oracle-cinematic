@@ -12,6 +12,8 @@ import styles from './PropertyViewTab.module.css';
 // Same entry point HouseWorkspace uses, so both surfaces pick the engine
 // from VITE_TOUR_ENGINE and neither can drift onto its own viewer.
 const TourViewer = lazy(() => import('./TourViewer'));
+// Camera capture loads only when opened: most visits never use it.
+const CaptureStudio = lazy(() => import('./CaptureStudio'));
 
 /**
  * Property View — one address, what public records say about it, and the media
@@ -44,6 +46,27 @@ const STATE_RE = /,\s*([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*(?:,\s*USA?)?\s*$/i;
 function stateFrom(address) {
   const match = STATE_RE.exec((address || '').trim());
   return match ? match[1].toUpperCase() : null;
+}
+
+// How the server matched a record to the address typed (AC11.04). The resolve
+// is a substring search, so "12 Main St" also finds "112 Main St". Only an
+// exact address is the record typed; anything else, a record the server did
+// not label included, is a possible match the agent confirms. Nothing records
+// a person confirming the property (T11.03), so an exact address is still
+// "not verified".
+function isExactMatch(record) {
+  return record?.identity?.status === 'exact_address';
+}
+
+function MatchFlag({ record }) {
+  // Made here from the typed address, so it matched nothing.
+  if (record?.created) return <span className={styles.candidateFlag}>New record</span>;
+  const exact = isExactMatch(record);
+  return (
+    <span className={styles.candidateFlag} data-possible={exact ? undefined : ''}>
+      {exact ? 'Address match · not verified' : 'Possible match'}
+    </span>
+  );
 }
 
 function fmtMoney(v) {
@@ -84,7 +107,9 @@ export default function PropertyViewTab() {
   const [lookupError, setLookupError] = useState(null);
 
   const [candidates, setCandidates] = useState(null); // { leads, listings }
-  const [subject, setSubject] = useState(null);       // { leadId } | { listingId }
+  // { leadId | listingId, record }: the record keeps its address and how it
+  // matched on screen once the picker closes.
+  const [subject, setSubject] = useState(null);
   const [view, setView] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -139,6 +164,7 @@ export default function PropertyViewTab() {
     setCandidates(null);
     setView(null);
     setMintedLink(null);
+    setNotice(null);
 
     try {
       const geo = await crmGet(`/api/geocode?address=${encodeURIComponent(address)}`);
@@ -150,12 +176,13 @@ export default function PropertyViewTab() {
       }
 
       // Enrichment and record-matching are independent; run them together and
-      // let either fail without taking the other down.
+      // let either fail without taking the other down. A failed record check
+      // is null, never an empty list: unchecked is not "no existing record".
       const [enrichment, matches] = await Promise.all([
         crmGet(`/api/enrich-property?address=${encodeURIComponent(address)}&lat=${geo.lat}&lng=${geo.lng}`)
           .catch(() => null),
         crmGet(`/api/crm/property-view/resolve?address=${encodeURIComponent(address)}`)
-          .catch(() => ({ leads: [], listings: [] })),
+          .catch(() => null),
       ]);
       if (seq !== lookupSeq.current) return;
 
@@ -169,14 +196,15 @@ export default function PropertyViewTab() {
       setCandidates(matches);
       setLookupState('done');
 
-      // Exactly one match is unambiguous — select it so the agent can start
-      // capturing immediately instead of confirming the obvious.
+      // Exactly one match that is the typed address is unambiguous — select it
+      // so the agent can start capturing immediately instead of confirming the
+      // obvious. A possible match waits in the picker for the agent to confirm.
       const only = (matches?.leads?.length === 1 && !matches?.listings?.length)
-        ? { leadId: matches.leads[0].id }
+        ? { leadId: matches.leads[0].id, record: matches.leads[0] }
         : (matches?.listings?.length === 1 && !matches?.leads?.length)
-          ? { listingId: matches.listings[0].id }
+          ? { listingId: matches.listings[0].id, record: matches.listings[0] }
           : null;
-      if (only) setSubject(only);
+      if (isExactMatch(only?.record)) setSubject(only);
     } catch (err) {
       if (seq !== lookupSeq.current) return;
       setLookupState('error');
@@ -224,11 +252,36 @@ export default function PropertyViewTab() {
     setNotice(null);
     try {
       const created = await crmPost('/api/crm/property-view/subject', { address, state });
-      setSubject({ leadId: created.lead_id });
-      setNotice({
-        tone: 'ok',
-        text: created.created ? 'Property record created.' : 'Matched an existing record.',
-      });
+      // The record joins the candidates either way, so "Change record" can
+      // return to it.
+      const record = {
+        id: created.lead_id,
+        address: created.address || address,
+        identity: created.identity,
+        created: Boolean(created.created),
+      };
+      setCandidates((prev) => ({
+        leads: [record, ...(prev?.leads || []).filter((lead) => lead.id !== record.id)],
+        listings: prev?.listings || [],
+      }));
+      if (created.created || isExactMatch(created)) {
+        setSubject({ leadId: record.id, record });
+        setNotice({
+          tone: 'ok',
+          text: created.created
+            ? 'Property record created.'
+            : 'Matched an existing record with this address (not verified).',
+        });
+      } else {
+        // The address's key is taken by a record the typed text does not pin
+        // down (no town or state of its own, or an edited address): it waits
+        // with the candidates to confirm rather than becoming the subject.
+        setNotice({
+          tone: 'error',
+          text: 'An existing record already has this address, but it may be another property. '
+            + 'Pick it above if it is this one, or add the city and ZIP to create a separate record.',
+        });
+      }
     } catch (err) {
       setNotice({ tone: 'error', text: err?.message || 'Could not create the record.' });
     } finally {
@@ -247,6 +300,7 @@ export default function PropertyViewTab() {
     setBusy(true);
     setNotice(null);
     const failed = [];
+    const uploaded = [];
     let done = 0;
     setUploadProgress({ done: 0, total: files.length });
     for (const file of files) {
@@ -258,6 +312,7 @@ export default function PropertyViewTab() {
       try {
         await crmUpload(`/api/crm/property-view/media?${subjectQs}`, form);
         done += 1;
+        uploaded.push(file.name);
       } catch (err) {
         failed.push({ file, name: file.name, error: err?.message || 'Upload failed.', surface, capture, floor });
       }
@@ -270,7 +325,16 @@ export default function PropertyViewTab() {
     setNotice(failed.length
       ? { tone: 'error', text: `${done} of ${files.length} uploaded. ${failed.length} file${failed.length === 1 ? '' : 's'} failed — retry them below; nothing already uploaded is lost.` }
       : { tone: 'ok', text: `${done} file${done === 1 ? '' : 's'} uploaded.` });
+    // Which files the server acknowledged, by name: Capture Studio drops its
+    // on-device copy only for these.
+    return { uploaded, failed: failed.map((f) => f.name) };
   }, [subjectQs, refreshView]);
+
+  const [studioOpen, setStudioOpen] = useState(false);
+  const uploadFromStudio = useCallback(
+    (files) => uploadEach(files, { surface: activeSurface, capture: 'auto', floor: floorIndex }),
+    [uploadEach, activeSurface, floorIndex],
+  );
 
   const onPickFiles = useCallback(async (event) => {
     const files = Array.from(event.target.files || []);
@@ -367,6 +431,24 @@ export default function PropertyViewTab() {
     .filter((item) => item?.kind === 'video').length;
   const enrich = lookup?.enrichment;
   const hasCandidates = Boolean(candidates?.leads?.length || candidates?.listings?.length);
+  // The agent's pick answers the picker's notice, so it does not follow the
+  // chosen record into the media panel.
+  const chooseSubject = (next) => {
+    setNotice(null);
+    setSubject(next);
+  };
+  // Back to the picker. What was shown or failed for the old record goes with
+  // it: a retry would otherwise upload those files to the next one.
+  const changeSubject = () => {
+    setSubject(null);
+    setView(null);
+    setMintedLink(null);
+    setFailedUploads([]);
+    setWalkOpenFor(null);
+    setNotice(null);
+  };
+  // The record media attaches to can be another house than the address typed.
+  const subjectAddress = subject?.record?.address || lookup?.address || '';
 
   return (
     <section className={styles.wrap} aria-labelledby="property-view-title">
@@ -483,27 +565,48 @@ export default function PropertyViewTab() {
         <div className={styles.subjectPicker}>
           <h3>Attach media to a record</h3>
           {hasCandidates ? (
-            <ul className={styles.candidateList}>
-              {(candidates.leads || []).map((lead) => (
-                <li key={`lead-${lead.id}`}>
-                  <button type="button" onClick={() => setSubject({ leadId: lead.id })}>
-                    <span className={styles.candidateKind}>Lead</span>
-                    <span>{lead.address}</span>
-                  </button>
-                </li>
-              ))}
-              {(candidates.listings || []).map((listing) => (
-                <li key={`listing-${listing.id}`}>
-                  <button type="button" onClick={() => setSubject({ listingId: listing.id })}>
-                    <span className={styles.candidateKind}>Listing</span>
-                    <span>{listing.address}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
+            <>
+              <ul className={styles.candidateList}>
+                {(candidates.leads || []).map((lead) => (
+                  <li key={`lead-${lead.id}`}>
+                    <button type="button" onClick={() => chooseSubject({ leadId: lead.id, record: lead })}>
+                      <span className={styles.candidateKind}>Lead</span>
+                      <span>{lead.address}</span>
+                      <MatchFlag record={lead} />
+                    </button>
+                  </li>
+                ))}
+                {(candidates.listings || []).map((listing) => (
+                  <li key={`listing-${listing.id}`}>
+                    <button type="button" onClick={() => chooseSubject({ listingId: listing.id, record: listing })}>
+                      <span className={styles.candidateKind}>Listing</span>
+                      <span>{listing.address}</span>
+                      <MatchFlag record={listing} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {[...(candidates.leads || []), ...(candidates.listings || [])]
+                .some((r) => !r.created && !isExactMatch(r)) ? (
+                <p className={styles.candidateWarn}>
+                  A possible match only resembles the address you typed and may be another
+                  property. Confirm it is this one before attaching media.
+                </p>
+              ) : null}
+            </>
+          ) : candidates ? (
             <p className={styles.muted}>No existing record matches this address.</p>
+          ) : (
+            <p className={styles.muted} role="status">
+              Existing records couldn&apos;t be checked just now, so this is not a &ldquo;no
+              match&rdquo;. Look up again before creating a new record.
+            </p>
           )}
+          {/* The subject's own notice area is not on screen yet: a create that
+              needs the agent's answer says so here. */}
+          {notice ? (
+            <p className={notice.tone === 'error' ? styles.error : styles.ok} role="status">{notice.text}</p>
+          ) : null}
           <button type="button" className={styles.secondary} onClick={createSubject} disabled={busy}>
             <Plus aria-hidden="true" /> Create a new property record
           </button>
@@ -512,6 +615,16 @@ export default function PropertyViewTab() {
 
       {subject ? (
         <>
+          {/* The picker was the only place naming the record and how it
+              matched; once it closes, this does, until the agent changes it. */}
+          <div className={styles.attachTo} role="group" aria-label="Record media attaches to">
+            <span>Attaching media to <strong>{subjectAddress}</strong></span>
+            <MatchFlag record={subject.record} />
+            <button type="button" onClick={changeSubject} disabled={busy || studioOpen}>
+              Change record
+            </button>
+          </div>
+
           <div className={styles.surfaceTabs} role="tablist" aria-label="Media surface">
             {SURFACES.map(({ id, label, Icon }) => (
               <button
@@ -594,6 +707,11 @@ export default function PropertyViewTab() {
             <button type="button" className={styles.secondary} onClick={mintLink} disabled={busy}>
               <Link2 aria-hidden="true" /> Invite client to upload
             </button>
+            {captureMode !== 'pano' ? (
+              <button type="button" className={styles.secondary} onClick={() => setStudioOpen(true)} disabled={busy || studioOpen}>
+                <Camera aria-hidden="true" /> Capture with camera
+              </button>
+            ) : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -607,6 +725,17 @@ export default function PropertyViewTab() {
               aria-hidden="true"
             />
           </div>
+
+          {studioOpen ? (
+            <Suspense fallback={<p className={styles.muted}>Opening the camera…</p>}>
+              <CaptureStudio
+                subject={subjectQs}
+                onUpload={uploadFromStudio}
+                onChooseFiles={() => fileInputRef.current?.click()}
+                onClose={() => setStudioOpen(false)}
+              />
+            </Suspense>
+          ) : null}
 
           {uploadProgress ? (
             <p className={styles.ok} role="status" aria-live="polite">
@@ -746,12 +875,15 @@ export default function PropertyViewTab() {
                 panoScenes={tour.pano_scenes}
                 disclosure={tour.disclosure}
                 floors={tour.floors}
-                address={lookup?.address || ''}
-                title={lookup?.address || 'Property tour'}
+                address={subjectAddress}
+                title={subjectAddress || 'Property tour'}
                 // The badge has to survive into the viewer. Once someone is
                 // walking around, the button that carried the caveat is off
                 // screen and a stand-in space looks like a real capture.
                 isThisProperty={tour.is_this_property !== false}
+                // What the server may honestly call this space, and why (T12.10).
+                splatLabel={tour.splat_label}
+                splatCaveats={tour.splat_caveats || []}
                 onClose={() => setWalkOpenFor(null)}
               />
             </Suspense>

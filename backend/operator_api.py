@@ -5,8 +5,9 @@ module answers the questions an operator asks about CUSTOMERS:
 
   * /brokerages               who is live, what each can use, who needs action
   * /brokerages/{id}/diagnostics  one tenant's support bundle (§11)
-  * /billing/exceptions       no subscription, payment issue, canceled, webhook
-                              refusals, usage-metering backlog (§20)
+  * /billing/exceptions       two live subscriptions, no subscription, payment
+                              issue, canceled, webhook refusals, usage-metering
+                              backlog (§20)
   * /mls/feeds                every feed, licensed or not, and who is entitled (§21)
   * /comms                    voice + texting state per brokerage (§22)
   * /ai                       providers, model, failures, latency, tool failures (§23)
@@ -1177,6 +1178,29 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
                  ORDER BY cur.created_at DESC
                  LIMIT 100
                 """), [])
+            # Two subscriptions that may both bill one brokerage (the checkout
+            # webhook flags the second, T18.05). Read from the subscriptions, not
+            # the alert: the anomaly list is newest-first and shared with
+            # routine security alerts, and this stays listed until a person
+            # cancels one in Stripe and its deletion arrives. Read-only.
+            duplicates = await s.run("duplicate_subscriptions", lambda: conn.fetch(
+                """
+                SELECT s.tenant_id, t.name,
+                       array_agg(s.stripe_subscription_id ORDER BY s.created_at) AS subscriptions,
+                       array_agg(s.status ORDER BY s.created_at) AS statuses,
+                       array_agg(s.created_at ORDER BY s.created_at) AS created,
+                       (SELECT max(a.created_at) FROM audit_anomaly_alerts a
+                         WHERE a.tenant_id = s.tenant_id
+                           AND a.anomaly_type = 'second_live_subscription') AS flagged_at
+                  FROM subscriptions s
+                  JOIN tenants t ON t.id = s.tenant_id
+                 WHERE s.status NOT IN ('canceled','incomplete_expired')
+                   AND t.lifecycle_state <> 'erased'
+                 GROUP BY s.tenant_id, t.name
+                HAVING count(*) > 1
+                 ORDER BY max(s.created_at) DESC
+                 LIMIT 100
+                """), [])
             events = await s.run("webhook_events", lambda: conn.fetch(
                 "SELECT event_type, count(*)::int AS n, max(received_at) AS last_at "
                 "  FROM stripe_webhook_events WHERE received_at > now() - interval '30 days' "
@@ -1220,10 +1244,20 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
         else:
             other.append(item)
 
+    # A Stripe subscription id is a lookup key for the Stripe dashboard, not a
+    # credential: the person deciding which plan to keep needs both.
+    duplicate_subs = [{
+        "tenant_id": str(d["tenant_id"]), "name": d["name"], "flagged_at": _iso(d["flagged_at"]),
+        "subscriptions": [{"stripe_subscription_ref": ref, "status": st, "since": _iso(at)}
+                          for ref, st, at in zip(d["subscriptions"] or [], d["statuses"] or [],
+                                                 d["created"] or [])],
+    } for d in duplicates if str(d["tenant_id"]) != _PLATFORM_TENANT_ID]
+
     metering_on = billing_usage.metering_configured()
     backlog = _int((usage or {}).get("backlog")) if usage else 0
     webhook = billing.webhook_diagnostics()
     return {
+        "duplicate_subscriptions": duplicate_subs,
         "no_subscription": no_sub,
         "payment_issue": payment,
         "canceled": canceled,
@@ -1251,7 +1285,8 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
                            "oldest_unreported_at": _iso(u["oldest"])} for u in usage_tenants],
         },
         "counts": {"no_subscription": len(no_sub), "payment_issue": len(payment),
-                   "canceled": len(canceled), "reactivated_90d": len(reactivated)},
+                   "canceled": len(canceled), "reactivated_90d": len(reactivated),
+                   "duplicate_subscriptions": len(duplicate_subs)},
         "not_tracked": {"cancel_at_period_end": NOT_TRACKED["cancel_at_period_end"]},
         "unavailable": s.unavailable,
         "generated_at": datetime.now(timezone.utc).isoformat(),

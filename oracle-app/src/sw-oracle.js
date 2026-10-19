@@ -222,33 +222,10 @@ self.addEventListener('message', async (event) => {
     });
   }
 
-  if (type === 'CACHE_RETRIEVE_SPLAT') {
-    const propertyId = payload?.propertyId;
-    if (!propertyId) return;
-
-    const entry = await idbGet(STORE_SPLATS, propertyId);
-    if (entry?.blob) {
-      event.source?.postMessage({
-        type: 'CACHE_SPLAT_DATA',
-        propertyId,
-        blob: entry.blob,
-      });
-    }
-  }
-
-  if (type === 'CACHE_RETRIEVE_LEGAL') {
-    const propertyId = payload?.propertyId;
-    if (!propertyId) return;
-
-    const entry = await idbGet(STORE_LEGAL, propertyId);
-    if (entry?.payload) {
-      event.source?.postMessage({
-        type: 'CACHE_LEGAL_DATA',
-        propertyId,
-        payload: entry.payload,
-      });
-    }
-  }
+  // No message hands cached bytes back: a copy leaves IndexedDB only through
+  // serveSplat, after the server confirms this viewer may still see it
+  // (T16.14). Two retrieve messages (splat, legal) used to do so with no
+  // check and had no caller (T16.06, L16-05).
 
   if (type === 'CACHE_PURGE') {
     const propertyId = payload?.propertyId;

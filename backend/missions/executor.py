@@ -70,18 +70,39 @@ async def tick(ctx: TenantContext, mission_id: str) -> dict[str, Any]:
         "released": 0, "withheld": 0, "blocked": 0,
     }
 
-    # 1. Plan, but only when nothing is already pending. Planning costs a model
-    #    call, and re-planning over a queue that has not been worked yet would
-    #    pay for it repeatedly to produce the same sequence.
-    pending = await _count_planned(ctx, mission_id)
-    if pending == 0:
-        result["planned"] = await _plan(ctx, mission)
+    import ai_budget
+    from llm_gateway import SpendRefused
 
-    # 2. Work what is due.
-    due = await _due_actions(ctx, mission_id)
-    for action in due[:MAX_ACTIONS_PER_TICK]:
-        outcome = await _work_one(ctx, mission, action)
-        result[outcome] = result.get(outcome, 0) + 1
+    # Every hosted call this tick makes — its plan and each draft — is spent
+    # from the brokerage's AI budget (T18.07): held before it is sent, metered
+    # after, under one scope for the tick.
+    async with ai_budget.spending(ctx, "mission"):
+        # 1. Plan, but only when nothing is already pending. Planning costs a
+        #    model call, and re-planning over a queue that has not been worked
+        #    yet would pay for it repeatedly to produce the same sequence.
+        pending = await _count_planned(ctx, mission_id)
+        if pending == 0:
+            result["planned"] = await _plan(ctx, mission)
+
+        # 2. Work what is due.
+        due = await _due_actions(ctx, mission_id)
+        for action in due[:MAX_ACTIONS_PER_TICK]:
+            try:
+                outcome = await _work_one(ctx, mission, action)
+            except SpendRefused as refused:
+                # The budget stopped this action's draft before anything was
+                # sent. Not 'blocked' — nothing is wrong with the action — so
+                # it keeps its place ('planned') for a tick with budget, and
+                # the tick stops: every later draft would be refused too.
+                await _journal_refusal(ctx, mission["id"], "action_deferred", {
+                    "action_id": str(action["id"]),
+                    "code": refused.code,
+                    "reason": refused.message,
+                })
+                logger.info("mission %s: stopped by the AI budget (%s)", mission["id"], refused.code)
+                result["stopped"] = refused.code
+                break
+            result[outcome] = result.get(outcome, 0) + 1
 
     return result
 
@@ -96,12 +117,22 @@ async def _plan(ctx: TenantContext, mission: dict[str, Any]) -> int:
                        {"steps": 0, "reason": "no candidates matched"})
         return 0
 
+    from llm_gateway import SpendRefused
+
     try:
         steps, dropped, reasoning = await planner.propose_plan(ctx, mission, candidates)
     except planner.PlanUnavailable as exc:
         # The mission stays where it is. No fabricated fallback plan.
         await _journal(ctx, mission["id"], "plan_failed", {"error": str(exc)[:500]})
         logger.warning("mission %s: planning failed: %s", mission["id"], exc)
+        return 0
+    except SpendRefused as refused:
+        # The brokerage's AI budget refused the plan before it was asked
+        # (T18.07): recorded with its code, once, and tried again next tick.
+        await _journal_refusal(ctx, mission["id"], "plan_failed", {
+            "code": refused.code, "error": refused.message,
+        })
+        logger.info("mission %s: plan stopped by the AI budget (%s)", mission["id"], refused.code)
         return 0
 
     launched = mission.get("launched_at") or datetime.now(timezone.utc)
@@ -309,6 +340,8 @@ async def _stage(
 
 async def _release(ctx: TenantContext, staged: dict[str, Any]) -> bool:
     """Release through the same function a person's Approve click calls."""
+    from fastapi import HTTPException
+
     from commands_api import _get_command, release_command
 
     try:
@@ -317,6 +350,12 @@ async def _release(ctx: TenantContext, staged: dict[str, Any]) -> bool:
             return False
         await release_command(ctx, row, reason="released by mission grant")
         return True
+    except HTTPException as exc:
+        # A gate said no — e.g. the brokerage's subscription lapsed (402,
+        # F18.07). Expected, not a fault: the command stays staged for a person.
+        logger.info("mission: command %s not released (%s): %s",
+                    staged.get("id"), exc.status_code, exc.detail)
+        return False
     except Exception:  # noqa: BLE001
         logger.exception("mission: releasing command %s failed", staged.get("id"))
         return False
@@ -383,6 +422,29 @@ async def _journal(ctx: TenantContext, mission_id: Any, kind: str, detail: dict)
             )
     except Exception:  # noqa: BLE001 — the journal must never break the run
         logger.exception("mission %s: journalling %s failed", mission_id, kind)
+
+
+async def _journal_refusal(ctx: TenantContext, mission_id: Any, kind: str, detail: dict) -> None:
+    """_journal for a budget refusal, unless the mission's newest event is
+    already this refusal (same kind, same code). A tick runs every ten
+    minutes; while the budget stays spent each one is refused again, and a
+    journal (and digest) of the same line 144 times a day says nothing more."""
+    from db.connection import tenant_tx
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            last = await conn.fetchrow(
+                """SELECT kind, detail->>'code' AS code FROM mission_events
+                    WHERE mission_id = $1::uuid
+                    ORDER BY occurred_at DESC
+                    LIMIT 1""",
+                mission_id,
+            )
+    except Exception:  # noqa: BLE001 — unknown is not "already journalled"
+        last = None
+    if last is not None and last["kind"] == kind and last["code"] == detail.get("code"):
+        return
+    await _journal(ctx, mission_id, kind, detail)
 
 
 async def _refresh_candidates(

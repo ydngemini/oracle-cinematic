@@ -14,11 +14,19 @@ real percentage, so none is shown. A stage is a fact; "83%" would be a guess.
 Nothing here ever names a GPU provider, a pod, COLMAP, Gaussians or a file
 format. `public_view()` is the only shape a non-operator receives; operators
 read `operator_view()`, which adds diagnostics, provider and raw error text.
+
+READY means ready to VIEW: published and openable. It is not a quality claim.
+Whether the space may be called verified is its `certification`
+(space_certification), reported beside the stage and never folded into it. A
+build view does not read whether newer photos exist, so it is at best
+`incomplete`; the tour reads that and is the only place a space can verify.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Mapping, Optional
+
+import space_certification
 
 # ── the states ───────────────────────────────────────────────────────────────
 UPLOADING = "uploading"          # client-side only: files still going up
@@ -229,6 +237,8 @@ def public_view(row: Mapping[str, Any]) -> dict[str, Any]:
         "attempt": int(_get(row, "attempts", 0) or 0),
         "created_at": _iso(_get(row, "created_at")),
         "updated_at": _iso(_get(row, "updated_at")),
+        # Ready to view is not verified: the quality state, said separately.
+        "certification": space_certification.from_job_row(row).public(),
     }
 
 
@@ -236,6 +246,8 @@ def operator_view(row: Mapping[str, Any]) -> dict[str, Any]:
     """Everything an operator needs to diagnose a build. Not for customers."""
     out = public_view(row)
     out.update({
+        # Each check's status, the values it used and the lines it applied.
+        "certification": space_certification.from_job_row(row).operator(),
         "status": _get(row, "status"),
         "provider": _get(row, "provider"),
         "provider_job_id": _get(row, "provider_job_id"),

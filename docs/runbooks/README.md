@@ -19,7 +19,9 @@ An alert arrives as an email titled **`[Neoh] <component> <STATE>`** (from `back
 | `ai` | "Neoh is having trouble answering right now." | [ai-provider-down](ai-provider-down.md) | a test chat turn completes; `ai` HEALTHY |
 | `outbound_side_effects` | "Some calls or messages are still being confirmed." | [voice-provider-down](voice-provider-down.md) · [messaging-provider-down](messaging-provider-down.md) | no new `reconciliation_required` commands; review "needs review" ones |
 | `email_outbox` | "Some emails are waiting to send." | [email-provider-down](email-provider-down.md) | outbox `queued` drains; no `delivery_unknown` growth |
-| `mls` | "Listing data may be out of date." | [mls-provider-down](mls-provider-down.md) · [MLS production runbook](../mls-production-runbook.md) | the feed shows READY; `last_success_at` recent |
+| `valuation_providers` · `property_harvesters` · `market_data` | Valuations, public-record facts or market figures say "unavailable" for a source | [property-data-down](property-data-down.md) | the component is HEALTHY (valuations: a recorded successful call) |
+| `platform_email_relay` | "Some emails may not be sending right now." | [email-provider-down](email-provider-down.md) | a send succeeds; `consecutive_failures` back to 0 |
+| `mls` | "Listing data may be out of date." | [mls-provider-down](mls-provider-down.md) (legacy, MLS out of scope) · [MLS production runbook](../mls-production-runbook.md) | the feed shows READY; `last_success_at` recent |
 
 ## Failures without a dedicated alert component
 

@@ -73,4 +73,5 @@ def test_only_database_only_tasks_are_marked_internal(monkeypatch):
     monkeypatch.setattr(periodic.PeriodicScheduler, "_register_job_handler", staticmethod(lambda task: None))
     sched = periodic.build_default_scheduler()
     internal = sorted(t.name for t in sched._tasks.values() if t.internal_only)
-    assert internal == ["audit_chain_verify", "client_note_seal", "sealed_text_seal"], internal
+    assert internal == ["audit_chain_verify", "client_contact_index", "client_note_seal",
+                        "sealed_text_seal"], internal

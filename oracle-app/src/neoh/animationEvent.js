@@ -95,7 +95,7 @@ export const STAGE_SOURCES = Object.freeze({
 
 export const EVENT_REASONS = Object.freeze([
   'timeout', 'unavailable', 'interrupted', 'rejected', 'failed', 'send_refused',
-  'approval', 'cancelled',
+  'approval', 'cancelled', 'budget',
 ]);
 
 const URGENCIES = Object.freeze(['low', 'normal', 'high']);

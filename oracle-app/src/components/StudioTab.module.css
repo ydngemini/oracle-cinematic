@@ -128,6 +128,19 @@
 .siteList li > button:disabled { color: var(--oracle-text-ghost); cursor: not-allowed; }
 .siteList li > button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
+/* Custom domains (SitePublishPanel): the TXT record wraps instead of
+   overflowing a phone screen; a 64-character token has no break points.
+   The list is also .siteList, so the compound selectors outrank the phone
+   `.siteList li` / `.siteList li > button` rules below; a tie lets those win
+   and push Check DNS past the clipped edge. */
+.siteList.domainList li { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+.siteList.domainList li > button { grid-column: auto; }
+.domainList li > div > p { color: var(--oracle-text-dim); font-size: var(--text-xs); }
+.dnsRecord { display: grid; gap: 2px; margin: var(--space-1) 0 0; color: var(--oracle-text-dim); font-size: var(--text-xs); }
+.dnsRecord dt { margin-top: var(--space-1); }
+.dnsRecord dd { margin: 0; }
+.dnsRecord code { overflow-wrap: anywhere; white-space: normal; color: var(--oracle-text); font: 500 var(--text-xs)/1.4 var(--font-mono, ui-monospace, monospace); }
+
 .empty { min-height: 126px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); padding: var(--space-5); border-top: 1px solid var(--oracle-border-subtle); }
 .empty > svg { width: 32px; height: 32px; color: var(--oracle-accent-ink); stroke-width: 1.3; }
 .empty p { margin-top: var(--space-1); color: var(--oracle-text-dim); font-size: var(--text-xs); }

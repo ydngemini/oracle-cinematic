@@ -21,7 +21,6 @@ so the timeline stays the single source of truth. All queries run inside
 tenant_tx(ctx) — RLS does the tenant scoping (0019 FORCE'd).
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -32,8 +31,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+import ai_budget
 import client_note_crypto
 from client_note_crypto import SEALED_COLUMNS as _NOTE_SEALED
+from llm_gateway import SpendRefused
 import sealed_text
 from db.connection import tenant_tx
 from record_access import client_access_level, require_client_edit, resolve_assignment
@@ -723,14 +724,22 @@ def _template_draft(intent: str, client, profile) -> dict:
     return {"subject": subject, "body": body}
 
 
+#: The model draft's deadline, its hold included (T18.07: a deadline that
+#: fires while the hold is read is an unreadable budget, not a timeout).
+_DRAFT_LLM_SECONDS = 20
+
+
 async def _llm_draft(intent: str, client, profile) -> Optional[dict]:
     """Optional LLM-backed draft via the existing Bedrock path. Opt-in
-    (CRM_DRAFT_LLM=1) and fully guarded — any failure/timeout returns None so
-    the caller falls back to the template. Never raises."""
+    (CRM_DRAFT_LLM=1) and guarded — a failure or timeout returns None so the
+    caller falls back to the template. A brokerage AI budget refusal is the
+    one thing raised (T18.07): it is not a provider failure, and the template
+    must not be passed off as the model's draft. Nor is a budget that could
+    not be read before the deadline (SpendUnavailable: a 503 to retry)."""
     if os.environ.get("CRM_DRAFT_LLM", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
     try:
-        from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL
+        from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL
 
         ctx_lines = [
             f"Recipient: {client['full_name']} ({client['client_type']}, stage {client['stage']})",
@@ -746,10 +755,8 @@ async def _llm_draft(intent: str, client, profile) -> Optional[dict]:
             + f"\n\nIntent: {intent or 'a friendly check-in'}\n"
             + f"Sign off as:\n{_signature(profile)}\n"
         )
-        text = await asyncio.wait_for(
-            asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 600),
-            timeout=20,
-        )
+        # Held and metered under the request's spend scope (comms_draft).
+        text = await ai_budget.wait_for(invoke_async(PRIMARY_MODEL, prompt, 600), _DRAFT_LLM_SECONDS)
         if not text or not text.strip():
             return None
         text = text.strip()
@@ -762,8 +769,10 @@ async def _llm_draft(intent: str, client, profile) -> Optional[dict]:
         if not subject:
             subject = (intent or "Following up").split("\n")[0][:140]
         return {"subject": subject, "body": body}
+    except SpendRefused:
+        raise
     except Exception as exc:  # noqa: BLE001 — degrade, never crash the request
-        logger.warning("CRM draft LLM path failed, using template fallback: %s", exc)
+        logger.warning("CRM draft LLM path failed, using template fallback: %s", type(exc).__name__)
         return None
 
 
@@ -792,7 +801,13 @@ async def comms_draft(
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
 
-    draft = await _llm_draft(body.intent, client, profile)
+    # The model draft is spent from the brokerage's AI budget (T18.07). A
+    # refusal is answered as one (402/503 with its code), not as the template.
+    try:
+        async with ai_budget.spending(ctx, "comms_draft"):
+            draft = await _llm_draft(body.intent, client, profile)
+    except SpendRefused as refused:
+        raise ai_budget.http_refusal(refused) from None
     if draft is None:
         draft = _template_draft(body.intent, client, profile)
     return draft

@@ -378,6 +378,10 @@ async def _contract_inputs(conn, ctx: TenantContext, deal_id: str,
             transaction["id"], ctx.tenant_id,
         )
         parties = {row["party_role"]: row["display_name"] for row in rows}
+    # The linked client stands in only when no seller party is named. A
+    # property-match decision (0168, T11.03) does not change this: it says a
+    # public record is the house this lead refers to, not who the seller party
+    # is, and 0168 does not claim the relationship kind.
     seller_fallback = None
     if lead and lead["seller_client_id"]:
         seller_fallback = await conn.fetchval(
@@ -780,6 +784,10 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
         return _err("A client link may last between 1 and 90 days.")
 
     label = (tool_input.get("issued_to_label") or "").strip()[:120]
+    # What the 3D space may honestly be called (T12.10). Whether an unverified
+    # space may be shared at all is the owner's call; until then the approver
+    # and the model both see its quality state rather than "the 3D tour".
+    quality_label = tour.get("splat_label") if tiers.get("splat") else None
 
     approval = await create_approval(
         ctx,
@@ -799,8 +807,10 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
             # the scope, and so it cannot widen between request and mint.
             "asset_scope": {"summary": True, "media": True, "tour": True},
             "requested_by": user_id,
+            "quality_label": quality_label,
         },
     )
+    shows = f"the 3D tour ({quality_label})" if quality_label else "the 360° tour"
     return {
         "ok": True,
         "action_type": "share_property_tour",
@@ -808,11 +818,12 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
         "target_id": anchor["id"],
         "link_created": False,
         "expiry_days": days,
+        "quality_label": quality_label,
         "detail": (
             f"A client tour link was requested for {days} days and is awaiting "
             "approval. No link exists yet and nothing has been sent. Approving "
             "it mints a revocable, expiring URL that shows the summary, photos "
-            "and the 3D tour."
+            f"and {shows}."
         ),
     }
 

@@ -34,6 +34,7 @@ from mfa_api import router as mfa_router
 from security_contact import router as security_contact_router
 from billing import router as billing_router
 from billing_usage import router as billing_usage_router
+from ai_budget_api import router as ai_budget_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
 from tenancy import require_context, TenantContext, verify_session_current
@@ -59,6 +60,7 @@ from disposition_enforcer import start_disposition_enforcer, stop_disposition_en
 from lead_dossier import router as lead_dossier_router
 from cma_generator import router as cma_router
 from crm import router as crm_router
+from property_match_api import router as property_match_router
 from contacts_api import router as contacts_router
 from client_enterprise import router as client_enterprise_router
 from record_access import router as record_access_router
@@ -441,6 +443,7 @@ app.include_router(mfa_router)
 app.include_router(security_contact_router)
 app.include_router(billing_router)
 app.include_router(billing_usage_router)
+app.include_router(ai_budget_router)
 app.include_router(audit_router)
 if os.environ.get("ORACLE_ENV", "").lower() in {"dev", "development", "local"}:
     app.include_router(admin_c2_router)
@@ -456,6 +459,7 @@ app.include_router(agent_profile_router)
 app.include_router(lead_dossier_router)
 app.include_router(cma_router)
 app.include_router(crm_router)
+app.include_router(property_match_router)
 app.include_router(contacts_router)
 app.include_router(record_access_router)
 app.include_router(client_enterprise_router)
@@ -789,7 +793,18 @@ async def api_generate_tour(
     body = await request.json()
     if not body.get("address") and not body.get("description"):
         return JSONResponse({"error": "address or description required"}, status_code=400)
-    result = await generate_tour(body)
+    # Spent from the brokerage's AI budget (T18.07): held before each call is
+    # sent, metered after. A refusal is answered as one, with its code.
+    import ai_budget
+    from llm_gateway import SpendRefused
+
+    try:
+        async with ai_budget.spending(ctx, "tour"):
+            result = await generate_tour(body)
+    except SpendRefused as refused:
+        exc = ai_budget.http_refusal(refused)
+        return JSONResponse({"error": refused.message, **exc.detail},
+                            status_code=exc.status_code, headers=exc.headers)
     if result is None:
         return JSONResponse({"error": "tour generation failed"}, status_code=502)
     return JSONResponse(result)

@@ -15,8 +15,8 @@ const SERVICE_ERROR_STATUSES = new Set(['error', 'no_db']);
 export function useSubscription() {
   const [sub, setSub] = useState(
     BILLING_BYPASS
-      ? { active: true, status: 'dev_bypass', plan: 'dev', currentPeriodEnd: null }
-      : { active: false, status: 'loading', plan: 'none', currentPeriodEnd: null }
+      ? { active: true, status: 'dev_bypass', plan: 'dev', currentPeriodEnd: null, everEntitled: false }
+      : { active: false, status: 'loading', plan: 'none', currentPeriodEnd: null, everEntitled: false }
   );
   const [loading, setLoading] = useState(!BILLING_BYPASS);
   const [error, setError] = useState(null);
@@ -44,6 +44,10 @@ export function useSubscription() {
         status: data.status,
         plan: typeof data.plan === 'string' ? data.plan : 'none',
         currentPeriodEnd: data.current_period_end ?? null,
+        // Any subscription of this brokerage got past checkout, even when the
+        // newest one is a new, still-unpaid checkout (BillingOverlay: lapsed,
+        // not never-paid). Only an explicit true counts.
+        everEntitled: data.ever_entitled === true,
       });
       return { ok: true };
     } catch (err) {

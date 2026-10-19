@@ -25,7 +25,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
@@ -180,6 +180,12 @@ def build_model_card(
     dataset_manifest: Mapping[str, Any],
     metrics: Mapping[str, Any],
     limitations: Iterable[str],
+    intended_use: str = "Agent-approved tone and formatting preferences only.",
+    prohibited_use: Iterable[str] = (
+        "personality or distress profiling",
+        "protected-class inference",
+        "autonomous legal, financial, outreach, or bidding decisions",
+    ),
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -187,26 +193,162 @@ def build_model_card(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset": dict(dataset_manifest),
         "metrics": dict(metrics),
-        "intended_use": "Agent-approved tone and formatting preferences only.",
-        "prohibited_use": [
-            "personality or distress profiling",
-            "protected-class inference",
-            "autonomous legal, financial, outreach, or bidding decisions",
-        ],
+        "intended_use": intended_use,
+        "prohibited_use": list(prohibited_use),
         "limitations": list(limitations),
         "rollback_supported": True,
     }
 
 # --------------------------------------------------------------------------- #
 # Underwriting model — the synthetic contract records carry deal economics but
-# no explicit ARV / rehab / distress fields, so we derive defensible training
-# targets from the real property facts. Rough DE resale comps ($/sqft) by
-# county feed the ARV estimate.
+# no ARV / rehab / distress fields, so the training targets are COMPUTED here
+# from fixed constants: an unsourced county $/sqft table, a rehab $/sqft
+# schedule and the 70% rule. They are heuristics, not appraisals or sale
+# prices, and no error against real transactions has been measured (audit
+# A08). Every manifest and model card says so (underwriting_targets).
 # --------------------------------------------------------------------------- #
 _CURRENT_YEAR = datetime.now().year
 _COUNTY_PPSF = {"New Castle": 215.0, "Kent": 175.0, "Sussex": 235.0}
 _DEFAULT_PPSF = 200.0
 _MAO_RULE = 0.70  # the wholesaler's classic 70% rule
+_OLD_AGE, _AGING_AGE = 40, 25  # years since built: full systems / partial mechanicals
+_DEFAULT_AGE = 30  # assumed when a record has no year_built
+_REHAB_PSF = {"base": 25.0, "built_40_years_ago": 20.0, "built_25_years_ago": 10.0,
+              "inspection_contingency": 5.0}
+
+#: Where a model's training targets came from. Only OBSERVED_TARGETS can back
+#: a valuation model's promotion (models_api.activate_model) or be mounted as
+#: a state underwriter (local_vllm_adapter.EdgeUnderwriter).
+HEURISTIC_TARGETS = "heuristic"
+UNRECORDED_TARGETS = "unrecorded"
+OBSERVED_TARGETS = "observed_transactions"
+
+#: The file a model card is written to inside an adapter directory.
+ADAPTER_CARD = "model-card.json"
+
+
+def declared_targets(card: Any) -> Optional[Mapping[str, Any]]:
+    """A model card's dataset.targets block, or None when the card declares
+    none or is not shaped like a card."""
+    dataset = card.get("dataset") if isinstance(card, Mapping) else None
+    targets = dataset.get("targets") if isinstance(dataset, Mapping) else None
+    return targets if isinstance(targets, Mapping) else None
+
+
+def targets_observed(card: Any) -> bool:
+    targets = declared_targets(card)
+    return bool(targets) and targets.get("provenance") == OBSERVED_TARGETS
+
+
+def underwriting_targets() -> dict[str, Any]:
+    """What the underwriting targets are, in the numbers _underwrite uses."""
+    return {
+        "provenance": HEURISTIC_TARGETS,
+        "records": "synthetic contracts (ml_forge/synthetic_lawyer.py)",
+        "rules": {
+            "arv_usd_per_sqft_by_county": dict(_COUNTY_PPSF),
+            "arv_usd_per_sqft_default": _DEFAULT_PPSF,
+            "rehab_usd_per_sqft": dict(_REHAB_PSF),
+            "age_years": {"reference_year": _CURRENT_YEAR, "old": _OLD_AGE, "aging": _AGING_AGE,
+                          "assumed_when_year_built_missing": _DEFAULT_AGE},
+            "mao_factor": _MAO_RULE,
+            "mao": "0.70 * ARV - rehab",
+        },
+        "validated_against_transactions": False,
+    }
+
+
+def _row_shapes(data_path: str) -> dict[str, int]:
+    """How many rows are raw contracts (targets computed here) and how many
+    arrive as pre-built chat rows (targets computed somewhere else)."""
+    counts = {"raw_contracts": 0, "prebuilt_chat_rows": 0}
+    with open(data_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            key = "prebuilt_chat_rows" if isinstance(record.get("messages"), list) else "raw_contracts"
+            counts[key] += 1
+    return counts
+
+
+def underwriting_manifest(data_path: str) -> dict[str, Any]:
+    """The dataset as it will be trained. Rows that already carry chat
+    messages bring their own targets, computed by rules this trainer cannot
+    see, so their provenance is unrecorded rather than this file's heuristic."""
+    shapes = _row_shapes(data_path)
+    if shapes["prebuilt_chat_rows"]:
+        kind, targets = "underwriting_unrecorded_targets", {
+            "provenance": UNRECORDED_TARGETS,
+            "records": "pre-built chat rows; their targets were not computed by this trainer",
+            "validated_against_transactions": False,
+        }
+    else:
+        kind, targets = "synthetic_heuristic_underwriting", underwriting_targets()
+    return {
+        "dataset_path": data_path,
+        "dataset_sha256": artifact_sha256(data_path),
+        "kind": kind,
+        "rows": shapes,
+        "targets": targets,
+    }
+
+
+_STYLE_USE = {
+    "intended_use": "Agent-approved tone and formatting preferences only.",
+    "prohibited_use": [
+        "personality or distress profiling",
+        "protected-class inference",
+        "autonomous legal, financial, outreach, or bidding decisions",
+    ],
+    "limitations": ["Activation requires a held-out evaluation and canary approval."],
+}
+_UNDERWRITING_PROHIBITED = [
+    *_STYLE_USE["prohibited_use"],
+    "presenting its ARV, rehab, MAO or verdict as an appraisal, an automated valuation, "
+    "a market value or a verified deal price",
+]
+_UNDERWRITING_LIMITS = [
+    "No per-region error and uncertainty against observed transactions has been measured.",
+    "Registry activation and mounting as a state underwriter are refused until it is retrained "
+    "on observed transactions and a passed evaluation publishes per-region error and uncertainty.",
+]
+_TARGET_LIMIT = {
+    HEURISTIC_TARGETS: "Targets are heuristic: an unsourced county $/sqft table, a rehab $/sqft "
+                       "schedule and the 70% rule (see dataset.targets).",
+    UNRECORDED_TARGETS: "Targets came pre-built with the data; who computed them, and from what, "
+                        "is not recorded.",
+}
+
+
+def model_card_for(manifest: Mapping[str, Any], *, name: str, steps: int) -> dict[str, Any]:
+    targets = declared_targets({"dataset": manifest})
+    if targets is None:
+        use = _STYLE_USE
+    else:
+        provenance = targets.get("provenance")
+        use = {
+            "intended_use": (
+                "Research scaffold for the underwriting output shape, trained on "
+                f"{'synthetic contracts with heuristic' if provenance == HEURISTIC_TARGETS else 'unrecorded'} "
+                "targets; not a valuation."
+            ),
+            "prohibited_use": _UNDERWRITING_PROHIBITED,
+            "limitations": [_TARGET_LIMIT.get(provenance, _TARGET_LIMIT[UNRECORDED_TARGETS]),
+                            *_UNDERWRITING_LIMITS],
+        }
+    return build_model_card(
+        name=name,
+        base_model=BASE_MODEL,
+        dataset_manifest=manifest,
+        metrics={"training_steps": steps, "evaluation_status": "pending"},
+        limitations=use["limitations"],
+        intended_use=use["intended_use"],
+        prohibited_use=use["prohibited_use"],
+    )
 
 
 def _round_k(value: float) -> int:
@@ -222,9 +364,9 @@ def _distress_signals(prop: dict, contract: dict) -> list:
     year = int(prop.get("year_built") or 0)
     age = _CURRENT_YEAR - year if year else 0
 
-    if age >= 40:
+    if age >= _OLD_AGE:
         signals.append(f"Built {year} (~{age}y): roof/HVAC/electrical likely end-of-life")
-    elif age >= 25:
+    elif age >= _AGING_AGE:
         signals.append(f"Built {year} (~{age}y): aging mechanicals, dated finishes")
 
     contingencies = contract.get("contingencies") or []
@@ -249,20 +391,20 @@ def _underwrite(record: dict) -> dict:
     sqft = float(prop.get("sqft") or 0)
     county = prop.get("county", "")
     year = int(prop.get("year_built") or 0)
-    age = _CURRENT_YEAR - year if year else 30
+    age = _CURRENT_YEAR - year if year else _DEFAULT_AGE
     purchase_price = float(contract.get("purchase_price") or 0)
 
     ppsf = _COUNTY_PPSF.get(county, _DEFAULT_PPSF)
     arv = _round_k(sqft * ppsf)
 
-    # Rehab budget: $25/sqft cosmetic base, escalated by age-driven distress.
-    rehab_psf = 25.0
-    if age >= 40:
-        rehab_psf += 20.0   # full systems replacement
-    elif age >= 25:
-        rehab_psf += 10.0   # partial mechanicals + finishes
+    # Rehab budget: a cosmetic base, escalated by age-driven distress.
+    rehab_psf = _REHAB_PSF["base"]
+    if age >= _OLD_AGE:
+        rehab_psf += _REHAB_PSF["built_40_years_ago"]   # full systems replacement
+    elif age >= _AGING_AGE:
+        rehab_psf += _REHAB_PSF["built_25_years_ago"]   # partial mechanicals + finishes
     if "inspection" in (contract.get("contingencies") or []):
-        rehab_psf += 5.0    # contingency reserve for the unknown
+        rehab_psf += _REHAB_PSF["inspection_contingency"]  # reserve for the unknown
     rehab = _round_k(sqft * rehab_psf)
 
     mao = _round_k(_MAO_RULE * arv - rehab)
@@ -367,6 +509,12 @@ def load_training_dataset(data_path: str, tokenizer):
 # --------------------------------------------------------------------------- #
 # Training
 # --------------------------------------------------------------------------- #
+def adapter_dir_for(state_code: str) -> str:
+    """Where train() leaves the raw LoRA adapter — the directory
+    EdgeUnderwriter discovers state adapters in."""
+    return os.path.join(OUTPUT_DIR, "adapters", state_code.lower())
+
+
 def train(data_path: str, state_code: str, max_steps: int) -> str:
     """Fine-tune the LoRA adapter and export a .gguf. Returns the gguf path."""
     try:
@@ -437,7 +585,7 @@ def train(data_path: str, state_code: str, max_steps: int) -> str:
     )
 
     # Also persist the raw LoRA adapter so vLLM can hot-swap it without a merge.
-    adapter_dir = os.path.join(OUTPUT_DIR, "adapters", state_code.lower())
+    adapter_dir = adapter_dir_for(state_code)
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
 
@@ -472,11 +620,7 @@ def main():
     args = parser.parse_args()
 
     data_path = args.data
-    manifest: dict[str, Any] = {
-        "dataset_path": data_path,
-        "dataset_sha256": artifact_sha256(data_path),
-        "kind": "licensed_state_underwriting",
-    }
+    manifest: dict[str, Any] = underwriting_manifest(data_path)
     if args.style_examples:
         if not args.agent or not args.consent_version:
             parser.error("--style-examples requires --agent and --consent-version")
@@ -498,15 +642,18 @@ def main():
         data_path = prepared
 
     gguf_path = train(data_path, args.state, args.max_steps)
-    card = build_model_card(
+    card = model_card_for(
+        manifest,
         name=f"{'agent-' + args.agent if args.agent else args.state.lower()}-lora",
-        base_model=BASE_MODEL,
-        dataset_manifest=manifest,
-        metrics={"training_steps": args.max_steps, "evaluation_status": "pending"},
-        limitations=["Activation requires a held-out evaluation and canary approval."],
+        steps=args.max_steps,
     )
     card_path = Path(gguf_path).with_suffix(".model-card.json")
     card_path.write_text(json.dumps(card, indent=2, sort_keys=True), encoding="utf-8")
+    # The adapter carries its own card: EdgeUnderwriter mounts a state adapter
+    # only when that card declares observed-transaction targets.
+    Path(adapter_dir_for(args.state), ADAPTER_CARD).write_text(
+        json.dumps(card, indent=2, sort_keys=True), encoding="utf-8"
+    )
     print(f"[edge_forge] Done. Edge artifact: {gguf_path}")
     print(f"[edge_forge] Artifact SHA-256: {artifact_sha256(gguf_path)}")
     print(f"[edge_forge] Model card: {card_path}")

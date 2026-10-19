@@ -134,4 +134,81 @@ describe('capture panel', () => {
     expect(await screen.findByText(/scale unknown/)).toBeTruthy();
     expect(screen.getByText(/floor plan could not be made/i)).toBeTruthy();
   });
+
+  it('keeps "ready to view" and the quality check visibly separate (T12.09)', async () => {
+    const certification = {
+      state: 'incomplete',
+      label: 'Quality checks incomplete',
+      reasons: ["It hasn't been tested on real phones yet", 'Some views may look soft or blurry'],
+    };
+    crmGet.mockImplementation((url) => Promise.resolve(url.startsWith('/api/crm/space') ? {
+      published: { media_id: 'm' }, latest_build: job() } : job({
+      state: 'ready', active: false, terminal: true, label: 'Ready',
+      caveats: ['Some views may look soft or blurry'], steps: steps('ready'), certification,
+    })));
+    render(<CaptureSessionPanel leadId={LEAD} photoCount={30} />);
+    const quality = await screen.findByRole('status', { name: /quality check/i });
+    expect(quality.textContent).toMatch(/Quality checks incomplete/);
+    expect(quality.textContent).toMatch(/real phones/);
+    // Said once: a caveat already listed is not repeated as a reason.
+    expect(screen.getAllByText('Some views may look soft or blurry')).toHaveLength(1);
+    expect(screen.getByText(/your space is ready/i)).toBeTruthy();
+    expect(document.body.textContent.replace(/not verified/gi, '')).not.toMatch(/verified|professional|full 3d/i);
+  });
+
+  it('shows an operator each check and its status', async () => {
+    const certification = {
+      state: 'incomplete',
+      label: 'Quality checks incomplete',
+      reasons: [],
+      checks: {
+        held_out_quality: { label: 'Image quality', status: 'passed' },
+        registration: { label: 'Camera placement', status: 'passed' },
+        room_connectivity: { label: 'Room connections', status: 'missing' },
+        device_performance: { label: 'Phone performance', status: 'missing' },
+      },
+    };
+    crmGet.mockImplementation((url) => Promise.resolve(url.startsWith('/api/crm/space') ? {
+      published: { media_id: 'm' }, latest_build: job() } : job({
+      state: 'ready', active: false, terminal: true, label: 'Ready', steps: steps('ready'), certification,
+    })));
+    render(<CaptureSessionPanel leadId={LEAD} photoCount={30} />);
+    const checks = await screen.findByRole('list', { name: /quality checks/i });
+    expect(checks.textContent).toMatch(/Room connections: not measured/);
+    expect(checks.textContent).toMatch(/Image quality: passed/);
+  });
+
+  it('once built, shows the published space\'s quality check, not the build view\'s', async () => {
+    // The build view never compares the build with the property's current
+    // photos; the published space does. So the panel re-reads it when ready.
+    const fromBuild = { state: 'incomplete', label: 'Quality checks incomplete',
+      reasons: ['from the build view'] };
+    const fromSpace = {
+      state: 'pending', label: 'Quality not verified yet',
+      reasons: ["Photos or video were added after this space was built; it hasn't been checked against them"],
+      checks: { registration: { label: 'Camera placement', status: 'passed' } },
+    };
+    let summaries = 0;
+    crmGet.mockImplementation((url) => {
+      if (url.startsWith('/api/crm/space')) {
+        summaries += 1;
+        return Promise.resolve(summaries === 1
+          ? { published: null, latest_build: job() }
+          : { published: { media_id: 'm1', certification: fromSpace }, latest_build: null });
+      }
+      return Promise.resolve(job({
+        state: 'ready', active: false, terminal: true, label: 'Ready', media_id: 'm1',
+        steps: steps('ready'), certification: fromBuild,
+      }));
+    });
+    render(<CaptureSessionPanel leadId={LEAD} photoCount={30} />);
+    await screen.findByText(/your space is ready/i);
+    await waitFor(() => expect(screen.getByRole('status', { name: /quality check/i }).textContent)
+      .toMatch(/Quality not verified yet/));
+    const quality = screen.getByRole('status', { name: /quality check/i });
+    expect(quality.textContent).toMatch(/added after this space was built/);
+    expect(quality.textContent).not.toMatch(/from the build view/);
+    expect(screen.getByRole('list', { name: /quality checks/i }).textContent).toMatch(/Camera placement: passed/);
+    expect(summaries).toBe(2);
+  });
 });

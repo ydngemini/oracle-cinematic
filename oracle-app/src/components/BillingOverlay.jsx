@@ -51,21 +51,62 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+// Stripe reaches these only after a subscription was entitled (active or
+// trialing), so the brokerage has records here. A failed or ended payment must
+// not lock it out of them (AC18.07, F18.07): it can read and export, and the
+// server gate (billing.require_active_subscription) keeps refusing outbound
+// sends and other spend. The newest subscription can also be a new checkout
+// still unpaid ('incomplete' while a bank debit settles, 'incomplete_expired'
+// if it fails) after a paid one ended: /billing/status's ever_entitled says
+// so, and that brokerage is lapsed too. Only one that never got past checkout
+// ('none', or 'incomplete'/'incomplete_expired' with no history) stays there.
+const LAPSED_STATUSES = new Set(['canceled', 'unpaid', 'paused']);
+
+// Nothing waits for reactivation: the send workers fail a queued email and a
+// queued or scheduled command for good when it comes due while inactive
+// (email_outbox.deliver, commands_api._execute_command_job), so a later
+// reactivation never fires something nobody re-approved. Say so. A draft
+// awaiting approval (a mission's due send included: release_command refuses
+// it and the mission leaves it staged) stays a draft, so name that too, or a
+// send repeated by hand plus a later approval reaches the client twice.
+const LAPSED_COPY = {
+  kicker: 'Subscription inactive',
+  title: 'Your records are still here',
+  description: 'You can open and export them. Email, texts and calls to clients can’t be sent while the subscription is inactive. A queued or scheduled send that comes due meanwhile is cancelled, not held: send it again once the subscription is active. A draft awaiting approval stays a draft; approve it or send again, not both.',
+};
+
+function isBrokerOwner() {
+  try {
+    return window.sessionStorage.getItem('oracle_role') === 'broker_owner';
+  } catch {
+    return false;
+  }
+}
+
 const BILLING_STATUS_ERROR =
   'We couldn\'t verify your license because the billing service is unavailable. Please try again.';
 const CHECKOUT_ERROR = 'We couldn\'t open secure checkout. Please try again.';
 const PORTAL_ERROR = 'We couldn\'t open the billing portal. Please try again.';
+// A plan that may still bill but is not paid up. Checkout refuses a second
+// plan while one exists (409), so the way forward is the billing portal.
+const UNSETTLED_STATUSES = new Set(['incomplete', 'unpaid', 'paused']);
 
 /**
- * @param {{ onLockedChange?: (locked: boolean) => void }} props
- *   Told whether the workspace is behind this gate, so the shell can hold
- *   anything else that would open over it (the first-visit walkthrough opened
- *   on top of the locked dialog and took the keyboard).
+ * @param {{
+ *   onLockedChange?: (locked: boolean) => void,
+ *   onOpenAccountData?: () => void,
+ * }} props
+ *   onLockedChange: told whether the workspace is behind this gate, so the
+ *   shell can hold anything else that would open over it (the first-visit
+ *   walkthrough opened on top of the locked dialog and took the keyboard).
+ *   onOpenAccountData: opens the owner's Account & data panel (the export),
+ *   offered when a paid subscription has lapsed.
  */
-export function BillingOverlay({ onLockedChange } = {}) {
+export function BillingOverlay({ onLockedChange, onOpenAccountData } = {}) {
   const {
     active,
     status,
+    everEntitled,
     loading: subLoading,
     error: statusError,
     refresh,
@@ -75,6 +116,10 @@ export function BillingOverlay({ onLockedChange } = {}) {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
+  // Checkout answered 409: this brokerage already holds a plan, which the
+  // status read may not have shown (it changed since, or Stripe reported a
+  // status this page does not know). The portal is where that plan is managed.
+  const [checkoutRefused, setCheckoutRefused] = useState(false);
   const dialogRef = useRef(null);
   const titleRef = useRef(null);
   const titleId = useId();
@@ -84,7 +129,13 @@ export function BillingOverlay({ onLockedChange } = {}) {
     status === 'error' || status === 'no_db' ? BILLING_STATUS_ERROR : null
   );
   const mode = subLoading ? 'checking' : (verificationError ? 'error' : 'purchase');
-  const isVisible = !active;
+  // A lapsed brokerage may step past the dialog to its records; one that never
+  // paid may not. Not remembered across loads: the dialog is the reminder.
+  const lapsed = !active && mode === 'purchase' && (LAPSED_STATUSES.has(status) || everEntitled === true);
+  const [continued, setContinued] = useState(false);
+  const showingRecords = lapsed && continued;
+  const isVisible = !active && !showingRecords;
+  const isOwner = isBrokerOwner();
   const [plan, setPlan] = useState(null);
   useEffect(() => {
     if (mode !== 'purchase' || plan) return undefined;
@@ -101,7 +152,14 @@ export function BillingOverlay({ onLockedChange } = {}) {
   // "temporarily unavailable" would send people to retry something that is not
   // set up. A Stripe outage (reason 'lookup_failed') keeps the button.
   const notConfigured = plan?.reason === 'not_configured';
-  const copy = dialogCopy(planName)[mode];
+  const copy = lapsed ? LAPSED_COPY : dialogCopy(planName)[mode];
+  const unsettled = UNSETTLED_STATUSES.has(status);
+  const offerPortal = status === 'canceled' || unsettled || checkoutRefused;
+
+  const handleExport = useCallback(() => {
+    setContinued(true);
+    onOpenAccountData?.();
+  }, [onOpenAccountData]);
 
   useEffect(() => { onLockedChange?.(isVisible); }, [isVisible, onLockedChange]);
 
@@ -119,10 +177,15 @@ export function BillingOverlay({ onLockedChange } = {}) {
       window.location.href = url;
     } catch (err) {
       const msg = err instanceof ApiError ? formatApiError(err) : CHECKOUT_ERROR;
+      if (err instanceof ApiError && err.status === 409) {
+        // The plan this page read may be stale (one went active elsewhere).
+        setCheckoutRefused(true);
+        refresh?.();
+      }
       setActionError(msg);
       setCheckoutLoading(false);
     }
-  }, [tenantId]);
+  }, [tenantId, refresh]);
 
   const handleOpenPortal = useCallback(async () => {
     setPortalLoading(true);
@@ -142,7 +205,10 @@ export function BillingOverlay({ onLockedChange } = {}) {
 
   // Capture focus only when the blocking dialog appears, then restore it when
   // verification succeeds or the component unmounts. There is deliberately no
-  // Escape/close path: dismissing this enforcement gate would be a billing bypass.
+  // Escape/close path: dismissing this enforcement gate would be a billing
+  // bypass. The lapsed dialog's explicit "Continue to your records" is not
+  // one — reading and exporting are not billable, and the server refuses
+  // what is.
   useEffect(() => {
     if (!isVisible) return undefined;
 
@@ -204,6 +270,29 @@ export function BillingOverlay({ onLockedChange } = {}) {
     return () => document.removeEventListener('keydown', trapFocus);
   }, [isVisible]);
 
+  if (showingRecords) {
+    // In the flow below the header, like ServiceStatusBanner, never over the
+    // records (data-service-banner: the view drops its header allowance).
+    return (
+      <section className={styles.lapsedNotice} aria-label="Subscription inactive" data-service-banner="">
+        <p className={styles.lapsedNoticeText}>
+          Subscription inactive. Email, texts and calls to clients can&rsquo;t be sent; a queued or scheduled
+          send that comes due meanwhile is cancelled, not held, so send it again after reactivating. A draft
+          awaiting approval stays a draft; approve it or send again, not both.
+          Your records stay open{isOwner ? ' and exportable' : ''}.
+        </p>
+        {isOwner && onOpenAccountData ? (
+          <button className={styles.noticeBtn} type="button" onClick={onOpenAccountData}>
+            Export your data
+          </button>
+        ) : null}
+        <button className={styles.noticeBtn} type="button" onClick={() => setContinued(false)}>
+          Reactivate
+        </button>
+      </section>
+    );
+  }
+
   if (!isVisible) return null;
 
   return (
@@ -227,6 +316,22 @@ export function BillingOverlay({ onLockedChange } = {}) {
           </h2>
           <p id={descriptionId} className={styles.subheading}>{copy.description}</p>
         </div>
+
+        {lapsed ? (
+          <div className={styles.lapsedActions}>
+            {isOwner && onOpenAccountData ? (
+              <button className={styles.retryBtn} type="button" onClick={handleExport}>
+                Export your data
+              </button>
+            ) : null}
+            <button className={styles.retryBtn} type="button" onClick={() => setContinued(true)}>
+              Continue to your records
+            </button>
+            {isOwner ? null : (
+              <p className={styles.fine}>Your brokerage owner can export the brokerage&apos;s records.</p>
+            )}
+          </div>
+        ) : null}
 
         {mode === 'checking' ? (
           <div className={styles.statusState} role="status" aria-live="polite">
@@ -279,6 +384,13 @@ export function BillingOverlay({ onLockedChange } = {}) {
                   Checkout can&apos;t start until billing is connected on this deployment. Ask your Neoh administrator.
                 </p>
               ) : null}
+              {unsettled ? (
+                <p className={styles.fine}>
+                  {status === 'incomplete'
+                    ? 'This brokerage\'s first payment hasn\'t settled yet (a bank debit can take a few days). Use Manage billing to check it or change the payment method.'
+                    : 'This brokerage\'s plan payment isn\'t settled. Use Manage billing to update the card or review the invoice.'}
+                </p>
+              ) : null}
 
               <button
                 className={styles.cta}
@@ -297,14 +409,14 @@ export function BillingOverlay({ onLockedChange } = {}) {
                 )}
               </button>
 
-              {status === 'canceled' ? (
+              {offerPortal ? (
                 <button
                   className={styles.portalBtn}
                   type="button"
                   onClick={handleOpenPortal}
                   disabled={checkoutLoading || portalLoading}
                 >
-                  {portalLoading ? 'Opening portal…' : 'Reactivate via Portal'}
+                  {portalLoading ? 'Opening portal…' : status === 'canceled' ? 'Reactivate via Portal' : 'Manage billing'}
                 </button>
               ) : null}
 

@@ -21,6 +21,7 @@ from fastapi import (
 from fastapi.responses import Response
 from pydantic import ValidationError
 
+import ai_budget
 import ws_hub
 from ai_chat_models import ChatSendFrame
 from ai_chat_store import (
@@ -38,11 +39,12 @@ from ai_chat_store import (
     update_assistant,
 )
 from automation_jobs import INTERACTIVE_QUEUE, enqueue_job
+from llm_gateway import SpendRefused
 from platform_policy import ActionRisk, Feature, feature_enabled
 from tenancy import TenantContext, require_context
 
 # Import registers the durable response handler before workers start.
-import ai_chat_agent  # noqa: F401,E402
+import ai_chat_agent  # noqa: E402
 
 logger = logging.getLogger("oracle.ai_chat_api")
 router = APIRouter(prefix="/api/ai/chat", tags=["Private AI Chat"])
@@ -292,6 +294,19 @@ async def handle_chat_websocket(
         await _reject(websocket, request_id, "INVALID_MESSAGE", "Check the message and selected files")
         return
 
+    # The brokerage's AI token budget, before anything is persisted or queued
+    # (T18.07): a paused, halted or spent budget, one with less left than the
+    # smallest request this kind of turn makes (words parse first; files skip
+    # the text-only tiers), or one that cannot be read, is refused here with
+    # its own code. Each model call is checked again.
+    try:
+        await ai_budget.admission(ctx, floor=ai_chat_agent.smallest_request_hold(
+            words=bool(frame.content), files=bool(frame.attachment_ids)))
+    except SpendRefused as refused:
+        logger.info("ai_chat rejected request_id=%s code=%s", frame.request_id, refused.code)
+        await _reject(websocket, str(frame.request_id), refused.code, refused.message)
+        return
+
     context = frame.context.model_dump(mode="json") if frame.context else None
     logger.info("ai_chat persisting request_id=%s context=%s", frame.request_id, context and context.get("type"))
     try:
@@ -320,6 +335,9 @@ async def handle_chat_websocket(
             ctx, job_type="ai_chat:response",
             payload={
                 "tenant_id": ctx.tenant_id, "user_id": ctx.agent_id,
+                # The turn runs as the person who asked (L07-03), never wider
+                # than a broker-owner (ai_chat_agent._worker_role).
+                "role": ctx.role.value,
                 "request_id": str(frame.request_id), "assistant_id": created["assistant_id"],
                 # Only a spoken turn carries it; a code, never words (L05-05).
                 **({"lang_hint": frame.lang} if frame.lang else {}),

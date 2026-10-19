@@ -9,7 +9,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional
+from types import SimpleNamespace
+from typing import Any, Optional, Sequence
 
 import httpx
 
@@ -24,9 +25,20 @@ from ai_chat_store import (
     update_assistant,
 )
 from automation_jobs import JobReporter, register_handler
-from memory_core.session_manager import SessionManager
-from billing_usage import record_inference
+from memory_core.session_manager import SessionManager, _profile_to_dict
+from llm_gateway import (
+    ATTACHMENT_TOKENS,
+    MIN_TOKENS,
+    SpendRefused,
+    SpendUnavailable,
+    document_tokens,
+    estimate_tokens,
+    spend_guarded,
+    spend_guarded_thread,
+    spend_scope,
+)
 from tenancy import Role, TenantContext
+import ai_budget
 import neoh_persona
 import frame_constraints
 import semantic_turn
@@ -35,6 +47,13 @@ logger = logging.getLogger("oracle.ai_chat")
 # One Foundry model round may not take longer than this (the turn has several).
 _FOUNDRY_ROUND_SECONDS = 90.0
 _TURN_DEADLINE_SECONDS = float(os.getenv("ORACLE_AI_TURN_DEADLINE_SECONDS", "90"))
+# The Foundry SDK's own limit for one request made in a chat turn (T18.07),
+# with no retry: the ladder is the fallback. Its defaults are 600 s and two
+# retries, and the round's wait cannot stop its worker thread — so a request
+# the turn stopped waiting for could outlive its hold (ai_budget.HOLD_SECONDS,
+# 600 s), and a retried attempt is billed while only the final response's
+# usage is settled. No longer than the round's wait or the turn's deadline.
+_FOUNDRY_REQUEST_SECONDS = min(_FOUNDRY_ROUND_SECONDS, _TURN_DEADLINE_SECONDS)
 
 MODEL_ID = os.getenv("ORACLE_AI_CHAT_MODEL", "us.amazon.nova-pro-v1:0")
 # Azure Foundry is the platform's inference plane; an unset variable must not
@@ -580,6 +599,16 @@ def _tool_config(context_type: str | None) -> dict | None:
     return {"tools": tools} if tools else None
 
 
+def _offered_tool_config(context_type: str | None, withheld) -> dict | None:
+    """The Bedrock toolConfig for this turn: the release's offer for the record
+    minus what this actor is not offered (tool_offer). None when nothing is left."""
+    config = _tool_config(context_type)
+    if not config or not withheld:
+        return config
+    kept = [t for t in config["tools"] if t["toolSpec"]["name"] not in withheld]
+    return {"tools": kept} if kept else None
+
+
 def _foundry_inputs(bundle: dict, runtime_context: str = "") -> list[dict]:
     """Build stateless Responses API input without persisting Azure conversation state."""
     items: list[dict] = []
@@ -684,14 +713,31 @@ def _foundry_tools(context_type: str | None) -> list[dict]:
 _FOUNDRY_INSTRUCTIONS = neoh_persona.build_system_prompt(compact=True)
 
 
-def _foundry_response(input_items: list[dict], context_type: str | None):
-    return _foundry_openai_client().responses.create(
+def _foundry_offered(context_type: str | None, withheld: frozenset[str] = frozenset()) -> list[dict]:
+    """The Foundry tools this turn's actor is sent: the offer minus what is withheld."""
+    return [t for t in _foundry_tools(context_type) if t.get("name") not in withheld]
+
+
+def _foundry_response(input_items: list[dict], context_type: str | None,
+                      withheld: frozenset[str] = frozenset()):
+    client = _foundry_openai_client()
+    if spend_scope.get() is not None:
+        # Held and metered (spend_guarded_thread copies the turn's context
+        # into this thread): bounded below the hold and sent once.
+        client = client.with_options(timeout=_FOUNDRY_REQUEST_SECONDS, max_retries=0)
+    return client.responses.create(
         model=_FOUNDRY_MODEL,
         input=input_items,
-        tools=_foundry_tools(context_type),
+        tools=_foundry_offered(context_type, withheld),
         instructions=_FOUNDRY_INSTRUCTIONS,
         store=False,
     )
+
+
+def _withheld(bundle: dict) -> frozenset[str]:
+    """The tools this turn's actor is not offered (tool_offer, set by _generate)."""
+    offer = bundle.get("tool_offer") if isinstance(bundle, dict) else None
+    return frozenset(getattr(offer, "withheld", None) or ())
 
 
 async def _foundry_generate(
@@ -712,13 +758,20 @@ async def _foundry_generate(
     input_items = _foundry_inputs(bundle, runtime_context)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    # Bounded: the SDK's own default is 600 s x 3 attempts per call.
-    response = await asyncio.wait_for(
-        asyncio.to_thread(_foundry_response, input_items, context_type), timeout=_FOUNDRY_ROUND_SECONDS)
-    # Metered at every model call, not once per turn: a turn that runs tools
-    # calls the model again for each round, and those rounds carry the whole
-    # conversation plus every tool receipt so far. They are the expensive half.
-    await record_inference(ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:0")
+    withheld = _withheld(bundle)
+    # Bounded twice: the wait at _FOUNDRY_ROUND_SECONDS, and the request
+    # itself at _FOUNDRY_REQUEST_SECONDS with no retry (_foundry_response) —
+    # the SDK's own default is 600 s x 3 attempts per call.
+    # Checked and metered at every model call, not once per turn (T18.07): a
+    # turn that runs tools calls the model again for each round, and those
+    # rounds carry the whole conversation plus every tool receipt so far. They
+    # are the expensive half. The turn's spend scope holds each call's
+    # estimate before it is sent and records its reported usage after — when
+    # its thread returns, even if the turn stopped waiting for it first.
+    response = await spend_guarded_thread(
+        "foundry", _foundry_estimate(input_items, context_type, withheld),
+        _foundry_response, input_items, context_type, withheld,
+        timeout=_FOUNDRY_ROUND_SECONDS)
     actions: list[dict] = applied if applied is not None else []
 
     # Monotonic across the WHOLE turn, not per round: the ledger's identity is
@@ -754,13 +807,26 @@ async def _foundry_generate(
         prior_output = [
             item.model_dump(mode="json", exclude_none=True) for item in response.output
         ]
-        response = await asyncio.wait_for(asyncio.to_thread(
-            _foundry_response, input_items + prior_output + tool_outputs, context_type
-        ), timeout=_FOUNDRY_ROUND_SECONDS)
-        await record_inference(
-            ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:{round_index + 1}"
-        )
+        next_items = input_items + prior_output + tool_outputs
+        response = await spend_guarded_thread(
+            "foundry", _foundry_estimate(next_items, context_type, withheld),
+            _foundry_response, next_items, context_type, withheld,
+            timeout=_FOUNDRY_ROUND_SECONDS)
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
+
+
+def _foundry_estimate(input_items: list[dict], context_type: str | None,
+                      withheld: frozenset[str] = frozenset()) -> int:
+    """A Foundry call's hold: its input, the tools it is sent and its
+    instructions, plus a completion allowance. The Responses call sets no
+    output ceiling, so the allowance (the hosted tier's own ceiling) is an
+    estimate, not a bound."""
+    return estimate_tokens(input_items, _foundry_offered(context_type, withheld), _FOUNDRY_INSTRUCTIONS,
+                           completion=FIREWORKS_MAX_TOKENS)
+
+
+#: Bedrock's completion ceiling, as _converse sends it.
+_BEDROCK_MAX_TOKENS = 1800
 
 
 def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None) -> dict:
@@ -780,11 +846,169 @@ def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None
         "modelId": MODEL_ID,
         "system": [{"text": system_prompt}],
         "messages": messages,
-        "inferenceConfig": {"maxTokens": 1800, "temperature": 0.2, "topP": 0.9},
+        "inferenceConfig": {"maxTokens": _BEDROCK_MAX_TOKENS, "temperature": 0.2, "topP": 0.9},
     }
     if tool_config:
         kwargs["toolConfig"] = tool_config
     return _get_client().converse(**kwargs)
+
+
+def _bedrock_documents(bundle: dict) -> list[str]:
+    """The extracted text of each PDF _bedrock_messages sends as bytes."""
+    return [str(attachment.get("extracted_text") or "") for attachment in bundle.get("attachments") or []
+            if attachment.get("media_type") == "application/pdf"]
+
+
+def _bedrock_estimate(messages: list[dict], system_prompt: str, tool_config: dict | None,
+                      documents: Sequence[str] = ()) -> int:
+    """A Bedrock call's hold. estimate_tokens holds each PDF the call carries
+    as bytes at ATTACHMENT_TOKENS; Bedrock reads a PDF by its text, so one
+    whose extracted text is known is held at that text's size instead."""
+    return (estimate_tokens(messages, system_prompt, tool_config, completion=_BEDROCK_MAX_TOKENS)
+            + sum(document_tokens(text) - ATTACHMENT_TOKENS for text in documents))
+
+
+async def _bedrock_round(messages: list[dict], system_prompt: str, tool_config: dict | None,
+                         documents: Sequence[str] = ()) -> dict:
+    """One Bedrock Converse call, held and metered under the turn's spend scope
+    (T18.07) — settled when its thread returns, even if the turn stopped
+    waiting first. Only when the tier is on: a disabled tier raises in
+    _converse without reaching AWS, and holding for it would refuse a turn the
+    free local model could still answer. `documents` is the extracted text of
+    each PDF in `messages` (_bedrock_documents)."""
+    if not BEDROCK_FALLBACK_ENABLED:
+        return await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
+    return await spend_guarded_thread(
+        "bedrock", _bedrock_estimate(messages, system_prompt, tool_config, documents),
+        _converse, messages, system_prompt, tool_config)
+
+
+#: The words of the smallest turn the floor is computed for. A one-character
+#: message can hold one token less (CHARS_PER_TOKEN rounding).
+_SMALLEST_TEXT = "hi"
+#: The least one file adds to a first call, per tier: Foundry is sent a PDF
+#: as its extracted text (_foundry_inputs) and an image at ATTACHMENT_TOKENS;
+#: Bedrock holds either at ATTACHMENT_TOKENS or more (_bedrock_estimate).
+_SMALLEST_FILES = (
+    {"media_type": "application/pdf", "filename": "", "extracted_text": "x", "data": b""},
+    {"media_type": "image/png", "filename": "", "data": b""},
+)
+#: The tiers a turn with files can start on; the gateway and direct Fireworks
+#: refuse files before holding anything (_local_fallback).
+_FILE_TIERS = ("foundry", "bedrock")
+
+
+@lru_cache(maxsize=1)
+def _first_call_holds() -> dict[str, dict[str, int]]:
+    """What each hosted tier's first answering call holds in the smallest
+    turns, built as _generate builds them: the persona, the operator-memory
+    block inject_jit_prompt always appends (a new operator's defaults), and
+    the tool offer's note for an agent (the broker-owner reads are always
+    withheld from one, and named; Foundry gets the note and the memory block
+    as its runtime context), the tools that offer leaves, the completion
+    ceiling, and no record, history or brokerage block (no channel set up;
+    with no record selected no channel tool is offered either way). The
+    memory block names the operator, whose id varies in length: it is left
+    empty, so a real turn holds a few tokens more and the floor stays a lower
+    bound. The brokerage block is left out for the same reason: it is
+    best-effort (_resolve_brokerage_context) and absent when its read fails.
+
+        text        the words _SMALLEST_TEXT, no file
+        files       those words and the least one file adds on that tier
+        files_only  no words (the tier's own stand-in), and that file
+    """
+    import tool_offer
+
+    offer = tool_offer.for_actor(SimpleNamespace(role=Role.AGENT), None,
+                                 {channel: "not set up" for channel in tool_offer.CHANNEL_TOOLS})
+    withheld = frozenset(offer.withheld)
+    note = offer.prompt_note()
+    memory = SessionManager(None)._render_memory_block({
+        "user_id": "", "tenant_id": "0" * 36,
+        "parameters": _profile_to_dict(None), "recent_interactions": [],
+    })
+    system_prompt = (neoh_persona.build_system_prompt().rstrip() + "\n\n" + memory
+                     + ("\n\n" + note if note else ""))
+    runtime_context = ((note + "\n\n" if note else "") + memory).strip()
+    tools = [t for t in _local_tools(None) if t["function"]["name"] not in withheld]
+
+    def hold(tier: str, text: str, attachments: Sequence[dict] = ()) -> int:
+        bundle = {"messages": [{"role": "user", "content": text}], "attachments": list(attachments)}
+        if tier == "foundry":
+            return _foundry_estimate(_foundry_inputs(bundle, runtime_context), None, withheld)
+        if tier == "bedrock":
+            return _bedrock_estimate(_bedrock_messages(bundle), system_prompt,
+                                     _offered_tool_config(None, withheld), _bedrock_documents(bundle))
+        chat = [{"role": "system", "content": system_prompt}, *_compact_history(bundle["messages"], 24_000)]
+        # llm_gateway.tool_call raises the gateway's ceiling to its MIN_TOKENS.
+        ceiling = max(FIREWORKS_MAX_TOKENS, MIN_TOKENS) if tier == "gateway" else FIREWORKS_MAX_TOKENS
+        return estimate_tokens(chat, tools, completion=ceiling)
+
+    return {
+        "text": {tier: hold(tier, _SMALLEST_TEXT) for tier in ("gateway", "fireworks", "foundry", "bedrock")},
+        "files": {tier: min(hold(tier, _SMALLEST_TEXT, [f]) for f in _SMALLEST_FILES) for tier in _FILE_TIERS},
+        "files_only": {tier: min(hold(tier, "", [f]) for f in _SMALLEST_FILES) for tier in _FILE_TIERS},
+    }
+
+
+def _request_parse_hold() -> int:
+    """What the smallest turn's request parse holds, built as the parse builds
+    it (semantic_turn → semantic_frame.extract_frame → llm_gateway.complete).
+    It is held, and settled, before the turn's first answering call. 0 when
+    the parser is off or no hosted provider can take it: one that cannot is
+    never asked (complete() skips a provider without structured output)."""
+    if not frame_constraints.enabled():
+        return 0
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    import llm_gateway
+    import semantic_frame
+
+    if not any(p.supports_response_format and p.name != "local" for p in llm_gateway.providers_for("fast")):
+        return 0
+    zone = semantic_turn.default_timezone()
+    # Any instant with microseconds: its ISO form is as long as the parse's own.
+    now = datetime(2026, 1, 1, microsecond=1, tzinfo=timezone.utc).astimezone(ZoneInfo(zone))
+    messages = [{"role": "system", "content": semantic_frame.SYSTEM},
+                {"role": "user", "content": semantic_frame._prompt(_SMALLEST_TEXT, (), now, zone)}]
+    return estimate_tokens(messages, completion=max(semantic_frame.FRAME_TOKEN_BUDGET, MIN_TOKENS))
+
+
+def smallest_request_hold(*, words: Optional[bool] = None, files: Optional[bool] = None) -> int:
+    """The least a chat turn must have room for before its first answering
+    call is admitted (T18.07), so admission and the owner's panel judge a
+    turn as its calls are judged: its request parse (a turn with words, the
+    parser on), then that call.
+
+    A turn with words and no files is answered on the first hosted tier of
+    _generate's ladder, and a refusal there ends the turn — a cheaper later
+    tier never runs. A turn with files skips the text-only tiers (the gateway,
+    direct Fireworks) and starts on Foundry, else Bedrock; one with no words
+    has no request to parse. `words` and `files` say which kind of turn (the
+    socket knows); None means any kind — the least of them, as the owner's
+    panel reports. A lower bound, exact for the smallest turns of an
+    operator with an empty id and no brokerage block (_first_call_holds); a
+    real turn with more words, a record, history, a brokerage block, a longer
+    operator id or an owner's wider offer holds more, and is stopped at that
+    call. 0 when no hosted tier would take it."""
+    ladder = [tier for tier, configured in (
+        ("gateway", bool(_gateway_chat_providers())),
+        ("fireworks", FIREWORKS_ENABLED),
+        ("foundry", AI_PROVIDER == "azure-foundry"),
+        ("bedrock", BEDROCK_FALLBACK_ENABLED),
+    ) if configured]
+    if not ladder:
+        return 0
+    holds = _first_call_holds()
+    parse = _request_parse_hold()
+    kinds = {(True, False): parse + holds["text"][ladder[0]]}
+    file_tier = next((tier for tier in ladder if tier in _FILE_TIERS), None)
+    if file_tier is not None:
+        kinds[(True, True)] = parse + holds["files"][file_tier]
+        kinds[(False, True)] = holds["files_only"][file_tier]
+    return min((hold for (has_words, has_files), hold in kinds.items()
+                if words in (None, has_words) and files in (None, has_files)), default=0)
 
 
 #: Phrases that tell the agent something is waiting for their approval.
@@ -908,7 +1132,9 @@ async def _local_fallback(
 
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tools = _local_tools(context_type) if ctx is not None else []
+    withheld = _withheld(bundle)
+    tools = [t for t in _local_tools(context_type)
+             if (t.get("function") or {}).get("name") not in withheld] if ctx is not None else []
     actions: list[dict] = applied if applied is not None else []
 
     payload: dict[str, Any] = {
@@ -936,6 +1162,15 @@ async def _local_fallback(
                 temperature=payload["temperature"],
                 timeout=timeout or 120.0,
             )
+        if api_key:
+            # A hosted endpoint over plain HTTP (the Fireworks tier): held and
+            # metered under the turn's spend scope like a gateway call. The
+            # local llama server takes no key and is not hosted spend.
+            return await spend_guarded(
+                "fireworks",
+                estimate_tokens(payload["messages"], payload.get("tools") or [],
+                                completion=payload["max_tokens"]),
+                lambda: _local_chat(payload, url=url, api_key=api_key, timeout=timeout))
         return await _local_chat(payload, url=url, api_key=api_key, timeout=timeout)
 
     # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
@@ -1015,8 +1250,13 @@ async def _local_fallback(
             ok = bool(isinstance(receipt, dict) and receipt.get("ok"))
             if ok and (receipt.get("command_id") or receipt.get("approval_id")):
                 staged_commands.append(str(receipt.get("command_id") or receipt.get("approval_id")))
-            logger.info("chat tool %s ok=%s%s", name, ok,
-                        "" if ok else f" error={str((receipt or {}).get('error') or '')[:160]!r}")
+            # The outcome by code only: a refusal's or a handler's error text
+            # can name a customer ("Sarah Chen has no email on record"), and
+            # this line reaches application logs (A06, L05-11).
+            outcome = "ok" if ok else (
+                f"refused:{receipt.get('constraint')}"
+                if isinstance(receipt, dict) and receipt.get("refused") else "failed")
+            logger.info("chat tool %s %s", name, outcome)
             call_index += 1
             messages.append(
                 {
@@ -1132,10 +1372,15 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         asyncio.ensure_future(semantic_turn.prepare_turn(ctx, bundle, assistant_id))
         if frame_constraints.enabled() else None
     )
+    # "Actually, the other Sarah": withdraw what the previous turn staged
+    # before this turn can stage the corrected one (F05.04, correction.py).
+    import correction
+
+    withdrawn = await correction.withdraw_superseded(ctx, bundle)
     memory = SessionManager(ctx)
     brokerage = await _resolve_brokerage_context(ctx)
     base = neoh_persona.build_system_prompt(brokerage=brokerage)
-    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base)
+    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base) + correction.prompt_note(withdrawn)
     # What this turn added on top of the persona. Foundry carries its own
     # compact copy of the persona in `instructions=`, so it must be handed only
     # the additions — previously computed by subtracting BASE_SYSTEM_PROMPT
@@ -1187,11 +1432,39 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # lets the model explain — it is not the control.
     turn = await frame_task if frame_task is not None else None
     if turn is not None:
-        semantic_turn.bind(assistant_id, turn.active, turn.lang)
+        semantic_turn.bind(assistant_id, turn.active, turn.lang, pending=turn.pending())
         constraint_block = turn.prompt_block()
         if constraint_block:
             system_prompt += "\n\n" + constraint_block
             runtime_context = (runtime_context + "\n\n" + constraint_block).strip()
+        # The frame's one precise question (T05.10, L05-08): several records
+        # the person can open match a name, so the model asks and names them
+        # instead of picking one; execute_safe_tool refuses acting on any of
+        # them this turn (frame_constraints.check_pending).
+        question_block = turn.question_block()
+        if question_block:
+            system_prompt += "\n\n" + question_block
+            runtime_context = (question_block + "\n\n" + runtime_context).strip()
+        # For handle_ai_chat_job: the choices reach the UI as buttons (L05-09).
+        bundle["question"] = turn.question
+    # What this actor is offered this turn, and why the rest is not (T07.04,
+    # L07-03): the broker-owner reads an agent may not use and the channels the
+    # brokerage has not set up are withheld from every provider's tool list
+    # below and named here, so the model says "texting needs setup" instead of
+    # staging a text that can go nowhere. execute_safe_tool refuses the same
+    # names with the same reason (tool_offer.current).
+    import tool_offer
+
+    offer = await tool_offer.for_turn(ctx, bundle["assistant"].get("context_type"))
+    bundle["tool_offer"] = offer
+    tool_offer.remember(ctx, assistant_id, offer)
+    offer_note = offer.prompt_note()
+    if offer_note:
+        system_prompt += "\n\n" + offer_note
+        # Ahead of the memory block in Foundry's runtime context: _foundry_inputs
+        # keeps its first 12k characters, and a control note that is cut is a
+        # tool withheld with no reason given.
+        runtime_context = (offer_note + "\n\n" + runtime_context).strip()
     # Hosted chat runs through llm_gateway: one place that knows which
     # providers exist, one call counter, one deadline. The loop, the tool
     # execution and the receipts are unchanged — only the transport moved.
@@ -1201,6 +1474,10 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # round for exactly the reason this loop guards: once a CRM write has
     # committed, replaying the conversation applies it twice. So a fall-through
     # to the next provider is legal only while nothing has been written.
+    #
+    # A budget refusal (SpendRefused, T18.07) is never a provider failure:
+    # every tier re-raises it with the receipts of what it already applied,
+    # and no later tier runs. Nothing was sent for the refused call.
     for provider in _gateway_chat_providers():
         provider_actions: list[dict] = []
         try:
@@ -1216,6 +1493,8 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 provider_actions,
                 f"{provider.name}:{provider.model}",
             )
+        except SpendRefused as refused:
+            raise _with_receipts(refused, provider_actions, f"{provider.name}:{provider.model}")
         except Exception as provider_error:  # noqa: BLE001
             if provider_actions:
                 logger.warning(
@@ -1238,6 +1517,8 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             return await _fireworks_generate(
                 ctx, bundle, system_prompt, assistant_id, fireworks_actions
             )
+        except SpendRefused as refused:
+            raise _with_receipts(refused, fireworks_actions, f"fireworks:{FIREWORKS_MODEL}")
         except Exception as fireworks_error:  # noqa: BLE001
             # Same rule as every other tier: writes that already committed must
             # come back with their receipts, or the retry double-applies them.
@@ -1260,6 +1541,8 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             return await _foundry_generate(
                 ctx, bundle, assistant_id, runtime_context, applied=foundry_actions
             )
+        except SpendRefused as refused:
+            raise _with_receipts(refused, foundry_actions, f"azure-foundry:{_FOUNDRY_MODEL}")
         except Exception as foundry_error:  # noqa: BLE001
             # Same rule as the Bedrock and local branches below: writes that
             # already committed must come back with their receipts. Falling
@@ -1281,10 +1564,11 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     messages = _bedrock_messages(bundle)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tool_config = _tool_config(context_type)
+    tool_config = _offered_tool_config(context_type, offer.withheld)
+    documents = _bedrock_documents(bundle)
     actions: list[dict] = []
     try:
-        response = await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
+        response = await _bedrock_round(messages, system_prompt, tool_config, documents)
         for _ in range(2):
             output = response.get("output", {}).get("message", {})
             content = output.get("content", [])
@@ -1307,8 +1591,10 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                     "status": "success" if receipt.get("ok") else "error",
                 }})
             messages.append({"role": "user", "content": results})
-            response = await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
+            response = await _bedrock_round(messages, system_prompt, tool_config, documents)
         raise RuntimeError("The assistant exceeded the safe tool-call limit")
+    except SpendRefused as refused:
+        raise _with_receipts(refused, actions, MODEL_ID)
     except Exception as bedrock_error:  # noqa: BLE001
         logger.warning("Nova chat request failed; attempting text-only local fallback: %s", bedrock_error)
         if actions:
@@ -1341,6 +1627,18 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             raise RuntimeError(message) from local_error
 
 
+def _with_receipts(refused: SpendRefused, applied: list[dict], model_id: str) -> SpendRefused:
+    """The refusal, carrying the receipts of writes the tier already applied
+    (they committed, and the turn must report them) and the tier's model."""
+    refused.applied = list(applied)
+    refused.model_id = model_id
+    return refused
+
+
+#: Said before a budget refusal when the turn had already applied writes.
+_APPLIED_THEN_STOPPED = "The requested record update was applied, but Neoh stopped before finishing its answer."
+
+
 async def _broadcast_chunks(ctx: TenantContext, assistant_id: str, request_id: str, content: str) -> None:
     await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, {
         "type": "AI_CHAT_START", "version": 1, "message_id": assistant_id,
@@ -1355,12 +1653,75 @@ async def _broadcast_chunks(ctx: TenantContext, assistant_id: str, request_id: s
         await asyncio.sleep(0)
 
 
+def _worker_role(value: object) -> Role:
+    """The role the chat turn runs as (T07.04, L07-03).
+
+    The turn used to run as Role.AGENT whoever asked, so a broker-owner was
+    refused their own workspace reports with "your role is agent" and the
+    offer could not name the real permission. The API now records the
+    requester's role in the job; a job without one (queued before this
+    release, or unreadable) still runs as an agent — the least the person
+    could be. A platform admin runs as the brokerage's owner: the tool loop
+    reads under RLS, and a platform-admin session there would see every
+    tenant's rows, which no chat turn should."""
+    if value == Role.BROKER_OWNER.value or value == Role.PLATFORM_ADMIN.value:
+        return Role.BROKER_OWNER
+    return Role.AGENT
+
+
+async def _live_role(requester: TenantContext) -> tuple[str, Optional[str]]:
+    """The requester's CURRENT membership here: ("ok", users.role) for an active
+    member, ("missing", None) when they are not one, ("unknown", None) when it
+    could not be read. Never raises."""
+    try:
+        import record_access
+        from db.connection import tenant_tx
+
+        async with tenant_tx(requester) as conn:
+            member = await record_access.find_member(conn, requester.tenant_id, requester.agent_id)
+    except Exception:  # noqa: BLE001 — not re-checked is not the same as absent
+        logger.debug("chat turn: live role not readable; the recorded role stands", exc_info=True)
+        return "unknown", None
+    return ("ok", str(member["role"])) if member else ("missing", None)
+
+
+async def _turn_role(requester: TenantContext, recorded: object) -> Role:
+    """The role a chat turn runs as. The job recorded the requester's role when
+    the session passed its account check; between enqueue and claim they may
+    have been demoted or removed, so the live users row wins when it can be
+    read: an active member runs as their current role, someone who is no
+    longer an active member runs as an agent (a platform admin, who has no
+    row to lose, keeps owner-level), and only when the row cannot be read
+    does the recorded role stand — always narrowed by _worker_role."""
+    state, live = await _live_role(requester)
+    if state == "ok":
+        return _worker_role(live)
+    if state == "missing":
+        # Not an active member here. A removed or deactivated member runs as
+        # an agent; a platform admin never was a member (their identity is the
+        # platform's, not a users row), so the role the API verified stands —
+        # narrowed to the brokerage's owner like every platform-admin turn.
+        return Role.BROKER_OWNER if recorded == Role.PLATFORM_ADMIN.value else Role.AGENT
+    return _worker_role(recorded)
+
+
+def _question_choices(bundle: dict) -> list[dict]:
+    """The turn's question as the UI shows it: one button per record the
+    person may have meant that a click can carry back as the chat context
+    (client, lead — semantic_turn.CLICKABLE), labelled as the parser saw it,
+    with what tells same-name records apart. [] without one."""
+    question = bundle.get("question") if isinstance(bundle, dict) else None
+    return [{"type": c.record_type, "id": str(c.id), "label": c.label, "detail": c.detail}
+            for c in (getattr(question, "choices", None) or ()) if c.clickable]
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
     assistant_id = str(payload["assistant_id"])
     request_id = str(payload["request_id"])
-    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    requester = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=await _turn_role(requester, payload.get("role")))
     bundle = await load_response_bundle(ctx, assistant_id)
     # A spoken turn's recognition language (L05-05): read by
     # semantic_turn.prepare_turn only when the words cannot tell.
@@ -1393,6 +1754,12 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
             logger.warning("AI chat concurrency release failed for turn %s", assistant_id)
         return {"message_id": assistant_id, "status": "interrupted"}
     await update_assistant(ctx, assistant_id, content="", status_value="streaming", model_id=MODEL_ID)
+    # Every hosted model call this turn makes — its tiers, its tool rounds and
+    # its request parsing (a child task, which copies this context) — is held
+    # against the brokerage's AI token budget before it is sent and metered
+    # after (T18.07, ai_budget). Reset in the finally below.
+    scope = ai_budget.SpendScope(ctx, f"chat:{assistant_id}")
+    scope_token = spend_scope.set(scope)
     try:
         # One deadline for the whole turn. Each model call was bounded, but a
         # hung provider times three tool rounds times the fallback ladder kept
@@ -1401,16 +1768,30 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         content, actions, model_id = await asyncio.wait_for(
             _generate(ctx, bundle, assistant_id), timeout=_TURN_DEADLINE_SECONDS)
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
+        # The one precise question's choices (T05.10, L05-09): the row keeps
+        # the record ids only — labels are re-read as the caller when the
+        # thread is listed (list_messages) — and this frame carries the labels
+        # the turn already had, so the UI can offer them as buttons now.
+        choices = _question_choices(bundle)
         await update_assistant(
-            ctx, assistant_id, content=content, status_value="completed", model_id=model_id
+            ctx, assistant_id, content=content, status_value="completed", model_id=model_id,
+            choices=[{"type": c["type"], "id": c["id"]} for c in choices] if choices else None,
         )
         await SessionManager(ctx).record_interaction(user_id, "user", bundle["messages"][-1]["content"])
         await SessionManager(ctx).record_interaction(user_id, "assistant", content)
         await ws_hub.broadcast_user(tenant_id, user_id, {
             "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
             "request_id": request_id, "model_id": model_id, "actions": actions,
+            "choices": choices,
+            # unlimited | ok | warning as of the turn's last hosted call; the
+            # chat shows one quiet line for "warning". None: no hosted call.
+            "budget_state": scope.state,
         })
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
+    except SpendRefused as refused:
+        # The budget stopped the turn BEFORE a model call (T18.07). Said as
+        # what it is, never as "unavailable": the person can act on it.
+        return await _end_refused_turn(ctx, assistant_id, request_id, refused)
     except Exception as exc:  # noqa: BLE001
         # Product language only: provider errors ("HTTP 503", "1006", a
         # stack frame) used to reach the user verbatim.
@@ -1430,12 +1811,42 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         # user had already given up on. Finish the job as a failed turn.
         return {"message_id": assistant_id, "status": "failed"}
     finally:
+        spend_scope.reset(scope_token)
         # Release concurrency slot regardless of success/failure. A Valkey
         # outage here must not replace the turn's real outcome with a 500.
         try:
             await release_concurrency(ctx)
         except Exception:  # noqa: BLE001 - counter has a TTL; the sweep covers stuck rows
             logger.warning("AI chat concurrency release failed for turn %s", assistant_id)
+
+
+async def _end_refused_turn(ctx: TenantContext, assistant_id: str, request_id: str,
+                            refused: SpendRefused) -> dict:
+    """End a turn the budget stopped. With no writes applied it fails with the
+    budget code and the refusal's own words; with writes applied it completes
+    with their receipts and says why the answer stopped (degraded). Not
+    retried: the job finishes, like any failed turn."""
+    logger.info("AI chat turn %s stopped by the AI budget: %s", assistant_id, refused.code)
+    if refused.applied:
+        content = f"{_APPLIED_THEN_STOPPED} {refused.message}"
+        model_id = refused.model_id or MODEL_ID
+        await _broadcast_chunks(ctx, assistant_id, request_id, content)
+        await update_assistant(ctx, assistant_id, content=content, status_value="completed",
+                               model_id=model_id, error_code=refused.code)
+        await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, {
+            "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
+            "request_id": request_id, "model_id": model_id, "actions": refused.applied,
+            "choices": [], "budget_state": refused.state, "code": refused.code,
+        })
+        return {"message_id": assistant_id, "status": "degraded", "code": refused.code}
+    await update_assistant(ctx, assistant_id, content=refused.message, status_value="failed",
+                           model_id=MODEL_ID, error_code=refused.code)
+    await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, {
+        "type": "AI_CHAT_ERROR", "version": 1, "message_id": assistant_id,
+        "request_id": request_id, "code": refused.code, "message": refused.message,
+        "budget_state": refused.state,
+    })
+    return {"message_id": assistant_id, "status": "failed", "code": refused.code}
 
 
 register_handler("ai_chat:response", handle_ai_chat_job)
@@ -1463,9 +1874,17 @@ NEOH REPLIES:"""
 
 
 _VOICE_STALL_LINE = "One moment please — I need a second to think about that."
+#: What a caller hears when the brokerage's AI budget (or the platform switch)
+#: stops a reply, or the call's brokerage is not known (T18.07): said, then the
+#: call ends. Never the stall line — "one moment" would promise an answer that
+#: is not coming — and never budget detail, which is the brokerage's business.
+VOICE_REFUSED_LINE = ("I'm sorry, I can't answer questions on this line right now. "
+                      "Please contact the brokerage directly. Goodbye.")
+#: Who a phone-call reply is spent as: the call's brokerage, as a service actor.
+_VOICE_ACTOR = "voice-reply"
 
 
-async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
+async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: str) -> str:
     """Compose the spoken reply for a live phone turn, through the gateway.
 
     The ladder this replaces was the same shape the gateway already implements:
@@ -1485,31 +1904,63 @@ async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
 
     A card number the caller reads out never reaches the model provider: it is
     removed here, before either path (pan_redaction, PCI DSS SAQ A).
+
+    Spent for the call's brokerage (`tenant_id`, T18.07): every hosted call
+    here is held against its AI token budget before it is sent and metered
+    after, in a scope of its own (ai_budget.spending — the key is random, never
+    the caller's number). A refusal is raised (SpendRefused), never turned into
+    the stall line: the webhook says VOICE_REFUSED_LINE and ends the call. With
+    no brokerage to hold against, nothing is sent.
+
+    The budget's database work never holds the caller past the live-call
+    budget: each settle (and a dropped hold's release) runs in the background,
+    and the gateway call is bounded by the budget with its hold included — a
+    hold that cannot be read in that time is an unreadable budget, refused
+    like any other (SpendUnavailable), never passed and never the stall line.
     """
     speech_text = _scrub_pan(speech_text, "voice_call_speech")
-    if not _gateway_chat_providers():
-        # No gateway on this deployment: the original ladder still answers
-        # callers rather than leaving them with a stall line on every turn.
-        return await _voice_reply_direct(caller_id, speech_text)
+    if not tenant_id:
+        raise SpendUnavailable("unknown", ai_budget.CODES["unknown"],
+                               "This call's brokerage is not known, so no model was asked.")
+    ctx = TenantContext(agent_id=_VOICE_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    async with ai_budget.spending(ctx, "voice", settles_in_background=True):
+        if not _gateway_chat_providers():
+            # No gateway on this deployment: the original ladder still answers
+            # callers rather than leaving them with a stall line on every turn.
+            return await _voice_reply_direct(caller_id, speech_text)
 
-    import llm_gateway
+        import llm_gateway
 
-    prompt = _VOICE_PROMPT.format(text=speech_text[:500])
-    try:
-        reply = await llm_gateway.complete(
-            speech_text[:500],
-            task="fast",
-            system=prompt,
-            max_tokens=FIREWORKS_MAX_TOKENS,
-            temperature=0.3,
-            timeout=VOICE_REPLY_BUDGET_SECONDS,
-        )
-    except Exception as exc:  # noqa: BLE001 — a live call never gets a traceback
-        logger.warning(
-            "Voice reply unavailable within the %.1fs live-call budget: %s",
-            VOICE_REPLY_BUDGET_SECONDS, exc,
-        )
-        return _VOICE_STALL_LINE
+        prompt = _VOICE_PROMPT.format(text=speech_text[:500])
+        try:
+            # complete() bounds the provider calls by `timeout`, but not the
+            # hold in front of them (a pool acquire of up to 10 s, then its
+            # statements): this bounds the whole reply. Cut off inside a hold,
+            # the budget could not be read in the caller's time and no model
+            # was asked for that call: SpendUnavailable, not the stall line.
+            reply = await ai_budget.wait_for(
+                llm_gateway.complete(
+                    speech_text[:500],
+                    task="fast",
+                    system=prompt,
+                    max_tokens=FIREWORKS_MAX_TOKENS,
+                    temperature=0.3,
+                    timeout=VOICE_REPLY_BUDGET_SECONDS,
+                ),
+                VOICE_REPLY_BUDGET_SECONDS,
+            )
+        except SpendRefused:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning("Voice reply unavailable within the %.1fs live-call budget",
+                           VOICE_REPLY_BUDGET_SECONDS)
+            return _VOICE_STALL_LINE
+        except Exception as exc:  # noqa: BLE001 — a live call never gets a traceback
+            logger.warning(
+                "Voice reply unavailable within the %.1fs live-call budget: %s",
+                VOICE_REPLY_BUDGET_SECONDS, exc,
+            )
+            return _VOICE_STALL_LINE
     # 300 characters is roughly 20 seconds of speech; past that the caller is
     # listening to a monologue rather than a conversation.
     return reply.strip()[:300] or _VOICE_STALL_LINE
@@ -1529,6 +1980,14 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
     then this coroutine's own error handling is moot — the call is already gone.
     A stall line delivered on time beats a perfect answer delivered after the
     caller has been hung up on.
+
+    Each hosted tier is held under the caller's spend scope before it is sent
+    (the hold's round trip counts against the same deadline) and metered after,
+    in the background (the reply does not wait for it); a refusal raises and
+    ends the ladder — it is never a reason to try Foundry. A hold that cannot
+    be read before the deadline is an unreadable budget (SpendUnavailable, the
+    webhook's refusal line), as on the gateway path: no model was asked, so
+    it is never the stall line.
     """
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
     loop = asyncio.get_running_loop()
@@ -1538,31 +1997,38 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
         return deadline - loop.time()
 
     if FIREWORKS_ENABLED:
+        payload = {
+            "model": FIREWORKS_MODEL,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": speech_text[:500]},
+            ],
+            "temperature": 0.3,
+            # A caller is waiting on the line, but a reasoning model
+            # emits nothing at all if the budget only covers reasoning.
+            "max_tokens": FIREWORKS_MAX_TOKENS,
+        }
         try:
-            data = await asyncio.wait_for(
-                _local_chat(
-                    {
-                        "model": FIREWORKS_MODEL,
-                        "messages": [
-                            {"role": "system", "content": prompt},
-                            {"role": "user", "content": speech_text[:500]},
-                        ],
-                        "temperature": 0.3,
-                        # A caller is waiting on the line, but a reasoning model
-                        # emits nothing at all if the budget only covers reasoning.
-                        "max_tokens": FIREWORKS_MAX_TOKENS,
-                    },
-                    url=FIREWORKS_URL,
-                    api_key=FIREWORKS_API_KEY,
-                    timeout=min(FIREWORKS_TIMEOUT, max(_remaining(), 0.1)),
+            data = await ai_budget.wait_for(
+                spend_guarded(
+                    "fireworks",
+                    estimate_tokens(payload["messages"], completion=FIREWORKS_MAX_TOKENS),
+                    lambda: _local_chat(
+                        payload,
+                        url=FIREWORKS_URL,
+                        api_key=FIREWORKS_API_KEY,
+                        timeout=min(FIREWORKS_TIMEOUT, max(_remaining(), 0.1)),
+                    ),
                 ),
-                timeout=max(_remaining(), 0.1),
+                max(_remaining(), 0.1),
             )
             message = (data.get("choices") or [{}])[0].get("message") or {}
             reply = str(message.get("content") or "").strip()
             if reply:
                 return reply[:300]
             logger.warning("Fireworks voice reply was empty; trying Foundry")
+        except SpendRefused:
+            raise
         except asyncio.TimeoutError:
             logger.warning(
                 "Fireworks voice reply exceeded the %.1fs live-call budget", VOICE_REPLY_BUDGET_SECONDS
@@ -1579,13 +2045,17 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
         {"role": "user", "content": speech_text[:500]},
     ]
     try:
-        # wait_for stops us waiting, but cannot cancel the worker thread — the
-        # orphan finishes into a discarded future, which is harmless here.
-        response = await asyncio.wait_for(
-            asyncio.to_thread(_foundry_response, input_items, None),
-            timeout=_remaining(),
+        # wait_for stops us waiting, but cannot cancel the worker thread: the
+        # request stays held until the thread returns and is then metered
+        # (spend_guarded_thread); _foundry_response bounds it, with no retry.
+        response = await ai_budget.wait_for(
+            spend_guarded_thread("foundry", _foundry_estimate(input_items, None),
+                                 _foundry_response, input_items, None),
+            _remaining(),
         )
         reply = response.output_text.strip()
         return reply[:300] if reply else "I'm sorry, could you say that differently?"
+    except SpendRefused:
+        raise
     except Exception:
         return _VOICE_STALL_LINE

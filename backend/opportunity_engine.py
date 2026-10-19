@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import semantic_language as lang_
 from db.connection import tenant_tx
 from tenancy import TenantContext
 
@@ -120,6 +121,37 @@ class Opportunity:
         out = asdict(self)
         out["score"] = self.score()
         return out
+
+
+# ── card language (L05-06) ──────────────────────────────────────────────────
+# Every sentence a card says comes from the en/es catalogue; `lang` None or
+# "en" is the English the cards always had. Record content (names,
+# addresses, model-written suggestions and summaries, stated needs) is shown
+# as stored in either language.
+
+def _say(key: str, lang: Optional[str], **values: Any) -> str:
+    return lang_.t(key, lang, **values)
+
+
+def _known(stored: Any, keys: tuple[str, ...], lang: Optional[str]) -> Any:
+    """`stored` in `lang` when it is exactly one of the catalogue's English
+    sentences, else as stored: a producer's fixed text is translated, and
+    anything a model or a person wrote is not guessed at."""
+    if lang_.lang_or_default(lang) == "en":
+        return stored
+    for key in keys:
+        entry = lang_.MESSAGES.get(key)
+        if entry and entry["en"] == stored:
+            return entry[lang_.lang_or_default(lang)]
+    return stored
+
+
+def _status_word(status: Any, lang: Optional[str]) -> str:
+    """A leads.dossier_status value: as stored in English, named in Spanish."""
+    key = f"dossier.{status}"
+    if lang_.lang_or_default(lang) == "en" or key not in lang_.MESSAGES:
+        return str(status)
+    return lang_.t(key, lang)
 
 
 #: NOTE ON SCOPING. Queries in this module carry `tenant_id = $1::uuid` bound
@@ -224,7 +256,8 @@ async def perception_coverage(ctx: TenantContext) -> dict[str, Any]:
     }
 
 
-async def _contract_deadline_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
+async def _contract_deadline_opportunities(conn, ctx: TenantContext,
+                                           lang: Optional[str] = None) -> list[Opportunity]:
     """Contracts running out of time.
 
     A date is the one signal that needs no behavioural capture to be true, and
@@ -252,19 +285,22 @@ async def _contract_deadline_opportunities(conn, ctx: TenantContext) -> list[Opp
         confidence = 0.95 if days <= 7 else 0.8
         out.append(Opportunity(
             kind="contract_deadline",
-            subject=r["client_name"] or r["address"] or "Unnamed record",
+            subject=r["client_name"] or r["address"] or _say("opp.contract.subject", lang),
             subject_id=r["client_id"] or r["id"],
             subject_type="client" if r["client_id"] else "lead",
-            headline=f"Contract expires in {days} day{'s' if days != 1 else ''}",
-            why=(
-                f"{r['address'] or 'This property'} has a contract expiring "
-                f"{r['contract_expires_at'].date().isoformat()} and its status is "
-                f"{r['dossier_status'] or 'unset'}."
+            headline=_say("opp.contract.headline_one" if days == 1 else "opp.contract.headline_many",
+                          lang, days=days),
+            why=_say(
+                "opp.contract.why", lang,
+                address=r["address"] or _say("opp.contract.this_property", lang),
+                date=r["contract_expires_at"].date().isoformat(),
+                status=(_status_word(r["dossier_status"], lang) if r["dossier_status"]
+                        else _say("opp.contract.unset", lang)),
             ),
-            recommended_action="Confirm the closing timeline with all parties today.",
+            recommended_action=_say("opp.contract.action", lang),
             confidence=confidence,
             evidence=[Evidence(
-                label="Contract expiry",
+                label=_say("opp.contract.evidence", lang),
                 value=r["contract_expires_at"].date().isoformat(),
                 source="leads.contract_expires_at",
             )],
@@ -295,7 +331,8 @@ def gap_label(gap: Any) -> str:
     return str(text)[:120]
 
 
-async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
+async def _intent_model_opportunities(conn, ctx: TenantContext,
+                                      lang: Optional[str] = None) -> list[Opportunity]:
     """Clients whose maintained intent model already asked for something.
 
     client_ai_automation writes next_actions and data_gaps per client. Those are
@@ -333,6 +370,10 @@ async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportun
         action_text = (
             (first.get("title") or first.get("action")) if isinstance(first, dict) else str(first)
         )
+        if isinstance(first, dict) and first.get("code"):
+            # Only the producer's fixed titles, by code; a model's own
+            # suggestion ("model-suggestion") has no catalogue key.
+            action_text = _known(action_text, (f"nba.{first['code']}",), lang)
         gaps = r["data_gaps"]
         if isinstance(gaps, str):
             try:
@@ -343,31 +384,33 @@ async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportun
         # recommendation less. Stated, not hidden.
         confidence = max(0.5, 0.9 - 0.1 * len(gaps or []))
         evidence = [Evidence(
-            label="Lead score",
-            value=str(r["lead_score"] if r["lead_score"] is not None else "unscored"),
+            label=_say("opp.nba.lead_score", lang),
+            value=str(r["lead_score"] if r["lead_score"] is not None else _say("opp.nba.unscored", lang)),
             source="clients.lead_score",
         )]
         if r["summary"]:
             evidence.append(Evidence(
-                label="Model summary", value=str(r["summary"])[:200],
+                label=_say("opp.nba.summary", lang), value=str(r["summary"])[:200],
                 source="client_ai_state.summary",
             ))
         for gap in (gaps or [])[:3]:
             text = gap_label(gap)
             if not text:
                 continue
+            code = gap.get("code") if isinstance(gap, dict) else None
             evidence.append(Evidence(
-                label="Not known", value=text,
+                label=_say("opp.nba.not_known", lang),
+                value=_known(text, (f"gap.{code}", f"gap.{code}.timed_out",
+                                    f"gap.{code}.unavailable"), lang) if code else text,
                 source="client_ai_state.data_gaps",
             ))
         out.append(Opportunity(
             kind="next_best_action",
-            subject=r["full_name"] or "Client",
+            subject=r["full_name"] or _say("opp.nba.subject", lang),
             subject_id=r["client_id"],
-            headline=str(action_text or "Recommended follow-up")[:120],
-            why=(r["summary"] or "The maintained intent model for this client "
-                 "recommends this as the next step.")[:280],
-            recommended_action=str(action_text or "Follow up")[:200],
+            headline=str(action_text or _say("opp.nba.headline", lang))[:120],
+            why=(r["summary"] or _say("opp.nba.why", lang))[:280],
+            recommended_action=str(action_text or _say("opp.nba.action", lang))[:200],
             confidence=round(confidence, 2),
             evidence=evidence,
             safe_to_automate=False,
@@ -375,7 +418,8 @@ async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportun
     return out
 
 
-async def _distress_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
+async def _distress_opportunities(conn, ctx: TenantContext,
+                                  lang: Optional[str] = None) -> list[Opportunity]:
     """High-motivation property records — the one signal that exists at scale.
 
     8.47M leads carry a motivation_score. This is the detector with real data
@@ -418,19 +462,17 @@ async def _distress_opportunities(conn, ctx: TenantContext) -> list[Opportunity]
             subject=f"{r['address']}, {r['state']}",
             subject_id=r["id"],
             subject_type="lead",
-            headline=f"Motivation score {score} — untouched",
-            why=(
-                f"This record scores {score}/100 on the public-record motivation "
-                f"model and is still marked '{r['dossier_status']}'. Nobody has "
-                "worked it."
-            ),
-            recommended_action="Review the dossier and decide whether to source it.",
+            headline=_say("opp.distress.headline", lang, score=score),
+            why=_say("opp.distress.why", lang, score=score,
+                     status=_status_word(r["dossier_status"], lang)),
+            recommended_action=_say("opp.distress.action", lang),
             confidence=round(confidence, 2),
             evidence=[
-                Evidence(label="Motivation score", value=str(score),
+                Evidence(label=_say("opp.distress.score", lang), value=str(score),
                          source="leads.motivation_score"),
-                Evidence(label="Last updated",
-                         value=r["updated_at"].date().isoformat() if r["updated_at"] else "unknown",
+                Evidence(label=_say("opp.distress.updated", lang),
+                         value=(r["updated_at"].date().isoformat() if r["updated_at"]
+                                else _say("opp.distress.unknown", lang)),
                          source="leads.updated_at"),
             ],
             safe_to_automate=False,
@@ -438,7 +480,8 @@ async def _distress_opportunities(conn, ctx: TenantContext) -> list[Opportunity]
     return out
 
 
-async def _listing_buyer_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
+async def _listing_buyer_opportunities(conn, ctx: TenantContext,
+                                       lang: Optional[str] = None) -> list[Opportunity]:
     """One of the brokerage's own active listings fits one of its buyers.
 
     The most ordinary opportunity in residential brokerage — "123 Main St may
@@ -455,10 +498,28 @@ async def _listing_buyer_opportunities(conn, ctx: TenantContext) -> list[Opportu
     # Its own savepoint: scan() runs every detector in ONE transaction, and a
     # failed statement here would otherwise abort it for the detectors after.
     async with conn.transaction():
-        return await _listing_buyer_cards(conn, ctx)
+        return await _listing_buyer_cards(conn, ctx, lang)
 
 
-async def _listing_buyer_cards(conn, ctx: TenantContext) -> list[Opportunity]:
+def _fit_notes(match: dict[str, Any], lang: Optional[str]) -> list[str]:
+    """The matched criteria as sentences. English is buyer_matching's own
+    note; another language is said from the note's key and values, and a
+    note without them (an older producer) stays as written."""
+    notes = list(match.get("matched_criteria") or [])
+    if lang_.lang_or_default(lang) == "en":
+        return notes
+    detail = match.get("matched_detail") or []
+    out = []
+    for i, note in enumerate(notes):
+        item = detail[i] if i < len(detail) and isinstance(detail[i], dict) else {}
+        key = f"fit.{item.get('key')}"
+        out.append(_say(key, lang, **(item.get("params") or {}))
+                   if item.get("key") and key in lang_.MESSAGES else note)
+    return out
+
+
+async def _listing_buyer_cards(conn, ctx: TenantContext,
+                               lang: Optional[str] = None) -> list[Opportunity]:
     import buyer_matching
 
     listings = await conn.fetch(
@@ -485,17 +546,24 @@ async def _listing_buyer_cards(conn, ctx: TenantContext) -> list[Opportunity]:
         prop = found["property"]
         place = buyer_matching.parse_us_address(prop.get("address") or "")
         where = (f"{place['street']}, {place['city']}" if place
-                 else str(prop.get("address") or "This listing"))
-        first_name = (best["name"] or "the buyer").split()[0]
+                 else str(prop.get("address") or _say("opp.match.this_listing", lang)))
+        first_name = (best["name"] or _say("opp.match.buyer", lang)).split()[0]
+        if lang_.lang_or_default(lang) != "en":
+            unnamed = not best["name"] or best["name"] == lang_.MESSAGES["opp.match.unnamed"]["en"]
+            best = {**best, "name": _known(best["name"], ("opp.match.unnamed",), lang)}
+            if unnamed:
+                first_name = _say("opp.match.buyer", lang)
+        fits = _fit_notes(best, lang)
         evidence = [
-            Evidence(label="Fits", value=note, source="clients.preferences")
-            for note in best["matched_criteria"]
+            Evidence(label=_say("opp.match.fits", lang), value=note, source="clients.preferences")
+            for note in fits
         ]
         for need in best["stated_needs"][:2]:
-            evidence.append(Evidence(label="Wants", value=need, source="clients.preferences"))
+            evidence.append(Evidence(label=_say("opp.match.wants", lang), value=need,
+                                     source="clients.preferences"))
         for shown in best["recent_showings"][:2]:
             evidence.append(Evidence(
-                label="Was shown",
+                label=_say("opp.match.shown", lang),
                 value=f"{shown['address']}" + (f" — {shown['outcome']}" if shown.get("outcome") else ""),
                 source="showings", as_of=shown.get("shown_at"),
             ))
@@ -505,13 +573,14 @@ async def _listing_buyer_cards(conn, ctx: TenantContext) -> list[Opportunity]:
             subject=where,
             subject_id=prop.get("lead_id") or row["lead_id"],
             subject_type="lead",
-            headline=f"May fit {best['name']}",
+            headline=_say("opp.match.headline", lang, name=best["name"]),
             why=(
-                f"{best['name']}'s recorded criteria agree on {best['matched_signals']} of 4: "
-                + "; ".join(best["matched_criteria"])
-                + (f". {others} other buyer{'s' if others != 1 else ''} also fit." if others else ".")
+                _say("opp.match.why", lang, name=best["name"], n=best["matched_signals"],
+                     criteria="; ".join(fits))
+                + (_say("opp.match.others_one" if others == 1 else "opp.match.others_many",
+                        lang, n=others) if others else ".")
             )[:280],
-            recommended_action=f"Ask Neoh about {first_name} and this home, then reach out.",
+            recommended_action=_say("opp.match.action", lang, first=first_name),
             confidence=round(min(0.8, 0.2 * best["matched_signals"] + 0.15), 2),
             evidence=evidence,
             safe_to_automate=False,
@@ -529,8 +598,12 @@ _DETECTORS = (
 )
 
 
-async def scan(ctx: TenantContext) -> dict[str, Any]:
+async def scan(ctx: TenantContext, lang: Optional[str] = None) -> dict[str, Any]:
     """One pass over everything this tenant can currently be told about.
+
+    `lang` is the language the cards are written in (en/es; None is English).
+    It changes sentences only: which cards exist, their order, confidence and
+    evidence rows are the same in every language.
 
     A detector that raises is logged and skipped rather than failing the scan:
     the feed is a read surface, and one broken detector should cost its own
@@ -541,7 +614,7 @@ async def scan(ctx: TenantContext) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
         for detector in _DETECTORS:
             try:
-                found.extend(await detector(conn, ctx))
+                found.extend(await detector(conn, ctx, lang))
             except Exception:  # noqa: BLE001 - see docstring
                 logger.exception("Opportunity detector failed: %s", detector.__name__)
                 failed.append(detector.__name__)

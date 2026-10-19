@@ -122,7 +122,7 @@ _INTERNAL: frozenset[str] = frozenset(
     # Set by the platform, never by an operator: a provider SDK reads them, or
     # a startup probe writes them for later code to read back.
     | {
-        "ORACLE_TWILIO_CREDENTIALS_VALIDATED", "AWS_OBSERVABILITY_ENABLED",
+        "AWS_OBSERVABILITY_ENABLED",
         "ORACLE_ASSIGNOR_NAME", "ORACLE_AUTORENEW_DISCLOSURE",
     }
     # Baked into the image by backend/Dockerfile's GIT_SHA/APP_VERSION/

@@ -321,6 +321,9 @@ export default function OurAITab({
       segments,
       homeowners,
       stewarded,
+      // "Live" for websites means a site the public can open, not merely that
+      // /api/sites answered (prompt 14 T14.16, L14-03).
+      publishedSites: sites.filter((site) => site?.status === 'published'),
       activeRoutes: routes.filter(activeRoute),
       connectedProviders: providers.filter(connectedProvider),
       pendingCommands: commands.filter((command) => ['draft', 'awaiting_approval', 'pending'].includes(command?.state)),
@@ -561,7 +564,7 @@ export default function OurAITab({
     {
       name: 'Hyperlocal Website',
       detail: 'Build source-backed area sites, private revisions, lead intake, attribution, and approval-gated publishing.',
-      status: sourceState('sites'),
+      status: sourceState('sites', data.publishedSites.length > 0),
       Icon: Globe2,
     },
     {

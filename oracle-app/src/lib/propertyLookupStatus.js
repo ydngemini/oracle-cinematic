@@ -52,9 +52,16 @@ export function propertyLookupView(automation) {
   };
 }
 
+// The brokerage's AI budget (or the platform switch) stopped the AI step; the
+// pass reconciled recorded facts only and retries once there is budget.
+const AI_BUDGET_CODES = new Set([
+  'AI_BUDGET_EXHAUSTED', 'AI_BUDGET_INSUFFICIENT', 'AI_SPEND_PAUSED', 'AI_SPEND_HALTED',
+]);
+
 /** The header label for a degraded pass names what degraded it. */
 export function degradedLabel(automation) {
   if (automation?.last_error_code === 'MODEL_UNAVAILABLE_OR_INVALID') return 'Rules only';
+  if (AI_BUDGET_CODES.has(automation?.last_error_code)) return 'Rules only: AI budget';
   if (propertyLookupView(automation)?.failed) return 'Lookup failed';
   return 'Partial';
 }

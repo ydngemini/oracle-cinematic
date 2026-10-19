@@ -446,6 +446,41 @@ def test_billing_exceptions_classifies_and_skips_the_platform_tenant(use_conn, m
     assert "whsec" not in json.dumps(hooks) and "sk_" not in json.dumps(hooks)
 
 
+def test_billing_exceptions_list_a_brokerage_holding_two_live_subscriptions(use_conn, monkeypatch):
+    """The checkout webhook's second_live_subscription alert went only to the
+    anomaly list, newest first, where routine access-denial alerts of the same
+    severity pushed it out of view while both plans kept billing. Billing
+    exceptions now list the duplicate from the subscriptions themselves, so it
+    stays until a person cancels one of the two in Stripe; nothing here
+    changes anything."""
+    import billing_usage
+
+    monkeypatch.setattr(billing_usage, "metering_configured", lambda: False)
+    conn = use_conn(FakeConn(fetch=[
+        ("HAVING count(*) > 1", [
+            {"tenant_id": ADMIN.tenant_id, "name": "Platform", "subscriptions": ["sub_p1", "sub_p2"],
+             "statuses": ["active", "active"], "created": [NOW, NOW], "flagged_at": None},
+            {"tenant_id": T_LIVE, "name": "Lockwood", "subscriptions": ["sub_old", "sub_new"],
+             "statuses": ["active", "incomplete"], "created": [NOW - timedelta(days=2), NOW],
+             "flagged_at": NOW},
+        ]),
+    ]))
+    out = run(op.billing_exceptions(ctx=ADMIN))
+    assert out["duplicate_subscriptions"] == [{
+        "tenant_id": T_LIVE, "name": "Lockwood", "flagged_at": NOW.isoformat(),
+        "subscriptions": [
+            {"stripe_subscription_ref": "sub_old", "status": "active",
+             "since": (NOW - timedelta(days=2)).isoformat()},
+            {"stripe_subscription_ref": "sub_new", "status": "incomplete", "since": NOW.isoformat()},
+        ],
+    }]
+    assert out["counts"]["duplicate_subscriptions"] == 1
+    duplicate_sql = next(q for q in conn.statements if "HAVING count(*) > 1" in q)
+    # Live means "may still bill", the same test the checkout webhook flags on.
+    assert "NOT IN ('canceled','incomplete_expired')" in duplicate_sql.replace(", ", ",")
+    assert not any(q.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for q in conn.statements)
+
+
 def test_mls_feeds_reports_every_feed_and_its_entitled_tenants(use_conn):
     use_conn(FakeConn(fetch=[
         ("FROM mls_sync_status", [

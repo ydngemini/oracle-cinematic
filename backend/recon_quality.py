@@ -20,11 +20,19 @@ publish — and everything in between is a caveat plus a recorded number. Tighte
 them only against more measured runs (docs/neoh-space-quality.md).
 
 Missing measurements are never treated as passing or failing: a run with no
-report is `quality_unverified`, said plainly.
+report is `quality_unverified`, said plainly. Neither is an impossible one: a
+value that is not a finite number inside VALID_RANGES (an infinite PSNR, an
+SSIM of 7) is a broken report, listed under `metrics["invalid"]` and never
+used — it neither passes, blocks nor reaches the job's diagnostics, whose jsonb
+refuses Infinity and NaN outright.
+
+This gate decides what may be PUBLISHED. Whether a published space may be
+called verified is a separate, stricter question (space_certification).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
@@ -54,6 +62,20 @@ BLOCK_REPROJECTION_PX = 4.0
 #: views. Below this, compression is visibly softening detail.
 COMPRESSION_PSNR_DB = 28.0
 
+#: What a real measurement can be, (low, high) inclusive, None = unbounded.
+#: PSNR on 8-bit renders has no meaning past 100 dB, SSIM lives in [-1, 1],
+#: LPIPS and a share of frames in [0, 1].
+VALID_RANGES: dict[str, tuple[float, Optional[float]]] = {
+    "held_out_psnr": (0.0, 100.0),
+    "held_out_cc_psnr": (0.0, 100.0),
+    "held_out_ssim": (-1.0, 1.0),
+    "held_out_cc_ssim": (-1.0, 1.0),
+    "held_out_lpips": (0.0, 1.0),
+    "registration_ratio": (0.0, 1.0),
+    "mean_reprojection_error_px": (0.0, None),
+    "input_images": (0.0, None),
+}
+
 
 @dataclass
 class QualityVerdict:
@@ -67,13 +89,46 @@ class QualityVerdict:
         if limitation not in self.limitations:
             self.limitations.append(limitation)
 
+    def flag_invalid(self, name: str) -> None:
+        invalid = self.metrics.setdefault("invalid", [])
+        if name not in invalid:
+            invalid.append(name)
+
 
 def _num(value: Any) -> Optional[float]:
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number == number else None   # NaN is "not measured"
+    # NaN and ±inf are "not measured": no instrument reports them, and jsonb
+    # cannot store them.
+    return number if math.isfinite(number) else None
+
+
+def valid_measurement(name: str, value: Any) -> tuple[Optional[float], bool]:
+    """(the value as a measurement, whether it was invalid).
+
+    Absent is (None, False): not measured. Present but not a finite number in
+    VALID_RANGES[name] is (None, True): a broken report, never a result. A
+    boolean or a string is not a number an instrument reported, however
+    float() reads it: `true` would otherwise be a perfect 1.0 ratio.
+    """
+    if value is None:
+        return None, False
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, True
+    number = _num(value)
+    low, high = VALID_RANGES[name]
+    if number is None or number < low or (high is not None and number > high):
+        return None, True
+    return number, False
+
+
+def _measured(verdict: "QualityVerdict", name: str, value: Any) -> Optional[float]:
+    number, invalid = valid_measurement(name, value)
+    if invalid:
+        verdict.flag_invalid(name)
+    return number
 
 
 def assess(quality: Optional[Mapping[str, Any]]) -> QualityVerdict:
@@ -88,12 +143,15 @@ def assess(quality: Optional[Mapping[str, Any]]) -> QualityVerdict:
         verdict.render_model = "antialiased"
 
     held = quality.get("held_out") if isinstance(quality.get("held_out"), Mapping) else {}
-    psnr, ssim = _num(held.get("psnr")), _num(held.get("ssim"))
-    cc_psnr, cc_ssim = _num(held.get("cc_psnr")), _num(held.get("cc_ssim"))
+    psnr = _measured(verdict, "held_out_psnr", held.get("psnr"))
+    ssim = _measured(verdict, "held_out_ssim", held.get("ssim"))
+    cc_psnr = _measured(verdict, "held_out_cc_psnr", held.get("cc_psnr"))
+    cc_ssim = _measured(verdict, "held_out_cc_ssim", held.get("cc_ssim"))
     geometric_psnr = cc_psnr if cc_psnr is not None else psnr
     geometric_ssim = cc_ssim if cc_ssim is not None else ssim
     verdict.metrics.update({k: v for k, v in {
-        "held_out_psnr": psnr, "held_out_ssim": ssim, "held_out_lpips": _num(held.get("lpips")),
+        "held_out_psnr": psnr, "held_out_ssim": ssim,
+        "held_out_lpips": _measured(verdict, "held_out_lpips", held.get("lpips")),
         "held_out_cc_psnr": cc_psnr, "held_out_cc_ssim": cc_ssim,
         "gaussians": _num(held.get("num_GS")), "steps": _num(held.get("step")),
     }.items() if v is not None})
@@ -112,9 +170,13 @@ def assess(quality: Optional[Mapping[str, Any]]) -> QualityVerdict:
             verdict.add("quality_low")
 
     colmap = quality.get("colmap") if isinstance(quality.get("colmap"), Mapping) else {}
-    ratio = _num(colmap.get("registration_ratio"))
-    frames = _num(quality.get("input_images"))
-    reprojection = _num(colmap.get("mean_reprojection_error_px"))
+    ratio = _measured(verdict, "registration_ratio", colmap.get("registration_ratio"))
+    frames = _measured(verdict, "input_images", quality.get("input_images"))
+    reprojection = _measured(verdict, "mean_reprojection_error_px",
+                             colmap.get("mean_reprojection_error_px"))
+    if frames is not None:
+        # A ratio means nothing without the number of frames it is a ratio of.
+        verdict.metrics["input_images"] = frames
     if ratio is not None:
         verdict.metrics["registration_ratio"] = ratio
         if frames is not None and frames >= MIN_FRAMES_FOR_RATIO and ratio < BLOCK_REGISTRATION:

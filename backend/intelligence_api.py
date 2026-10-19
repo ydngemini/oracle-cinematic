@@ -11,6 +11,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+import sealed_text
+from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
 from graph_engine import PropertyGraph
 from intelligence_engine import (
@@ -38,8 +40,9 @@ from platform_policy import (
     enforce_public_property_data,
     latest_observation,
     require_feature,
+    validate_approval_reason,
 )
-from tenancy import TenantContext, require_context
+from tenancy import Role, TenantContext, require_context, require_role
 
 logger = logging.getLogger("oracle.intelligence")
 
@@ -123,6 +126,15 @@ class TitleFindingInput(BaseModel):
 
 class TitleAnalysis(AnalysisBase):
     findings: list[TitleFindingInput] = Field(max_length=500)
+
+
+class TitleFindingReview(BaseModel):
+    """A person's decision on one title finding. `reason` is checked by
+    validate_approval_reason (8-500 characters once whitespace is collapsed)."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: str = Field(pattern=r"^(confirmed|dismissed)$")
+    reason: str = Field(max_length=2_000)
 
 
 class ForecastAnalysis(BaseModel):
@@ -640,6 +652,80 @@ async def title_intelligence(
         warnings=list(result["warnings"]),
         review_required=True,
     )
+
+
+@router.post("/title/findings/{finding_id}/review")
+async def review_title_finding(
+    finding_id: UUID,
+    body: TitleFindingReview,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Confirm or dismiss one title finding still awaiting review (T11.03).
+
+    The homeowner's dossier reads `confirmed` as the only state in which a
+    matched or released finding loses its "Not verified" label, and never
+    shows a `dismissed` one, so this decision is what the client sees. A broker
+    owner decides, as for contract templates and model activation: the finding
+    belongs to the brokerage's record, not to the agent who ran the analysis.
+
+    Not gated on PREDICTIVE_INTELLIGENCE: findings already stored are served to
+    the portal whatever the flag says, so dismissing one must stay possible.
+
+    The reason often names an owner, so it is stored only sealed (0167,
+    CONTRACT C5.1), under the key of the finding's own tenant. The audit record
+    names the finding, the decision and the actor only (the reason, notes and
+    finding type are free text and may name an owner), and lands in the
+    finding's tenant: a platform admin may decide another tenant's finding, and
+    that tenant's trail must show who changed what its client sees.
+    """
+    require_role(ctx, Role.BROKER_OWNER)
+    reason = validate_approval_reason(body.reason)
+    async with tenant_tx(ctx) as conn:
+        # Read and lock the finding first: RLS decides whether the caller sees
+        # it at all, and its own tenant names the sealing key.
+        current = await conn.fetchrow(
+            "SELECT tenant_id,review_status FROM title_findings WHERE id=$1::uuid FOR UPDATE",
+            str(finding_id),
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Title finding not found.")
+        if current["review_status"] != "required":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This title finding is already {current['review_status']}; "
+                    "only a finding awaiting review can be decided."
+                ),
+            )
+        row = await conn.fetchrow(
+            """
+            UPDATE title_findings
+               SET review_status=$2,reviewed_by=$3,reviewed_at=now(),
+                   review_reason_ciphertext=pgp_sym_encrypt($4::text,$5::text,'s2k-mode=1')
+             WHERE id=$1::uuid AND review_status='required'
+            RETURNING id,tenant_id,match_status,review_status,reviewed_by,reviewed_at
+            """,
+            str(finding_id),
+            body.decision,
+            ctx.agent_id,
+            reason,
+            sealed_text.key_for(current["tenant_id"]),
+        )
+    await ledger.record(
+        category=AuditCategory.USER_STATE_CHANGE,
+        action=f"title_finding_{body.decision}",
+        tenant_id=str(row["tenant_id"]),
+        user_id=ctx.agent_id,
+        target_id=str(finding_id),
+        metadata={"finding_id": str(finding_id), "decision": body.decision},
+    )
+    return {
+        "id": str(row["id"]),
+        "match_status": row["match_status"],
+        "review_status": row["review_status"],
+        "reviewed_by": row["reviewed_by"],
+        "reviewed_at": row["reviewed_at"].isoformat(),
+    }
 
 
 @router.post("/forecast")

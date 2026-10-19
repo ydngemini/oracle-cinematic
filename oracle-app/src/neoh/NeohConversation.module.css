@@ -83,6 +83,15 @@
   font: 500 var(--text-lg) / 1.4 var(--font-sans);
 }
 
+/* The brokerage is near its monthly AI budget (T18.07): one quiet line. */
+.budgetNote {
+  margin: var(--space-3) 0 0;
+  max-width: 62ch;
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
 /* ── Starters: the first thing to ask, about someone real ─────────────── */
 
 .starters {

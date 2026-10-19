@@ -51,6 +51,29 @@ def test_example_client_normalizes_and_scores_only_recorded_facts():
     }
 
 
+def test_a_linked_property_is_scored_without_being_called_verified():
+    """A lead or listing linked to the client is a CRM link, not a check that
+    the public record is their house: that is a broker owner's decision
+    (property_match_decisions, L11-14), which this score never reads. The
+    factor read "Verified linked property" for every linked house, including
+    one whose record a broker owner had rejected (F11.04)."""
+    _, factors = _score(
+        has_email=False,
+        has_phone=False,
+        preferences=normalize_preferences({}),
+        last_inbound_at=None,
+        actionable_response=False,
+        properties=[{"price": None, "zip_code": None}],
+        timeline_days=None,
+        explicit_intent="unknown",
+        now=NOW,
+    )
+
+    (linked,) = [factor for factor in factors if factor["evidence_ref"] == "property:linked"]
+    assert linked["points"] == 15
+    assert "verif" not in linked["label"].lower()
+
+
 def test_stage_policy_never_invents_transaction_or_lost_status():
     base = {
         "score": 80,

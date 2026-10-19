@@ -93,6 +93,20 @@ describe('Deals, Property View and the composer fit a phone', () => {
   });
 });
 
+describe('the Studio domain list keeps Check DNS on a phone', () => {
+  it('outranks the later phone rules for .siteList rows instead of tying with them', () => {
+    // The domain <ul> is both .siteList and .domainList. At 760px and below,
+    // `.siteList li` (three tracks) and `.siteList li > button` (column 2 / -1)
+    // come later with the same specificity as `.domainList li`, so they won:
+    // the TXT value took an `auto` track and pushed the button past the
+    // clipped edge (375px: tracks 287px 0px 0px). The compound selector wins.
+    const css = read('./components/StudioTab.module.css');
+    expect(css).not.toMatch(/\n\.domainList li \{/);
+    expect(block(css, '.siteList.domainList li {')).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) auto/);
+    expect(block(css, '.siteList.domainList li > button {')).toMatch(/grid-column:\s*auto/);
+  });
+});
+
 describe('the Neoh bar never covers a sheet', () => {
   it('sits one step below the overlay tier that sheets and dialogs use', () => {
     for (const [file, selector] of [['./neoh/NeohSurface.module.css', '.surface {'], ['./neoh/NeohConversation.module.css', '.dock {']]) {
@@ -109,5 +123,23 @@ describe('faint text still reads', () => {
       const bg = rgba(token(css, name));
       expect(contrast(over(ghost, bg), bg), name).toBeGreaterThanOrEqual(4.5);
     }
+  });
+});
+
+describe('a phone does not zoom into the house decision form', () => {
+  it('keeps the reason field at 16px on a coarse pointer', () => {
+    // iOS Safari zooms a focused control under 16px. index.css pins controls
+    // to --text-md on a coarse pointer, but the textarea's `font` shorthand
+    // (class + element) outranks that rule and resets it to the body's 14px,
+    // so the module restates it after the shorthand.
+    expect(read('./index.css')).toMatch(
+      /@media \(pointer: coarse\) \{\s*input, textarea, select \{ font-size: var\(--text-md\); \}/,
+    );
+    const css = read('./components/HouseSelection.module.css');
+    const base = css.indexOf('.matchForm textarea {');
+    const coarse = css.indexOf('@media (pointer: coarse)', base);
+    expect(base).toBeGreaterThan(-1);
+    expect(coarse).toBeGreaterThan(base);
+    expect(block(css.slice(coarse), '.matchForm textarea {')).toMatch(/font-size:\s*var\(--text-md\)/);
   });
 });

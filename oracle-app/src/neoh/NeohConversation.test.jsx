@@ -230,6 +230,25 @@ describe('NeohConversation', () => {
     expect(field.value).toBe('');
   });
 
+  it('picking one of the question\'s records answers with that record as the context', async () => {
+    setState({
+      aiChatMessages: [{
+        id: ASSISTANT_ID, request_id: 'r1', role: 'assistant', content: 'Which Sarah?', status: 'completed',
+        choices: [
+          { type: 'client', id: CLIENT_ID, label: 'Sarah Chen', detail: 'buyer · active' },
+          { type: 'lead', id: ASSISTANT_ID, label: 'Sarah Lee', detail: 'seller' },
+        ],
+      }],
+    });
+    renderTab();
+    const group = await screen.findByRole('group', { name: 'Which one did you mean?' });
+    expect(group.textContent).toContain('buyer · active');
+    fireEvent.click(screen.getByRole('button', { name: /Sarah Chen/ }));
+    await waitFor(() => expect(globalThis.__oracle.socket.send).toHaveBeenCalled());
+    const frame = JSON.parse(globalThis.__oracle.socket.send.mock.calls[0][0]);
+    expect(frame).toMatchObject({ type: 'AI_CHAT_SEND', content: 'Sarah Chen', context: { type: 'client', id: CLIENT_ID } });
+  });
+
   it('Shift+Enter is a newline, not a send', async () => {
     renderTab();
     const field = await screen.findByRole('textbox', { name: 'Message Neoh' });
@@ -277,6 +296,33 @@ describe('NeohConversation', () => {
     expect(screen.queryByText('Call placed')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     expect(onNavigate).toHaveBeenCalledWith('automations');
+  });
+
+  it('says quietly when the brokerage is near its monthly AI budget (T18.07)', async () => {
+    setState({
+      aiChatMessages: [
+        { id: 'u1', request_id: 'r1', role: 'user', content: 'Who first?', status: 'completed' },
+        { id: ASSISTANT_ID, request_id: 'r1', role: 'assistant', content: 'Call Sarah.', status: 'completed', budget_state: 'warning' },
+      ],
+    });
+    renderTab();
+    const line = await screen.findByText(/close to this month.s Neoh AI budget/);
+    expect(line.getAttribute('role')).toBe('status');
+  });
+
+  it('shows no budget line unless the latest turn says so, and a refusal in the server\'s words', async () => {
+    setState({
+      aiChatMessages: [
+        { id: 'a1', request_id: 'r1', role: 'assistant', content: 'Earlier.', status: 'completed', budget_state: 'warning' },
+        {
+          id: 'a2', request_id: 'r2', role: 'assistant', status: 'failed', budget_state: 'exhausted',
+          error_code: 'AI_BUDGET_EXHAUSTED', content: 'Ask your broker to raise it; it renews on the 1st (UTC).',
+        },
+      ],
+    });
+    renderTab();
+    expect(await screen.findByText(/Ask your broker to raise it/)).toBeTruthy();
+    expect(screen.queryByText(/close to this month.s Neoh AI budget/)).toBeNull();
   });
 
   it('says Neoh is unavailable in product language when the conversation is switched off', async () => {

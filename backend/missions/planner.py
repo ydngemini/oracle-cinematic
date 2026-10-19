@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from llm_gateway import SpendRefused
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,42 @@ MAX_CANDIDATES = 40
 MAX_STEPS = 60
 
 CHANNELS = ("email", "sms", "voice", "task")
+
+#: The registered tool each channel's step is carried out by (07's
+#: ToolCapability registry, tool_capabilities.py). `task` has none: the
+#: executor skips it ("no internal task surface", executor.py:178; PR #11).
+#: A channel whose tool is missing or not offered is neither offered to the
+#: model nor kept in a plan (T08.04, AC08.02, ledger L08-03), so no plan looks
+#: feasible and is later `skipped`.
+CHANNEL_TOOLS: dict[str, Optional[str]] = {
+    "email": "draft_email", "sms": "draft_sms", "voice": "call_contact", "task": None,
+}
+
+
+def channel_feasibility(setup_gaps: Optional[dict[str, str]] = None) -> dict[str, Optional[str]]:
+    """channel -> None when executable, else the reason it is not.
+
+    Two reasons a channel cannot be carried out, in order: the release has no
+    tool for it (the registry), or this brokerage has not set it up —
+    `setup_gaps` is channel_setup.gaps for the mission's agent (L07-03,
+    L08-04), the same preconditions the approved command fails closed on, in
+    its own words. Without it only the release is judged (unknown is not a
+    gap, C6)."""
+    import tool_capabilities
+
+    registry = tool_capabilities.registry()
+    out: dict[str, Optional[str]] = {}
+    for channel in CHANNELS:
+        tool = CHANNEL_TOOLS.get(channel)
+        if tool is None:
+            out[channel] = f"{channel} steps have no executable tool yet (no internal task surface)"
+        elif tool not in registry or not registry[tool].offered:
+            out[channel] = f"{channel} steps need the {tool} tool, which is not available on this release"
+        elif (setup_gaps or {}).get(channel):
+            out[channel] = f"{channel} steps cannot be carried out for this agent yet: {setup_gaps[channel]}"
+        else:
+            out[channel] = None
+    return out
 
 #: A reasoning model spends part of this budget thinking before it emits the
 #: structured answer, and a multi-candidate sequencing task with a full JSON
@@ -143,9 +180,18 @@ async def propose_plan(
     if not usable:
         return [], [], "No candidates matched this objective."
 
-    allowed = _allowed_channels(mission)
-    if not allowed:
+    permitted = _allowed_channels(mission)
+    if not permitted:
         return [], [], "This mission has no channels it is allowed to use."
+    # What this brokerage has actually set up, read the way the executor
+    # reads it (tool_offer.channel_gaps -> channel_setup; {} when unknown).
+    import tool_offer
+
+    feasibility = channel_feasibility(await tool_offer.channel_gaps(ctx))
+    allowed = {c for c in permitted if feasibility.get(c) is None}
+    if not allowed:
+        reasons = "; ".join(sorted(str(feasibility[c]) for c in permitted))
+        return [], [], f"No channel this mission may use can be carried out: {reasons}."
 
     prompt = _prompt(mission, usable, allowed)
     plan = await _ask(llm_gateway, prompt)
@@ -155,7 +201,7 @@ async def propose_plan(
     seen: set[tuple[int, int]] = set()
 
     for index, step in enumerate(plan.steps):
-        reason = _refuse(step, usable, allowed, seen)
+        reason = _refuse(step, usable, allowed, seen, feasibility)
         if reason:
             dropped.append({"step_index": index, "reason": reason, "proposed": step.model_dump()})
             continue
@@ -185,12 +231,15 @@ def _refuse(
     candidates: list[dict[str, Any]],
     allowed: set[str],
     seen: set[tuple[int, int]],
+    feasibility: Optional[dict[str, Optional[str]]] = None,
 ) -> Optional[str]:
     """Why code will not carry this step. None means it stands."""
     if step.candidate >= len(candidates):
         # The one that matters: a number pointing at nobody. The schema stops a
         # name being invented; this stops an index being invented.
         return f"names candidate {step.candidate}, which is not in the list"
+    if feasibility and feasibility.get(step.channel):
+        return f"uses {step.channel}: {feasibility[step.channel]}"
     if step.channel not in allowed:
         return f"uses {step.channel}, which this mission is not allowed to use"
     if (step.candidate, step.day_offset) in seen:
@@ -264,6 +313,11 @@ async def _ask(gateway, prompt: str) -> MissionPlan:
                 max_tokens=PLAN_TOKEN_BUDGET,
                 temperature=0.2,
             )
+        except SpendRefused:
+            # The brokerage's AI budget refused before anything was sent
+            # (T18.07). Not a provider's coin flip: asking again would only be
+            # refused again, so it is raised for the tick to record.
+            raise
         except Exception as exc:  # noqa: BLE001 — including LLMUnavailable
             last_error = str(exc)[:500]
             logger.warning("mission planner: attempt %d gateway failure: %s", attempt, last_error)

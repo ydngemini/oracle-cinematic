@@ -14,7 +14,8 @@ States (email_outbox.status):
     sent     → the server accepted it (provider_message_id = Message-ID)
     failed   → refused, not configured, or blocked at send time by the
                compliance gate — e.g. the person unsubscribed after it was
-               queued (error says which; 'blocked: …' is never retried)
+               queued, or the brokerage's subscription lapsed (F18.07)
+               (error says which; 'blocked: …' is never retried)
 The claim is a single UPDATE … WHERE status='queued', so two workers can never
 send the same row. Every send carries the commercial footer and one-click
 List-Unsubscribe headers (commercial_email.py).
@@ -35,6 +36,7 @@ import json
 import logging
 from typing import Any
 
+import billing
 import commercial_email
 import outreach_compliance
 import recovery_mode
@@ -88,14 +90,18 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
     # from any agent's email — must not get this one. Brokerage-wide read
     # (outreach_suppression is not narrowed to an agent), and the footer is
     # built here too, both before the send so a failure is a definite "not sent".
+    # Entitlement likewise (F18.07): a row queued while the brokerage paid must
+    # not go out after its subscription lapsed or it began closing.
     try:
-        decision = await outreach_compliance.guard_outreach(
-            worker_ctx, channel=outreach_compliance.Channel.EMAIL, contact=str(row["to_email"]),
-            state_code=None)
-        commercial = None
-        if decision.allowed:
-            commercial = await commercial_email.prepare(tenant_id, recipient=str(row["to_email"]),
-                                                        body=str(row["body_text"] or ""))
+        refusal = await billing.entitlement_refusal(worker_ctx)
+        decision = commercial = None
+        if refusal is None:
+            decision = await outreach_compliance.guard_outreach(
+                worker_ctx, channel=outreach_compliance.Channel.EMAIL, contact=str(row["to_email"]),
+                state_code=None)
+            if decision.allowed:
+                commercial = await commercial_email.prepare(tenant_id, recipient=str(row["to_email"]),
+                                                            body=str(row["body_text"] or ""))
     except commercial_email.PostalAddressRequired as exc:
         # Nothing was sent, and retrying cannot help until setup changes.
         await _finish(tenant_id, outbox_id, "failed", error=str(exc)[:500])
@@ -103,6 +109,10 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - nothing was sent; the job retries
         await _finish(tenant_id, outbox_id, "queued", error=f"held: pre-send check failed ({type(exc).__name__})")
         raise
+    if refusal is not None:
+        # Final, like an opt-out: reactivating later must not fire it unseen.
+        await _finish(tenant_id, outbox_id, "failed", error=f"blocked: {refusal[1]}"[:500])
+        return {"status": "blocked"}
     if not decision.allowed:
         await _finish(tenant_id, outbox_id, "failed",
                       error=("blocked: " + "; ".join(decision.blockers))[:500])
