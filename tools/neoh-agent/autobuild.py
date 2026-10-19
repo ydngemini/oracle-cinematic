@@ -143,8 +143,8 @@ def commit_local(paths: list[str], category: str) -> None:
 
 SIDE_BRANCH = re.compile(r"auto/neoh-(?:0[1-9]|1[0-9]|20)-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}")
 TRUSTED_ORIGIN = re.compile(
-    r"(?:https://github\\.com/|git@github\\.com:|ssh://git@github\\.com/)"
-    r"ydngemini/oracle-cinematic(?:\\.git)?",
+    r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"ydngemini/oracle-cinematic(?:\.git)?",
     re.IGNORECASE,
 )
 
@@ -158,10 +158,13 @@ def push_side_branch(branch: str) -> str:
     if not SIDE_BRANCH.fullmatch(branch) or runner.git("branch", "--show-current") != branch:
         raise ValueError("Refusing to push a branch not created for this Neoh auto-build.")
     origin = runner.git("remote", "get-url", "origin")
-    if not TRUSTED_ORIGIN.fullmatch(origin):
-        raise ValueError("Refusing to push: origin is not the expected Neoh GitHub repository.")
+    push_origin = runner.git("remote", "get-url", "--push", "origin")
+    if not TRUSTED_ORIGIN.fullmatch(origin) or not TRUSTED_ORIGIN.fullmatch(push_origin):
+        raise ValueError("Refusing to push: origin does not point to the expected Neoh GitHub repository.")
     if runner.git("status", "--porcelain", "--untracked-files=all"):
         raise ValueError("Refusing to push: the working tree is not clean.")
+    if runner.git("rev-parse", "--verify", "HEAD") != runner.git("rev-parse", "--verify", branch):
+        raise ValueError("Refusing to push: branch HEAD changed.")
     committed = runner.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines()
     if not committed:
         raise ValueError("Refusing to push an empty commit.")
@@ -171,7 +174,8 @@ def push_side_branch(branch: str) -> str:
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
     result = subprocess.run(
-        ["git", "push", "--porcelain", "--set-upstream", "origin", refspec],
+        ["git", "-c", "core.hooksPath=/dev/null", "push",
+         "--porcelain", "--set-upstream", "origin", refspec],
         cwd=str(ROOT), env=env, check=False, capture_output=True, text=True,
         timeout=180,
     )
