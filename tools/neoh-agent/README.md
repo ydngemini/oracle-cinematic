@@ -6,17 +6,19 @@ backend, React/Vite frontend, or DigitalOcean production stack.
 ## Setup
 
 Requires Python 3.10+, Git, a clean checkout with synthetic test data, and
-either a valid Anthropic API key or an eligible Claude Code login.
+an Anthropic API key. Anthropic's Agent SDK quickstart documents API-key authentication; do not rely on a Claude subscription login for an application.
 
-Run these commands on your own development machine:
+Run these commands on your own development machine. Until this branch is merged, switch to it after cloning:
 
     git clone https://github.com/ydngemini/oracle-cinematic.git
     cd oracle-cinematic
+    git switch feat/neoh-agent-sdk-dev-runner-20261019
     python3 -m venv "$HOME/.cache/neoh-agent-venv"
     source "$HOME/.cache/neoh-agent-venv/bin/activate"
     python -m pip install -r tools/neoh-agent/requirements.txt
 
-Set ANTHROPIC_API_KEY securely in your shell if using the Claude Console.
+Set ANTHROPIC_API_KEY securely in your shell using a key from https://platform.claude.com/settings/keys.
+A Claude Pro/Max subscription is not equivalent to API billing.
 Never commit your key or store real customer data in the checkout.
 
 ## Read-only first
