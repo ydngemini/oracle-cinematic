@@ -69,10 +69,27 @@ def source_path_allowed(raw: str) -> bool:
     return True
 
 
+def write_path_allowed(raw: str) -> bool:
+    if not source_path_allowed(raw):
+        return False
+    path = (ROOT / raw).resolve()
+    relative = path.relative_to(ROOT)
+    if relative.as_posix() in {
+        "CLAUDE.md", "docs/claude-prompts/CONTRACT.md",
+        "docs/claude-prompts/README.md",
+    }:
+        return False
+    if relative.parts[0] in {".claude", "tools"}:
+        return False
+    return True
+
+
 async def file_guard(data, _tool_use_id, _context):
     if data.get("tool_name") in {"Read", "Write", "Edit"}:
         target = data.get("tool_input", {}).get("file_path")
-        if not source_path_allowed(target):
+        action = data.get("tool_name")
+        allowed = source_path_allowed(target) if action == "Read" else write_path_allowed(target)
+        if not allowed:
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
@@ -175,7 +192,7 @@ async def run(args) -> int:
             print(f"[session] {message.subtype}")
             if message.total_cost_usd is not None:
                 print(f"[estimated cost] USD {message.total_cost_usd:.4f}")
-            if message.is_error:
+            if message.is_error or message.terminal_reason not in (None, "completed"):
                 return 1
     return 0 if completed else 1
 
