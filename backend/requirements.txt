@@ -5,47 +5,47 @@
 # without locking every wheel in the tree.
 
 # ── Web framework ──────────────────────────────────────────────────────────────
-fastapi==0.136.3
-uvicorn[standard]==0.49.0      # [standard] pulls uvloop + httptools + websockets
+fastapi==0.143.3
+uvicorn[standard]==0.54.0      # [standard] pulls uvloop + httptools + websockets
 
 # ── Database ───────────────────────────────────────────────────────────────────
-asyncpg==0.31.0                # Async PostgreSQL driver; tenant_tx + RLS GUC set
+asyncpg==0.32.0                # Async PostgreSQL driver; tenant_tx + RLS GUC set
 redis==5.2.1                   # Distributed rate limits + durable ACS callback state
 
 # ── Auth / security ────────────────────────────────────────────────────────────
 PyJWT==2.15.1                  # JWT encode/decode in auth.py (>= 2.x returns str)
-cryptography==50.0.0           # Authenticated encryption for Redis ACS call state
+cryptography==50.0.2           # Authenticated encryption for Redis ACS call state
 
 # ── LLM gateway ───────────────────────────────────────────────────────────────
 # One seam for every model call (backend/llm_gateway.py), replacing two
 # hand-rolled provider ladders. Wide transitive tree, but the runtime image
 # already carries openai, tokenizers, aiohttp, httpx, pydantic and pyyaml — the
 # genuinely new weight is litellm itself plus tiktoken and jinja2.
-litellm==1.97.0
+litellm==1.105.1
 
 # ── Payments ───────────────────────────────────────────────────────────────────
 stripe==15.2.0                 # Checkout sessions + webhook verification
 
 # ── HTTP clients ───────────────────────────────────────────────────────────────
-aiohttp==3.14.3                # Agent Mind llama-server streaming (mind_service.py)
+aiohttp==3.14.5                # Agent Mind llama-server streaming (mind_service.py)
 websockets==15.0.1             # ACS <-> Qwen Omni realtime audio bridge
 httpx==0.28.1                  # K8s HPA / pod queries in admin_c2.py (lazy import — not in venv yet)
 requests==2.34.2               # RunPod reconstruction provider HTTP submit/poll
 # PodProvider pushes a capture to a rented RunPod GPU over SSH and pulls the
 # .sog back. Lazy-imported, so only the pods reconstruction path needs it.
-asyncssh==2.24.0
+asyncssh==2.24.1
 # Runs the floor-plan point segmenter (floorplan_pipeline/segmentation.py) on
 # CPU. Inference only — torch is a TRAINING dependency and is deliberately not
 # here; scripts/train_point_segmenter.py is run offline, not by the backend.
-onnxruntime==1.27.0
-playwright==1.62.0             # Browser-backed public-record harvesters
+onnxruntime==1.31.0
+playwright==1.64.0             # Browser-backed public-record harvesters
 
 # ── Microsoft Foundry ─────────────────────────────────────────────────────────
-azure-ai-projects==2.3.0       # Foundry prompt-agent administration + Responses client
-azure-identity==1.25.3         # Managed identity in Azure; Azure CLI credential locally
-google-auth==2.43.0            # ADC for Vertex AI (Veo video provider); no key material in env
-azure-keyvault-secrets==4.10.0 # Migration admin credential (run_migrations.py)
-azure-storage-blob==12.30.0    # object_storage azure-blob backend + SAS links
+azure-ai-projects==2.8.0       # Foundry prompt-agent administration + Responses client
+azure-identity==1.26.0         # Managed identity in Azure; Azure CLI credential locally
+google-auth==2.62.0            # ADC for Vertex AI (Veo video provider); no key material in env
+azure-keyvault-secrets==4.11.3 # Migration admin credential (run_migrations.py)
+azure-storage-blob==12.31.0    # object_storage azure-blob backend + SAS links
                                # (also a hard dependency of azure-ai-projects)
 
 # Identity is self-contained: auth.py does DB-backed users with stdlib scrypt and
@@ -53,23 +53,23 @@ azure-storage-blob==12.30.0    # object_storage azure-blob backend + SAS links
 # SAML/OAuth library is required to log in.
 
 # ── AWS (legacy) ───────────────────────────────────────────────────────────────
-boto3==1.43.14                 # Opt-in only: ORACLE_DB_AUTH=aws-iam token minting,
+boto3==1.43.114                 # Opt-in only: ORACLE_DB_AUTH=aws-iam token minting,
                                # ORACLE_EMAIL_PROVIDER=ses, and the S3 recon path.
                                # Every use is a lazy import, so an Azure-only
                                # deployment never loads it.
 
 # ── Messaging ──────────────────────────────────────────────────────────────────
 azure-communication-callautomation==1.6.0
-azure-communication-email==1.0.0   # Default transactional email (replaces SES)
+azure-communication-email==1.1.0   # Default transactional email (replaces SES)
 azure-communication-sms==1.1.0
-twilio==9.10.0
-plivo==4.62.0                      # PRIMARY voice carrier — see backend/voice_provider.py
-telnyx==4.180.0                    # PRIMARY messaging carrier — see backend/messaging_provider.py
+twilio==9.12.0
+plivo==4.63.0                      # PRIMARY voice carrier — see backend/voice_provider.py
+telnyx==4.185.0                    # PRIMARY messaging carrier — see backend/messaging_provider.py
 pynacl==1.6.2                      # Ed25519 webhook signature verification (used by telnyx SDK)
 
 # ── Voice intelligence ─────────────────────────────────────────────────────────
-python-multipart==0.0.31       # FastAPI multipart parsing for UploadFile in voice_intel.py
-pypdf==6.19.0                  # bounded text extraction for private record-bound PDF attachments
+python-multipart==0.0.32       # FastAPI multipart parsing for UploadFile in voice_intel.py
+pypdf==6.21.0                  # bounded text extraction for private record-bound PDF attachments
 faster-whisper==1.2.1          # Walkthrough transcription in voice_intel.py
                                # (lazy import — endpoint 503s gracefully if absent)
 
@@ -90,6 +90,6 @@ opencv-python-headless==4.10.0.84
 numpy>=1.26,<3                 # opencv's array interface; pinned major-open
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-python-dotenv==1.2.2           # Load .env in local dev; no-op in prod (env already set)
+python-dotenv==1.2.4           # Load .env in local dev; no-op in prod (env already set)
 # GPU reconstruction via OnCompute operator-key signing (OnComputeProvider)
 eth-account>=0.13
