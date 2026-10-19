@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Autonomous, bounded Neoh code -> tests -> repair -> local commit loop.
+"""Autonomous Neoh code -> tests -> repair -> side-branch push loop.
 
 Run only on a clean synthetic-data checkout. This is not an OS sandbox.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -54,13 +55,13 @@ def start_feature_branch(category: str) -> tuple[str, str]:
     if status.returncode or status.stdout.strip():
         raise ValueError("Autobuild needs a clean checkout. Commit or stash changes first.")
     base_sha = runner.git("rev-parse", "HEAD")
-    current = runner.git("branch", "--show-current")
-    if not current or current in {"main", "master"}:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        current = f"auto/neoh-{category}-{stamp}-{uuid4().hex[:6]}"
-        created = command(["git", "switch", "-c", current])
-        if created.returncode:
-            raise RuntimeError(created.stderr)
+    # Every run gets its own new side branch, even when launched from a feature branch.
+    # This avoids accidentally pushing unrelated work or an existing shared branch.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    current = f"auto/neoh-{category}-{stamp}-{uuid4().hex[:6]}"
+    created = command(["git", "switch", "-c", current])
+    if created.returncode:
+        raise RuntimeError(created.stderr)
     print(f"[branch] {current} at {base_sha[:12]}", flush=True)
     return current, base_sha
 
@@ -140,6 +141,51 @@ def commit_local(paths: list[str], category: str) -> None:
     print(f"[commit] {runner.git('rev-parse', '--short', 'HEAD')}", flush=True)
 
 
+SIDE_BRANCH = re.compile(r"auto/neoh-(?:0[1-9]|1[0-9]|20)-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}")
+TRUSTED_ORIGIN = re.compile(
+    r"(?:https://github\\.com/|git@github\\.com:|ssh://git@github\\.com/)"
+    r"ydngemini/oracle-cinematic(?:\\.git)?",
+    re.IGNORECASE,
+)
+
+
+def push_side_branch(branch: str) -> str:
+    """Only push the current, clean, automatically created branch to Neoh origin.
+
+    No force pushes, no tags, no main/master, no token-bearing HTTPS remotes.
+    Requires pre-configured git authentication on the developer machine.
+    """
+    if not SIDE_BRANCH.fullmatch(branch) or runner.git("branch", "--show-current") != branch:
+        raise ValueError("Refusing to push a branch not created for this Neoh auto-build.")
+    origin = runner.git("remote", "get-url", "origin")
+    if not TRUSTED_ORIGIN.fullmatch(origin):
+        raise ValueError("Refusing to push: origin is not the expected Neoh GitHub repository.")
+    if runner.git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("Refusing to push: the working tree is not clean.")
+    committed = runner.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines()
+    if not committed:
+        raise ValueError("Refusing to push an empty commit.")
+    changed_paths_are_safe(committed)
+    refspec = f"refs/heads/{branch}:refs/heads/{branch}"
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+    result = subprocess.run(
+        ["git", "push", "--porcelain", "--set-upstream", "origin", refspec],
+        cwd=str(ROOT), env=env, check=False, capture_output=True, text=True,
+        timeout=180,
+    )
+    if result.returncode:
+        # Avoid printing raw git stderr, which may contain authentication details.
+        raise RuntimeError(
+            f"Side-branch push failed (exit {result.returncode}). "
+            "Check GitHub authentication, repository permissions and network access."
+        )
+    url = f"https://github.com/ydngemini/oracle-cinematic/tree/{branch}"
+    print(f"[pushed] {url}", flush=True)
+    return url
+
+
 def autobuild(args) -> int:
     branch, base_sha = start_feature_branch(args.category)
     original = args.task.strip() or (
@@ -165,9 +211,11 @@ def autobuild(args) -> int:
             print("[pass] Local checks passed; NOT staging or production evidence.", flush=True)
             if args.commit:
                 commit_local(paths, args.category)
+                if args.push:
+                    push_side_branch(branch)
             else:
-                print("[review] Changes remain uncommitted on the branch.")
-            print(f"[ready] branch={branch}; base={base_sha[:12]}; no remote push or deploy.")
+                print("[review] Changes remain uncommitted; no push.")
+            print(f"[ready] branch={branch}; base={base_sha[:12]}; main untouched; no deploy.")
             return 0
         print(f"[repair needed]\n{feedback[:REPORT_LIMIT]}", flush=True)
         prompt = (
@@ -195,15 +243,21 @@ def main() -> None:
     parser.add_argument("--test-timeout", type=int, default=360)
     parser.add_argument("--agent-timeout", type=int, default=1800)
     parser.add_argument("--commit", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--push", action=argparse.BooleanOptionalAction, default=True,
+        help="After passing tests and committing, push only the new auto/neoh-* side branch",
+    )
     args = parser.parse_args()
     if args.max_repairs < 0 or args.max_turns <= 0 or args.budget_usd <= 0:
         parser.error("max-repairs must be non-negative; turns and USD budget positive")
+    if args.push and not args.commit:
+        parser.error("--push requires --commit; use --no-commit --no-push")
     if args.test_timeout <= 0 or args.agent_timeout <= 0:
         parser.error("timeouts must be positive")
     try:
         raise SystemExit(autobuild(args))
     except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
-        print(f"[stop] {error}. No remote push or deploy.", file=sys.stderr)
+        print(f"[stop] {error}. No main push or deploy.", file=sys.stderr)
         raise SystemExit(2) from error
 
 
