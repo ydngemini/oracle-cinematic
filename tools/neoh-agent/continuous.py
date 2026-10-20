@@ -143,6 +143,19 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         log = STATE_DIR / (name + ".log")
         output = log.open("w", encoding="utf-8")
+        # Every worktree is its own checkout; npm dependencies from the
+        # supervisor's checkout are not automatically available here.
+        # This executes repo dependency scripts: use an isolated dev host
+        # with no production credentials and no customer data.
+        dependency_install = subprocess.run(
+            ["npm", "ci", "--no-audit", "--no-fund"],
+            cwd=str(path / "oracle-app"), env=env, stdout=output,
+            stderr=subprocess.STDOUT, timeout=900,
+        )
+        if dependency_install.returncode:
+            output.close()
+            print(f"[continuous] dependency installation failed in {path}", flush=True)
+            return 1, name, ""
         child = subprocess.Popen(command, cwd=str(path), env=env,
                                  stdout=output, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -150,10 +163,10 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
         while child.poll() is None:
             if STOP:
                 if stop_requested_at is None:
-                    child.terminate()
+                    os.killpg(child.pid, signal.SIGTERM)
                     stop_requested_at = time.monotonic()
                 elif time.monotonic() - stop_requested_at > 20:
-                    child.kill()
+                    os.killpg(child.pid, signal.SIGKILL)
             time.sleep(1)
         output.flush()
         output.close()
