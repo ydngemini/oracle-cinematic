@@ -3,6 +3,40 @@
 Local, opt-in developer tooling. It is NOT part of Neoh's shipping FastAPI
 backend, React/Vite frontend, or DigitalOcean production stack.
 
+## Existing Ubuntu development box: safe installation
+
+**Do not reset, pull over, or wipe your working Neoh checkout.** Clone a
+second, clean checkout for autonomous development on the same machine:
+
+```bash
+mkdir -p "$HOME/neoh-autonomous"
+git clone --branch feat/neoh-agent-sdk-dev-runner-20261019 \
+  https://github.com/ydngemini/oracle-cinematic.git \
+  "$HOME/neoh-autonomous/oracle-cinematic"
+cd "$HOME/neoh-autonomous/oracle-cinematic"
+python3 -m venv "$HOME/.cache/neoh-agent-venv"
+source "$HOME/.cache/neoh-agent-venv/bin/activate"
+python -m pip install -r tools/neoh-agent/requirements.txt
+python -m pip install -r backend/requirements.txt -r backend/requirements-test.txt
+python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+bash -n tools/neoh-agent/install-service.sh
+```
+
+Keep your original Neoh directory and its Git state intact. **A second clone
+on the same Ubuntu user is not an OS sandbox**: for unattended execution,
+use a separate unprivileged Linux user or container that cannot read real
+Neoh customers, cloud access keys, developer tokens, or production databases.
+Give that identity write access only to side branches in this repository.
+
+Only after the SDK's read-only audit works, its offline tests pass, all
+security/CI checks pass, and an isolated non-publishing smoke test works,
+configure ~/.config/neoh-agent/agent.env (0600) with your API key and install
+the user service while the agent venv is activated. The installer refuses
+to overwrite an existing systemd unit.
+
+The systemd unit is enabled for continuous use, not created or executed by
+a GitHub commit. Review the resulting work on auto/neoh-* GitHub branches.
+
 ## Setup
 
 Requires Python 3.10+, Git, a clean checkout with synthetic test data, and
