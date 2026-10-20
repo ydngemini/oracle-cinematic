@@ -23,10 +23,21 @@ Never commit your key or store real customer data in the checkout.
 
 ## Recommended: automatic build, test, repair and push
 
-The autonomous controller uses **build mode by default**. It starts from a
-clean checkout, creates a **fresh** GitHub side branch for each task, edits
-one Neoh category, runs fixed local test commands, retries failures (up to
-two repair rounds by default), commits and pushes successful work to GitHub.
+The autonomous controller uses **build mode by default**. On every run it
+verifies the GitHub origin, fetches the newest `main`, and merges/fast-forwards
+that commit into the clean development checkout. It compares the entire
+`docs/claude-prompts/` directory with the authoritative GitHub version and
+refuses to continue if instruction files diverge or a merge conflicts.
+
+It then reads the **current** main-branch README, CONTRACT, all 20 category
+prompts and LEDGER. Without a supplied task, it chooses an actionable next
+slice based on the category build order, dependency prerequisites and ledger
+next-task entries. It skips explicit owner-gated work, categories already
+blocked, and categories with existing `auto/neoh-*` branches on GitHub.
+
+For each selected task it creates a **fresh** GitHub side branch, edits one
+category, runs fixed local test commands, retries failures (up to two repair
+rounds by default), commits and pushes successful work to GitHub.
 
 The main branch is NEVER pushed, merged or deployed by this controller.
 The resulting remote branch is named like:
@@ -40,20 +51,33 @@ fetch and push remotes match ydngemini/oracle-cinematic on GitHub.
 Start this from the repository root after installing the Python SDK and
 Neoh's test dependencies:
 
+    # Completely self-directed: picks one open category from current main
+    python tools/neoh-agent/autobuild.py --budget-usd 12 --max-repairs 2
+
+    # Or explicitly assign the category and work
     python tools/neoh-agent/autobuild.py \
       --category 02 \
       --task "Fix the next documented mobile UI defect with regression tests" \
       --budget-usd 12 \
       --max-repairs 2
 
-You may launch from main or another clean branch. The controller creates
-a NEW auto/neoh-* branch before the agent starts. To avoid including
-unrelated commits in the resulting side branch, launch from an up-to-date
-main after this runner's draft PR has been merged.
+Launch from a clean main or integration branch that already includes this
+runner. The controller merges in the newest origin/main and creates a new
+`auto/neoh-*` branch before editing. Before PR #34 is merged, the setup's
+development branch includes the runner; its history will also be present
+in any child side branch. After merging the reviewed setup PR, launch from
+updated main for clean, isolated build branches.
+
+**One task per invocation:** this honors Neoh's one-category-per-session
+contract and prevents starting new work while previous branches await review.
+To start another self-directed task, run autobuild again after reviewing or
+removing the completed side branch. This is not a daemon or background job.
 
 Outputs will include the new side-branch GitHub URL after a successful push.
-No PR is opened automatically. You can then review the side branch, compare
-it with main, and open a PR separately.
+No PR is opened automatically. Review the side branch, compare it with
+main, and open a PR separately. Pushing it triggers non-deploy CI checks
+for side branches; staging and production deployment workflows remain
+main-gated. The developer agent guardrail tests are also in GitHub CI.
 
 For an offline run without remote publication:
 
@@ -64,6 +88,8 @@ To opt out of the automatic local commit too, pass both --no-commit and
 
 If tests or required ledger updates fail, the builder attempts targeted
 repairs. After exhaustion, the changes remain local and are NOT pushed.
+If main changes during the preflight fetch or the prompt format becomes
+unrecognizable, the builder stops rather than using stale instructions.
 CI and provider-dependent tests, migrations, integrations and real-device
 evidence remain separate release requirements. Local tests are not production
 certification.
