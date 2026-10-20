@@ -80,6 +80,8 @@ jobs:
       # These tests have no Anthropic API dependency and do not make Git pushes.
       - name: Agent SDK development guardrails
         run: python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+      - name: Validate Ubuntu service installer syntax
+        run: bash -n tools/neoh-agent/install-service.sh
 
       # Fails the build on any known CVE in a pinned dependency. Runs after the
       # tests so a vulnerable-but-working tree still reports its test result
