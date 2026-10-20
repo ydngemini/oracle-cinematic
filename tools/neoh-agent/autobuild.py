@@ -71,7 +71,10 @@ def synchronize_latest_main() -> tuple[str, list[str]]:
                 "merge", "--no-edit", main_sha]
     result = command(argv, timeout=180)
     if result.returncode:
-        if runner.git("rev-parse", "-q", "--verify", "MERGE_HEAD") :
+        # rev-parse -q returns nonzero when no merge is in progress.
+        # Never use runner.git(check=True) in this failure-recovery branch.
+        merging = command(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        if merging.returncode == 0:
             command(["git", "merge", "--abort"], timeout=60)
         raise RuntimeError("Cannot merge fresh Neoh main without conflicts. No build started.")
     # Enforce exact instruction bytes from remote main; our feature branch
