@@ -105,7 +105,7 @@ class SideBranchTests(unittest.TestCase):
         args = type("Args", (), dict(
             category="02", task="Fix one issue", max_repairs=0,
             budget_usd=2.0, max_turns=4, model="sonnet",
-            test_timeout=60, agent_timeout=120,
+            test_timeout=60, agent_timeout=120, skip_categories="",
             commit=True, push=True,
         ))()
         with patch.object(autobuild, "synchronize_latest_main",
@@ -137,7 +137,7 @@ class SideBranchTests(unittest.TestCase):
         args = type("Args", (), dict(
             category="auto", task="", max_repairs=0, budget_usd=2.0,
             max_turns=4, model="sonnet", test_timeout=60,
-            agent_timeout=120, commit=True, push=True,
+            agent_timeout=120, skip_categories="", commit=True, push=True,
         ))()
         with patch.object(autobuild, "synchronize_latest_main",
                           return_value=("a" * 40, [])):
@@ -166,7 +166,7 @@ class SideBranchTests(unittest.TestCase):
         args = type("Args", (), dict(
             category="auto", task="", max_repairs=0, budget_usd=2,
             max_turns=4, model="sonnet", test_timeout=60,
-            agent_timeout=120, commit=True, push=True
+            agent_timeout=120, skip_categories="", commit=True, push=True
         ))()
         with patch.object(autobuild, "synchronize_latest_main",
                           side_effect=RuntimeError("Cannot refresh main")):
