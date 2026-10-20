@@ -115,8 +115,9 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
     name = f"cycle-{int(time.time())}-{os.getpid()}"
     path = parent / name
     base = git("rev-parse", "HEAD")
+    work_branch = "supervisor/neoh-" + name
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "worktree", "add", "--detach", str(path), base],
+        ["git", "-C", str(ROOT), "worktree", "add", "-b", work_branch, str(path), base],
         capture_output=True, text=True, timeout=60,
     )
     if result.returncode:
@@ -140,7 +141,10 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
         print(f"[continuous] isolated cycle started: {name}", flush=True)
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        log = STATE_DIR / (name + ".log")
+        output = log.open("w", encoding="utf-8")
         child = subprocess.Popen(command, cwd=str(path), env=env,
+                                 stdout=output, stderr=subprocess.STDOUT,
                                  start_new_session=True)
         stop_requested_at = None
         while child.poll() is None:
@@ -151,10 +155,32 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
                 elif time.monotonic() - stop_requested_at > 20:
                     child.kill()
             time.sleep(1)
-        return child.returncode, name
+        output.flush()
+        output.close()
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        category = ""
+        for line in lines:
+            if line.startswith("[discovery] category="):
+                category = line.split("category=", 1)[1][:2]
+        for line in lines[-12:]:
+            print(line[:400], flush=True)
+        if child.returncode == 0:
+            # Do not leave a long-lived checkout with altered branch state.
+            removal = subprocess.run(
+                ["git", "-C", str(ROOT), "worktree", "remove", "--force", str(path)],
+                capture_output=True, timeout=60,
+            )
+            if removal.returncode == 0:
+                subprocess.run(
+                    ["git", "-C", str(ROOT), "branch", "-D", work_branch],
+                    capture_output=True, timeout=30,
+                )
+        else:
+            print(f"[continuous] failed worktree retained for inspection: {path}", flush=True)
+        return child.returncode, name, category
     finally:
-        # Keep failed cycles for forensic review and manual salvage.
-        # Successful cycles can be removed only when clean, after publication.
+        # Failed worktrees are intentionally retained for recovery; successful
+        # ones are removed after local checks/push finish.
         pass
 
 
@@ -173,7 +199,7 @@ def supervise(args) -> int:
                 if isinstance(until, (int, float)) and until > now
             }
             excluded = set(state["blocked"])
-            code, worktree_name = run_cycle(args, excluded)
+            code, worktree_name, category = run_cycle(args, excluded)
             executed += 1
             state["cycles"] = int(state.get("cycles", 0)) + 1
             passed = code == 0
@@ -188,6 +214,9 @@ def supervise(args) -> int:
             )[-100:]
             state["last_cycle"] = utc_now()
             write_state(state)
+            if not passed and category:
+                state["blocked"][category] = time.time() + args.failure_cooldown_seconds
+                write_state(state)
             if STOP:
                 break
             if passed:
@@ -215,12 +244,13 @@ def main() -> None:
     parser.add_argument("--agent-timeout", type=int, default=1800)
     parser.add_argument("--poll-seconds", type=int, default=120)
     parser.add_argument("--error-poll-seconds", type=int, default=600)
+    parser.add_argument("--failure-cooldown-seconds", type=int, default=3600)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 means run indefinitely")
     parser.add_argument("--push", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.category == "auto" and args.task:
         parser.error("To supply --task, also specify --category.")
-    if args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30:
+    if args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30 or args.failure_cooldown_seconds < 60:
         parser.error("Invalid cycle or polling controls.")
     if args.budget_usd <= 0 or args.max_turns <= 0 or args.max_repairs < 0:
         parser.error("Invalid model budget or repair settings.")
