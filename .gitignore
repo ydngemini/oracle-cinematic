@@ -75,3 +75,6 @@ observatory/
 # Load-test output: synthetic credentials and run results. Never committed.
 performance/out/
 backend/.rehearsal_migrations/
+
+# Persistent autonomous developer state, worktrees, logs and lockfiles
+/.neoh-agent-state/

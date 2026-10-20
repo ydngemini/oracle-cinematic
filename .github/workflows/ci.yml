@@ -75,6 +75,14 @@ jobs:
         working-directory: backend
         run: python -m pytest tests compliance_engine/tests -q
 
+      # The autonomous developer runner is separate from Neoh's production
+      # app, but its branch/prompt guards must never regress silently.
+      # These tests have no Anthropic API dependency and do not make Git pushes.
+      - name: Agent SDK development guardrails
+        run: python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+      - name: Validate Ubuntu service installer syntax
+        run: bash -n tools/neoh-agent/install-service.sh
+
       # Fails the build on any known CVE in a pinned dependency. Runs after the
       # tests so a vulnerable-but-working tree still reports its test result
       # first. Reads requirements.txt rather than the installed environment, so
@@ -184,9 +192,29 @@ jobs:
       # CI log. Reviewed false positives live in .gitleaksignore.
       - name: Secret scan (full history)
         run: |
-          docker run --rm -v "$PWD":/repo \
+          audit_dir="$(mktemp -d)"
+          trap 'rm -rf "$audit_dir"' EXIT
+          status=0
+          docker run --rm -v "$PWD":/repo -v "$audit_dir":/audit-out \
             ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
-            git /repo --redact --no-banner --exit-code 1
+            git /repo --redact --no-banner --exit-code 1 \
+              --report-format json --report-path /audit-out/findings.json || status=$?
+          if [ "$status" -ne 0 ] && [ -s "$audit_dir/findings.json" ]; then
+            # Print only metadata, never matching secrets or code excerpts.
+            python - "$audit_dir/findings.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              findings = json.load(f)
+          for finding in findings:
+              print("SECRET SCAN FINDING (redacted):",
+                    finding.get("File", ""),
+                    "line", finding.get("StartLine", ""),
+                    "rule", finding.get("RuleID", ""),
+                    "fingerprint", finding.get("Fingerprint", ""))
+          PY
+          fi
+          exit "$status"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
