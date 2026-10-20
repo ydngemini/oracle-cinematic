@@ -75,6 +75,12 @@ jobs:
         working-directory: backend
         run: python -m pytest tests compliance_engine/tests -q
 
+      # The autonomous developer runner is separate from Neoh's production
+      # app, but its branch/prompt guards must never regress silently.
+      # These tests have no Anthropic API dependency and do not make Git pushes.
+      - name: Agent SDK development guardrails
+        run: python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+
       # Fails the build on any known CVE in a pinned dependency. Runs after the
       # tests so a vulnerable-but-working tree still reports its test result
       # first. Reads requirements.txt rather than the installed environment, so
