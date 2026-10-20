@@ -132,5 +132,49 @@ class SideBranchTests(unittest.TestCase):
         commit.assert_not_called()
 
 
+    def test_changed_main_blocks_automatic_push(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        args = type("Args", (), dict(
+            category="auto", task="", max_repairs=0, budget_usd=2.0,
+            max_turns=4, model="sonnet", test_timeout=60,
+            agent_timeout=120, commit=True, push=True,
+        ))()
+        with patch.object(autobuild, "synchronize_latest_main",
+                          return_value=("a" * 40, [])):
+            with patch.object(autobuild.work_discovery, "select_work",
+                              return_value={"category": "02", "task": "Fix a bug",
+                                            "main_sha": "a" * 40,
+                                            "prompt": "docs/claude-prompts/02-x.md"}):
+                with patch.object(autobuild.work_discovery, "pending_categories",
+                                  return_value=set()):
+                    with patch.object(autobuild, "start_feature_branch",
+                                      return_value=(branch, "abc123")):
+                        with patch.object(autobuild, "model_round", return_value=0):
+                            with patch.object(autobuild, "dirty_files",
+                                              return_value=["oracle-app/src/App.jsx"]):
+                                with patch.object(autobuild, "execute_tests",
+                                                  return_value=(True, "")):
+                                    with patch.object(autobuild, "commit_local"):
+                                        with patch.object(autobuild.work_discovery,
+                                                          "remote_main_sha", return_value="b" * 40):
+                                            with patch.object(autobuild, "push_side_branch") as push:
+                                                with self.assertRaises(RuntimeError):
+                                                    autobuild.autobuild(args)
+                                                push.assert_not_called()
+
+    def test_prompts_must_refresh_before_work_selection(self):
+        args = type("Args", (), dict(
+            category="auto", task="", max_repairs=0, budget_usd=2,
+            max_turns=4, model="sonnet", test_timeout=60,
+            agent_timeout=120, commit=True, push=True
+        ))()
+        with patch.object(autobuild, "synchronize_latest_main",
+                          side_effect=RuntimeError("Cannot refresh main")):
+            with patch.object(autobuild.work_discovery, "select_work") as choose:
+                with self.assertRaises(RuntimeError):
+                    autobuild.autobuild(args)
+                choose.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
