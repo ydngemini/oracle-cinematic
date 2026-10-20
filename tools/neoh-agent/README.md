@@ -21,6 +21,59 @@ Set ANTHROPIC_API_KEY securely in your shell using a key from https://platform.c
 A Claude Pro/Max subscription is not equivalent to API billing.
 Never commit your key or store real customer data in the checkout.
 
+## Run continuously (automatic self-directed development)
+
+Use the persistent supervisor when you want Neoh to keep finding work rather
+than stop after one engineering task. It repeatedly refreshes the current
+GitHub main and docs/claude-prompts, finds an eligible task in LEDGER.md,
+creates an isolated worktree, executes the same safe build/test/repair/push
+pipeline, and moves to another eligible category. After success it polls
+again. If no task is eligible it idles and checks for newly unblocked work.
+
+Run interactively from a clean checkout that contains the runner code:
+
+    python tools/neoh-agent/continuous.py \
+      --budget-usd 12 --daily-budget-usd 48 \
+      --poll-seconds 120 --error-poll-seconds 600
+
+An unattended process only runs while its host is running, connected, and
+authenticated with Anthropic and GitHub. For a Linux systemd user service:
+
+    # Activate the Python virtual environment first.
+    source "$HOME/.cache/neoh-agent-venv/bin/activate"
+    bash tools/neoh-agent/install-service.sh
+
+Before starting the service, put a valid ANTHROPIC_API_KEY in
+~/.config/neoh-agent/agent.env (mode 0600) and restart the service. Use a
+restricted development host/VM with synthetic test data, no production secrets.
+The installer enables startup with your systemd user session. If it must run
+after logout or reboot before login, configure systemd user lingering
+explicitly on your host (loginctl enable-linger for your user).
+
+    systemctl --user status neoh-agent.service
+    journalctl --user -u neoh-agent.service -f
+    systemctl --user restart neoh-agent.service
+    systemctl --user stop neoh-agent.service
+    systemctl --user disable --now neoh-agent.service
+
+The supervisor uses a single-instance file lock, atomic persistent state
+stored under ignored .neoh-agent-state/, graceful SIGTERM/SIGINT handling,
+and per-category failure cooldowns. Failed isolated worktrees remain on disk
+for inspection; successes are cleaned up. Inspect state and retained worktrees
+periodically to control disk usage.
+
+Defaults: 12 USD *estimated* maximum per agent cycle and a conservative
+48 USD UTC daily allocation ceiling. Neither replaces account-side Anthropic
+spend limits. Test commands, Git operations and a compromised development
+host can incur costs outside the model budget. The daily budget is reserved
+before each model run, is persisted across restarts, and resets at UTC midnight.
+
+One task is processed at a time. Open auto/neoh-* branches are excluded so
+the worker does not duplicate that category. It never merges, deploys, sends
+messages, changes billing or contacts real people. Review and merge the PRs
+manually. No agent is launched by committing this code; install/start the
+service on your own development host.
+
 ## Recommended: automatic build, test, repair and push
 
 The autonomous controller uses **build mode by default**. On every run it
