@@ -198,7 +198,20 @@ def supervise(args) -> int:
                 category: until for category, until in state["blocked"].items()
                 if isinstance(until, (int, float)) and until > now
             }
+            day = datetime.now(timezone.utc).date().isoformat()
+            if state.get("budget_day") != day:
+                state["budget_day"] = day
+                state["daily_reserved_usd"] = 0.0
+            if state["daily_reserved_usd"] + args.budget_usd > args.daily_budget_usd:
+                print("[continuous] daily model budget reached; idling until UTC day changes.", flush=True)
+                write_state(state)
+                sleep_interruptible(args.poll_seconds)
+                continue
             excluded = set(state["blocked"])
+            # Reserve the upper per-run estimated budget BEFORE starting the model.
+            # This is a conservative accounting guard, not a provider-side hard cap.
+            state["daily_reserved_usd"] += args.budget_usd
+            write_state(state)
             code, worktree_name, category = run_cycle(args, excluded)
             executed += 1
             state["cycles"] = int(state.get("cycles", 0)) + 1
@@ -238,6 +251,7 @@ def main() -> None:
     parser.add_argument("--task", default="")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--budget-usd", type=float, default=12)
+    parser.add_argument("--daily-budget-usd", type=float, default=48)
     parser.add_argument("--max-repairs", type=int, default=2)
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--test-timeout", type=int, default=360)
@@ -252,7 +266,7 @@ def main() -> None:
         parser.error("To supply --task, also specify --category.")
     if args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30 or args.failure_cooldown_seconds < 60:
         parser.error("Invalid cycle or polling controls.")
-    if args.budget_usd <= 0 or args.max_turns <= 0 or args.max_repairs < 0:
+    if args.budget_usd <= 0 or args.daily_budget_usd < args.budget_usd or args.max_turns <= 0 or args.max_repairs < 0:
         parser.error("Invalid model budget or repair settings.")
     signal.signal(signal.SIGINT, on_shutdown)
     signal.signal(signal.SIGTERM, on_shutdown)
