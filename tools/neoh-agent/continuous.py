@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -108,7 +109,19 @@ def ensure_supervisor_checkout() -> str:
     return branch
 
 
-def run_cycle(args, skip: set[str]) -> tuple[int, str]:
+def cycle_status(code: int, stopped: bool = False) -> str:
+    if code == 0:
+        return "passed"
+    if stopped or code in (-signal.SIGTERM, -signal.SIGINT):
+        return "interrupted"
+    return "failed"
+
+
+def storage_ready(min_free_gib: float) -> bool:
+    return shutil.disk_usage(ROOT).free >= min_free_gib * 1024 ** 3
+
+
+def run_cycle(args, skip: set[str]) -> tuple[int, str, str]:
     """Use an ephemeral worktree so a failed run never contaminates supervisor."""
     parent = STATE_DIR / "worktrees"
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -230,6 +243,10 @@ def supervise(args) -> int:
                 write_state(state)
                 sleep_interruptible(args.poll_seconds)
                 continue
+            if not storage_ready(args.min_free_gib):
+                print("[continuous] low disk space; no cycle or budget reservation started.", flush=True)
+                sleep_interruptible(args.error_poll_seconds)
+                continue
             excluded = set(state["blocked"])
             # Reserve the upper per-run estimated budget BEFORE starting the model.
             # This is a conservative accounting guard, not a provider-side hard cap.
@@ -238,19 +255,19 @@ def supervise(args) -> int:
             code, worktree_name, category = run_cycle(args, excluded)
             executed += 1
             state["cycles"] = int(state.get("cycles", 0)) + 1
-            passed = code == 0
-            state["successes" if passed else "failures"] = (
-                int(state.get("successes" if passed else "failures", 0)) + 1
-            )
+            status = cycle_status(code, STOP)
+            passed = status == "passed"
+            counter = {"passed": "successes", "failed": "failures", "interrupted": "interruptions"}[status]
+            state[counter] = int(state.get(counter, 0)) + 1
             state["history"] = (
                 state["history"] + [{
                     "time": utc_now(), "worktree": worktree_name,
-                    "exit_code": code, "status": "passed" if passed else "failed",
+                    "exit_code": code, "status": status,
                 }]
             )[-100:]
             state["last_cycle"] = utc_now()
             write_state(state)
-            if not passed and category:
+            if status == "failed" and category:
                 state["blocked"][category] = time.time() + args.failure_cooldown_seconds
                 write_state(state)
             if STOP:
@@ -283,10 +300,13 @@ def main() -> None:
     parser.add_argument("--error-poll-seconds", type=int, default=600)
     parser.add_argument("--failure-cooldown-seconds", type=int, default=3600)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 means run indefinitely")
+    parser.add_argument("--min-free-gib", type=float, default=0.5)
     parser.add_argument("--push", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.category == "auto" and args.task:
         parser.error("To supply --task, also specify --category.")
+    if not 0 < args.min_free_gib < float("inf"):
+        parser.error("Minimum free disk space must be finite and positive.")
     if args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30 or args.failure_cooldown_seconds < 60:
         parser.error("Invalid cycle or polling controls.")
     if args.budget_usd <= 0 or args.daily_budget_usd < args.budget_usd or args.max_turns <= 0 or args.max_repairs < 0:

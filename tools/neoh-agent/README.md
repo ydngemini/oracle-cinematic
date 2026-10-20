@@ -222,6 +222,23 @@ push. Prefer autobuild.py for automatic engineering.
 * The runner is source tooling only. No user-facing Neoh feature is marked
   tested or production ready by installing it.
 
+### Reliability controls
+
+The supervisor checks available storage before creating a cycle or reserving
+its model budget. `--min-free-gib` defaults to 0.5 GiB; below this threshold it
+waits without deleting retained worktrees or modifying the budget limit.
+This is a start-of-cycle guard, not a guarantee against filling the disk mid-run.
+
+New operator-interrupted cycles are recorded separately from failed checks and
+do not place a category on failure cooldown. Existing historical records are
+not rewritten, and interrupted cycles retain their budget reservation.
+
+Task selection checks both the next-task text and the blocker column for owner
+gates. Decision references such as `D-2026-10-12-02` block automatic selection,
+including explicit category requests, until the authoritative ledger is updated.
+Repair feedback retains failure identifiers plus the start and end of long
+test output rather than only a tail of potentially irrelevant text.
+
 Future: run this inside ephemeral locked-down development containers, add
 independent CI gates and code review, and optionally open a draft PR after
 successful checks. Never automatically merge or release to production.

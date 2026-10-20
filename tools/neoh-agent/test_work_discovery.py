@@ -107,6 +107,14 @@ class WorkDiscoveryTests(unittest.TestCase):
         selection = self.run_selector(row)
         self.assertEqual(selection["category"], "01")
 
+    def test_owner_blocker_skipped_even_when_next_task_is_actionable(self):
+        for blocker in ("Owner decision: seat terms", "D-2026-10-12-02 (billable stage)"):
+            with self.subTest(blocker=blocker):
+                row = sample_ledger({"02": {"blockers": blocker}})
+                self.assertEqual(self.run_selector(row)["category"], "01")
+                with self.assertRaises(ValueError):
+                    self.run_selector(row, category="02", task="Override blocked task")
+
     def test_no_task_without_category(self):
         with self.assertRaises(ValueError):
             self.run_selector(sample_ledger(), task="Custom work")

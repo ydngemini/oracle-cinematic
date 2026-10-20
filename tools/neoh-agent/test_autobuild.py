@@ -13,6 +13,19 @@ SPEC.loader.exec_module(autobuild)
 
 
 class SideBranchTests(unittest.TestCase):
+    def test_failure_report_preserves_diagnostics_and_output_edges(self):
+        output = "start marker\n" + "noise\n" * 5000
+        output += "FAILED tests/test_seats.py::test_concurrency\n"
+        output += "noise\n" * 5000 + "end marker\n"
+        report = autobuild.summarize_failure(output, 2500)
+        self.assertLessEqual(len(report), 2500)
+        self.assertIn("FAILED tests/test_seats.py::test_concurrency", report)
+        self.assertIn("start marker", report)
+        self.assertIn("end marker", report)
+
+    def test_short_failure_report_is_unchanged(self):
+        self.assertEqual(autobuild.summarize_failure("one failure"), "one failure")
+
     def test_branch_naming(self):
         self.assertIsNotNone(
             autobuild.SIDE_BRANCH.fullmatch("auto/neoh-02-20261019T120000Z-abcdef")

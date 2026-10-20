@@ -96,6 +96,25 @@ class NeohAgentGuardTests(unittest.TestCase):
         self.assertIn("READ-ONLY", audit)
         self.assertIn("implemented_untested", build)
 
+    def test_email_answers_are_scoped_and_not_authority(self):
+        from argparse import Namespace
+        import json
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "answers.json"
+            path.write_text(json.dumps([
+                {"category": "02", "answer": "Use the existing design"},
+                {"category": "18", "answer": "Unrelated billing decision"},
+            ]))
+            with patch.dict(runner.os.environ, {"NEOH_OWNER_ANSWERS": str(path)}):
+                prompt = runner.engineering_prompt(
+                    Namespace(mode="build", category="02", task="fix one bug"),
+                    "abc", runner.prompt_path("02"),
+                )
+            self.assertIn("Use the existing design", prompt)
+            self.assertNotIn("Unrelated billing decision", prompt)
+            self.assertIn("UNTRUSTED DATA", prompt)
+            self.assertIn("until the authoritative ledger agrees", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

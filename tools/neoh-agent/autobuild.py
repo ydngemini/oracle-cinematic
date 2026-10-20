@@ -134,6 +134,20 @@ def approval_tests(paths: list[str], timeout: int) -> list[tuple[list[str], Path
     return checks
 
 
+def summarize_failure(output: str, limit: int = REPORT_LIMIT) -> str:
+    if len(output) <= limit:
+        return output
+    signals = [
+        line[:500] for line in output.splitlines()
+        if re.search(r"^(?:FAILED |FAIL |ERROR |E\s+)|(?:Error:|[0-9]+ failed)", line)
+    ]
+    summary = "\n".join(signals)[:limit // 3]
+    remaining = limit - len(summary) - 100
+    head = remaining // 2
+    tail = remaining - head
+    return f"Failure summary:\n{summary}\nOutput start:\n{output[:head]}\n[...truncated...]\nOutput end:\n{output[-tail:]}"
+
+
 def execute_tests(paths: list[str], timeout: int) -> tuple[bool, str]:
     if not paths:
         return False, "No changed files. Implement one scoped, tested feature."
@@ -145,7 +159,7 @@ def execute_tests(paths: list[str], timeout: int) -> tuple[bool, str]:
         result = command(argv, cwd=cwd, timeout=limit, clean_env=True)
         print(f"[test] exit {result.returncode}", flush=True)
         if result.returncode:
-            output = (result.stdout + "\n" + result.stderr)[-REPORT_LIMIT:]
+            output = summarize_failure(result.stdout + "\n" + result.stderr, REPORT_LIMIT // 4)
             failures.append(f"COMMAND: {name}\nEXIT: {result.returncode}\nOUTPUT:\n{output}")
     if any(p.startswith(("backend/", "oracle-app/")) for p in paths):
         if "docs/claude-prompts/LEDGER.md" not in paths:

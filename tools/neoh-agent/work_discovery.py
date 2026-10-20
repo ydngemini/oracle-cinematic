@@ -143,7 +143,10 @@ def select_work(sha: str, category: str = "auto", task: str = "",
             continue
         if row["next"] in ("", "—", "-"):
             continue
-        if any(gate in row["next"].lower() for gate in OWNER_GATES):
+        decision_text = (row["next"] + " " + row["blockers"]).lower()
+        if any(gate in decision_text for gate in OWNER_GATES):
+            continue
+        if re.search(r"\bd-\d{4}-\d{2}-\d{2}-\d+\b", row["blockers"], re.I):
             continue
         # Category 02 is explicitly permitted to begin without category 01.
         required = () if candidate == "02" else dependencies[candidate]
