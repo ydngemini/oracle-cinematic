@@ -108,18 +108,25 @@ class SideBranchTests(unittest.TestCase):
             test_timeout=60, agent_timeout=120,
             commit=True, push=True,
         ))()
-        with patch.object(autobuild, "start_feature_branch",
-                          return_value=(branch, "abc123")):
-            with patch.object(autobuild, "model_round", return_value=0):
-                with patch.object(autobuild, "dirty_files", return_value=[
-                    "oracle-app/src/App.jsx",
-                    "docs/claude-prompts/LEDGER.md",
-                ]):
-                    with patch.object(autobuild, "execute_tests",
-                                      return_value=(False, "lint failed")):
-                        with patch.object(autobuild, "push_side_branch") as push:
-                            with patch.object(autobuild, "commit_local") as commit:
-                                result = autobuild.autobuild(args)
+        with patch.object(autobuild, "synchronize_latest_main",
+                          return_value=("a" * 40, [])):
+            with patch.object(autobuild.work_discovery, "pending_categories",
+                              return_value=set()):
+                with patch.object(autobuild.work_discovery, "select_work",
+                                  return_value={"category": "02", "task": "Fix one issue",
+                                                "main_sha": "a" * 40, "prompt": "docs/claude-prompts/02-x.md"}):
+                    with patch.object(autobuild, "start_feature_branch",
+                                      return_value=(branch, "abc123")):
+                        with patch.object(autobuild, "model_round", return_value=0):
+                            with patch.object(autobuild, "dirty_files", return_value=[
+                                "oracle-app/src/App.jsx",
+                                "docs/claude-prompts/LEDGER.md",
+                            ]):
+                                with patch.object(autobuild, "execute_tests",
+                                                  return_value=(False, "lint failed")):
+                                    with patch.object(autobuild, "push_side_branch") as push:
+                                        with patch.object(autobuild, "commit_local") as commit:
+                                            result = autobuild.autobuild(args)
         self.assertEqual(result, 1)
         push.assert_not_called()
         commit.assert_not_called()
