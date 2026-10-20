@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -84,11 +85,22 @@ def write_path_allowed(raw: str) -> bool:
     return True
 
 
+def read_path_allowed(raw: str) -> bool:
+    if source_path_allowed(raw):
+        return True
+    reference = os.environ.get("NEOH_READ_ONLY_REFERENCE")
+    if not reference or not isinstance(raw, str) or not raw:
+        return False
+    root = Path(reference).resolve()
+    path = (ROOT / raw).resolve()
+    return path.is_relative_to(root)
+
+
 async def file_guard(data, _tool_use_id, _context):
     if data.get("tool_name") in {"Read", "Write", "Edit"}:
         target = data.get("tool_input", {}).get("file_path")
         action = data.get("tool_name")
-        allowed = source_path_allowed(target) if action == "Read" else write_path_allowed(target)
+        allowed = read_path_allowed(target) if action == "Read" else write_path_allowed(target)
         if not allowed:
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -119,6 +131,12 @@ def engineering_prompt(args, sha: str, path: Path) -> str:
             "Update that category's ledger rows with an honest "
             "implemented_untested state, since you cannot run tests directly. "
             "Never modify production deployment or CI configuration. "
+        )
+    reference = os.environ.get("NEOH_READ_ONLY_REFERENCE")
+    if reference:
+        prompt += (
+            f" Owner-authorized read-only reference directory: {reference}. "
+            "You may inspect its contents for context; never edit or write there. "
         )
     return prompt + "\n\nTask: " + task
 

@@ -2,6 +2,8 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "runner", Path(__file__).with_name("runner.py")
@@ -11,6 +13,36 @@ spec.loader.exec_module(runner)
 
 
 class NeohAgentGuardTests(unittest.TestCase):
+    def test_reference_reads_never_allow_writes(self):
+        import asyncio
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "Oracle"
+            reference.mkdir()
+            target = reference / "source.py"
+            with patch.dict(runner.os.environ, {"NEOH_READ_ONLY_REFERENCE": str(reference)}):
+                self.assertTrue(runner.read_path_allowed(str(target)))
+                self.assertFalse(runner.write_path_allowed(str(target)))
+                self.assertFalse(runner.read_path_allowed(str(reference.parent / "outside.py")))
+                for action in ("Write", "Edit"):
+                    result = asyncio.run(runner.file_guard({
+                        "tool_name": action,
+                        "tool_input": {"file_path": str(target)},
+                    }, None, None))
+                    self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+                result = asyncio.run(runner.file_guard({
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": str(target)},
+                }, None, None))
+                self.assertEqual(result, {})
+
+    def test_reference_symlink_cannot_escape(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "Oracle"
+            reference.mkdir()
+            (reference / "escape").symlink_to(reference.parent)
+            with patch.dict(runner.os.environ, {"NEOH_READ_ONLY_REFERENCE": str(reference)}):
+                self.assertFalse(runner.read_path_allowed(str(reference / "escape" / "private.txt")))
+
     def test_category(self):
         self.assertTrue(runner.prompt_path("02").name.startswith("02-"))
         with self.assertRaises(ValueError):
