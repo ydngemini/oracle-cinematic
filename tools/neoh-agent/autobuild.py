@@ -238,8 +238,11 @@ def autobuild(args) -> int:
     # First fetch and reconcile the source-of-truth docs, BEFORE task choice.
     main_sha, changed_prompts = synchronize_latest_main()
     pending = work_discovery.pending_categories()
+    skip = set(filter(None, args.skip_categories.split(",")))
+    if any(part not in {f"{n:02d}" for n in range(1, 21)} for part in skip):
+        raise ValueError("--skip-categories expects comma-separated categories 01-20.")
     selection = work_discovery.select_work(
-        main_sha, category=args.category, task=args.task, pending=pending
+        main_sha, category=args.category, task=args.task, pending=pending | skip
     )
     args.category = selection["category"]
     branch, base_sha = start_feature_branch(args.category)
@@ -320,6 +323,7 @@ def autobuild(args) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous Neoh build, test and repair")
     parser.add_argument("--category", default="auto", help="auto selects from latest main ledger; or use 01-19")
+    parser.add_argument("--skip-categories", default="", help="Comma-separated categories to leave for manual review this cycle")
     parser.add_argument("--task", default="", help="Omit for self-directed work, or provide with explicit --category")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--max-turns", type=int, default=24)
