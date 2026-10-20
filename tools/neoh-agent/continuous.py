@@ -147,9 +147,19 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str]:
         # supervisor's checkout are not automatically available here.
         # This executes repo dependency scripts: use an isolated dev host
         # with no production credentials and no customer data.
+        # NPM packages may execute installation scripts. Never expose the
+        # Anthropic key, GitHub tokens, or existing developer credentials.
+        dependency_env = {
+            k: v for k, v in env.items()
+            if not any(marker in k.upper() for marker in (
+                "API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                "PRIVATE_KEY", "AUTH", "AWS_", "AZURE_", "GOOGLE_",
+                "ORACLE_DB_", "DIGITALOCEAN_", "GITHUB_",
+            ))
+        }
         dependency_install = subprocess.run(
             ["npm", "ci", "--no-audit", "--no-fund"],
-            cwd=str(path / "oracle-app"), env=env, stdout=output,
+            cwd=str(path / "oracle-app"), env=dependency_env, stdout=output,
             stderr=subprocess.STDOUT, timeout=900,
         )
         if dependency_install.returncode:
