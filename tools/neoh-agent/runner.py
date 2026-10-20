@@ -192,7 +192,7 @@ async def run(args) -> int:
             print(f"[session] {message.subtype}")
             if message.total_cost_usd is not None:
                 print(f"[estimated cost] USD {message.total_cost_usd:.4f}")
-            if message.is_error or message.terminal_reason not in (None, "completed"):
+            if message.is_error or getattr(message, "terminal_reason", None) not in (None, "completed"):
                 return 1
     return 0 if completed else 1
 
