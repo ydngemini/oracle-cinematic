@@ -45,8 +45,54 @@ class PersistentWorkerTests(unittest.TestCase):
                 patch.object(continuous, "run_cycle") as cycle:
             self.assertEqual(continuous.supervise(args), 0)
             cycle.assert_not_called()
-            write.assert_not_called()
+            write.assert_called_once()
+            self.assertEqual(state["idle_reason"], "low_disk")
             self.assertEqual(state["daily_reserved_usd"], 0)
+
+    def test_no_work_does_not_create_checkout_or_reserve_budget(self):
+        state = {"blocked": {}, "history": [], "budget_day": continuous.utc_now()[:10],
+                 "daily_reserved_usd": 0.0}
+        args = SimpleNamespace(max_cycles=1, budget_usd=12, daily_budget_usd=48,
+                               min_free_gib=0.5, error_poll_seconds=60)
+        def stop(_seconds):
+            continuous.STOP = True
+        with patch.object(continuous, "STOP", False), \
+                patch.object(continuous, "ensure_supervisor_checkout"), \
+                patch.object(continuous, "acquire_lock"), \
+                patch.object(continuous, "read_state", return_value=state), \
+                patch.object(continuous, "write_state"), \
+                patch.object(continuous, "storage_ready", return_value=True), \
+                patch.object(continuous, "preflight_work",
+                             side_effect=continuous.work_discovery.NoActionableWork("blocked")), \
+                patch.object(continuous, "sleep_interruptible", side_effect=stop), \
+                patch.object(continuous, "run_cycle") as cycle:
+            self.assertEqual(continuous.supervise(args), 0)
+            cycle.assert_not_called()
+            self.assertEqual(state["daily_reserved_usd"], 0)
+            self.assertEqual(state["idle_reason"], "no_eligible_work")
+            self.assertNotIn("failures", state)
+
+    def test_preflight_attaches_task_identity_and_risk(self):
+        args = SimpleNamespace(category="auto", task="")
+        with patch.object(continuous.work_discovery, "fetch_latest_main", return_value=("a" * 40, [])), \
+                patch.object(continuous.work_discovery, "pending_categories", return_value={"03"}), \
+                patch.object(continuous.work_discovery, "select_work", return_value={
+                    "category": "02", "task": "Fix routes", "main_sha": "a" * 40,
+                }) as choose:
+            selection = continuous.preflight_work(args, {"05"})
+        self.assertEqual(choose.call_args.kwargs["pending"], {"03", "05"})
+        self.assertEqual(len(selection["task_id"]), 20)
+        self.assertEqual(selection["risk"]["level"], "normal")
+
+    def test_idle_reason_is_persisted_once(self):
+        state = {"active_task": {"category": "02"}}
+        with patch.object(continuous, "write_state") as write, \
+                patch.object(continuous, "sleep_interruptible") as sleep:
+            continuous.idle(state, "daily_budget", 120)
+            continuous.idle(state, "daily_budget", 120)
+        write.assert_called_once()
+        self.assertEqual(sleep.call_count, 2)
+        self.assertNotIn("active_task", state)
 
     def test_state_survives_restart_and_is_private(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import runner
+import intelligence
+import work_discovery
 
 ROOT = runner.ROOT
 STATE_DIR = ROOT / ".neoh-agent-state"
@@ -121,7 +123,25 @@ def storage_ready(min_free_gib: float) -> bool:
     return shutil.disk_usage(ROOT).free >= min_free_gib * 1024 ** 3
 
 
-def run_cycle(args, skip: set[str]) -> tuple[int, str, str]:
+def preflight_work(args, skip: set[str]) -> dict:
+    main_sha, _changes = work_discovery.fetch_latest_main()
+    pending = work_discovery.pending_categories() | skip
+    selection = work_discovery.select_work(main_sha, category=args.category, task=args.task, pending=pending)
+    selection["task_id"] = intelligence.task_identity(selection["category"], selection["task"], main_sha)
+    selection["risk"] = intelligence.risk_profile(selection["category"], selection["task"])
+    return selection
+
+
+def idle(state: dict, reason: str, seconds: int) -> None:
+    if state.get("idle_reason") != reason:
+        state["idle_reason"] = reason
+        state.pop("active_task", None)
+        write_state(state)
+        print(f"[continuous] idle: {reason}", flush=True)
+    sleep_interruptible(seconds)
+
+
+def run_cycle(args, skip: set[str], selection: dict) -> tuple[int, str, str]:
     """Use an ephemeral worktree so a failed run never contaminates supervisor."""
     parent = STATE_DIR / "worktrees"
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -138,15 +158,14 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str, str]:
     try:
         command = [
             sys.executable, str(path / "tools/neoh-agent/autobuild.py"),
-            "--category", args.category, "--budget-usd", str(args.budget_usd),
+            "--category", selection["category"], "--budget-usd", str(args.budget_usd),
             "--max-repairs", str(args.max_repairs),
             "--max-turns", str(args.max_turns),
             "--model", args.model,
             "--test-timeout", str(args.test_timeout),
             "--agent-timeout", str(args.agent_timeout),
         ]
-        if args.task:
-            command += ["--task", args.task]
+        command += ["--task", selection["task"]]
         if skip:
             command += ["--skip-categories", ",".join(sorted(skip))]
         if not args.push:
@@ -154,6 +173,8 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str, str]:
         print(f"[continuous] isolated cycle started: {name}", flush=True)
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["NEOH_PLANNED_MAIN"] = selection["main_sha"]
+        env["NEOH_RECENT_FAILURES"] = json.dumps(selection.get("recent_failures", []))
         log = STATE_DIR / (name + ".log")
         output = log.open("w", encoding="utf-8")
         # Every worktree is its own checkout; npm dependencies from the
@@ -200,6 +221,16 @@ def run_cycle(args, skip: set[str]) -> tuple[int, str, str]:
                 category = line.split("category=", 1)[1][:2]
         for line in lines[-12:]:
             print(line[:400], flush=True)
+        receipt = {"cycle": name, "exit_code": child.returncode, "task_id": selection["task_id"]}
+        for artifact in ("checks", "handoff"):
+            source = path / ".neoh-agent-state" / f"{artifact}.json"
+            if source.is_file() and not source.is_symlink() and source.resolve().is_relative_to(path.resolve()):
+                if source.stat().st_size <= 65536:
+                    try:
+                        receipt[artifact] = json.loads(source.read_text())
+                    except (ValueError, OSError):
+                        receipt[artifact] = {"unavailable": True}
+        intelligence.save_report(ROOT, f"receipt-{name}", receipt)
         if child.returncode == 0:
             # Do not leave a long-lived checkout with altered branch state.
             removal = subprocess.run(
@@ -239,20 +270,28 @@ def supervise(args) -> int:
                 state["budget_day"] = day
                 state["daily_reserved_usd"] = 0.0
             if state["daily_reserved_usd"] + args.budget_usd > args.daily_budget_usd:
-                print("[continuous] daily model budget reached; idling until UTC day changes.", flush=True)
-                write_state(state)
-                sleep_interruptible(args.poll_seconds)
+                idle(state, "daily_budget", args.poll_seconds)
                 continue
             if not storage_ready(args.min_free_gib):
-                print("[continuous] low disk space; no cycle or budget reservation started.", flush=True)
-                sleep_interruptible(args.error_poll_seconds)
+                idle(state, "low_disk", args.error_poll_seconds)
                 continue
             excluded = set(state["blocked"])
+            try:
+                selection = preflight_work(args, excluded)
+            except work_discovery.NoActionableWork:
+                idle(state, "no_eligible_work", args.error_poll_seconds)
+                continue
+            except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError):
+                idle(state, "preflight_unavailable", args.error_poll_seconds)
+                continue
+            selection["recent_failures"] = intelligence.recent_failures(state["history"], selection["category"])
             # Reserve the upper per-run estimated budget BEFORE starting the model.
             # This is a conservative accounting guard, not a provider-side hard cap.
             state["daily_reserved_usd"] += args.budget_usd
+            state["idle_reason"] = ""
+            state["active_task"] = {key: selection[key] for key in ("category", "task_id", "risk")}
             write_state(state)
-            code, worktree_name, category = run_cycle(args, excluded)
+            code, worktree_name, category = run_cycle(args, excluded, selection)
             executed += 1
             state["cycles"] = int(state.get("cycles", 0)) + 1
             status = cycle_status(code, STOP)
@@ -263,9 +302,12 @@ def supervise(args) -> int:
                 state["history"] + [{
                     "time": utc_now(), "worktree": worktree_name,
                     "exit_code": code, "status": status,
+                    "category": category or selection["category"], "task_id": selection["task_id"],
+                    "failure_kind": "infrastructure" if code == 3 else status,
                 }]
             )[-100:]
             state["last_cycle"] = utc_now()
+            state.pop("active_task", None)
             write_state(state)
             if status == "failed" and category:
                 state["blocked"][category] = time.time() + args.failure_cooldown_seconds

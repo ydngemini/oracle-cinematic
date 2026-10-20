@@ -99,11 +99,12 @@ class NeohAgentGuardTests(unittest.TestCase):
     def test_email_answers_are_scoped_and_not_authority(self):
         from argparse import Namespace
         import json
+        from datetime import datetime, timezone
         with TemporaryDirectory() as directory:
             path = Path(directory) / "answers.json"
             path.write_text(json.dumps([
-                {"category": "02", "answer": "Use the existing design"},
-                {"category": "18", "answer": "Unrelated billing decision"},
+                {"category": "02", "answer": "Use the existing design", "answered_at": datetime.now(timezone.utc).isoformat()},
+                {"category": "18", "answer": "Unrelated billing decision", "answered_at": datetime.now(timezone.utc).isoformat()},
             ]))
             with patch.dict(runner.os.environ, {"NEOH_OWNER_ANSWERS": str(path)}):
                 prompt = runner.engineering_prompt(

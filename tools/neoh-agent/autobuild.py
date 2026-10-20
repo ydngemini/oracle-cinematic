@@ -8,14 +8,17 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import runner
 import work_discovery
+import intelligence
 
 ROOT = runner.ROOT
 REPORT_LIMIT = 10000
@@ -33,12 +36,27 @@ def command(argv: list[str], cwd: Path = ROOT, timeout: int = 240,
                 env.pop(name, None)
         env["CI"] = "1"
     try:
-        return subprocess.run(
-            argv, cwd=str(cwd), env=env, check=False, capture_output=True,
-            text=True, timeout=timeout,
+        child = subprocess.Popen(
+            argv, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(argv, 124, "", f"Timed out after {timeout} seconds")
+        try:
+            output, errors = child.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(argv, child.returncode, output, errors)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                output, errors = child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.stdout.close()
+                child.stderr.close()
+                output, errors = "", "Output pipes did not close after timeout."
+            child.wait(timeout=5)
+            return subprocess.CompletedProcess(argv, 124, output,
+                                               errors + f"\nTimed out after {timeout} seconds")
     except OSError as error:
         return subprocess.CompletedProcess(argv, 127, "", f"Unable to execute: {error}")
 
@@ -148,25 +166,65 @@ def summarize_failure(output: str, limit: int = REPORT_LIMIT) -> str:
     return f"Failure summary:\n{summary}\nOutput start:\n{output[:head]}\n[...truncated...]\nOutput end:\n{output[-tail:]}"
 
 
-def execute_tests(paths: list[str], timeout: int) -> tuple[bool, str]:
+def execute_tests(paths: list[str], timeout: int, category: str | None = None) -> tuple[bool, str]:
     if not paths:
         return False, "No changed files. Implement one scoped, tested feature."
     changed_paths_are_safe(paths)
+    try:
+        plan = intelligence.read_plan(ROOT, category, paths)
+        high_risk = intelligence.risk_profile(category, plan["goal"])["level"] == "high"
+        source_changed = any(name.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sql")) for name in paths)
+        regression_changed = any(name.startswith("backend/tests/") or re.search(r"\.(test|spec)\.[jt]sx?$", name)
+                                 for name in paths)
+        if high_risk and source_changed and not regression_changed:
+            return False, "Risk gate: sensitive source changes require changed regression tests"
+        stats = command(["git", "diff", "HEAD", "--numstat", "--no-renames", "--"])
+        untracked = command(["git", "ls-files", "--others", "--exclude-standard", "-z"])
+        if stats.returncode or untracked.returncode:
+            raise RuntimeError("Cannot inspect the change footprint")
+        intelligence.check_churn(ROOT, paths, stats.stdout, list(filter(None, untracked.stdout.split("\0"))))
+        syntax = intelligence.syntax_errors(ROOT, paths)
+        if syntax:
+            return False, "\n".join(syntax)
+    except (ValueError, OSError) as error:
+        return False, f"Plan/scope gate: {intelligence.redact(str(error))}"
+    focused = intelligence.focused_tests(ROOT, paths)
+    targeted = []
+    if focused["backend"]:
+        targeted.append(([sys.executable, "-m", "pytest", *focused["backend"], "-q"], ROOT / "backend", timeout))
+    if focused["frontend"]:
+        targeted.append((["npm", "test", "--", *focused["frontend"]], ROOT / "oracle-app", timeout))
     failures: list[str] = []
-    for argv, cwd, limit in approval_tests(paths, timeout):
+    evidence = []
+    full = approval_tests(paths, timeout)
+    checks = [full[0], *targeted, *full[1:]]
+    for index, (argv, cwd, limit) in enumerate(checks):
         name = " ".join(argv)
         print(f"[test] ({cwd.relative_to(ROOT)}) {name}", flush=True)
+        started = time.monotonic()
         result = command(argv, cwd=cwd, timeout=limit, clean_env=True)
         print(f"[test] exit {result.returncode}", flush=True)
+        raw = result.stdout + "\n" + result.stderr
+        kind = intelligence.failure_kind(raw, result.returncode) if result.returncode else "passed"
+        evidence.append({"command": argv, "cwd": str(cwd.relative_to(ROOT)),
+                         "exit_code": result.returncode, "kind": kind,
+                         "seconds": round(time.monotonic() - started, 3)})
+        intelligence.save_report(ROOT, "checks", {"checks": evidence, "complete": False})
         if result.returncode:
-            output = summarize_failure(result.stdout + "\n" + result.stderr, REPORT_LIMIT // 4)
+            output = intelligence.redact(summarize_failure(raw, REPORT_LIMIT // 4))
             failures.append(f"COMMAND: {name}\nEXIT: {result.returncode}\nOUTPUT:\n{output}")
+            if kind in {"disk", "permissions", "timeout"}:
+                raise intelligence.InfrastructureFailure(f"{kind}: {output}")
+            if index <= len(targeted):
+                break
     if any(p.startswith(("backend/", "oracle-app/")) for p in paths):
         if "docs/claude-prompts/LEDGER.md" not in paths:
             failures.append(
                 "Neoh contract C10: update the category's LEDGER.md rows. "
                 "Do not invent test results or production proof."
             )
+    intelligence.save_report(ROOT, "checks", {"checks": evidence, "complete": len(evidence) == len(checks),
+                                            "passed": not failures})
     return not failures, "\n\n".join(failures)
 
 
@@ -254,6 +312,9 @@ def push_side_branch(branch: str) -> str:
 def autobuild(args) -> int:
     # First fetch and reconcile the source-of-truth docs, BEFORE task choice.
     main_sha, changed_prompts = synchronize_latest_main()
+    expected_main = os.environ.get("NEOH_PLANNED_MAIN")
+    if expected_main and expected_main != main_sha:
+        raise RuntimeError("Main changed after preflight; rediscover before spending model budget")
     pending = work_discovery.pending_categories()
     skip = set(filter(None, args.skip_categories.split(",")))
     if any(part not in {f"{n:02d}" for n in range(1, 21)} for part in skip):
@@ -288,6 +349,7 @@ def autobuild(args) -> int:
     prompt = original
     attempts = args.max_repairs + 1
     allocation = args.budget_usd / attempts
+    previous_signature = None
     for attempt in range(attempts):
         print(f"\n[build] round {attempt + 1}/{attempts}", flush=True)
         result = model_round(args, prompt, allocation, allow_dirty=attempt > 0)
@@ -296,11 +358,19 @@ def autobuild(args) -> int:
             return 1
         paths = dirty_files()
         try:
-            good, feedback = execute_tests(paths, args.test_timeout)
+            good, feedback = execute_tests(paths, args.test_timeout, args.category)
+        except intelligence.InfrastructureFailure as error:
+            print(f"[infrastructure] {error}. No model repair, push, or deploy.", flush=True)
+            return 3
         except RuntimeError as error:
             print(f"[stop] {error}. No push or deploy.", file=sys.stderr)
             return 2
         if good:
+            intelligence.save_report(ROOT, "handoff", {
+                "base_sha": base_sha, "main_sha": main_sha, "category": args.category,
+                "task_id": intelligence.task_identity(args.category, selection["task"], main_sha),
+                "files": paths, "checks_passed": True, "production_verified": False,
+            })
             print("[pass] Local checks passed; NOT staging or production evidence.", flush=True)
             if args.commit:
                 commit_local(paths, args.category)
@@ -323,6 +393,14 @@ def autobuild(args) -> int:
             print(f"[ready] branch={branch}; base={base_sha[:12]}; main untouched; no deploy.")
             return 0
         print(f"[repair needed]\n{feedback[:REPORT_LIMIT]}", flush=True)
+        try:
+            signature = (intelligence.failure_fingerprint(feedback), intelligence.change_fingerprint(ROOT, paths))
+        except (ValueError, OSError):
+            signature = None
+        if signature is not None and signature == previous_signature:
+            print("[stop] Same failure and unchanged files; stopping an unproductive repair loop.", flush=True)
+            return 1
+        previous_signature = signature
         prompt = (
             f"Continue SAME Neoh category {args.category} task: {original}. "
             "Repair the existing changed files; earlier edits remain in the worktree. "

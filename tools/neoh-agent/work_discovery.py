@@ -19,6 +19,10 @@ OWNER_GATES = ("owner:", "owner decision", "owner decides", "counsel sign",
                "production app", "provider credentials", "purchase", "deploy production")
 
 
+class NoActionableWork(ValueError):
+    pass
+
+
 def git(*args: str, timeout: int = 120) -> str:
     result = subprocess.run(["git", "-C", str(runner.ROOT), *args],
                             capture_output=True, text=True, timeout=timeout)
@@ -157,4 +161,4 @@ def select_work(sha: str, category: str = "auto", task: str = "",
             raise ValueError(f"Category {candidate} contract marker is missing.")
         return {"category": candidate, "task": task.strip() or row["next"],
                 "main_sha": sha, "prompt": found[candidate]}
-    raise ValueError("No safe actionable work in latest LEDGER. Review blockers or side branches.")
+    raise NoActionableWork("No safe actionable work in latest LEDGER. Review blockers or side branches.")

@@ -224,6 +224,9 @@ push. Prefer autobuild.py for automatic engineering.
 
 ### Reliability controls
 
+See [INTELLIGENCE.md](INTELLIGENCE.md) for the 20 additional planning,
+evaluation, recovery, and context controls and their primary-source research.
+
 The supervisor checks available storage before creating a cycle or reserving
 its model budget. `--min-free-gib` defaults to 0.5 GiB; below this threshold it
 waits without deleting retained worktrees or modifying the budget limit.

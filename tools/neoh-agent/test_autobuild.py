@@ -1,5 +1,7 @@
 """Offline tests for Neoh autonomous side-branch delivery. No GitHub push is made."""
 import importlib.util
+import os
+from contextlib import ExitStack
 import subprocess
 import unittest
 from pathlib import Path
@@ -13,6 +15,52 @@ SPEC.loader.exec_module(autobuild)
 
 
 class SideBranchTests(unittest.TestCase):
+    def setUp(self):
+        receipt = patch.object(autobuild.intelligence, "save_report")
+        receipt.start()
+        self.addCleanup(receipt.stop)
+
+    def test_stale_preflight_stops_before_model(self):
+        with patch.object(autobuild, "synchronize_latest_main", return_value=("a" * 40, [])), \
+                patch.dict(os.environ, {"NEOH_PLANNED_MAIN": "b" * 40}), \
+                patch.object(autobuild, "model_round") as model:
+            with self.assertRaisesRegex(RuntimeError, "Main changed after preflight"):
+                autobuild.autobuild(object())
+        model.assert_not_called()
+
+    def failing_builder(self, infrastructure=False):
+        args = type("Args", (), dict(
+            category="02", task="", max_repairs=4, budget_usd=12,
+            max_turns=24, model="sonnet", test_timeout=60,
+            agent_timeout=120, skip_categories="", commit=True, push=True,
+        ))()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"NEOH_PLANNED_MAIN": ""}))
+            stack.enter_context(patch.object(autobuild, "synchronize_latest_main", return_value=("a" * 40, [])))
+            stack.enter_context(patch.object(autobuild.work_discovery, "pending_categories", return_value=set()))
+            stack.enter_context(patch.object(autobuild.work_discovery, "select_work", return_value={
+                "category": "02", "task": "Fix source", "main_sha": "a" * 40, "prompt": "docs/prompt.md",
+            }))
+            stack.enter_context(patch.object(autobuild, "start_feature_branch", return_value=("auto/test", "b" * 40)))
+            model = stack.enter_context(patch.object(autobuild, "model_round", return_value=0))
+            stack.enter_context(patch.object(autobuild, "dirty_files", return_value=["backend/source.py"]))
+            tests = stack.enter_context(patch.object(autobuild, "execute_tests", return_value=(False, "same assertion")))
+            stack.enter_context(patch.object(autobuild.intelligence, "change_fingerprint", return_value="same content"))
+            commit = stack.enter_context(patch.object(autobuild, "commit_local"))
+            publish = stack.enter_context(patch.object(autobuild, "push_side_branch"))
+            if infrastructure:
+                tests.side_effect = autobuild.intelligence.InfrastructureFailure("disk full")
+            result = autobuild.autobuild(args)
+            commit.assert_not_called()
+            publish.assert_not_called()
+            return result, model.call_count
+
+    def test_unchanged_repairs_stop_early(self):
+        self.assertEqual(self.failing_builder(), (1, 2))
+
+    def test_infrastructure_error_does_not_retry_model(self):
+        self.assertEqual(self.failing_builder(infrastructure=True), (3, 1))
+
     def test_failure_report_preserves_diagnostics_and_output_edges(self):
         output = "start marker\n" + "noise\n" * 5000
         output += "FAILED tests/test_seats.py::test_concurrency\n"
