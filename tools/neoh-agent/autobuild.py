@@ -15,6 +15,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import runner
+import work_discovery
 
 ROOT = runner.ROOT
 REPORT_LIMIT = 10000
@@ -47,6 +48,47 @@ def dirty_files() -> list[str]:
     if result.returncode:
         raise RuntimeError(result.stderr)
     return sorted(set(result.stdout.splitlines()))
+
+
+def synchronize_latest_main() -> tuple[str, list[str]]:
+    """Fetch current upstream prompts, fast-forward or merge them, never reset.
+
+    The controller must run from a clean repository with tools installed.
+    A conflict aborts safely, preserving the original checkout. Production
+    stays untouched, and no remote branch is written by this step.
+    """
+    status = command(["git", "status", "--porcelain", "--untracked-files=all"])
+    if status.returncode or status.stdout.strip():
+        raise ValueError("Refusing to refresh Neoh instructions in a dirty checkout.")
+    main_sha, prompt_changes = work_discovery.fetch_latest_main()
+    branch = runner.git("branch", "--show-current")
+    if not branch:
+        raise ValueError("Cannot refresh from a detached HEAD.")
+    if branch == "main":
+        argv = ["git", "merge", "--ff-only", main_sha]
+    else:
+        argv = ["git", "-c", "core.editor=true", "merge", "--no-edit", main_sha]
+    result = command(argv, timeout=180)
+    if result.returncode:
+        if runner.git("rev-parse", "-q", "--verify", "MERGE_HEAD") :
+            command(["git", "merge", "--abort"], timeout=60)
+        raise RuntimeError("Cannot merge fresh Neoh main without conflicts. No build started.")
+    # Enforce exact instruction bytes from remote main; our feature branch
+    # must not quietly override authoritative prompts, ledger or contract.
+    latest_tree = runner.git("rev-parse", f"{main_sha}:docs/claude-prompts")
+    working_tree = runner.git("rev-parse", "HEAD:docs/claude-prompts")
+    if latest_tree != working_tree:
+        raise RuntimeError(
+            "Local prompt folder differs from latest main; review the divergence first."
+        )
+    print(
+        f"[prompts] checked latest main {main_sha[:12]}; "
+        f"{len(prompt_changes)} prompt files changed relative to local HEAD",
+        flush=True,
+    )
+    for path in prompt_changes[:30]:
+        print(f"[prompt-update] {path}", flush=True)
+    return main_sha, prompt_changes
 
 
 def start_feature_branch(category: str) -> tuple[str, str]:
@@ -191,10 +233,27 @@ def push_side_branch(branch: str) -> str:
 
 
 def autobuild(args) -> int:
+    # First fetch and reconcile the source-of-truth docs, BEFORE task choice.
+    main_sha, changed_prompts = synchronize_latest_main()
+    pending = work_discovery.pending_categories()
+    selection = work_discovery.select_work(
+        main_sha, category=args.category, task=args.task, pending=pending
+    )
+    args.category = selection["category"]
     branch, base_sha = start_feature_branch(args.category)
-    original = args.task.strip() or (
-        "Implement the next safe highest-dependency P0 vertical slice from "
-        "Neoh category 02, with regression tests and a ledger update."
+    original = (
+        f"Latest Neoh main: {main_sha}. "
+        f"Current authoritative prompt: {selection['prompt']}. "
+        f"Changes to prompt folder on refresh: {', '.join(changed_prompts) or 'none'}. "
+        f"Read all current Neoh project instructions and ledger first. "
+        f"Implement this discovered task (one vertical slice only): "
+        f"{selection['task']}. Include regression tests and the ledger update. "
+        f"Do not perform other categories or owner-gated actions."
+    )
+    print(
+        f"[discovery] category={args.category}; "
+        f"task={selection['task']}; pinned main={main_sha[:12]}",
+        flush=True,
     )
     prompt = original
     attempts = args.max_repairs + 1
@@ -238,8 +297,8 @@ def autobuild(args) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous Neoh build, test and repair")
-    parser.add_argument("--category", default="02")
-    parser.add_argument("--task", default="")
+    parser.add_argument("--category", default="auto", help="auto selects from latest main ledger; or use 01-19")
+    parser.add_argument("--task", default="", help="Omit for self-directed work, or provide with explicit --category")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--max-repairs", type=int, default=2)
