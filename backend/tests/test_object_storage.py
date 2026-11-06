@@ -85,7 +85,13 @@ def test_unknown_backend_fails_loudly(monkeypatch):
         ),
     ],
 )
-def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, expected):
+def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, tmp_path, env, expected):
+    # Hermetic: the host may really have a writable /mnt/neoh, so point the
+    # unmounted case at a root that cannot be created: its parent is a regular
+    # file, so mkdir raises OSError (a merely missing path would be auto-created).
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x")
+    env = {"ORACLE_MEDIA_ROOT": blocker / "not-mounted", **env}
     assert _reload(monkeypatch, **env).is_configured() is expected
 
 

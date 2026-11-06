@@ -676,18 +676,21 @@ updated: 2026-10-13
 #### L09-04 No spoken opt-out handling on outbound AI calls
 ```yaml
 id: L09-04
-status: source_verified
+status: implemented_untested
 env: local
-evidence_shas: [745f2fa]
-files: [backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/outreach_compliance.py]
+evidence_shas: [745f2fa, 852506d]
+files: [backend/elevenlabs_realtime.py, backend/inbound_voice.py, backend/tests/test_outbound_voice_opt_out.py]
 tests_run:
   - {cmd: "grep -n opt_out backend/elevenlabs_realtime.py backend/qwen_omni_realtime.py backend/plivo_call_handler.py", result: "no matches, while the disclosure (outreach_compliance.py:105) promises no further contact", date: 2026-10-12}
-authz_checked: n/a
-blockers: []
+  - {cmd: "pytest backend/tests/test_outbound_voice_opt_out.py backend/tests/test_elevenlabs_realtime.py backend/tests/test_voice_opt_out.py", result: "NOT RUN (no shell in the authoring session)", date: 2026-11-06}
+authz_checked: callee number and tenant come from the call's own Redis state, never the model; write runs under tenant RLS (brokerage scope). Not exercised against PostgreSQL.
+blockers:
+  - {type: verification, note: "Bridge tests stub the DB write; no real-PostgreSQL read of outreach_suppression yet."}
+  - {type: scope, note: "ElevenLabs/Plivo bridge only; qwen_omni_realtime outbound path still has no spoken opt-out handling."}
 audit_refs: []
 decision_refs: []
-next_task: "T09.15"
-updated: 2026-10-12
+next_task: "Run the tests; add the same hook to qwen_omni_realtime; real-PostgreSQL test of the suppression row (AC09.05)."
+updated: 2026-11-06
 ```
 
 ### L10

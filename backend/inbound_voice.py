@@ -730,6 +730,37 @@ async def _record_voice_opt_out(conn: Any, tenant_id: str, caller_ciphertext: An
     )
 
 
+def heard_opt_out(utterance: str) -> bool:
+    """True when one caller utterance is an opt-out. Stateless on purpose: an
+    outbound call keeps no transcript, so each turn is judged alone."""
+    return _requested_opt_out([{"role": "caller", "text": str(utterance or "")}])
+
+
+async def record_outbound_voice_opt_out(tenant_id: str, callee: str) -> None:
+    """Suppress the person an outbound AI call reached, brokerage-wide, after
+    they said they do not want more contact. The number comes from the call's
+    own state (never from the model) and no transcript text is stored. Raises
+    on an unusable tenant or number: an opt-out that is not recorded must be
+    retried by the caller, never pass silently."""
+    from outreach_compliance import Channel, normalize_contact
+
+    try:
+        uuid.UUID(str(tenant_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("outbound opt-out: tenant id is invalid") from exc
+    contact = normalize_contact(str(callee or ""), Channel.VOICE)
+    if not contact:
+        raise ValueError("outbound opt-out: callee number unavailable")
+    ctx = _tenant_context(str(tenant_id), "neoh-outbound-voice-opt-out")
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            """INSERT INTO outreach_suppression (tenant_id, contact, channel, reason, source_text)
+               VALUES ($1::uuid, $2, '*', 'stop_keyword', 'outbound call: callee asked not to be contacted')
+               ON CONFLICT (tenant_id, contact, channel) WHERE lifted_at IS NULL DO NOTHING""",
+            str(tenant_id), contact,
+        )
+
+
 async def finalize_inbound_voice_call(
     call_sid: str,
     transcript: Sequence[Mapping[str, Any]],

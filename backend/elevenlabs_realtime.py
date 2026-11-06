@@ -211,6 +211,9 @@ class PlivoElevenLabsBridge:
         #: Card numbers/codes removed from save_note calls (counts only).
         self.pan_cards = 0
         self.pan_codes = 0
+        #: A spoken opt-out heard on an outbound call, until it is recorded.
+        self.opt_out_heard = False
+        self.opt_out_recorded = False
 
     # ── instructions ────────────────────────────────────────────────────
     def _instructions(self) -> tuple[str, Optional[str]]:
@@ -257,6 +260,8 @@ class PlivoElevenLabsBridge:
                 await self._hand_off_after_failure()
             raise
         finally:
+            if not inbound:
+                await self._record_opt_out()
             if not inbound and self.notes:
                 await self._deliver_notes()
             if inbound:
@@ -405,11 +410,32 @@ class PlivoElevenLabsBridge:
             self._transcript.append({"role": role, "text": text[:4_000]})
         if role != "caller":
             return
+        if self._call_state.get("direction") != "inbound" and not self.opt_out_heard:
+            from inbound_voice import heard_opt_out
+
+            if heard_opt_out(text):
+                self.opt_out_heard = True
+                await self._record_opt_out()
         self._turns += 1
         if await self._maybe_hand_off():
             raise ElevenLabsHandoffRequested("caller asked for a human agent")
         if self._turns >= self._max_turns:
             raise ElevenLabsCallLimitReached(f"call reached {self._max_turns} caller turns")
+
+    async def _record_opt_out(self) -> None:
+        """Suppress the callee once a spoken opt-out was heard. Never raises
+        into the media loop; a failure is retried when the call ends."""
+        if not self.opt_out_heard or self.opt_out_recorded:
+            return
+        from inbound_voice import record_outbound_voice_opt_out
+
+        try:
+            await record_outbound_voice_opt_out(
+                str(self._call_state.get("tenant_id") or ""), str(self._call_state.get("callee") or ""))
+            self.opt_out_recorded = True
+            logger.info("Outbound spoken opt-out recorded: uuid=%s", self.call_uuid)
+        except Exception:
+            logger.exception("Outbound spoken opt-out NOT recorded: uuid=%s", self.call_uuid)
 
     async def _maybe_hand_off(self) -> bool:
         if (self._handoff_started or self._call_state.get("direction") != "inbound"
