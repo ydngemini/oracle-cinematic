@@ -124,7 +124,9 @@ export function resolveLegacyId(id) {
   // A Work type is a valid destination in its own right, so Home's "N more in
   // Work" can say onNavigate('opportunities') without inventing an alias.
   if (WORK_TYPES.includes(id)) return { view: VIEWS.work, type: id };
-  return LEGACY_TAB_IDS[id] || { view: VIEWS.home };
+  // Own keys only: a stored id like "constructor" must not resolve to an
+  // Object.prototype member and leave CrmShell with no view.
+  return Object.prototype.hasOwnProperty.call(LEGACY_TAB_IDS, id) ? LEGACY_TAB_IDS[id] : { view: VIEWS.home };
 }
 
 /**

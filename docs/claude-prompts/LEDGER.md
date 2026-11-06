@@ -34,7 +34,7 @@ Listed weakest to strongest:
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01); A01–A10 re-checked at `d01c6a7` (L01-02) | — | Untracked A01/A04/A02 instances from L01-02; T01.05 migration crosswalk |
-| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
+| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl; L02-06 and L02-07 `tests_pass` (local) | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); L03-13 suspended agent's queued video cancelled (0166, local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local); L04-05/06 contacts added or edited by hand link too (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local); L05-08 the chat turn asks the one precise question and cannot pick; L05-09 the UI offers the choices and a click answers; L05-10 an unplaced name is looked up as the caller; L05-11 review fixes (every ambiguous record held, the server's question cannot be hidden, a lookup never narrows or lifts a restriction, names kept out of logs) (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; properties and deals looked up like people; contact as a chat context (L05-11 next) |
@@ -205,6 +205,45 @@ updated: 2026-10-16
 Findings fixed from this crawl:
 - AI hub, for agents: owner-only lead-routing metrics answered 403 on every visit, and the page showed "Lead routing is temporarily unavailable". A 403 source is now "not available to your role" and leaves the outage banner and the source count (`OurAITab.jsx`).
 - Properties → Forms: a not-loaded advertising-rules dataset (backend 404, `dataset_not_loaded`) was shown as "No advertising rules recorded for this state", i.e. none apply. It now says the rules haven't been loaded and not to assume none apply (`StateDocumentLibrary.jsx`).
+
+#### L02-06 Every address alias is tested; a stored tab id can no longer resolve to an inherited object key (AC02.04)
+```yaml
+id: L02-06
+status: tests_pass
+env: local
+evidence_shas: [46d9900]   # base; change in the commit that adds this row
+files: [oracle-app/src/routes.js, oracle-app/src/routes.test.js]
+tests_run:
+  - {cmd: "vitest run src/routes.test.js src/allPagesMatrix.test.js --pool=forks --maxWorkers=1 --no-file-parallelism --testTimeout=30000", result: "2 failed before the fixes (the inherited-key and clean-crawl cases); 27 passed after", date: 2026-11-05}
+  - {cmd: "full gate on the working tree: git diff --check; vitest run (forks, one worker, 30 s timeout); npm run lint; npm run build; pytest tests -q", result: "all exit 0: 90 files, 895 frontend tests; 5100 backend passed, 58 skipped (no live database, so nothing here ran against real PostgreSQL)", date: 2026-11-05}
+authz_checked: n/a
+blockers: [{type: verification, note: "AC02.04 stays open: the Playwright back/forward/reload spec is still owed."}]
+audit_refs: []
+decision_refs: []
+next_task: "Then the AC02.04 Playwright navigation spec."
+updated: 2026-11-05
+```
+Source evidence: before the fix `resolveLegacyId` returned `LEGACY_TAB_IDS[id] || home`, so an id such as `constructor` returned `Object.prototype.constructor`, a truthy value with no `view`. `redirectFor` already used an own-key check.
+
+#### L02-07 A page verdict cannot be a "pass" without crawl evidence
+```yaml
+id: L02-07
+status: tests_pass
+env: local
+evidence_shas: [46d9900]   # base; change in the commit that adds this row
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js]
+tests_run:
+  - {cmd: "vitest run src/routes.test.js src/allPagesMatrix.test.js (flags as L02-06)", result: "27 passed; the committed matrix still matches the build", date: 2026-11-05}
+  - {cmd: "full gate on the working tree: git diff --check; vitest run (forks, one worker, 30 s timeout); npm run lint; npm run build; pytest tests -q", result: "all exit 0: 90 files, 895 frontend tests; 5100 backend passed, 58 skipped (no live database, so nothing here ran against real PostgreSQL)", date: 2026-11-05}
+authz_checked: n/a (docs tooling; no runtime or API change)
+blockers:
+  - {type: human, note: "All 52 rows in all-pages-verdicts.json are still empty (not_inspected). A verdict needs a named reviewer's functional sign-off; the crawl only shows pages render (AC02.09)."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "A reviewer then enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`."
+updated: 2026-11-05
+```
+`verdictProblems` makes the matrix build fail on a `pass` for a page with no clean crawl, a legacy page, or a page that attempted writes on open. Verdict dates must be YYYY-MM-DD. No verdict was recorded and the generated matrix is unchanged.
 
 ### L03
 Brokerage tenancy and hybrid access.
