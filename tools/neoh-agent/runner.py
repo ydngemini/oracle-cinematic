@@ -135,7 +135,7 @@ def engineering_prompt(args, sha: str, path: Path) -> str:
             "Never modify production deployment or CI configuration. "
             "Before editing source, write .neoh-agent-state/plan.json with category "
             "(the two-digit string, such as \"08\"), "
-            "goal, evidence [{path, line}], acceptance [explicit observable checks], "
+            "goal, evidence [at most 8 {path, line}], acceptance [1-8 explicit observable checks], "
             "files [every planned changed path including tests and LEDGER.md], "
             "rollback, and self_review. Evidence must reference existing repository "
             "files and valid line numbers. Keep the change to at most 12 files and "

@@ -81,6 +81,12 @@ class IntelligenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     intelligence.read_plan(self.root, "02", self.paths)
 
+    def test_too_much_evidence_says_so(self):
+        self.plan["evidence"] = self.plan["evidence"] * 9
+        self.save_plan()
+        with self.assertRaisesRegex(ValueError, "1-8 evidence entries, not 9"):
+            intelligence.read_plan(self.root, "02", self.paths)
+
     def test_plan_cannot_read_credentials_or_escape(self):
         for name in ("../secret", "/etc/passwd", ".env", ".git/config"):
             with self.subTest(name=name), self.assertRaises(ValueError):

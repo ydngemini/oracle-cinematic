@@ -78,7 +78,10 @@ def read_plan(root: Path, category: str, paths: list[str]) -> dict:
         raise ValueError("Plan needs 1-8 explicit acceptance criteria")
     evidence = plan.get("evidence")
     if not isinstance(evidence, list) or not 1 <= len(evidence) <= 8:
-        raise ValueError("Plan needs source evidence")
+        # A repair round can only fix what the error names: "needs source
+        # evidence" on a plan listing 13 sources read as nonsense twice.
+        found = len(evidence) if isinstance(evidence, list) else "no"
+        raise ValueError(f"Plan needs 1-8 evidence entries, not {found}; keep the strongest 8")
     for item in evidence:
         if not isinstance(item, dict):
             raise ValueError("Evidence must identify a source file and line")
