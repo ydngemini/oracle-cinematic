@@ -132,6 +132,10 @@ def preflight_work(args, skip: set[str]) -> dict:
     return selection
 
 
+def held_categories(args) -> set[str]:
+    return set(filter(None, getattr(args, "hold_categories", "").split(",")))
+
+
 def idle(state: dict, reason: str, seconds: int) -> None:
     if state.get("idle_reason") != reason:
         state["idle_reason"] = reason
@@ -163,6 +167,7 @@ def run_cycle(args, skip: set[str], selection: dict) -> tuple[int, str, str]:
             "--max-turns", str(args.max_turns),
             "--model", args.model,
             "--test-timeout", str(args.test_timeout),
+            "--backend-test-timeout", str(args.backend_test_timeout),
             "--agent-timeout", str(args.agent_timeout),
         ]
         command += ["--task", selection["task"]]
@@ -275,7 +280,7 @@ def supervise(args) -> int:
             if not storage_ready(args.min_free_gib):
                 idle(state, "low_disk", args.error_poll_seconds)
                 continue
-            excluded = set(state["blocked"])
+            excluded = set(state["blocked"]) | held_categories(args)
             try:
                 selection = preflight_work(args, excluded)
             except work_discovery.NoActionableWork:
@@ -303,15 +308,24 @@ def supervise(args) -> int:
                     "time": utc_now(), "worktree": worktree_name,
                     "exit_code": code, "status": status,
                     "category": category or selection["category"], "task_id": selection["task_id"],
-                    "failure_kind": "infrastructure" if code == 3 else status,
+                    "failure_kind": ("provider" if code == 4 else "infrastructure" if code == 3 else status),
                 }]
             )[-100:]
             state["last_cycle"] = utc_now()
             state.pop("active_task", None)
             write_state(state)
-            if status == "failed" and category:
+            if status == "failed" and category and code not in (3, 4):
                 state["blocked"][category] = time.time() + args.failure_cooldown_seconds
                 write_state(state)
+            if code == 4:
+                # The provider rejected the session before implementation, so
+                # do not consume the day budget or punish the selected task.
+                state["daily_reserved_usd"] = max(0.0, state["daily_reserved_usd"] - args.budget_usd)
+                state["idle_reason"] = "provider_credit"
+                write_state(state)
+                print("[continuous] provider credit unavailable; waiting before retry.", flush=True)
+                sleep_interruptible(args.provider_poll_seconds)
+                continue
             if STOP:
                 break
             if passed:
@@ -331,15 +345,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Neoh autonomous development continuously")
     parser.add_argument("--category", default="auto")
     parser.add_argument("--task", default="")
+    parser.add_argument(
+        "--hold-categories", default="",
+        help="Comma-separated categories to leave alone, such as work finished on a branch "
+             "the main ledger cannot see yet.",
+    )
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--budget-usd", type=float, default=12)
     parser.add_argument("--daily-budget-usd", type=float, default=48)
     parser.add_argument("--max-repairs", type=int, default=2)
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--test-timeout", type=int, default=360)
+    parser.add_argument(
+        "--backend-test-timeout", type=int, default=2700,
+        help="Full backend-suite ceiling in seconds; use measured suite duration plus headroom.",
+    )
     parser.add_argument("--agent-timeout", type=int, default=1800)
     parser.add_argument("--poll-seconds", type=int, default=120)
     parser.add_argument("--error-poll-seconds", type=int, default=600)
+    parser.add_argument("--provider-poll-seconds", type=int, default=21600)
     parser.add_argument("--failure-cooldown-seconds", type=int, default=3600)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 means run indefinitely")
     parser.add_argument("--min-free-gib", type=float, default=0.5)
@@ -347,11 +371,16 @@ def main() -> None:
     args = parser.parse_args()
     if args.category == "auto" and args.task:
         parser.error("To supply --task, also specify --category.")
+    if any(part not in {f"{n:02d}" for n in range(1, 21)} for part in held_categories(args)):
+        parser.error("--hold-categories expects comma-separated categories 01-20.")
     if not 0 < args.min_free_gib < float("inf"):
         parser.error("Minimum free disk space must be finite and positive.")
-    if args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30 or args.failure_cooldown_seconds < 60:
+    if (args.max_cycles < 0 or args.poll_seconds < 10 or args.error_poll_seconds < 30
+            or args.provider_poll_seconds < 60 or args.failure_cooldown_seconds < 60):
         parser.error("Invalid cycle or polling controls.")
-    if args.budget_usd <= 0 or args.daily_budget_usd < args.budget_usd or args.max_turns <= 0 or args.max_repairs < 0:
+    if (args.budget_usd <= 0 or args.daily_budget_usd < args.budget_usd
+            or args.max_turns <= 0 or args.max_repairs < 0
+            or args.test_timeout <= 0 or args.backend_test_timeout <= 0):
         parser.error("Invalid model budget or repair settings.")
     signal.signal(signal.SIGINT, on_shutdown)
     signal.signal(signal.SIGTERM, on_shutdown)

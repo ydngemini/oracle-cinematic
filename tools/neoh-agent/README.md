@@ -228,7 +228,9 @@ See [INTELLIGENCE.md](INTELLIGENCE.md) for the 20 additional planning,
 evaluation, recovery, and context controls and their primary-source research.
 
 The supervisor checks available storage before creating a cycle or reserving
-its model budget. `--min-free-gib` defaults to 0.5 GiB; below this threshold it
+its model budget. `--hold-categories 01,02` leaves those categories alone, for
+work finished on a branch that the main ledger cannot see yet; a hold does not
+expire, so remove it once that work reaches main. `--min-free-gib` defaults to 0.5 GiB; below this threshold it
 waits without deleting retained worktrees or modifying the budget limit.
 This is a start-of-cycle guard, not a guarantee against filling the disk mid-run.
 

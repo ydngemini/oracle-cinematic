@@ -84,6 +84,60 @@ class PersistentWorkerTests(unittest.TestCase):
         self.assertEqual(len(selection["task_id"]), 20)
         self.assertEqual(selection["risk"]["level"], "normal")
 
+    def test_provider_credit_releases_budget_without_blocking_the_task(self):
+        state = {"blocked": {}, "history": [], "budget_day": continuous.utc_now()[:10],
+                 "daily_reserved_usd": 0.0}
+        args = SimpleNamespace(
+            max_cycles=1, budget_usd=12, daily_budget_usd=48, min_free_gib=0.5,
+            error_poll_seconds=60, failure_cooldown_seconds=3600,
+            provider_poll_seconds=21600, category="auto", task="",
+        )
+        selection = {"category": "02", "task": "Fix routes", "task_id": "task-id",
+                     "risk": {"level": "normal"}, "main_sha": "a" * 40}
+
+        def stop(_seconds):
+            continuous.STOP = True
+
+        with patch.object(continuous, "STOP", False), \
+                patch.object(continuous, "ensure_supervisor_checkout"), \
+                patch.object(continuous, "acquire_lock"), \
+                patch.object(continuous, "read_state", return_value=state), \
+                patch.object(continuous, "write_state"), \
+                patch.object(continuous, "storage_ready", return_value=True), \
+                patch.object(continuous, "preflight_work", return_value=selection), \
+                patch.object(continuous, "run_cycle", return_value=(4, "cycle-1", "02")), \
+                patch.object(continuous, "sleep_interruptible", side_effect=stop):
+            self.assertEqual(continuous.supervise(args), 0)
+        self.assertEqual(state["daily_reserved_usd"], 0.0)
+        self.assertEqual(state["idle_reason"], "provider_credit")
+        self.assertNotIn("02", state["blocked"])
+
+    def test_held_categories_are_never_offered_to_discovery(self):
+        state = {"blocked": {"03": 9e12}, "history": [], "budget_day": continuous.utc_now()[:10],
+                 "daily_reserved_usd": 0.0}
+        args = SimpleNamespace(
+            max_cycles=1, budget_usd=12, daily_budget_usd=48, min_free_gib=0.5,
+            error_poll_seconds=60, hold_categories="01,02,06",
+        )
+        seen = []
+
+        def nothing_to_do(_args, skip):
+            seen.append(set(skip))
+            raise continuous.work_discovery.NoActionableWork("none")
+
+        def stop(*_args):
+            continuous.STOP = True
+
+        with patch.object(continuous, "STOP", False), \
+                patch.object(continuous, "ensure_supervisor_checkout"), \
+                patch.object(continuous, "acquire_lock"), \
+                patch.object(continuous, "read_state", return_value=state), \
+                patch.object(continuous, "storage_ready", return_value=True), \
+                patch.object(continuous, "preflight_work", side_effect=nothing_to_do), \
+                patch.object(continuous, "idle", side_effect=stop):
+            self.assertEqual(continuous.supervise(args), 0)
+        self.assertEqual(seen, [{"01", "02", "03", "06"}])
+
     def test_idle_reason_is_persisted_once(self):
         state = {"active_task": {"category": "02"}}
         with patch.object(continuous, "write_state") as write, \

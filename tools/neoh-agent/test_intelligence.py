@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -165,8 +166,16 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 124)
         pid = int(result.stdout.strip())
         status = Path(f"/proc/{pid}/stat")
-        if status.exists():
-            self.assertEqual(status.read_text().split()[2], "Z")
+        # The kill is delivered, but the process needs a moment to finish dying.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if status.read_text().split()[2] == "Z":
+                    return
+            except OSError:
+                return  # already reaped
+            time.sleep(0.05)
+        self.fail(f"Descendant {pid} outlived the timeout.")
 
     def test_focused_checks_do_not_replace_full_suite(self):
         executed = []

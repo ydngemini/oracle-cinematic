@@ -18,5 +18,15 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{js,jsx,ts,tsx}'],
     css: false,
     restoreMocks: true,
+    // This development host also runs local AI workloads. The previous
+    // unbounded worker pool caused unrelated jsdom renders to starve each
+    // other and exceed Vitest's 5s default (observed at 8--28s). A single,
+    // deterministic worker makes a real regression reproducible instead of
+    // randomly failing another feature's verification cycle.
+    pool: 'forks',
+    fileParallelism: false,
+    maxWorkers: 1,
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 })

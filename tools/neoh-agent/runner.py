@@ -141,6 +141,15 @@ def engineering_prompt(args, sha: str, path: Path) -> str:
             "1500 added/deleted lines, with no binary files or files over 1 MiB. "
             "After edits, update self_review with concrete edge cases and authorization "
             "risks inspected. Self-review is not independent test evidence. "
+            "Engineering quality bar: prefer a small, contract-first design over a "
+            "fashionable abstraction. Preserve backward compatibility unless the "
+            "ledger explicitly authorizes a migration; make invalid states explicit, "
+            "handle failures and cancellation deliberately, and keep behavior "
+            "deterministic and observable. For user-facing changes, consider keyboard "
+            "accessibility, loading/error states, responsive behavior, and measurable "
+            "performance. For data or boundary changes, consider validation, tenant "
+            "isolation, idempotency, auditability, and safe rollback. Add focused "
+            "regression tests for the changed contract and its most likely edge case. "
         )
         profile = intelligence.risk_profile(args.category, task)
         prompt += f"Risk review focus ({profile['level']}): {profile['review']}. "

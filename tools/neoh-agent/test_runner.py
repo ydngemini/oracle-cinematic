@@ -95,6 +95,8 @@ class NeohAgentGuardTests(unittest.TestCase):
         )
         self.assertIn("READ-ONLY", audit)
         self.assertIn("implemented_untested", build)
+        self.assertIn("Engineering quality bar", build)
+        self.assertIn("contract-first design", build)
 
     def test_email_answers_are_scoped_and_not_authority(self):
         from argparse import Namespace

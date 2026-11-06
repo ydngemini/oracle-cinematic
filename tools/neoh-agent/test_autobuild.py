@@ -1,8 +1,11 @@
 """Offline tests for Neoh autonomous side-branch delivery. No GitHub push is made."""
 import importlib.util
+import io
 import os
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -73,6 +76,65 @@ class SideBranchTests(unittest.TestCase):
 
     def test_short_failure_report_is_unchanged(self):
         self.assertEqual(autobuild.summarize_failure("one failure"), "one failure")
+
+    def test_backend_suite_uses_its_measured_timeout(self):
+        checks = autobuild.approval_tests(
+            ["backend/search_api.py"], timeout=1800, backend_timeout=2700,
+        )
+        backend = next(check for check in checks if check[0][-2:] == ["tests", "-q"])
+        self.assertEqual(backend[2], 2700)
+
+    def test_frontend_suite_keeps_the_standard_timeout(self):
+        checks = autobuild.approval_tests(
+            ["oracle-app/src/App.jsx"], timeout=1800, backend_timeout=2700,
+        )
+        frontend = next(check for check in checks if check[0] == ["npm", "test"])
+        self.assertEqual(frontend[2], 1800)
+
+    def test_provider_credit_is_not_reported_as_a_code_failure(self):
+        args = type("Args", (), dict(
+            category="02", budget_usd=2.0, max_turns=4, model="sonnet", agent_timeout=120,
+        ))()
+        with self._fake_runner("print('Credit balance is too low')\nraise SystemExit(1)"):
+            with self.assertRaises(autobuild.ProviderCreditUnavailable):
+                autobuild.model_round(args, "Fix one issue", 2.0, allow_dirty=False)
+
+    def _fake_runner(self, script):
+        real = subprocess.Popen
+        return patch.object(
+            autobuild.subprocess, "Popen",
+            lambda _argv, **options: real([sys.executable, "-c", script], **options),
+        )
+
+    def _round_args(self, timeout=30):
+        return type("Args", (), dict(
+            category="02", budget_usd=2.0, max_turns=4, model="sonnet", agent_timeout=timeout,
+        ))()
+
+    def test_model_output_reaches_the_cycle_log_and_keeps_the_exit_code(self):
+        log = io.StringIO()
+        with self._fake_runner("print('turn one')\nraise SystemExit(7)"), redirect_stdout(log):
+            code = autobuild.model_round(self._round_args(), "Fix", 2.0, allow_dirty=False)
+        self.assertEqual(code, 7)
+        self.assertIn("turn one", log.getvalue())
+
+    def test_a_timed_out_session_keeps_what_it_already_logged(self):
+        log = io.StringIO()
+        script = "import time\nprint('turn one', flush=True)\ntime.sleep(60)"
+        with self._fake_runner(script), redirect_stdout(log):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                autobuild.model_round(self._round_args(timeout=2), "Fix", 2.0, allow_dirty=False)
+        self.assertIn("turn one", log.getvalue())
+
+    def test_a_grandchild_holding_the_pipe_cannot_hang_a_timeout(self):
+        script = ("import subprocess, sys, time\n"
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'])\n"
+                  "time.sleep(60)")
+        started = time.monotonic()
+        with self._fake_runner(script), redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                autobuild.model_round(self._round_args(timeout=1), "Fix", 2.0, allow_dirty=False)
+        self.assertLess(time.monotonic() - started, 7.5)
 
     def test_branch_naming(self):
         self.assertIsNotNone(

@@ -6,11 +6,13 @@ Run only on a clean synthetic-data checkout. This is not an OS sandbox.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,11 @@ import intelligence
 
 ROOT = runner.ROOT
 REPORT_LIMIT = 10000
+PROVIDER_TAIL_LINES = 40
+
+
+class ProviderCreditUnavailable(RuntimeError):
+    """The configured model provider rejected a session before it could work."""
 
 
 def command(argv: list[str], cwd: Path = ROOT, timeout: int = 240,
@@ -136,8 +143,10 @@ def changed_paths_are_safe(paths: list[str]) -> None:
             raise RuntimeError(f"STOP: unapproved changed path: {name}")
 
 
-def approval_tests(paths: list[str], timeout: int) -> list[tuple[list[str], Path, int]]:
+def approval_tests(paths: list[str], timeout: int,
+                   backend_timeout: int | None = None) -> list[tuple[list[str], Path, int]]:
     """Tests use fixed executable/argument lists, never model-provided shell."""
+    backend_timeout = backend_timeout or timeout
     checks: list[tuple[list[str], Path, int]] = [
         (["git", "diff", "--check"], ROOT, min(timeout, 60)),
     ]
@@ -148,7 +157,7 @@ def approval_tests(paths: list[str], timeout: int) -> list[tuple[list[str], Path
             (["npm", "run", "build"], ROOT / "oracle-app", timeout),
         ]
     if any(p.startswith("backend/") for p in paths):
-        checks.append(([sys.executable, "-m", "pytest", "tests", "-q"], ROOT / "backend", timeout))
+        checks.append(([sys.executable, "-m", "pytest", "tests", "-q"], ROOT / "backend", backend_timeout))
     return checks
 
 
@@ -166,7 +175,8 @@ def summarize_failure(output: str, limit: int = REPORT_LIMIT) -> str:
     return f"Failure summary:\n{summary}\nOutput start:\n{output[:head]}\n[...truncated...]\nOutput end:\n{output[-tail:]}"
 
 
-def execute_tests(paths: list[str], timeout: int, category: str | None = None) -> tuple[bool, str]:
+def execute_tests(paths: list[str], timeout: int, category: str | None = None,
+                  backend_timeout: int | None = None) -> tuple[bool, str]:
     if not paths:
         return False, "No changed files. Implement one scoped, tested feature."
     changed_paths_are_safe(paths)
@@ -196,7 +206,7 @@ def execute_tests(paths: list[str], timeout: int, category: str | None = None) -
         targeted.append((["npm", "test", "--", *focused["frontend"]], ROOT / "oracle-app", timeout))
     failures: list[str] = []
     evidence = []
-    full = approval_tests(paths, timeout)
+    full = approval_tests(paths, timeout, backend_timeout)
     checks = [full[0], *targeted, *full[1:]]
     for index, (argv, cwd, limit) in enumerate(checks):
         name = " ".join(argv)
@@ -238,10 +248,35 @@ def model_round(args, task: str, allocation: float, allow_dirty: bool) -> int:
     if allow_dirty:
         argv.append("--allow-dirty")
     print(f"[agent] estimated API budget USD {allocation:.2f}", flush=True)
-    result = subprocess.run(
-        argv, cwd=str(ROOT), check=False, timeout=args.agent_timeout,
+    # Stream to the cycle log as it happens: a session that times out keeps
+    # what it did. Only the recent tail is needed to recognise a credit failure.
+    child = subprocess.Popen(
+        argv, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
-    return result.returncode
+    tail: deque[str] = deque(maxlen=PROVIDER_TAIL_LINES)
+
+    def pump() -> None:
+        for line in child.stdout:
+            print(line, end="", flush=True)
+            tail.append(line)
+
+    # A thread, because a grandchild can hold the pipe open after the runner
+    # dies; reading inline would turn a timeout into a permanent hang.
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        code = child.wait(timeout=args.agent_timeout)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+        reader.join(5)
+        raise
+    reader.join(5)
+    if re.search(r"credit balance is too low|insufficient (?:credit|balance|funds)", "".join(tail), re.I):
+        raise ProviderCreditUnavailable(
+            "Model provider credit is unavailable; no implementation session was started."
+        )
+    return code
 
 
 def commit_local(paths: list[str], category: str) -> None:
@@ -352,13 +387,20 @@ def autobuild(args) -> int:
     previous_signature = None
     for attempt in range(attempts):
         print(f"\n[build] round {attempt + 1}/{attempts}", flush=True)
-        result = model_round(args, prompt, allocation, allow_dirty=attempt > 0)
+        try:
+            result = model_round(args, prompt, allocation, allow_dirty=attempt > 0)
+        except ProviderCreditUnavailable as error:
+            print(f"[provider] {error}", flush=True)
+            return 4
         if result:
             print(f"[stop] agent session failed (exit {result}). No push or deploy.", file=sys.stderr)
             return 1
         paths = dirty_files()
         try:
-            good, feedback = execute_tests(paths, args.test_timeout, args.category)
+            good, feedback = execute_tests(
+                paths, args.test_timeout, args.category,
+                getattr(args, "backend_test_timeout", args.test_timeout),
+            )
         except intelligence.InfrastructureFailure as error:
             print(f"[infrastructure] {error}. No model repair, push, or deploy.", flush=True)
             return 3
@@ -425,6 +467,10 @@ def main() -> None:
     parser.add_argument("--max-repairs", type=int, default=2)
     parser.add_argument("--budget-usd", type=float, default=12.0)
     parser.add_argument("--test-timeout", type=int, default=360)
+    parser.add_argument(
+        "--backend-test-timeout", type=int, default=2700,
+        help="Full backend-suite ceiling in seconds; 45 minutes covers the observed 30-minute run at 89%% completion.",
+    )
     parser.add_argument("--agent-timeout", type=int, default=1800)
     parser.add_argument("--commit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -436,7 +482,7 @@ def main() -> None:
         parser.error("max-repairs must be non-negative; turns and USD budget positive")
     if args.push and not args.commit:
         parser.error("--push requires --commit; use --no-commit --no-push")
-    if args.test_timeout <= 0 or args.agent_timeout <= 0:
+    if args.test_timeout <= 0 or args.backend_test_timeout <= 0 or args.agent_timeout <= 0:
         parser.error("timeouts must be positive")
     try:
         raise SystemExit(autobuild(args))
