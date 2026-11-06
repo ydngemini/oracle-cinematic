@@ -68,11 +68,6 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 @pytest.mark.parametrize(
     "env, expected",
     [
-        # azure-files with the default /mnt/neoh, which is not a real mount in
-        # a test environment. "Configured" means a write would actually land,
-        # so an unmounted default must answer False — see the writable-root case
-        # below for the positive path.
-        ({}, False),
         ({"ORACLE_STORAGE_BACKEND": "s3"}, False),                   # no bucket
         ({"ORACLE_STORAGE_BACKEND": "s3", "RECON_S3_BUCKET": "b"}, True),
         ({"ORACLE_STORAGE_BACKEND": "azure-blob"}, False),           # no account
@@ -87,6 +82,18 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 )
 def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, expected):
     assert _reload(monkeypatch, **env).is_configured() is expected
+
+
+def test_an_unusable_mount_is_not_configured(monkeypatch, tmp_path):
+    """"Configured" means a write would land. A root that cannot be created
+    must answer False. The root sits under a regular file so the result does
+    not depend on whether the host happens to have a writable /mnt/neoh."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+
+    mod = _reload(monkeypatch, ORACLE_MEDIA_ROOT=blocker / "media")
+
+    assert mod.is_configured() is False
 
 
 def test_a_real_writable_mount_is_configured(monkeypatch, tmp_path):

@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/missions", tags=["missions"])
 
 CHANNELS = ("email", "sms", "voice", "task")
+#: Statuses nothing may move a mission out of.
+TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 OBJECTIVES = ("listings_won", "buyers_converted", "appointments_set",
               "database_reactivated", "sphere_touched", "deals_saved")
 
@@ -232,15 +234,91 @@ async def pause_mission(
     mission_id: str, ctx: TenantContext = Depends(require_context),
 ):
     require_feature(Feature.MISSIONS)
-    await _load(ctx, mission_id)
+    row = await _load(ctx, mission_id)
+    # Pausing a finished mission would turn a terminal status back into one
+    # launch accepts, which is how a cancelled mission could be revived.
+    if row["status"] in TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail=f"This mission is {row['status']}.")
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """UPDATE missions SET status = 'paused', updated_at = now()
-                WHERE id = $1::uuid RETURNING *""",
+                WHERE id = $1::uuid AND status NOT IN ('completed', 'failed', 'cancelled')
+            RETURNING *""",
             mission_id,
         )
+    if row is None:
+        raise HTTPException(status_code=409, detail="This mission has already finished.")
     await _journal(ctx, mission_id, "paused", {"by": ctx.agent_id})
     return {"mission": _mission_json(row)}
+
+
+@router.post("/{mission_id}/cancel")
+async def cancel_mission(
+    mission_id: str, ctx: TenantContext = Depends(require_context),
+):
+    """Stop a mission for good: nothing planned will run, nothing new starts.
+
+    Only actions still `planned` are skipped. A command already staged or
+    approved lives in the command ledger with its own state and approval; this
+    does not reach into it, and the response says how many are in that position
+    rather than implying they were recalled. Idempotent: a second cancel is a
+    200 that changes nothing.
+    """
+    require_feature(Feature.MISSIONS)
+    row = await _load(ctx, mission_id)
+    if row["status"] == "cancelled":
+        return {"mission": _mission_json(row), "actions_skipped": 0,
+                "already_cancelled": True}
+    if row["status"] in TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail=f"This mission is {row['status']}.")
+
+    # One transaction: a mission can never read 'cancelled' with actions still
+    # eligible to run, nor the reverse.
+    async with tenant_tx(ctx) as conn:
+        updated = await conn.fetchrow(
+            """UPDATE missions SET status = 'cancelled', updated_at = now()
+                WHERE id = $1::uuid AND status NOT IN ('completed', 'failed', 'cancelled')
+            RETURNING *""",
+            mission_id,
+        )
+        if updated is None:
+            skipped = 0
+            in_flight = 0
+        else:
+            skipped = await conn.fetchval(
+                """WITH s AS (
+                       UPDATE mission_actions
+                          SET state = 'skipped', blocked_reason = 'mission cancelled',
+                              updated_at = now()
+                        WHERE mission_id = $1::uuid AND state = 'planned'
+                    RETURNING 1)
+                   SELECT count(*)::int FROM s""",
+                mission_id,
+            )
+            in_flight = await conn.fetchval(
+                """SELECT count(*)::int FROM mission_actions
+                    WHERE mission_id = $1::uuid AND state IN ('staged', 'approved')""",
+                mission_id,
+            )
+    if updated is None:
+        # Lost a race with completion or another cancel; report what is true now.
+        current = await _load(ctx, mission_id)
+        if current["status"] == "cancelled":
+            return {"mission": _mission_json(current), "actions_skipped": 0,
+                    "already_cancelled": True}
+        raise HTTPException(status_code=409, detail=f"This mission is {current['status']}.")
+
+    await _journal(ctx, mission_id, "cancelled", {
+        "by": ctx.agent_id, "actions_skipped": int(skipped or 0),
+        "commands_already_staged_or_approved": int(in_flight or 0),
+    })
+    return {
+        "mission": _mission_json(updated),
+        "actions_skipped": int(skipped or 0),
+        # Not recalled. Reviewable and cancellable in the command queue.
+        "commands_already_staged_or_approved": int(in_flight or 0),
+        "already_cancelled": False,
+    }
 
 
 @router.get("/{mission_id}/progress")

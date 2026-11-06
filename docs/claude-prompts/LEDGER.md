@@ -40,7 +40,7 @@ Listed weakest to strongest:
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice, local, unpushed) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Spanish call-queue card text still English (L05-05); real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Spanish call-queue cards (L05-05 next); scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
-| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
+| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `implemented_untested` | local | `852506d` (cancel path, tests not run) | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
@@ -597,20 +597,22 @@ Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal
 #### L08-01 Missions skip task actions; no cancel path
 ```yaml
 id: L08-01
-status: source_verified
+status: implemented_untested
 env: local
-evidence_shas: [745f2fa]
-files: [backend/missions/executor.py, backend/missions/planner.py, backend/missions/policy.py, backend/missions_api.py, backend/db/migrations/0100_missions.sql]
+evidence_shas: [745f2fa, 852506d]
+files: [backend/missions/executor.py, backend/missions/planner.py, backend/missions/policy.py, backend/missions_api.py, backend/db/migrations/0100_missions.sql, backend/tests/test_missions_cancel.py]
 tests_run:
   - {cmd: "sed -n 142,205p backend/missions/executor.py; grep -rn cancelled backend/missions backend/missions_api.py", result: "task actions are skipped; nothing writes cancelled; a standing grant can release a mission's own approval (policy.py:257-264)", date: 2026-10-12}
-authz_checked: n/a
+  - {cmd: "pytest backend/tests/test_missions_cancel.py backend/tests/test_missions_executor.py", result: "NOT RUN (session had no command execution)", date: 2026-11-06}
+authz_checked: "Not verified under real RLS. Cancel/pause load through the tenant-scoped _load (404 across tenants) and write inside tenant_tx; no cross-agent or two-brokerage PostgreSQL test exists yet (AC08.05)."
 blockers: 
-  - {type: review, note: "PR #11 (55ac99c, 0b52fbf) is open, not merged."}
+  - {type: review, note: "PR #11 (55ac99c, 0b52fbf) is open, not merged. Task actions are still skipped by the executor (T08.01/T08.04 untouched)."}
   - {type: owner, note: "Does a mission's standing grant count as current human approval (CONTRACT C4.1)?"}
+  - {type: test, note: "Cancel path (AC08.10) implemented at 852506d+: POST /api/missions/{id}/cancel skips only still-planned actions in one transaction, is idempotent, refuses completed/failed; pause refuses terminal missions (it used to turn 'cancelled' into 'paused', which launch accepts); the executor re-checks status before _stage. Tests use an in-memory fake, not PostgreSQL. Known gaps: staged/approved commands are NOT recalled (response reports their count); a cancel landing between the re-check and stage_command can still stage one action; no UI button; executor 'action_deferred' journal kind is not in the mission_events CHECK (0100_missions.sql:243-248), so that journal row is dropped (not fixed here)."}
 audit_refs: []
 decision_refs: []
-next_task: "T08.01: review PR #11"
-updated: 2026-10-12
+next_task: "Run the new tests; T08.01 review PR #11; cancel the staged command behind a cancelled mission (needs 10/07 command-cancel review); add 'action_deferred' to the event CHECK by additive migration; Cancel button in MissionBuilder"
+updated: 2026-11-06
 ```
 
 ### L09

@@ -186,6 +186,13 @@ async def _work_one(
         )
         return "withheld"
 
+    # A cancel or pause can land while this tick is mid-loop (tick read the
+    # mission once, at its start). Re-read just before the only step that
+    # starts an effect; the action stays 'planned' for a later tick or the
+    # cancel's own sweep.
+    if not await _still_running(ctx, mission["id"]):
+        return "withheld"
+
     staged, error = await _stage(ctx, mission, action, verdict)
     if staged is None:
         # 'blocked', not 'failed': the usual cause is a command this mission
@@ -325,6 +332,16 @@ async def _release(ctx: TenantContext, staged: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 # Data access
 # ---------------------------------------------------------------------------
+
+async def _still_running(ctx: TenantContext, mission_id: Any) -> bool:
+    """True only while the mission is still shadow or active."""
+    from db.connection import tenant_tx
+
+    async with tenant_tx(ctx) as conn:
+        status = await conn.fetchval(
+            "SELECT status FROM missions WHERE id = $1::uuid", mission_id)
+    return status in ("shadow", "active")
+
 
 async def _count_planned(ctx: TenantContext, mission_id: str) -> int:
     from db.connection import tenant_tx
