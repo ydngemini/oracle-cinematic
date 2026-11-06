@@ -65,8 +65,21 @@ class IntelligenceTests(unittest.TestCase):
     def test_scope_and_category_must_match(self):
         with self.assertRaises(ValueError):
             intelligence.read_plan(self.root, "18", self.paths)
+        with self.assertRaisesRegex(ValueError, 'string "18".*\'02\''):
+            intelligence.read_plan(self.root, "18", self.paths)
         with self.assertRaises(ValueError):
             intelligence.read_plan(self.root, "02", self.paths + ["unplanned.py"])
+
+    def test_numeric_category_is_the_same_answer(self):
+        self.plan["category"] = 2
+        self.save_plan()
+        self.assertEqual(intelligence.read_plan(self.root, "02", self.paths)["category"], "02")
+        for wrong in (18, True, None, "2"):
+            with self.subTest(wrong=wrong):
+                self.plan["category"] = wrong
+                self.save_plan()
+                with self.assertRaises(ValueError):
+                    intelligence.read_plan(self.root, "02", self.paths)
 
     def test_plan_cannot_read_credentials_or_escape(self):
         for name in ("../secret", "/etc/passwd", ".env", ".git/config"):

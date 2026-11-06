@@ -55,8 +55,19 @@ def read_plan(root: Path, category: str, paths: list[str]) -> dict:
     if not path.is_file() or path.stat().st_size > 32768:
         raise ValueError(f"Write the bounded plan at {PLAN} before requesting tests")
     plan = json.loads(path.read_text())
-    if not isinstance(plan, dict) or plan.get("category") != category:
-        raise ValueError("Plan category must match the selected task")
+    if not isinstance(plan, dict):
+        raise ValueError("Plan must be a JSON object")
+    # Models write 12 as often as "12", and 12 is plainly the same answer. It
+    # killed a whole cycle: the repair round read "must match", saw a 12 and
+    # changed nothing, so the error has to name both values.
+    declared = plan.get("category")
+    if isinstance(declared, int) and not isinstance(declared, bool):
+        declared = f"{declared:02d}"
+    if declared != category:
+        raise ValueError(
+            f'Plan category must be the string "{category}", the selected task, '
+            f"not {plan.get('category')!r}")
+    plan["category"] = declared
     for field in ("goal", "rollback", "self_review"):
         if not isinstance(plan.get(field), str) or not 10 <= len(plan[field].strip()) <= 2000:
             raise ValueError(f"Plan needs a concrete {field} description")
