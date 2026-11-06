@@ -40,7 +40,7 @@ Listed weakest to strongest:
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local); L05-08 the chat turn asks the one precise question and cannot pick; L05-09 the UI offers the choices and a click answers; L05-10 an unplaced name is looked up as the caller; L05-11 review fixes (every ambiguous record held, the server's question cannot be hidden, a lookup never narrows or lifts a restriction, names kept out of logs) (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; properties and deals looked up like people; contact as a chat context (L05-11 next) |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local); L07-03 per-actor offer names what is withheld (local) | Playwright check owed (L07-01); owner: archive_client | T08.04 + per-actor capability block |
-| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
+| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local); L08-01 cancel path `tests_pass` (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes; L11-16 Neoh reads it too (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
@@ -1143,42 +1143,24 @@ Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal
 #### L08-01 Missions skip task actions; no cancel path
 ```yaml
 id: L08-01
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/missions/executor.py, backend/missions/planner.py, backend/missions/policy.py, backend/missions_api.py, backend/db/migrations/0100_missions.sql]
+evidence_shas: [745f2fa, 7dc06c8]
+files: [backend/missions/executor.py, backend/missions/planner.py, backend/missions/policy.py, backend/missions_api.py, backend/db/migrations/0100_missions.sql, backend/tests/test_missions_cancel.py, backend/tests/test_missions_cancel_live.py]
 tests_run:
   - {cmd: "sed -n 142,205p backend/missions/executor.py; grep -rn cancelled backend/missions backend/missions_api.py", result: "task actions are skipped; nothing writes cancelled; a standing grant can release a mission's own approval (policy.py:257-264)", date: 2026-10-12}
   - {cmd: "T08.01 review of PR #11 (draft, head 0b52fbf, base d9add31) against current code and a database built from every migration (2026-10-15)", result: "Not mergeable as is: (1) its 0129 migration re-creates mission_events_kind_check WITHOUT 'action_deferred' (written since L05-03), so it would re-break deferral journalling (L08-02); (2) it picks the client with lower(cl.assignee_id)=lower(m.created_by), which predates 0131 / D-2026-10-13-01: pool clients (no assignee) and edit-shared clients are refused, and the access rule is restated instead of left to RLS (C3.3); (3) under 0131 an INSERT into client_tasks for a client the owner can only view raises 42501, which _create_internal_task does not catch, so the tick errors instead of blocking the action; (4) it executes a task whenever verdict.may_release, which a standing grant can produce — the open owner question; (5) numbered 0129 although main is at 0159 (migrations README: next number above the max). Sound and worth keeping: the tenant-bound FK + partial unique index for retry safety, FOR UPDATE OF the action, the receipt read-back, no outbound command for a task", date: 2026-10-15}
-authz_checked: n/a
-blockers: 
-  - {type: review, note: "PR #11 (55ac99c, 0b52fbf) is open, not merged."}
-  - {type: owner, note: "Does a mission's standing grant count as current human approval (CONTRACT C4.1)?"}
-audit_refs: []
-decision_refs: []
-next_task: "Owner answers the grant question; then rebuild PR #11 on current main per the review below (new migration number, includes action_deferred, RLS decides the client, 42501 -> blocked)."
-updated: 2026-10-15
-```
-
-#### L08-02 A deferred mission step's journal row was refused by the database
-```yaml
-id: L08-02
-status: tests_pass
-env: local
-evidence_shas: [33e80e0]
-files: [backend/db/migrations/0159_mission_events_action_deferred.sql, backend/tests/test_mission_event_kinds.py, backend/tests/test_mission_deferral_journal_live.py, .github/workflows/ci.yml]
-tests_run:
-  - {cmd: "pg_get_constraintdef(mission_events_kind_check) on a database built from every migration; grep of the kinds missions_api.py and missions/*.py write", result: "the CHECK (0100) lists 19 kinds without 'action_deferred'; executor._work_one journals 'action_deferred' since L05-03; _journal logs and swallows a refused insert, so the step's due_at moved but its journal row was never stored. Every other written kind is allowed", date: 2026-10-15}
-  - {cmd: "pytest -q tests/test_mission_event_kinds.py with 0159 moved aside, then restored", result: "before: failed ('journalled but refused by mission_events_kind_check: [action_deferred]'); after: passed. The test compares every kind the code writes with the newest migration that defines the CHECK", date: 2026-10-15}
-  - {cmd: "pytest -q tests/test_mission_deferral_journal_live.py with the pre-0159 constraint restored, then 0159 re-applied", result: "before: failed (journal [] — the row was silently lost); after: 1 passed (['action_deferred'])", date: 2026-10-15}
-  - {cmd: "cd backend && pytest -q tests/test_mission_event_kinds.py tests/test_migration_ledger.py tests/test_run_migrations.py tests/test_mission*.py", result: "157 passed", date: 2026-10-15}
-authz_checked: "No access change: one CHECK constraint gains one allowed value."
+  - {cmd: "pytest tests/test_missions_cancel.py tests/test_missions_cancel_live.py plus the whole CI live list (throwaway postgres:16, all 165 migrations through 0169, oracle_app_login under FORCE RLS)", result: "139 passed, 1 skipped, exit 0. On the 0161 base the mutant check from 2026-11-06 still applies: without the launch WHERE guard and the pre-release re-check, the two tests written for them fail", date: 2026-11-07}
+  - {cmd: "pytest tests -q", result: "6110 passed, 117 skipped, 2 failed: test_ai_budget_hosted_calls' fake connection had no fetchval for the new status re-check (fake extended), and LAUNCH-BACKLOG.md needed regenerating; both files then 137 passed with the cancel tests", date: 2026-11-07}
+authz_checked: "Cancel loads through tenant-scoped _load; another brokerage gets 404 and changes nothing (live). Any agent in the brokerage can cancel, the same as pause; per-agent ownership of missions is not checked."
 blockers:
-  - "Not deployed (C4.4). Deferral journal rows written before 0159 were never stored; they cannot be recovered (the due_at moves themselves happened)."
+  - {type: review, note: "PR #11 (55ac99c, 0b52fbf) is open, not merged. This row's tests_pass covers the cancel half only (AC08.10): task actions are still skipped by the executor (T08.01, T08.04)."}
+  - {type: owner, note: "Does a mission's standing grant count as current human approval (CONTRACT C4.1)?"}
+  - {type: scope, note: "Cancel skips still-planned actions in one transaction, refuses finished missions, and pause/launch can no longer revive one (launch's write is guarded). It does not recall commands already staged or approved; the response reports how many. The executor re-checks status before staging and before a grant release, which narrows but cannot close the race, because stage_command and release_command run in their own transactions. No Cancel button in MissionBuilder yet."}
 audit_refs: []
 decision_refs: []
-next_task: "See L08-01."
-updated: 2026-10-15
+next_task: "Owner answers the grant question; then rebuild PR #11 on current main per the review below (new migration number, includes action_deferred, RLS decides the client, 42501 -> blocked). Cancel follow-ups: withdraw the staged command behind a cancelled mission (10/07 command-cancel review); Cancel button in MissionBuilder."
+updated: 2026-11-07
 ```
 
 #### L08-03 Plans are feasible or refused against the tool registry (T08.04, AC08.02)

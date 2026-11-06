@@ -1066,6 +1066,12 @@ class _MissionConn:
             return dict(MISSION)
         raise AssertionError(f"unexpected query: {sql[:60]}")
 
+    async def fetchval(self, sql, *_args):
+        # The executor re-reads the mission's status before staging (L08-01).
+        if sql.startswith("SELECT status FROM missions"):
+            return MISSION["status"]
+        raise AssertionError(f"unexpected query: {sql[:60]}")
+
 
 def _tick(monkeypatch, *, pending, due=(), plan=None, stage=None, last_event=None):
     import db.connection
