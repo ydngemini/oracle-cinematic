@@ -160,6 +160,13 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         self.assertFalse(target.with_suffix(".tmp").exists())
 
+    def test_url_credentials_and_gh_tokens_are_redacted(self):
+        text = "fatal: unable to access 'https://x-access-token:abc123@github.com/o/r.git/' gho_" + "a" * 20
+        cleaned = intelligence.redact(text)
+        self.assertNotIn("abc123", cleaned)
+        self.assertNotIn("gho_aaaa", cleaned)
+        self.assertIn("github.com/o/r.git", cleaned)
+
     def test_secret_redaction(self):
         secret = "sk-ant-" + "x" * 30
         result = intelligence.redact(f"{secret}\nAuthorization: Bearer token-value\npassword=hidden")

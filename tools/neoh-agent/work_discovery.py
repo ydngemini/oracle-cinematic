@@ -27,7 +27,15 @@ def git(*args: str, timeout: int = 120) -> str:
     result = subprocess.run(["git", "-C", str(runner.ROOT), *args],
                             capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(f"Git main refresh/inspection failed (exit {result.returncode}).")
+        # git's own last line is the only clue to WHICH failure (network, lock,
+        # credential); without it every one read "exit 128" and needed a
+        # reproduction to diagnose.
+        import intelligence
+
+        lines = (result.stderr or "").strip().splitlines()
+        detail = intelligence.redact(lines[-1])[:200] if lines else "no message"
+        raise RuntimeError(
+            f"Git main refresh/inspection failed (exit {result.returncode}, git {args[0]}): {detail}")
     return result.stdout.strip()
 
 

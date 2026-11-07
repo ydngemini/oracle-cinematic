@@ -20,7 +20,8 @@ class InfrastructureFailure(RuntimeError):
 
 
 def redact(text: str) -> str:
-    text = re.sub(r"\b(?:sk-ant-|sk-|ghp_|github_pat_)[A-Za-z0-9_-]{12,}", "[REDACTED]", text)
+    text = re.sub(r"//[^/@\s]+@", "//[REDACTED]@", text)  # credentials inside a URL
+    text = re.sub(r"\b(?:sk-ant-|sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{12,}", "[REDACTED]", text)
     return re.sub(r"(?i)(authorization:\s*bearer|(?:api[_-]?key|password|token)\s*[=:])\s*\S+",
                   r"\1 [REDACTED]", text)
 

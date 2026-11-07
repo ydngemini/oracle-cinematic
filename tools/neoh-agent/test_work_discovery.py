@@ -46,6 +46,17 @@ def paths():
 
 
 class WorkDiscoveryTests(unittest.TestCase):
+    def test_git_failure_names_the_command_and_gits_reason(self):
+        failed = work.subprocess.CompletedProcess(
+            [], 128, "", "warning: x\nfatal: unable to access 'https://tok:s3cret@github.com/o/r/': Could not resolve host\n")
+        with patch.object(work.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError) as caught:
+                work.git("fetch", "origin")
+        message = str(caught.exception)
+        self.assertIn("exit 128, git fetch", message)
+        self.assertIn("Could not resolve host", message)
+        self.assertNotIn("s3cret", message)
+
     def test_parse_full_ledger(self):
         parsed = work.summary_rows(sample_ledger({"02": {
             "status": "tests_pass", "next": "Fix page X"

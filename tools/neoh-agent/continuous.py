@@ -136,12 +136,13 @@ def held_categories(args) -> set[str]:
     return set(filter(None, getattr(args, "hold_categories", "").split(",")))
 
 
-def idle(state: dict, reason: str, seconds: int) -> None:
-    if state.get("idle_reason") != reason:
+def idle(state: dict, reason: str, seconds: int, detail: str = "") -> None:
+    if state.get("idle_reason") != reason or state.get("idle_detail", "") != detail:
         state["idle_reason"] = reason
+        state["idle_detail"] = detail
         state.pop("active_task", None)
         write_state(state)
-        print(f"[continuous] idle: {reason}", flush=True)
+        print(f"[continuous] idle: {reason}" + (f": {detail}" if detail else ""), flush=True)
     sleep_interruptible(seconds)
 
 
@@ -286,14 +287,18 @@ def supervise(args) -> int:
             except work_discovery.NoActionableWork:
                 idle(state, "no_eligible_work", args.error_poll_seconds)
                 continue
-            except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError):
-                idle(state, "preflight_unavailable", args.error_poll_seconds)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as error:
+                # After a reboot onto a captive-portal hotspot this ran 2h20m
+                # saying only "preflight_unavailable".
+                idle(state, "preflight_unavailable", args.error_poll_seconds,
+                     intelligence.redact(f"{type(error).__name__}: {error}")[:300])
                 continue
             selection["recent_failures"] = intelligence.recent_failures(state["history"], selection["category"])
             # Reserve the upper per-run estimated budget BEFORE starting the model.
             # This is a conservative accounting guard, not a provider-side hard cap.
             state["daily_reserved_usd"] += args.budget_usd
             state["idle_reason"] = ""
+            state["idle_detail"] = ""
             state["active_task"] = {key: selection[key] for key in ("category", "task_id", "risk")}
             write_state(state)
             code, worktree_name, category = run_cycle(args, excluded, selection)
