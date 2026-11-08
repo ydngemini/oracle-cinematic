@@ -2776,20 +2776,22 @@ id: L17-16
 status: tests_pass
 env: staging
 evidence_shas: [5bc4494]
-files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py]
+files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py, oracle-app/package.json, oracle-app/package-lock.json]
 tests_run:
   - {cmd: "npm audit --omit=dev --audit-level=high (oracle-app)", result: "found 0 vulnerabilities (19 runtime packages)", date: 2026-10-14}
   - {cmd: "npm audit (including dev)", result: "8 in the build/test toolchain (5 high: brace-expansion, browserslist, nanoid, source-map-js, undici; 3 moderate: vitest, @vitest/mocker, baseline-browser-mapping), all transitive except vitest, all fixable by npm audit fix; none ships to the browser", date: 2026-10-14}
   - {cmd: "python -m pip_audit --strict --skip-editable -r backend/requirements.txt", result: "No known vulnerabilities found", date: 2026-10-14}
   - {cmd: "pytest tests/test_ci_security_gates.py + CI wiring tests", result: "126 passed (with test_backup_restore_scripts, test_ci_deploy_wiring, test_ci_build_contexts, test_release_immutability)", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "cd oracle-app && npm audit (base 0f25ab1)", result: "14 toolchain advisories (7 high: vite, nanoid, undici, zod, brace-expansion, browserslist, source-map-js; 7 moderate incl. eslint -> minimatch 10.2.5 globparts DoS); runtime audit --omit=dev clean", date: 2026-11-08}
+  - {cmd: "npm audit fix --package-lock-only; overrides.minimatch ^11.0.5 (eslint 10.14.0, the latest, still pins minimatch 10; npm offered only a breaking eslint change); npm ci; eslint src; npm run build; npm run bundle:check; npx vitest run", result: "npm audit: 0 vulnerabilities. All in-range minor/patch bumps (vite 8.1.5->8.3.6, vitest 4.1.10->4.1.12, eslint 10.4.0->10.14.0, zod 4.4.3->4.6.7, undici 7.29.0->7.30.2). Lint clean, build ok, bundle 1181.8 KB gzip within budget. Vitest 1058/1061 at load 3.5 with Noah running beside it; the 3 (IntelligenceAuthoring, SecureDossierPage, NeohSurface) pass 26/26 twice alone, the same load flake seen before this change", date: 2026-11-08}
 authz_checked: n/a
 blockers:
   - {type: owner, note: "Turn on Dependabot alerts and security updates in the GitHub repository settings; the config file cannot."}
 audit_refs: []
 decision_refs: []
-next_task: "Fix the toolchain advisories in one PR (npm audit fix, then lint, vitest, build, bundle budget) — not done here because oracle-app/node_modules is shared with the main checkout."
-updated: 2026-10-14
+next_task: "Owner: turn on Dependabot alerts and security updates in the repository settings. Toolchain advisories fixed 2026-11-08 (local); re-check after the next Dependabot batch."
+updated: 2026-11-08
 ```
 pip-audit already ran on every push (`ci.yml` backend job) before this row; the frontend job now runs `npm audit --omit=dev --audit-level=high` right after `npm ci` and fails on a HIGH or CRITICAL runtime advisory. Dependabot: pip (/backend), npm (/oracle-app; runtime and tooling groups), github-actions, docker (/backend, /oracle-app); weekly, grouped minor+patch, 1-3 open PRs per ecosystem.
 
