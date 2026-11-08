@@ -334,9 +334,13 @@ def push_side_branch(branch: str) -> str:
         timeout=180,
     )
     if result.returncode:
-        # Avoid printing raw git stderr, which may contain authentication details.
+        # Raw git stderr can carry authentication details, so keep only its last
+        # line, redacted: enough to tell a network drop from an auth refusal or
+        # a rejected ref (2026-11-08: a verified build was lost to a bare exit 1).
+        lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
+        detail = intelligence.redact(lines[-1])[:200] if lines else "no message"
         raise RuntimeError(
-            f"Side-branch push failed (exit {result.returncode}). "
+            f"Side-branch push failed (exit {result.returncode}): {detail}. "
             "Check GitHub authentication, repository permissions and network access."
         )
     url = f"https://github.com/ydngemini/oracle-cinematic/tree/{branch}"

@@ -207,6 +207,36 @@ class SideBranchTests(unittest.TestCase):
         self.assertNotIn("--force", arguments)
         self.assertNotIn("main", arguments)
 
+    def test_a_failed_push_says_why_without_the_credential(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        origin = "https://github.com/ydngemini/oracle-cinematic.git"
+        def git(*args):
+            if args == ("branch", "--show-current"):
+                return branch
+            if args in (("remote", "get-url", "origin"), ("remote", "get-url", "--push", "origin")):
+                return origin
+            if args == ("status", "--porcelain", "--untracked-files=all"):
+                return ""
+            if args[0] == "rev-parse":
+                return "abc123"
+            if args[0] == "diff-tree":
+                return "oracle-app/src/App.jsx"
+            raise AssertionError(args)
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        stderr = ("remote: Invalid username or password.\n"
+                  f"fatal: unable to access 'https://x:{token}@github.com/ydngemini/"
+                  "oracle-cinematic.git/': Could not resolve host: github.com\n")
+        with patch.object(autobuild.runner, "git", side_effect=git):
+            with patch.object(autobuild.subprocess, "run",
+                              return_value=subprocess.CompletedProcess(["git"], 128, "", stderr)):
+                with self.assertRaises(RuntimeError) as caught:
+                    autobuild.push_side_branch(branch)
+        message = str(caught.exception)
+        self.assertIn("exit 128", message)
+        self.assertIn("Could not resolve host: github.com", message)
+        self.assertNotIn(token, message)
+        self.assertNotIn("x:", message)
+
     def test_push_destination_mismatch_is_blocked(self):
         branch = "auto/neoh-02-20261019T120000Z-abcdef"
         def git(*args):
