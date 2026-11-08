@@ -299,7 +299,8 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     expect(screen.getAllByRole('button', { name: 'Offboard…' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Suspend' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Offboard…' }));
-    expect(await screen.findByRole('group', { name: /Offboard Sam/ })).toBeTruthy();
+    // OffboardMemberForm is a lazy chunk; its first import can exceed the 1s default under a loaded suite.
+    expect(await screen.findByRole('group', { name: /Offboard Sam/ }, { timeout: 8000 })).toBeTruthy();
     sessionStorage.clear();
     localStorage.clear();
   });

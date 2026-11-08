@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildMatrix, verdictProblems } from '../scripts/build-all-pages-matrix.mjs';
+import { buildMatrix, verdictProblems, verdictShapeProblems } from '../scripts/build-all-pages-matrix.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const committed = JSON.parse(readFileSync(join(HERE, '../../docs/claude-prompts/all-pages.json'), 'utf8')).pages;
@@ -51,6 +51,22 @@ describe('ALL-PAGES-MATRIX (prompt 02 AC02.01)', () => {
     expect(verdictProblems({ mls: verdict('pass') }, rows, crawl)).toHaveLength(1);
     // fail and setup_required never need a clean crawl; comment keys are skipped.
     expect(verdictProblems({ '// how': 'x', b: verdict('fail'), d: verdict('setup_required') }, rows, crawl)).toEqual([]);
+  });
+
+  it('rejects malformed or self-signed verdicts (AC02.09)', () => {
+    const ok = { verdict: 'fail', evidence: 'run 1', reviewer: 'Dana Lee', date: '2026-02-28' };
+    expect(verdictShapeProblems({ '// how': 'x', a: ok })).toEqual([]);
+    expect(verdictShapeProblems({ a: { ...ok, evidence: '   ' } })).toHaveLength(1);
+    expect(verdictShapeProblems({ a: { ...ok, reviewer: ' ' } })).toHaveLength(1);
+    expect(verdictShapeProblems({ a: 'pass', b: null, c: [] })).toHaveLength(3);
+    expect(verdictShapeProblems({ a: { ...ok, verdict: 'maybe' } })).toHaveLength(1);
+    expect(verdictShapeProblems({ a: { ...ok, date: '2026-02-31' } })).toHaveLength(1);
+    expect(verdictShapeProblems({ a: { ...ok, date: '2026-13-01' } })).toHaveLength(1);
+    expect(verdictShapeProblems({ a: { ...ok, evidence: 42 } })).toHaveLength(1);
+    for (const who of ['claude', 'Claude Code', 'neoh-agent', 'auto', 'bot']) {
+      expect(verdictShapeProblems({ a: { ...ok, reviewer: who } }), who).toHaveLength(1);
+    }
+    expect(verdictShapeProblems({ a: { ...ok, reviewer: 'Claudette Moreau' } })).toEqual([]);
   });
 
   it('offers no MLS page (D-2026-10-12-01, prompt 11 T11.01)', async () => {

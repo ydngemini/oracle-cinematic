@@ -39,18 +39,40 @@ function loadCrawl() {
   return JSON.parse(readFileSync(CRAWL, 'utf8'));
 }
 
+// A verdict is a named human's sign-off (AC02.09), so an automated agent
+// cannot be the reviewer.
+const AUTOMATED_REVIEWER = /^\s*(claude|agent|bot|auto|neoh-agent)\b/i;
+
+/**
+ * Shape problems in the hand-kept verdicts: a well-formed object, non-blank
+ * evidence and reviewer, a real calendar date, and a human reviewer.
+ * Comment keys (`//`) are skipped. Returns the problems found.
+ */
+export function verdictShapeProblems(verdicts) {
+  const problems = [];
+  const text = (x) => typeof x === 'string' && x.trim() !== '';
+  for (const [id, v] of Object.entries(verdicts)) {
+    if (id.startsWith('//')) continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)
+      || !VERDICT_VALUES.has(v.verdict) || !text(v.evidence) || !text(v.reviewer) || !v.date) {
+      problems.push(`${id} needs verdict (pass|fail|setup_required), evidence, reviewer and date`);
+      continue;
+    }
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v.date));
+    const day = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (!m || day.getUTCFullYear() !== +m[1] || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) {
+      problems.push(`${id} date must be a real YYYY-MM-DD date`);
+    }
+    if (AUTOMATED_REVIEWER.test(v.reviewer)) problems.push(`${id} reviewer must be a named person, not an automated agent`);
+  }
+  return problems;
+}
+
 function loadVerdicts() {
   if (!existsSync(VERDICTS)) return {};
   const raw = JSON.parse(readFileSync(VERDICTS, 'utf8'));
-  for (const [id, v] of Object.entries(raw)) {
-    if (id.startsWith('//')) continue;
-    if (!VERDICT_VALUES.has(v?.verdict) || !v.evidence || !v.reviewer || !v.date) {
-      throw new Error(`all-pages-verdicts.json: ${id} needs verdict (pass|fail|setup_required), evidence, reviewer and date`);
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.date))) {
-      throw new Error(`all-pages-verdicts.json: ${id} date must be YYYY-MM-DD`);
-    }
-  }
+  const problems = verdictShapeProblems(raw);
+  if (problems.length) throw new Error(`all-pages-verdicts.json: ${problems.join('; ')}`);
   return raw;
 }
 

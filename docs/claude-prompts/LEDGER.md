@@ -245,6 +245,26 @@ updated: 2026-11-05
 ```
 `verdictProblems` makes the matrix build fail on a `pass` for a page with no clean crawl, a legacy page, or a page that attempted writes on open. Verdict dates must be YYYY-MM-DD. No verdict was recorded and the generated matrix is unchanged.
 
+#### L02-08 A page verdict must be well-formed and signed by a named person (AC02.09)
+```yaml
+id: L02-08
+status: implemented_untested
+env: local
+evidence_shas: [33cc5da]   # base; change in the commit that adds this row
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "none: Bash was unavailable in this session", result: "NOT RUN (vitest src/allPagesMatrix.test.js, npm run pages:matrix --check)", date: 2026-11-08}
+authz_checked: n/a (docs tooling; no runtime or API change)
+blockers:
+  - {type: human, note: "All 52 rows in all-pages-verdicts.json are still empty (not_inspected). No verdict was recorded: a verdict needs a named reviewer's functional sign-off."}
+  - {type: verification, note: "Tests not run; run vitest src/allPagesMatrix.test.js before relying on this."}
+audit_refs: []
+decision_refs: []
+next_task: "A reviewer enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`."
+updated: 2026-11-08
+```
+New exported `verdictShapeProblems` replaces the inline check in `loadVerdicts`. Before, a whitespace-only evidence or reviewer, a non-string evidence, or a non-existent date such as 2026-02-31 was accepted (the old check only tested truthiness and the date's shape). Now each is reported by page id, all problems at once, and a reviewer naming an automated agent (claude, agent, bot, auto, neoh-agent) is refused. The verdicts file and the generated matrix are unchanged.
+
 ### L03
 Brokerage tenancy and hybrid access.
 
