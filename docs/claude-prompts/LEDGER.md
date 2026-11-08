@@ -3144,14 +3144,14 @@ tests_run:
   - {cmd: "full CI live list (.github/workflows/ci.yml:257) against the local migrated database", result: "70 passed (after re-recording 0161 locally: it had been edited after a first local apply, which test_migration_precheck rightly refused)", date: 2026-10-16}
 authz_checked: "Database-level: users_seat_limit (SECURITY DEFINER, search_path pinned, REVOKE ALL FROM PUBLIC) counts only the written row's brokerage; tenants_seat_limit_guard refuses seat_limit changes on any application login (member of oracle_app, not superuser) unless app_is_platform_admin(). Proven under the application role."
 blockers:
-  - {type: owner, note: "seat_limit is NULL for every brokerage, so nothing is enforced until the plan is decided (D-2026-10-12-02, T18.02): the number, whether the broker-owner counts (today: every active non-platform-admin user counts, owner included) and who sets it (a platform admin, today by SQL; no route)."}
+  - {type: deploy, note: "D-2026-11-05-01 decides the number: seat_limit = 21 (20 agents + the owner, who counts in 0161). Not yet set anywhere: 0161 reached main at 0f25ab1 (2026-11-08) but the staging deploy failed with DigitalOcean 401 for both the CI and the local token, and neoh-staging-ksfpn.ondigitalocean.app no longer resolves. After the account is restored: deploy, then UPDATE tenants SET seat_limit = 21 as doadmin through scripts/db-access-window.sh."}
+  - {type: owner, note: "Differs from the 2026-11-05 answer: the trigger also refuses reinstating (or reopening) a user in a brokerage already at its limit. Owner to confirm, or a follow-up migration exempts reopening a closing brokerage."}
   - "Lowering a limit below the active count removes no one; it blocks further activations until seats are freed."
   - "Stripe seat quantity (proration, upgrade/downgrade) is not wired: T18.04's checkout half waits on the owner's plan contract (T18.02) and Stripe test mode."
-  - "Not deployed (C4.4): 0161 is local; staging needs the push."
 audit_refs: []
-decision_refs: [D-2026-10-12-02]
+decision_refs: [D-2026-11-05-01, D-2026-10-12-02]
 next_task: "T18.05 Stripe event ordering and replay (AC18.03), test mode only; owner: plan contract (T18.02)."
-updated: 2026-10-16
+updated: 2026-11-08
 ```
 Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
 
@@ -3424,6 +3424,7 @@ Decisions are binding ([CONTRACT C2.4](CONTRACT.md#c2-scope-and-owner-decisions)
 | D-2026-10-12-03 | 2026-10-12 | **AI call notes support both modes, chosen per agent:** `review` (default) saves the note proposed for the agent to approve, edit or discard (the AI ignores it until approved); `direct` saves it approved. | Owner, in session 2026-10-12 ("both") | 09, 17 | `client_notes.review_state` (0130), `call_note_settings.py`, approve route, Personal AI toggle | Owner request |
 | D-2026-10-13-01 | 2026-10-13 | **Agents see their own clients, the brokerage pool and what is shared with them.** A client with no assignee is the brokerage pool, visible to every agent; an agent-created client is NOT auto-assigned; a share is per record and grants view or edit, chosen per share. | Owner, in session 2026-10-13 (three answers) | 03, 04, 17 | `0131_agent_record_scope.sql` (restrictive policies, `record_shares`, `assignee_user_id`), `record_access.py`, `ClientAccess.jsx`; contacts the same way in `0134_agent_contact_scope.sql` (L03-04) | Team leads (T03.02) or a different default for imports |
 | D-2026-10-12-02 | 2026-10-12 | Pricing is a hypothesis, not decided. Code: one Stripe price at quantity 1 (`backend/billing.py:44`, `:266`), no seats. Idea: ~$1,999/month per 20-agent brokerage, ~$1,499 pilot. | Shared notes 2026-10-11 | 18 | No price change without owner approval | Owner sets pricing |
+| D-2026-11-05-01 | 2026-11-05 | **Seat terms: 20 agents plus the owner; suspending an agent frees their seat.** A second owner takes a seat. Price stays undecided (D-2026-10-12-02). | Owner, in the 2026-11-05 Claude session (approved again 2026-11-08 with the PR #33 merge) | 18 | 0161 counts every active non-platform-admin user, owner included, so the plan is `tenants.seat_limit = 21`; suspension already frees a seat (trigger checks only rows that gain one) | The plan contract changes |
 
 ## Audit cross-reference
 
