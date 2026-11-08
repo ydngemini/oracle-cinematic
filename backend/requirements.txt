@@ -10,7 +10,7 @@ uvicorn[standard]==0.49.0      # [standard] pulls uvloop + httptools + websocket
 
 # ── Database ───────────────────────────────────────────────────────────────────
 asyncpg==0.31.0                # Async PostgreSQL driver; tenant_tx + RLS GUC set
-redis==5.2.1                   # Distributed rate limits + durable ACS callback state
+redis==8.1.0                   # Distributed rate limits + durable ACS callback state
 
 # ── Auth / security ────────────────────────────────────────────────────────────
 PyJWT==2.15.1                  # JWT encode/decode in auth.py (>= 2.x returns str)
