@@ -2670,19 +2670,21 @@ id: L17-11
 status: tests_pass
 env: staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds log_redaction.actor_ref
-files: [backend/log_redaction.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
+files: [backend/log_redaction.py, backend/crypto.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
 tests_run:
   - {cmd: "AST scan of every backend logging call with agent_id/agent_identity/current_agent_id added to the PII names (base)", result: "25 sites in 11 files logged the account id (= the user's email): login success/failure, password reset/change, session registry, RLS context, CRM create/link/log, portal mint, bulk actions, AWS actions, crypto ACCESS_PII", date: 2026-10-14}
   - {cmd: "AST scan: logging calls inside `except E as x` that interpolate x", result: "201 sites in 60+ files; str() of a real asyncpg error from local PostgreSQL 16 quotes row values: 'DETAIL:  Key (email)=(jane@example.test) already exists.' and 'Failing row contains (bob@example.test, x)'", date: 2026-10-14}
   - {cmd: "pytest tests/test_log_pii_guard.py", result: "10 passed: guard now includes account ids (actor_ref() is the safe wrapper); 22 sites fixed; the PIIScrubFilter on the root and uvicorn.error handlers removes emails, phones and PG row values from messages AND tracebacks while keeping uuids, timestamps, IPs and counts; server._configure_logging installs it; WebSocket handshake query strings redacted", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "tests/test_log_pii_guard.py with _ACCOUNT_ID_DEFERRED emptied (crypto.py was exempt because a parallel slice owned it on 2026-10-14; that slice merged)", result: "red: crypto.py:232 (pii_context), :305 (access_pii_field audit-failure error, which also interpolated the raw exception) and :315 (ACCESS_PII info) log agent_id", date: 2026-11-08}
+  - {cmd: "crypto.py logs actor_ref(ctx.agent_id) at all three, and type + scrub_text(exc) on the audit failure; new test_pii_reads_log_the_reader_as_a_pseudonym drives pii_context, a read and a read whose ledger write fails with the reader's email in the error", result: "12 passed; with the old crypto.py restored, 2 failed (the source scan and the runtime test, whose captured line showed actor='jane.agent@example.test'); every test importing crypto plus the guard: 77 passed, 9 skipped", date: 2026-11-08}
 authz_checked: n/a
 blockers:
-  - {type: scope, note: "crypto.py's three agent_id sites (pii_context, access_pii_field) are exempted by name in the guard (_ACCOUNT_ID_DEFERRED) because a parallel slice owns crypto.py today; remove the entry when that slice merges. The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one."}
+  - {type: scope, note: "The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one. (The crypto.py deferral is gone: 2026-11-08, local.)"}
 audit_refs: [A06]
 decision_refs: []
-next_task: "Drop the crypto.py deferral at merge; review a staging log sample (AC17.05)."
-updated: 2026-10-14
+next_task: "Review a staging log sample (AC17.05) once staging deploys again."
+updated: 2026-11-08
 ```
 
 #### L17-12 Audit ledger: fallback drained and capped, chain verified on a schedule
