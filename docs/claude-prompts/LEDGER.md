@@ -245,6 +245,27 @@ updated: 2026-11-05
 ```
 `verdictProblems` makes the matrix build fail on a `pass` for a page with no clean crawl, a legacy page, or a page that attempted writes on open. Verdict dates must be YYYY-MM-DD. No verdict was recorded and the generated matrix is unchanged.
 
+#### L02-08 A page verdict must be well-formed and signed by a named person (AC02.09)
+```yaml
+id: L02-08
+status: tests_pass
+env: local
+evidence_shas: [2e33c7d]   # base; Noah cycle-1794130049-2 commit 84013b8, cherry-picked without its supervisor-branch parents
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js, oracle-app/src/components/BrokerageSetupPanel.test.jsx, docs/claude-prompts/ALL-PAGES-MATRIX.md, docs/claude-prompts/all-pages.json, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "Noah supervisor gates in cycle-1794130049-2: npm test (targeted, then full), npm run lint, npm run build", result: "all exit 0 (the agent session itself had no Bash, hence its NOT RUN note)", date: 2026-11-08}
+  - {cmd: "cd oracle-app && npx vitest run src/allPagesMatrix.test.js src/components/BrokerageSetupPanel.test.jsx; then the same with the pre-change build-all-pages-matrix.mjs restored", result: "33 passed; with the old script: 1 failed (verdictShapeProblems is not a function)", date: 2026-11-08}
+  - {cmd: "node scripts/build-all-pages-matrix.mjs --check (before and after this slice)", result: "stale on main already: PortfolioTab gained POST /api/intelligence/title/findings/{param}/review (PR #33); regenerated, 51 pages", date: 2026-11-08}
+authz_checked: n/a (docs tooling; no runtime or API change)
+blockers:
+  - {type: human, note: "All 52 rows in all-pages-verdicts.json are still empty (not_inspected). No verdict was recorded: a verdict needs a named reviewer's functional sign-off."}
+audit_refs: []
+decision_refs: []
+next_task: "A reviewer enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`."
+updated: 2026-11-08
+```
+New exported `verdictShapeProblems` replaces the inline check in `loadVerdicts`. Before, a whitespace-only evidence or reviewer, a non-string evidence, or a non-existent date such as 2026-02-31 was accepted (the old check only tested truthiness and the date's shape). Now each is reported by page id, all problems at once, and a reviewer naming an automated agent (claude, agent, bot, auto, neoh-agent) is refused. The verdicts file and the generated matrix are unchanged.
+
 ### L03
 Brokerage tenancy and hybrid access.
 
