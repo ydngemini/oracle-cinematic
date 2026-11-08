@@ -997,6 +997,8 @@ async def audit_trail_ws(websocket: WebSocket) -> None:
         return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    from audit_middleware import record_platform_websocket
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     ledger.subscribe(websocket)
 
     try:

@@ -1231,6 +1231,8 @@ async def observability_websocket(websocket: WebSocket):
         return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    from audit_middleware import record_platform_websocket
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     _obs_websockets.add(websocket)
     log.info("Observability WebSocket connected — %d clients", len(_obs_websockets))
     last_snapshot_at = float("-inf")

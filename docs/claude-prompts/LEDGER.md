@@ -2799,16 +2799,18 @@ id: L17-17
 status: tests_pass
 env: staging
 evidence_shas: [5bc4494]
-files: [backend/audit_middleware.py, backend/tests/test_platform_admin_read_audit.py]
+files: [backend/audit_middleware.py, backend/server.py, backend/audit_ledger.py, backend/aws_observability.py, backend/admin_c2.py, backend/tests/test_platform_admin_read_audit.py]
 tests_run:
   - {cmd: "pytest tests/test_platform_admin_read_audit.py tests/test_security_launch_review.py", result: "72 passed", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "pytest tests/test_platform_admin_read_audit.py with WebSocket tests added (one subscription row, query string never recorded, reconnect coalesced, tenant roles not recorded; AST check that all five user-authenticated WebSocket handlers record after accept())", result: "red: 8 failed (no record_platform_websocket; none of /ws, /ws/voice-telemetry/{id}, /admin/audit-trail, /api/aws/ws, /admin/surge-telemetry recorded a platform admin)", date: 2026-11-08}
+  - {cmd: "audit_middleware.record_platform_websocket() called after accept() in the five handlers; same pytest, then mutants: the call removed from admin_c2.surge_telemetry_ws, and the helper made a no-op", result: "17 passed; each mutant: 1 failed. Full backend suite then failed 3 existing WebSocket tests whose fakes lack query_params, so the helper is now fail-safe (an audit error never breaks the stream; new test): those 3 plus this file 35 passed, full suite otherwise 6208 passed. Provider media bridges (/media/acs, /media/twilio, /media/plivo) carry no user identity and are out of scope", date: 2026-11-08}
 authz_checked: "Only a token whose role is platform_admin; tenant users' reads are not recorded; sign-in/session/policy/ws paths skipped. Row: ADMIN_ACTION 'platform_read GET <path>', actor, route template, path, target_tenant_id (the tenant the route or ?tenant_id names, else 'all'), status, time, client IP. No query string, no response content."
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "Route decrypts through crypto.access_pii_field (still no caller) once field encryption (A01) lands; platform-admin WebSocket subscriptions are not covered (BaseHTTPMiddleware does not see them)."
-updated: 2026-10-14
+next_task: "Route decrypts through crypto.access_pii_field (still no caller) once field encryption (A01) lands. WebSocket subscriptions are recorded since 2026-11-08 (local; deploy pending)."
+updated: 2026-11-08
 ```
 Bounded: one row per request, never per record. The same actor reading the same path again within 60 s is coalesced into the first row (the operator console polls every 60 s); a read of a different record is a different path and is always recorded. The coalescing map is capped at 5,000 keys. Writes go through `ledger.record` via the existing tracked background task; `audit_ledger.py` is unchanged.
 
