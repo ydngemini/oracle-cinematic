@@ -2670,19 +2670,21 @@ id: L17-11
 status: tests_pass
 env: staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds log_redaction.actor_ref
-files: [backend/log_redaction.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
+files: [backend/log_redaction.py, backend/crypto.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
 tests_run:
   - {cmd: "AST scan of every backend logging call with agent_id/agent_identity/current_agent_id added to the PII names (base)", result: "25 sites in 11 files logged the account id (= the user's email): login success/failure, password reset/change, session registry, RLS context, CRM create/link/log, portal mint, bulk actions, AWS actions, crypto ACCESS_PII", date: 2026-10-14}
   - {cmd: "AST scan: logging calls inside `except E as x` that interpolate x", result: "201 sites in 60+ files; str() of a real asyncpg error from local PostgreSQL 16 quotes row values: 'DETAIL:  Key (email)=(jane@example.test) already exists.' and 'Failing row contains (bob@example.test, x)'", date: 2026-10-14}
   - {cmd: "pytest tests/test_log_pii_guard.py", result: "10 passed: guard now includes account ids (actor_ref() is the safe wrapper); 22 sites fixed; the PIIScrubFilter on the root and uvicorn.error handlers removes emails, phones and PG row values from messages AND tracebacks while keeping uuids, timestamps, IPs and counts; server._configure_logging installs it; WebSocket handshake query strings redacted", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "tests/test_log_pii_guard.py with _ACCOUNT_ID_DEFERRED emptied (crypto.py was exempt because a parallel slice owned it on 2026-10-14; that slice merged)", result: "red: crypto.py:232 (pii_context), :305 (access_pii_field audit-failure error, which also interpolated the raw exception) and :315 (ACCESS_PII info) log agent_id", date: 2026-11-08}
+  - {cmd: "crypto.py logs actor_ref(ctx.agent_id) at all three, and type + scrub_text(exc) on the audit failure; new test_pii_reads_log_the_reader_as_a_pseudonym drives pii_context, a read and a read whose ledger write fails with the reader's email in the error", result: "12 passed; with the old crypto.py restored, 2 failed (the source scan and the runtime test, whose captured line showed actor='jane.agent@example.test'); every test importing crypto plus the guard: 77 passed, 9 skipped", date: 2026-11-08}
 authz_checked: n/a
 blockers:
-  - {type: scope, note: "crypto.py's three agent_id sites (pii_context, access_pii_field) are exempted by name in the guard (_ACCOUNT_ID_DEFERRED) because a parallel slice owns crypto.py today; remove the entry when that slice merges. The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one."}
+  - {type: scope, note: "The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one. (The crypto.py deferral is gone: 2026-11-08, local.)"}
 audit_refs: [A06]
 decision_refs: []
-next_task: "Drop the crypto.py deferral at merge; review a staging log sample (AC17.05)."
-updated: 2026-10-14
+next_task: "Review a staging log sample (AC17.05) once staging deploys again."
+updated: 2026-11-08
 ```
 
 #### L17-12 Audit ledger: fallback drained and capped, chain verified on a schedule
@@ -2774,20 +2776,22 @@ id: L17-16
 status: tests_pass
 env: staging
 evidence_shas: [5bc4494]
-files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py]
+files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py, oracle-app/package.json, oracle-app/package-lock.json]
 tests_run:
   - {cmd: "npm audit --omit=dev --audit-level=high (oracle-app)", result: "found 0 vulnerabilities (19 runtime packages)", date: 2026-10-14}
   - {cmd: "npm audit (including dev)", result: "8 in the build/test toolchain (5 high: brace-expansion, browserslist, nanoid, source-map-js, undici; 3 moderate: vitest, @vitest/mocker, baseline-browser-mapping), all transitive except vitest, all fixable by npm audit fix; none ships to the browser", date: 2026-10-14}
   - {cmd: "python -m pip_audit --strict --skip-editable -r backend/requirements.txt", result: "No known vulnerabilities found", date: 2026-10-14}
   - {cmd: "pytest tests/test_ci_security_gates.py + CI wiring tests", result: "126 passed (with test_backup_restore_scripts, test_ci_deploy_wiring, test_ci_build_contexts, test_release_immutability)", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "cd oracle-app && npm audit (base 0f25ab1)", result: "14 toolchain advisories (7 high: vite, nanoid, undici, zod, brace-expansion, browserslist, source-map-js; 7 moderate incl. eslint -> minimatch 10.2.5 globparts DoS); runtime audit --omit=dev clean", date: 2026-11-08}
+  - {cmd: "npm audit fix --package-lock-only; overrides.minimatch ^11.0.5 (eslint 10.14.0, the latest, still pins minimatch 10; npm offered only a breaking eslint change); npm ci; eslint src; npm run build; npm run bundle:check; npx vitest run", result: "npm audit: 0 vulnerabilities. All in-range minor/patch bumps (vite 8.1.5->8.3.6, vitest 4.1.10->4.1.12, eslint 10.4.0->10.14.0, zod 4.4.3->4.6.7, undici 7.29.0->7.30.2). Lint clean, build ok, bundle 1181.8 KB gzip within budget. Vitest 1058/1061 at load 3.5 with Noah running beside it; the 3 (IntelligenceAuthoring, SecureDossierPage, NeohSurface) pass 26/26 twice alone, the same load flake seen before this change", date: 2026-11-08}
 authz_checked: n/a
 blockers:
   - {type: owner, note: "Turn on Dependabot alerts and security updates in the GitHub repository settings; the config file cannot."}
 audit_refs: []
 decision_refs: []
-next_task: "Fix the toolchain advisories in one PR (npm audit fix, then lint, vitest, build, bundle budget) — not done here because oracle-app/node_modules is shared with the main checkout."
-updated: 2026-10-14
+next_task: "Owner: turn on Dependabot alerts and security updates in the repository settings. Toolchain advisories fixed 2026-11-08 (local); re-check after the next Dependabot batch."
+updated: 2026-11-08
 ```
 pip-audit already ran on every push (`ci.yml` backend job) before this row; the frontend job now runs `npm audit --omit=dev --audit-level=high` right after `npm ci` and fails on a HIGH or CRITICAL runtime advisory. Dependabot: pip (/backend), npm (/oracle-app; runtime and tooling groups), github-actions, docker (/backend, /oracle-app); weekly, grouped minor+patch, 1-3 open PRs per ecosystem.
 
@@ -2797,16 +2801,18 @@ id: L17-17
 status: tests_pass
 env: staging
 evidence_shas: [5bc4494]
-files: [backend/audit_middleware.py, backend/tests/test_platform_admin_read_audit.py]
+files: [backend/audit_middleware.py, backend/server.py, backend/audit_ledger.py, backend/aws_observability.py, backend/admin_c2.py, backend/tests/test_platform_admin_read_audit.py]
 tests_run:
   - {cmd: "pytest tests/test_platform_admin_read_audit.py tests/test_security_launch_review.py", result: "72 passed", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "pytest tests/test_platform_admin_read_audit.py with WebSocket tests added (one subscription row, query string never recorded, reconnect coalesced, tenant roles not recorded; AST check that all five user-authenticated WebSocket handlers record after accept())", result: "red: 8 failed (no record_platform_websocket; none of /ws, /ws/voice-telemetry/{id}, /admin/audit-trail, /api/aws/ws, /admin/surge-telemetry recorded a platform admin)", date: 2026-11-08}
+  - {cmd: "audit_middleware.record_platform_websocket() called after accept() in the five handlers; same pytest, then mutants: the call removed from admin_c2.surge_telemetry_ws, and the helper made a no-op", result: "17 passed; each mutant: 1 failed. Full backend suite then failed 3 existing WebSocket tests whose fakes lack query_params, so the helper is now fail-safe (an audit error never breaks the stream; new test): those 3 plus this file 35 passed, full suite otherwise 6208 passed. Provider media bridges (/media/acs, /media/twilio, /media/plivo) carry no user identity and are out of scope", date: 2026-11-08}
 authz_checked: "Only a token whose role is platform_admin; tenant users' reads are not recorded; sign-in/session/policy/ws paths skipped. Row: ADMIN_ACTION 'platform_read GET <path>', actor, route template, path, target_tenant_id (the tenant the route or ?tenant_id names, else 'all'), status, time, client IP. No query string, no response content."
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "Route decrypts through crypto.access_pii_field (still no caller) once field encryption (A01) lands; platform-admin WebSocket subscriptions are not covered (BaseHTTPMiddleware does not see them)."
-updated: 2026-10-14
+next_task: "Route decrypts through crypto.access_pii_field (still no caller) once field encryption (A01) lands. WebSocket subscriptions are recorded since 2026-11-08 (local; deploy pending)."
+updated: 2026-11-08
 ```
 Bounded: one row per request, never per record. The same actor reading the same path again within 60 s is coalesced into the first row (the operator console polls every 60 s); a read of a different record is a different path and is always recorded. The coalescing map is capped at 5,000 keys. Writes go through `ledger.record` via the existing tracked background task; `audit_ledger.py` is unchanged.
 
@@ -3144,14 +3150,14 @@ tests_run:
   - {cmd: "full CI live list (.github/workflows/ci.yml:257) against the local migrated database", result: "70 passed (after re-recording 0161 locally: it had been edited after a first local apply, which test_migration_precheck rightly refused)", date: 2026-10-16}
 authz_checked: "Database-level: users_seat_limit (SECURITY DEFINER, search_path pinned, REVOKE ALL FROM PUBLIC) counts only the written row's brokerage; tenants_seat_limit_guard refuses seat_limit changes on any application login (member of oracle_app, not superuser) unless app_is_platform_admin(). Proven under the application role."
 blockers:
-  - {type: owner, note: "seat_limit is NULL for every brokerage, so nothing is enforced until the plan is decided (D-2026-10-12-02, T18.02): the number, whether the broker-owner counts (today: every active non-platform-admin user counts, owner included) and who sets it (a platform admin, today by SQL; no route)."}
+  - {type: deploy, note: "D-2026-11-05-01 decides the number: seat_limit = 21 (20 agents + the owner, who counts in 0161). Not yet set anywhere: 0161 reached main at 0f25ab1 (2026-11-08) but the staging deploy failed with DigitalOcean 401 for both the CI and the local token, and neoh-staging-ksfpn.ondigitalocean.app no longer resolves. After the account is restored: deploy, then UPDATE tenants SET seat_limit = 21 as doadmin through scripts/db-access-window.sh."}
+  - {type: owner, note: "Differs from the 2026-11-05 answer: the trigger also refuses reinstating (or reopening) a user in a brokerage already at its limit. Owner to confirm, or a follow-up migration exempts reopening a closing brokerage."}
   - "Lowering a limit below the active count removes no one; it blocks further activations until seats are freed."
   - "Stripe seat quantity (proration, upgrade/downgrade) is not wired: T18.04's checkout half waits on the owner's plan contract (T18.02) and Stripe test mode."
-  - "Not deployed (C4.4): 0161 is local; staging needs the push."
 audit_refs: []
-decision_refs: [D-2026-10-12-02]
+decision_refs: [D-2026-11-05-01, D-2026-10-12-02]
 next_task: "T18.05 Stripe event ordering and replay (AC18.03), test mode only; owner: plan contract (T18.02)."
-updated: 2026-10-16
+updated: 2026-11-08
 ```
 Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
 
@@ -3424,6 +3430,7 @@ Decisions are binding ([CONTRACT C2.4](CONTRACT.md#c2-scope-and-owner-decisions)
 | D-2026-10-12-03 | 2026-10-12 | **AI call notes support both modes, chosen per agent:** `review` (default) saves the note proposed for the agent to approve, edit or discard (the AI ignores it until approved); `direct` saves it approved. | Owner, in session 2026-10-12 ("both") | 09, 17 | `client_notes.review_state` (0130), `call_note_settings.py`, approve route, Personal AI toggle | Owner request |
 | D-2026-10-13-01 | 2026-10-13 | **Agents see their own clients, the brokerage pool and what is shared with them.** A client with no assignee is the brokerage pool, visible to every agent; an agent-created client is NOT auto-assigned; a share is per record and grants view or edit, chosen per share. | Owner, in session 2026-10-13 (three answers) | 03, 04, 17 | `0131_agent_record_scope.sql` (restrictive policies, `record_shares`, `assignee_user_id`), `record_access.py`, `ClientAccess.jsx`; contacts the same way in `0134_agent_contact_scope.sql` (L03-04) | Team leads (T03.02) or a different default for imports |
 | D-2026-10-12-02 | 2026-10-12 | Pricing is a hypothesis, not decided. Code: one Stripe price at quantity 1 (`backend/billing.py:44`, `:266`), no seats. Idea: ~$1,999/month per 20-agent brokerage, ~$1,499 pilot. | Shared notes 2026-10-11 | 18 | No price change without owner approval | Owner sets pricing |
+| D-2026-11-05-01 | 2026-11-05 | **Seat terms: 20 agents plus the owner; suspending an agent frees their seat.** A second owner takes a seat. Price stays undecided (D-2026-10-12-02). | Owner, in the 2026-11-05 Claude session (approved again 2026-11-08 with the PR #33 merge) | 18 | 0161 counts every active non-platform-admin user, owner included, so the plan is `tenants.seat_limit = 21`; suspension already frees a seat (trigger checks only rows that gain one) | The plan contract changes |
 
 ## Audit cross-reference
 

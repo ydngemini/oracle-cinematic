@@ -11,7 +11,7 @@ ledger. Nobody else's reads are recorded (their own tenant's data is theirs).
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 import audit_middleware
@@ -155,3 +155,117 @@ def test_the_coalescing_state_is_bounded(monkeypatch):
         assert audit_middleware._platform_read_is_new("op", f"/api/clients/{index}", 100.0)
 
     assert len(audit_middleware._platform_read_last) <= 10
+
+
+# ---------------------------------------------------------------------------
+# WebSocket subscriptions (L17-17 follow-up, 2026-11-08). BaseHTTPMiddleware
+# never sees a WebSocket, so a platform admin's live streams (the main /ws, a
+# voice session, the audit trail, observability, surge telemetry) were not
+# recorded. Each handler now records one row once the socket is accepted.
+# ---------------------------------------------------------------------------
+
+def _ws_app():
+    app = FastAPI()
+
+    @app.websocket("/ws/stream/{tenant_id}")
+    async def stream(websocket: WebSocket, tenant_id: str):
+        from tenancy import require_context
+
+        ctx = require_context(websocket.headers["authorization"])
+        await websocket.accept()
+        audit_middleware.record_platform_websocket(websocket, ctx)
+        await websocket.send_json({"ok": True})
+        await websocket.close()
+
+    return TestClient(app)
+
+
+def test_a_platform_admin_websocket_subscription_is_recorded_once(harness):
+    _, recorded = harness
+    client = _ws_app()
+    url = f"/ws/stream/{OTHER_TENANT}?token=s3cret-value&q=Jane"
+    with client.websocket_connect(url, headers=_bearer("platform_admin")) as ws:
+        assert ws.receive_json() == {"ok": True}
+    reads = _reads(recorded)
+    assert len(reads) == 1, recorded
+    row = reads[0]
+    assert row["category"] is AuditCategory.ADMIN_ACTION
+    assert row["action"] == f"platform_read WEBSOCKET /ws/stream/{OTHER_TENANT}"
+    assert row["user_id"] == "operator@neoh.test"
+    meta = row["metadata"]
+    assert meta["method"] == "WEBSOCKET"
+    assert meta["route"] == "/ws/stream/{tenant_id}"
+    assert meta["target_tenant_id"] == OTHER_TENANT
+    # Never the query string: it can carry a token or a search term.
+    assert "s3cret" not in repr(row) and "Jane" not in repr(row)
+
+    # A reconnect inside the window is the same subscription.
+    with client.websocket_connect(url, headers=_bearer("platform_admin")) as ws:
+        ws.receive_json()
+    assert len(_reads(recorded)) == 1
+
+
+@pytest.mark.parametrize("role", ["agent", "broker_owner"])
+def test_tenant_users_websockets_are_not_recorded(harness, role):
+    _, recorded = harness
+    with _ws_app().websocket_connect(
+            f"/ws/stream/{OTHER_TENANT}", headers=_bearer(role, tenant=OTHER_TENANT)) as ws:
+        ws.receive_json()
+    assert _reads(recorded) == []
+
+
+# Every WebSocket handler that authenticates a user. The provider media
+# bridges (/media/acs, /media/twilio, /media/plivo) carry no user identity.
+_USER_WEBSOCKETS = [
+    ("server.py", "websocket_endpoint"),
+    ("server.py", "voice_telemetry_websocket"),
+    ("audit_ledger.py", "audit_trail_ws"),
+    ("aws_observability.py", "observability_websocket"),
+    ("admin_c2.py", "surge_telemetry_ws"),
+]
+
+
+@pytest.mark.parametrize("filename,handler", _USER_WEBSOCKETS)
+def test_every_user_websocket_records_a_platform_admin_after_accepting(filename, handler):
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / filename).read_text())
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.AsyncFunctionDef) and n.name == handler), None)
+    assert fn is not None, f"{filename}: no handler {handler}"
+
+    def lines_of(attr):
+        return [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
+                and isinstance(c.func, (ast.Attribute, ast.Name))
+                and getattr(c.func, "attr", getattr(c.func, "id", None)) == attr]
+
+    accepts, records = lines_of("accept"), lines_of("record_platform_websocket")
+    assert accepts, f"{filename}:{handler} never accepts"
+    assert records, f"{filename}:{handler} does not record platform-admin subscriptions"
+    assert min(records) > min(accepts), "record only a subscription that was accepted"
+
+
+def test_a_websocket_audit_failure_never_breaks_the_stream(monkeypatch):
+    """A bare object (no scope, no query_params), then a recorder that raises:
+    the handler must carry on either way; the bare object is still recorded."""
+    from tenancy import Role, TenantContext
+
+    monkeypatch.setattr(audit_middleware, "_platform_read_last", {})
+    recorded: list[dict] = []
+    monkeypatch.setattr(audit_middleware, "_spawn_record", lambda **kw: recorded.append(kw))
+    ctx = TenantContext(agent_id="operator@neoh.test", tenant_id=PLATFORM_TENANT,
+                        role=Role.PLATFORM_ADMIN)
+
+    class Bare:
+        pass
+
+    audit_middleware.record_platform_websocket(Bare(), ctx)
+    assert len(recorded) == 1 and recorded[0]["metadata"]["target_tenant_id"] == "all"
+
+    def boom(**kw):
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(audit_middleware, "_spawn_record", boom)
+    monkeypatch.setattr(audit_middleware, "_platform_read_last", {})
+    audit_middleware.record_platform_websocket(Bare(), ctx)  # must not raise

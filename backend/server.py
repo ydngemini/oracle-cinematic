@@ -36,7 +36,9 @@ from billing import router as billing_router
 from billing_usage import router as billing_usage_router
 from ai_budget_api import router as ai_budget_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
-from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
+from audit_middleware import (
+    AuditMiddleware, audit_action, audit_now, drain_pending, record_platform_websocket,
+)
 from tenancy import require_context, TenantContext, verify_session_current
 from admin_c2 import router as admin_c2_router
 from rate_limit_middleware import (
@@ -1298,6 +1300,7 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
         return
 
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     group = voice_session_group(ctx.tenant_id, session_uuid)
     ws_hub.register(group, websocket)
     try:
@@ -1369,6 +1372,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
 
     # Production identity is claim-derived. Query parameters never override it.
     user_id = ctx.agent_id

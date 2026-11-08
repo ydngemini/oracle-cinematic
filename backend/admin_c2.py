@@ -350,6 +350,8 @@ async def surge_telemetry_ws(websocket: WebSocket):
         return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    from audit_middleware import record_platform_websocket
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     _surge_subscribers.append(websocket)
 
     try:

@@ -42,6 +42,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from tenancy import TenantContext
+from log_redaction import actor_ref, scrub_text
 from audit_ledger import ledger, AuditCategory
 
 log = logging.getLogger("oracle.crypto")
@@ -230,9 +231,9 @@ async def pii_context(conn, ctx: TenantContext) -> AsyncGenerator[None, None]:
             tenant_key,
         )
         log.debug(
-            "pii_context: app.encryption_key GUC set for tenant=%r agent=%r.",
+            "pii_context: app.encryption_key GUC set for tenant=%r %s.",
             ctx.tenant_id,
-            ctx.agent_id,
+            actor_ref(ctx.agent_id),
         )
         yield
     finally:
@@ -303,8 +304,9 @@ async def access_pii_field(
         # Audit failure is serious but must not silently swallow the decrypted
         # value — log loudly and let the caller handle.
         log.error(
-            "access_pii_field: audit write failed for actor=%r target=%r field=%r: %s",
-            ctx.agent_id, target_id, field_name, exc,
+            "access_pii_field: audit write failed for %s target=%r field=%r: %s: %s",
+            actor_ref(ctx.agent_id), target_id, field_name,
+            type(exc).__name__, scrub_text(str(exc)),
         )
         raise CryptoError(
             f"PII access succeeded but audit ledger write failed for "
@@ -313,8 +315,8 @@ async def access_pii_field(
         ) from exc
 
     log.info(
-        "ACCESS_PII: actor=%r tenant=%r target=%r field=%r role=%r",
-        ctx.agent_id, ctx.tenant_id, target_id, field_name, ctx.role.value,
+        "ACCESS_PII: %s tenant=%r target=%r field=%r role=%r",
+        actor_ref(ctx.agent_id), ctx.tenant_id, target_id, field_name, ctx.role.value,
     )
     return plaintext
 
