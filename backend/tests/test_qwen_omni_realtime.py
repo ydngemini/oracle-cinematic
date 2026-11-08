@@ -184,6 +184,15 @@ def test_media_endpoint_requires_live_call_binding(monkeypatch):
     assert websocket.closed_code == 4403
 
 
+def _admit_by_ai_budget(monkeypatch):
+    """The call's brokerage may spend on a realtime model (T18.07; the gate
+    itself is tested in tests/test_ai_budget_hosted_calls.py)."""
+    async def admitted(_tenant_id):
+        return None
+
+    monkeypatch.setattr(commands_api, "_realtime_refusal", admitted)
+
+
 def test_media_endpoint_accepts_signed_jwt_for_live_call(monkeypatch):
     websocket = _FakeAcsWebSocket(
         authorization="Bearer signed-acs-token",
@@ -211,6 +220,7 @@ def test_media_endpoint_accepts_signed_jwt_for_live_call(monkeypatch):
         accept_active_call,
     )
     monkeypatch.setattr(qwen_omni_realtime, "QwenOmniRealtimeBridge", _Bridge)
+    _admit_by_ai_budget(monkeypatch)
 
     asyncio.run(commands_api.acs_qwen_media(websocket))
 

@@ -675,9 +675,11 @@ class DurableJobWorkers:
                 except Exception as exc:  # noqa: BLE001 - persisted retry path
                     # An error that says retrying cannot help (job_terminal,
                     # e.g. command_providers.ProviderConfigurationError) is
-                    # dead-lettered now rather than re-run later.
+                    # dead-lettered now rather than re-run later, under its
+                    # own code when it names one (billing.NotEntitled).
                     if getattr(exc, "job_terminal", False):
-                        await fail_job(job, worker_id, exc, error_code="NOT_CONFIGURED",
+                        await fail_job(job, worker_id, exc,
+                                       error_code=getattr(exc, "job_error_code", "NOT_CONFIGURED"),
                                        terminal=True)
                     else:
                         await fail_job(job, worker_id, exc)

@@ -256,6 +256,10 @@ class Ambiguity(_Strict):
     mention: Optional[int] = Field(default=None, ge=0)
     question: str = Field(min_length=1, max_length=200)
     choices: list[Candidate] = Field(default_factory=list, max_length=MAX_CANDIDATES)
+    #: Server-decided: True only on an ambiguity authorize_frame built. The
+    #: parser may write its own ("Which Sarah?"), with no choices; the turn
+    #: asks from the server's alone (L05-11), never from the model's text.
+    server: bool = False
 
 
 class SemanticFrame(_Strict):
@@ -320,6 +324,7 @@ def _strip_server_fields(data: dict[str, Any]) -> dict[str, Any]:
     for a in data.get("ambiguities") or []:
         if isinstance(a, dict):
             a["choices"] = []
+            a.pop("server", None)
     return data
 
 
@@ -444,12 +449,14 @@ async def authorize_frame(ctx: TenantContext, frame: SemanticFrame) -> SemanticF
             ambiguities.append(Ambiguity(
                 mention=index,
                 question=f"I can't find a record you can open for “{m.text}”. Who do you mean?",
+                server=True,
             ))
         elif len(kept) > 1:
             ambiguities.append(Ambiguity(
                 mention=index,
                 question=f"{len(kept)} records match “{m.text}”. Which one?",
                 choices=kept,
+                server=True,
             ))
 
     if dropped:
@@ -474,6 +481,9 @@ class KnownRecord:
     record_type: str
     id: str
     label: str
+    #: What tells two same-name records apart when the turn asks (type, stage,
+    #: email). Never shown to the parser; lives for the turn only (L05-11).
+    detail: str = ""
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:

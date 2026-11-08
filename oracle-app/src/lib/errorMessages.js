@@ -106,7 +106,10 @@ function baseSentence(error, { capability, fallback } = {}) {
     return ERROR_MESSAGES.UNAVAILABLE;
   }
   // Validation-ish answers are often the most useful thing the server said.
-  if ((status === 400 || status === 409 || status === 422) && isHumanMessage(error.message)) {
+  // A 402 is a stop the brokerage can act on (its AI budget, its plan): the
+  // server's sentence says which, and who can change it.
+  if ((status === 400 || status === 402 || status === 409 || status === 422)
+      && isHumanMessage(error.message)) {
     return error.message.trim();
   }
   if (STATUS_MESSAGES[status]) return STATUS_MESSAGES[status];

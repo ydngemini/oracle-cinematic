@@ -5,16 +5,23 @@ These tests cover the deterministic contract path only; the Bedrock JSONL
 training generator remains exercised separately by manual forge runs.
 """
 
+import asyncio
 import json
 import os
+import re
+from contextlib import asynccontextmanager
 
 import pytest
 
 from ml_forge.synthetic_lawyer import (
+    BUILTIN_CONTRACT_TEMPLATES,
     draft_assignment_contract,
     draft_assignment_contract_json,
+    fetch_assignment_transaction_for_client,
     generate_assignment_contract_artifact,
     generate_assignment_contract_vault_artifact,
+    normalize_assignment_payload,
+    render_contract_workspace_draft,
 )
 from contract_vault import VaultedContract
 
@@ -84,6 +91,170 @@ def test_draft_fatal_error_when_required_data_missing():
     assert "seller_name" in result["missing_variables"]
     assert "investor_buy_price" in result["missing_variables"]
     assert result["final_contract_text"] == ""
+
+
+def test_public_record_owner_is_never_used_as_the_seller():
+    # F11.04: an owner of record comes from a public-record parcel match that
+    # nobody has confirmed.  It is not the contract's Seller.
+    transaction = _payload(
+        seller_name=None,
+        payload={"owner_name": "Public Record Owner"},
+    )
+
+    assert normalize_assignment_payload(transaction)["seller_name"] is None
+    result = draft_assignment_contract(transaction)
+
+    assert result["status"] == "FATAL_ERROR"
+    assert "seller_name" in result["missing_variables"]
+    _assert_workspace_asks_for_the_seller(transaction)
+
+
+def _assert_workspace_asks_for_the_seller(transaction):
+    # A FATAL_ERROR draft has no text at all; the workspace preview is the
+    # path that renders text without a seller, so the owner check lives here.
+    template = BUILTIN_CONTRACT_TEMPLATES["assignment-standard"]
+    draft = render_contract_workspace_draft(
+        document_type=template["document_type"],
+        body_template=template["body_template"],
+        required_fields=template["required_fields"],
+        transaction_data=transaction,
+    )
+    assert draft["status"] == "INCOMPLETE"
+    assert "seller_name" in draft["missing_variables"]
+    assert "[[MISSING: seller_name]]" in draft["final_contract_text"]
+    assert "Public Record Owner" not in draft["final_contract_text"]
+
+
+def test_lead_seller_name_still_fills_the_seller():
+    result = draft_assignment_contract(
+        _payload(
+            seller_name=None,
+            payload={"seller_name": "Confirmed Seller", "owner_name": "Public Record Owner"},
+        )
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert "Confirmed Seller" in result["final_contract_text"]
+    assert "Public Record Owner" not in result["final_contract_text"]
+
+
+def _select_expression(query, alias):
+    """The SELECT-list expression a query names ``alias``, however it is spelled.
+
+    Walks back from ``AS <alias>`` to the top-level comma (or SELECT) that
+    starts the expression, skipping parentheses and quoted literals.
+    """
+    found = list(re.finditer(rf"\bAS\s+{alias}\b", query, re.IGNORECASE))
+    assert len(found) == 1, f"the deal query must name exactly one {alias} column"
+    end = found[0].start()
+    depth, quoted, i = 0, False, end - 1
+    while i >= 0:
+        ch = query[i]
+        if ch == "'":
+            quoted = not quoted
+        elif not quoted:
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and (ch == "," or re.search(r"\bSELECT\s*$", query[: i + 1], re.IGNORECASE)):
+                break
+        i -= 1
+    return query[i + 1:end].strip()
+
+
+def _assert_seller_never_reads_an_owner(query):
+    """F11.04 guard, independent of SQL spelling: the Seller expression names
+    no owner field at all, and the query never reads public-record parcels."""
+    expression = _select_expression(query, "seller_name")
+    assert not re.search(r"owner", expression, re.IGNORECASE), expression
+    assert "public_property_records" not in query.lower()
+
+
+class _ContractDealConn:
+    """Answers the deal query; a Seller expression that reads any owner field
+    yields the owner of record, as Postgres would."""
+
+    def __init__(self, *, seller_client_name=None):
+        self.seller_client_name = seller_client_name
+        self.queries = []
+
+    async def fetchrow(self, query, *args):
+        self.queries.append((query, args))
+        payload = {"owner_name": "Public Record Owner", "earnest_money": 3000}
+        seller = self.seller_client_name
+        if seller is None and re.search(r"owner", _select_expression(query, "seller_name"), re.IGNORECASE):
+            seller = payload["owner_name"]
+        return {
+            "assignee_name": "Atlas Cash Buyers LLC",
+            "property_address": "42 Elkton Rd, Newark, DE 19711",
+            "seller_name": seller,
+            "contract_execution_date": "2026-06-15",
+            "contract_expires_at": "2099-08-01",
+            "underwriting": {"wholesale_buy_price": 195000, "investor_buy_price": 220000},
+            "payload": json.dumps(payload),
+            "acquisition_entity": {"entity_name": "Neoh Acquisitions LLC"},
+            "listing_price": None,
+        }
+
+
+def _fetch_with(monkeypatch, conn):
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    monkeypatch.setattr("db.connection.tenant_tx", tx)
+    return asyncio.run(
+        fetch_assignment_transaction_for_client("11111111-1111-1111-1111-111111111111", object())
+    )
+
+
+def test_client_contract_without_a_linked_seller_asks_for_one(monkeypatch):
+    conn = _ContractDealConn()
+    transaction = _fetch_with(monkeypatch, conn)
+
+    _assert_seller_never_reads_an_owner(conn.queries[0][0])
+    assert transaction["seller_name"] is None
+    result = draft_assignment_contract(transaction)
+    assert result["status"] == "FATAL_ERROR"
+    assert "seller_name" in result["missing_variables"]
+    _assert_workspace_asks_for_the_seller(transaction)
+
+
+@pytest.mark.parametrize(
+    "regression",
+    [
+        "COALESCE(seller.full_name, leads.payload->>'seller_name', leads.payload->>'owner_name')",
+        "COALESCE(seller.full_name, leads.payload ->> 'owner_name')",
+        "COALESCE(seller.full_name, leads.payload#>>'{owner_name}')",
+        "COALESCE(seller.full_name, (SELECT p.owner_name FROM public_property_records p"
+        " WHERE p.parcel_id = leads.parcel_id LIMIT 1))",
+        "COALESCE(seller.full_name, (SELECT p.name FROM public_property_records p LIMIT 1))",
+        "COALESCE(seller.full_name, leads.payload->>'OWNER')",
+    ],
+)
+def test_seller_guard_catches_every_spelling_of_an_owner_fallback(monkeypatch, regression):
+    conn = _ContractDealConn()
+    _fetch_with(monkeypatch, conn)
+    query = conn.queries[0][0]
+    shipped = _select_expression(query, "seller_name")
+
+    regressed = query.replace(shipped, regression)
+    assert regressed != query
+    with pytest.raises(AssertionError):
+        _assert_seller_never_reads_an_owner(regressed)
+
+
+def test_client_contract_uses_the_linked_seller_client(monkeypatch):
+    conn = _ContractDealConn(seller_client_name="Linked Seller Client")
+    transaction = _fetch_with(monkeypatch, conn)
+
+    result = draft_assignment_contract(transaction)
+    assert result["status"] == "SUCCESS"
+    assert "Linked Seller Client" in result["final_contract_text"]
+    assert "Public Record Owner" not in result["final_contract_text"]
 
 
 def test_draft_rejects_corrupt_financial_and_date_values():

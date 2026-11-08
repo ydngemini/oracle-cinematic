@@ -381,6 +381,13 @@ export function CrmShell() {
     startTransition(() => setProfileOpen(false));
   }, []);
 
+  // A lapsed subscription's "Export your data": Settings holds the owner's
+  // Account & data panel (the export), reachable once the gate steps aside.
+  const openAccountData = useCallback(() => {
+    setProfileView('settings');
+    setProfileOpen(true);
+  }, []);
+
   const closeTour = useCallback((completed = false) => {
     // Dismissing counts too — the tour now opens itself on a first visit, so a
     // close that recorded nothing would reopen it on the next mount.
@@ -477,6 +484,10 @@ export function CrmShell() {
         </div>
       </header>
       <ServiceStatusBanner />
+      {/* Here, not last: its dialog is fixed over everything wherever it is
+          mounted, and its lapsed-subscription notice sits in the flow, below
+          the header like the service banner. */}
+      <BillingOverlay onLockedChange={setBillingLocked} onOpenAccountData={openAccountData} />
 
       <AdaptiveViewTransition
         key={viewKey}
@@ -643,7 +654,6 @@ export function CrmShell() {
         onNavigateSales={navigateSales}
       />
 
-      <BillingOverlay onLockedChange={setBillingLocked} />
       <OnboardingGate />
     </div>
     </LayoutGroup>

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ crmGet: vi.fn() }));
@@ -39,5 +39,48 @@ describe('OurAITab live sources', () => {
     render(<OurAITab />);
     expect(await screen.findByText('Partial live view')).toBeTruthy();
     expect(screen.getByText(/Lead routing is temporarily unavailable/)).toBeTruthy();
+  });
+});
+
+describe('OurAITab website status (T14.16)', () => {
+  function serveSites(sites) {
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.startsWith('/api/sites') ? { sites } : {}));
+    window.sessionStorage.setItem('oracle_ai_workspace', 'sites');
+  }
+
+  async function websiteStatus() {
+    const name = await screen.findByText('Hyperlocal Website');
+    const card = name.closest('li');
+    await waitFor(() => expect(within(card).queryByText('Checking')).toBeNull());
+    return card;
+  }
+
+  afterEach(() => window.sessionStorage.clear());
+
+  it('is not Live just because the sites endpoint answered', async () => {
+    serveSites([{ id: 's1', status: 'draft' }]);
+    render(<OurAITab />);
+    const card = await websiteStatus();
+    expect(within(card).getByText('Setup required')).toBeTruthy();
+    expect(within(card).queryByText('Live')).toBeNull();
+  });
+
+  it('is Live once a site is published', async () => {
+    serveSites([{ id: 's1', status: 'draft' }, { id: 's2', status: 'published' }]);
+    render(<OurAITab />);
+    const card = await websiteStatus();
+    expect(within(card).getByText('Live')).toBeTruthy();
+  });
+});
+
+describe('OurAITab carries no legacy MLS/IDX (T14.02, AC14.02, D-2026-10-12-01)', () => {
+  it('never polls the MLS health endpoint and offers no IDX item', async () => {
+    serve({});
+    const { container } = render(<OurAITab />);
+    await waitFor(() => expect(api.crmGet).toHaveBeenCalled());
+    await screen.findByText(/\d+\/\d+ sources/);
+    const paths = api.crmGet.mock.calls.map(([path]) => String(path));
+    expect(paths.some((p) => /\/api\/mls\b|idx/i.test(p))).toBe(false);
+    expect(container.textContent).not.toMatch(/\bIDX\b|MLS \/ IDX|WordPress IDX/);
   });
 });

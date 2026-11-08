@@ -40,11 +40,14 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Contact PII**:
 - `clients` holds name, email, phone and notes **in plaintext**. Its `encrypted_contact` column exists but is unused.
+- `client_contact_index` (0156) holds, per client, HMAC-SHA-256 lookup hashes of the normalised email and phone and keyed word-prefix name tokens, under the tenant key (the `agent_contacts` scheme). No plaintext; not reversible without the master key. Filled by `client_contact_index.py` (periodic, internal-only); goes with its client. Nothing searches it yet (L17-23).
 - `agent_contacts` keeps PII encrypted with pgcrypto under a per-tenant key, with HMAC lookup hashes. `assigned_user_id` (0134) is the canonical assignee (a `users.id`, no PII); who may read a contact follows it, the brokerage pool and `record_shares` rows of kind `contact` (D-2026-10-13-01).
 - `leads` has 10.4M rows in dev. `payload` holds owner names **in plaintext**, and `encrypted_payload` is unused.
 - Also in this category: `transaction_parties` (encrypted), `contact_property_relationships`, `buyer_profiles` and `lead_intake_events` (encrypted payload).
 
 **Business CRM**: notes (`client_notes.body` is communication content — AI call notes are what a customer said on a call; since 0132 every app write seals it in `body_ciphertext` under the tenant key, and pre-0132 rows stay plaintext until `backend/backfill_client_notes.py` runs), tasks, activities, tags, segments, showings, listings, transactions, offers, milestones, checklists, buyer requests, marketplace, smart plans (revisions immutable), missions, hyperlocal sites, studio campaigns.
+- `property_match_decisions` (0168, T11.03): the append-only record of a broker owner confirming, rejecting or withdrawing that a public property record is a linked client's house — ids, the decision, evidence kinds and timestamps. The decider's reason may name an owner, so it is stored only sealed in `reason_ciphertext` under the key of the lead's own tenant; there is no plaintext column for it and no fingerprint of the record's address or owner. `decided_by` is the decider's login (an email), stamped by trigger from the session. The reason never enters audit metadata; the brokerage export decrypts it, and the rows go with their lead, client or tenant.
+- `hyperlocal_site_events` (0173, T14.04): the append-only trail of a site's publish, rollback and archive moves (status, from and to revision) and of its custom-domain claim's states, written by trigger. `actor` is the acting login (an email) from the session, `actor_role` its role; a domain row carries the claimed hostname and the DNS check's evidence (record name, answer counts, verdicts, the matched value's hash — never another TXT value); a site row may carry the approval id and its reviewer's login. Erased with the site or the brokerage. `hyperlocal_site_domains` gained `challenge_token` (a random value the customer publishes in DNS, not a secret), `last_checked_at` and `last_check` (the same evidence shape).
 
 **Communication content**:
 - `sms_messages`: numbers **in plaintext**. Since 0152 (L17-21) every app write seals the body in `body_ciphertext` under the tenant key and leaves `body` NULL; pre-0152 bodies stay plaintext until `backend/backfill_sealed_text.py` runs.
@@ -76,6 +79,9 @@ Counts are from the dev database. They show shape, not production volume.
 - `style_training_examples`: redacted.
 - Model registry, training runs and evaluations.
 
+**Derived intelligence** (property signals, scores, zoning and title analyses):
+- `title_findings`: `notes` is the agent's working note **in plaintext** (often a third party's court record) and never reaches the client portal. The reviewer's reason for confirming or dismissing a finding (T11.03) may name an owner, so it is stored only sealed in `review_reason_ciphertext` under the key of the finding's own tenant (0167); there is no plaintext column for it. `reviewed_by` is the reviewer's email. The reason never enters audit metadata; the brokerage export decrypts it, and erasure deletes it with the row.
+
 **Documents and media**:
 - Contracts, drafts and synthesis artifacts (encrypted content plus a vault object).
 - `ai_record_attachments` (encrypted bytes).
@@ -88,7 +94,9 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Secrets / capability tokens**: `provider_credentials` (encrypted Google/SMTP tokens), `lead_source_connectors` (encrypted webhook secret), `oauth_authorization_states`, `password_reset_tokens`, `client_portals`, `property_view_upload_links`, and invitations (all hashed tokens). Two-step sign-in (0150, L17-19): `user_mfa_factors.totp_secret_ciphertext` is the authenticator secret sealed with the brokerage key (pgcrypto, per-tenant HKDF, never plaintext); `user_mfa_recovery_codes.code_hash` is the SHA-256 of each one-time recovery code. Both tables admit only the platform context (RLS), are erased with the brokerage (and with the user, by cascade) and are never exported.
 
-**Billing** (Neoh is controller): `subscriptions` (Stripe ids), `billing_usage_events`, `stripe_webhook_events` (event ids only).
+**Billing** (Neoh is controller): `subscriptions` (Stripe ids), `billing_usage_events`, `stripe_webhook_events` (event ids only), `billing_checkout_sessions` (0169: the brokerage's open Stripe Checkout session id and payable link, erased with the brokerage).
+
+**Spend controls** (0170, T18.07; operational, no customer content): `tenant_action_budgets` holds the missions cents cap and the AI token budget (monthly cap, warning percent, paused); `updated_by` is the setter's sign-in email; erased with the brokerage. `ai_token_reservations` holds the token estimate of each hosted model call in flight (a call key made of the feature kind — `chat`, `voice`, `mission`, `client_ai`, `parse`, `cma` and so on — with the chat message id or a random id per unit of work, the provider and a number; never a phone number, a call id or any prompt or answer text; the same key, with `:prompt`/`:completion`, is the `billing_usage_events` idempotency key), lapses within minutes and is erased with the brokerage. `platform_spend_controls` is the platform kill switch (one row per channel, no tenant); `reason` is a platform admin's free text and `updated_by` their sign-in id. Audit entries for budget changes carry the numbers and switches only, never the switch's reason.
 
 **Public / licensed / reference** (not brokerage data):
 - `public_property_records`: 9.8M rows of owner names from public records, with a trigram search index.
@@ -142,7 +150,7 @@ Spaces versioning is off, so a deleted object is gone.
 
 | Gap | Risk | Status |
 |---|---|---|
-| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21 (blind index for clients; batched backfill plan for leads), not built |
+| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21; clients slice (a) built in L17-23 (0156: hashes and tokens kept current, not yet searched); plaintext not yet sealed; leads not started |
 | `sms_messages.body`, `negotiation_events.transcript_excerpt`, `user_interactions.content` plaintext | DB read access exposes what people wrote and said | new writes sealed since 0152 (L17-21, local); old rows plaintext until `backfill_sealed_text.py` runs in each environment; refusing plaintext is a later contract migration |
 | `email_outbox` subject/body, `interaction_logs` subject/text, `ai_tool_operations.result`, `beliefs.source_quote`, `user_profiles.profile_summary` plaintext | DB read access exposes what people wrote, what the AI returned and what it remembers | new writes sealed since 0154 (L17-22, local); old rows plaintext until `backfill_sealed_text.py` / `sealed_text_seal` runs in each environment; refusing plaintext is a later contract migration |
 | `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |

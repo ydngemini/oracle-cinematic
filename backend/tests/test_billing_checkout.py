@@ -43,6 +43,55 @@ def _checkout(ctx=CTX, tenant_id=TENANT_ID):
     return asyncio.run(billing.create_checkout_session(_request(tenant_id), ctx=ctx))
 
 
+class _CheckoutDb:
+    """Just enough of subscriptions and billing_checkout_sessions for checkout:
+    an existing brokerage, no plan yet, and the brokerage's one stored session.
+    tests/test_stripe_subscription_state_live.py runs the same flows on
+    PostgreSQL."""
+
+    def __init__(self, live_status=None, customer=None):
+        self.live_status, self.customer = live_status, customer
+        self.session = None
+
+    async def execute(self, query, *args):
+        if "INSERT INTO billing_checkout_sessions" in query:
+            self.session = {"stripe_session_id": args[1], "url": args[2], "reusable": True}
+        return "OK"
+
+    async def fetchval(self, query, *args):
+        if "FROM tenants" in query:
+            return 1
+        if "SELECT status FROM subscriptions" in query:
+            return self.live_status
+        if "SELECT stripe_customer_id FROM subscriptions" in query:
+            return self.customer
+        raise AssertionError(f"unexpected query: {query}")
+
+    async def fetchrow(self, query, *args):
+        if "FROM billing_checkout_sessions" in query:
+            return self.session
+        raise AssertionError(f"unexpected query: {query}")
+
+
+def _with_checkout_db(monkeypatch, db):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield db
+
+    monkeypatch.setattr(billing, "get_pool", lambda: object())
+    monkeypatch.setattr(billing, "tenant_tx", tx)
+    return db
+
+
+@pytest.fixture(autouse=True)
+def _a_brokerage_without_a_plan(monkeypatch):
+    """Checkout now reads the brokerage's plan and open session before Stripe;
+    the portal tests below install their own rows."""
+    return _with_checkout_db(monkeypatch, _CheckoutDb())
+
+
 # ── the price guard ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
@@ -181,6 +230,83 @@ def test_a_generic_stripe_error_is_not_echoed_either(monkeypatch):
     assert excinfo.value.status_code == 502
     assert leak not in excinfo.value.detail
     assert "verification" not in excinfo.value.detail
+
+
+# ── one checkout per brokerage (T18.05, AC18.03) ─────────────────────────────
+
+def test_a_double_click_across_a_ten_minute_boundary_opens_one_session(monkeypatch):
+    """The idempotency key was a ten-minute wall-clock bucket, so clicks at
+    :59.6 and :00.2 got two keys and two payable sessions."""
+    keys = []
+
+    def _create(**kwargs):
+        keys.append(kwargs["idempotency_key"])
+        return _Session(f"cs_test_{len(keys)}", f"https://checkout.stripe.com/c/pay/cs_test_{len(keys)}")
+
+    monkeypatch.setattr(billing, "STRIPE_PRICE_ID", "price_ok")
+    monkeypatch.setattr(stripe.checkout.Session, "create", staticmethod(_create))
+
+    monkeypatch.setattr(billing.time, "time", lambda: 1_800_000_599.6)
+    first = _checkout()
+    monkeypatch.setattr(billing.time, "time", lambda: 1_800_000_600.2)
+    second = _checkout()
+
+    assert len(keys) == 1, keys
+    assert second.session_id == first.session_id and second.url == first.url
+
+
+def test_checkout_without_the_database_is_refused_before_stripe(monkeypatch):
+    """Without the database there is no way to see the brokerage's plan or its
+    open session, so a second subscription could be sold: refuse instead."""
+    monkeypatch.setattr(billing, "STRIPE_PRICE_ID", "price_ok")
+    monkeypatch.setattr(billing, "get_pool", lambda: None)
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "create",
+        staticmethod(lambda **_k: (_ for _ in ()).throw(AssertionError("must not reach Stripe"))),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _checkout()
+
+    assert excinfo.value.status_code == 503
+
+
+def test_a_pending_first_payment_blocks_a_second_checkout(monkeypatch):
+    _with_checkout_db(monkeypatch, _CheckoutDb(live_status="incomplete"))
+    monkeypatch.setattr(billing, "STRIPE_PRICE_ID", "price_ok")
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "create",
+        staticmethod(lambda **_k: (_ for _ in ()).throw(AssertionError("must not reach Stripe"))),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _checkout()
+
+    assert excinfo.value.status_code == 409
+    # Names the action the locked billing overlay offers; there is no
+    # separate Billing page to send the owner to.
+    assert "Manage billing" in excinfo.value.detail
+
+
+def test_a_returning_brokerage_checks_out_on_its_existing_customer(monkeypatch):
+    seen = {}
+
+    def _create(**kwargs):
+        seen.update(kwargs)
+        return _Session("cs_test_back", "https://checkout.stripe.com/c/pay/cs_test_back")
+
+    _with_checkout_db(monkeypatch, _CheckoutDb(customer="cus_existing"))
+    monkeypatch.setattr(billing, "STRIPE_PRICE_ID", "price_ok")
+    monkeypatch.setattr(stripe.checkout.Session, "create", staticmethod(_create))
+
+    _checkout()
+
+    assert seen["customer"] == "cus_existing"
+    # Stripe refuses tax and tax-id collection on an existing customer unless
+    # Checkout may write the address and name it collects back to it.
+    assert seen["customer_update"] == {"address": "auto", "name": "auto"}
 
 
 # ── the cancellation path ────────────────────────────────────────────────────

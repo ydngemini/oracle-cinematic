@@ -64,9 +64,19 @@ One state machine (`space_status.py`), stored as `reconstruction_jobs.stage`.
 | reconstructing | Building your space | the GPU step; 15–40 min typical |
 | converting | Preparing walkthrough | delivery format |
 | analyzing | Finishing touches | orientation, scale, entry view, floor plan |
-| ready | Ready | published atomically |
+| ready | Ready | published atomically; ready to view, not a quality claim |
 | needs_attention | Needs attention | e.g. conversion failed; raw output kept |
 | failed | Couldn't build this space | with category + guidance |
+
+**Ready to view is not verified.** `ready` means published and openable,
+nothing more. What the space may be *called* is its certification
+(`pending` / `incomplete` / `degraded` / `rejected` / `verified`,
+`space_certification.py`), reported beside the stage as `certification` on the
+job view, on `GET /api/crm/space` (`published.certification`) and on the tour
+(`splat_certification`, `splat_label`, `splat_caveats`). It is derived on every
+read, so photos added after a build make its proof stale without a write.
+Nothing stored today can reach `verified`; see
+[neoh-space-quality.md, "Certification"](neoh-space-quality.md#certification-t1209).
 
 **Progress honesty.** No provider exposes a real percentage, so none is shown:
 the API returns `steps` (done / current / pending) and a label. `progress` is
@@ -346,6 +356,10 @@ capture run and the browser harness.
   hook exists (`measured_scale`), no capture app sends it yet.
 * **Room semantics / room graph** — not inferred; only floor-plan rooms are
   listed. `focus_room`-style Neoh camera actions are therefore not offered.
+* **No space can be certified** — room connectivity (T12.06) and real-device
+  tour performance (T12.04) have no producer, so certification stops at
+  `incomplete` for every space. A phone-scan upload has no build behind it and
+  is always `pending`.
 * **Guided tour over a splat** — the guided route exists for 360 scenes only.
 * **Face / plate / document blurring** — not implemented.
 * **Cross-browser** — Chrome measured; Firefox and WebKit need Playwright's

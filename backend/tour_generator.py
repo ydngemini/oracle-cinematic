@@ -18,13 +18,12 @@ Uses Bedrock (Llama-70B) for generation with guided JSON output.
 Falls back to Claude-3 Sonnet if Llama fails.
 """
 
-import asyncio
 import json
 import logging
 import os
 from typing import Optional
 
-from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
+from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL
 
 logger = logging.getLogger("oracle.tour_generator")
 
@@ -221,13 +220,15 @@ async def generate_tour(property_data: dict) -> Optional[dict]:
         style=style,
     )
 
-    # Try Llama-70B first (faster, cheaper) — run in thread to avoid blocking event loop
+    # Try Llama-70B first (faster, cheaper). Under the route's spend scope each
+    # call is held and metered (T18.07); a budget refusal is raised, never a
+    # reason to ask the secondary model.
     prompt_text = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
-    raw = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt_text, 4096)
+    raw = await invoke_async(PRIMARY_MODEL, prompt_text, 4096)
 
     if not raw:
         logger.warning("Primary model failed, falling back to secondary")
-        raw = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt_text, 4096)
+        raw = await invoke_async(SECONDARY_MODEL, prompt_text, 4096)
 
     if not raw:
         logger.error("Both models failed to generate tour data")
@@ -236,7 +237,8 @@ async def generate_tour(property_data: dict) -> Optional[dict]:
     # Parse JSON from response
     parsed = _extract_json(raw)
     if not parsed:
-        logger.error("Failed to parse JSON from model response: %s", raw[:200])
+        # Its length, never its text: a tour echoes the property (C5.4).
+        logger.error("Failed to parse JSON from model response (%d chars)", len(raw))
         return None
 
     valid, msg = _validate_tour_data(parsed)
@@ -254,8 +256,8 @@ async def generate_tour(property_data: dict) -> Optional[dict]:
         "target": [0, 0.5, 0],
     }
 
-    logger.info("Generated tour: %d waypoints for '%s' (%s)",
-                len(parsed["waypoints"]), property_data.get("address", "unknown"), style)
+    # No address: it identifies a homeowner (C5.4).
+    logger.info("Generated tour: %d waypoints (%s)", len(parsed["waypoints"]), style)
     return parsed
 
 

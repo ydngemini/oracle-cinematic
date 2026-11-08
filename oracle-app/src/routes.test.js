@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_WORK_TYPE,
   LEGACY_PATHS,
+  LEGACY_TAB_IDS,
   VIEWS,
+  WORK_TYPES,
   entityHref,
   href,
   parse,
@@ -75,6 +77,59 @@ describe('legacy addresses', () => {
     expect(resolveLegacyId('command')).toEqual({ view: 'home' });
     expect(resolveLegacyId('our-ai')).toEqual({ view: 'work', type: 'ai' });
     expect(parse('/neoh').view).toBe(VIEWS.neoh);
+  });
+});
+
+describe('every alias lands on a real destination (prompt 02 AC02.04)', () => {
+  const VALID_VIEWS = Object.values(VIEWS);
+
+  it('sends every LEGACY_PATHS entry, with or without a trailing slash, to a current address', () => {
+    for (const [from, to] of Object.entries(LEGACY_PATHS)) {
+      expect(redirectFor(from), from).toBe(to);
+      expect(redirectFor(`${from}/`), `${from}/`).toBe(to);
+      const queryAt = to.indexOf('?');
+      const pathname = queryAt === -1 ? to : to.slice(0, queryAt);
+      const search = queryAt === -1 ? '' : to.slice(queryAt);
+      // The target is terminal: no redirect chain or loop.
+      expect(redirectFor(pathname), `${from} -> ${to}`).toBeNull();
+      const parsed = parse(pathname, search);
+      expect(VALID_VIEWS, to).toContain(parsed.view);
+      expect(parsed.entity, to).toBeNull();
+      if (parsed.view === VIEWS.work) {
+        // The type in the address is the type parse resolves, not a fallback.
+        expect(parsed.params.type, to).toBe(new URLSearchParams(search).get('type'));
+        expect(WORK_TYPES, to).toContain(parsed.params.type);
+        const sales = new URLSearchParams(search).get('sales');
+        if (sales) expect(parsed.params.sales, to).toBe(sales);
+      }
+    }
+  });
+
+  it('resolves every LEGACY_TAB_IDS entry to a valid view and, for Work, a known type', () => {
+    for (const id of Object.keys(LEGACY_TAB_IDS)) {
+      const target = resolveLegacyId(id);
+      expect(VALID_VIEWS, id).toContain(target.view);
+      if (target.type) {
+        expect(target.view, id).toBe(VIEWS.work);
+        expect(WORK_TYPES, id).toContain(target.type);
+      }
+    }
+  });
+
+  it('does not resolve inherited object keys as tab ids or paths', () => {
+    for (const key of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      expect(resolveLegacyId(key), key).toEqual({ view: VIEWS.home });
+      expect(redirectFor(`/${key}`), key).toBeNull();
+    }
+  });
+
+  it('round-trips every Work type through href and parse', () => {
+    for (const type of WORK_TYPES) {
+      const address = href(VIEWS.work, { type });
+      const queryAt = address.indexOf('?');
+      const parsed = parse('/work', queryAt === -1 ? '' : address.slice(queryAt));
+      expect(parsed.params.type, type).toBe(type);
+    }
   });
 });
 

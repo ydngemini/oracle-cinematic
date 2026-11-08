@@ -43,6 +43,10 @@ class _LedgerConn:
         self.executed.append((query, args))
         return "UPDATE 1"
 
+    async def fetch(self, query, *args):
+        assert "FROM subscriptions" in query  # the brokerage's other live plans: none
+        return []
+
 
 def _fake_tx(conn):
     from contextlib import asynccontextmanager
@@ -126,17 +130,44 @@ def test_a_replayed_event_changes_billing_state_once(monkeypatch):
 
 def test_an_older_event_cannot_overwrite_a_newer_state():
     """Every state write is conditioned on the event not being older than the
-    last one applied; a late invoice.paid cannot resurrect a cancellation."""
+    last one applied, and none reopens a cancelled subscription. This only
+    reads the source; tests/test_stripe_subscription_state_live.py replays
+    the same-second and later events against PostgreSQL."""
     import inspect
 
     for handler in (billing._handle_invoice_paid, billing._handle_subscription_updated,
                     billing._handle_checkout_completed):
-        assert "last_event_created <=" in inspect.getsource(handler), handler.__name__
+        source = inspect.getsource(handler)
+        assert "last_event_created <=" in source, handler.__name__
+        assert "NOT IN ('canceled', 'incomplete_expired')" in source, handler.__name__
 
 
 def test_unpaid_checkout_does_not_grant_access(monkeypatch):
     conn = _LedgerConn()
     obj = _event()["data"]["object"] | {"payment_status": "unpaid"}
     asyncio.run(billing._handle_checkout_completed(conn, obj, 10))
-    (query, args), = conn.executed
+    (query, args), = [(q, a) for q, a in conn.executed if "INSERT INTO subscriptions" in q]
     assert args[3] == "incomplete"
+
+
+def test_a_completed_session_is_never_handed_out_again():
+    conn = _LedgerConn()
+    asyncio.run(billing._handle_checkout_completed(conn, _event()["data"]["object"], 10))
+    marks = [a for q, a in conn.executed if "UPDATE billing_checkout_sessions SET completed_at" in q]
+    assert marks == [("cs_1",)]
+
+
+def test_a_deletion_before_its_checkout_asks_stripe_to_retry():
+    """It was recorded as processed and lost; the late checkout then stored the
+    plan as active (T18.05)."""
+    class _Unknown(_LedgerConn):
+        async def execute(self, query, *args):
+            self.executed.append((query, args))
+            return "UPDATE 0"
+
+        async def fetchval(self, query, *args):
+            assert "FROM subscriptions WHERE stripe_subscription_id" in query
+            return None
+
+    with pytest.raises(billing._SubscriptionNotYetKnown):
+        asyncio.run(billing._handle_subscription_deleted(_Unknown(), {"id": "sub_not_yet"}, 200))

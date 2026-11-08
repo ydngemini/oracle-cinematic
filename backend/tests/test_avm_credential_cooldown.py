@@ -123,3 +123,52 @@ class TestCooldownBoundaries:
         result = _rentcast(ok, monkeypatch)
         assert result is not None
         assert result.value == 250_000
+
+
+# ── A provider failure reaches health (L19-05, AC19.07) ─────────────────────
+
+class _SessionCtx:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("provider, key, status, kind, health", [
+    ("rentcast", "RENTCAST_API_KEY", 401, "credential_rejected", "AUTH_FAILED"),
+    ("rentcast", "RENTCAST_API_KEY", 503, "http_error", None),
+    ("rentcast", "RENTCAST_API_KEY", 429, "rate_limited", "RATE_LIMITED"),
+    ("attom", "ATTOM_API_KEY", 401, "credential_rejected", "AUTH_FAILED"),
+    ("attom", "ATTOM_API_KEY", 503, "http_error", None),
+])
+def test_an_injected_provider_failure_is_recorded_and_shown_in_health(monkeypatch, provider, key, status, kind,
+                                                                         health):
+    import component_health as ch
+    import provider_health
+
+    monkeypatch.delenv("RENTCAST_API_KEY", raising=False)
+    monkeypatch.delenv("ATTOM_API_KEY", raising=False)
+    monkeypatch.setenv(key, "some-key")
+    recorded = []
+
+    async def record(name, outcome):
+        recorded.append((name, outcome))
+
+    monkeypatch.setattr(provider_health, "record", record)
+    monkeypatch.setattr(avm_client.aiohttp, "ClientSession", lambda **kw: _SessionCtx(_FakeSession(status)))
+    asyncio.run(avm_client._value_property_uncached(SUBJECT))
+    assert (provider, kind) in recorded, recorded
+    other = "attom" if provider == "rentcast" else "rentcast"
+    assert not any(name == other and outcome for name, outcome in recorded), "an unconfigured provider is not recorded"
+
+    rows = [{"provider": provider, "consecutive_failures": 1, "last_failure_kind": kind}]
+    state = ch._valuation_providers(rows)["state"]
+    # A single 5xx is not yet an outage; three in a row are (DEGRADED).
+    assert state == (health or ch.HEALTHY)
+    rows[0]["consecutive_failures"] = 3
+    if health is None:
+        assert ch._valuation_providers(rows)["state"] == ch.DEGRADED

@@ -98,10 +98,10 @@ def test_one_broken_detector_does_not_lose_the_whole_briefing(monkeypatch):
     briefing, which reads to the agent as "nothing is happening" — the single
     most damaging thing this surface can say incorrectly.
     """
-    async def exploding(conn, ctx):
+    async def exploding(conn, ctx, lang=None):
         raise RuntimeError("detector is broken")
 
-    async def working(conn, ctx):
+    async def working(conn, ctx, lang=None):
         return [_opportunity(kind="worked", confidence=0.9)]
 
     from contextlib import asynccontextmanager

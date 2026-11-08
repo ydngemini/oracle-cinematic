@@ -452,4 +452,36 @@ describe('Neoh Space never takes the property page down (§35/36)', () => {
     expect(screen.getByRole('button', { name: /Partial 3D walkthrough/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Full 3D/i })).toBeNull();
   });
+
+  it('fails closed when no quality label reached it (T12.10)', async () => {
+    // A caller that forgets the server's label must not get an unqualified
+    // "3D walkthrough" — four of five call sites did exactly that.
+    renderTour({ splatUrl: PROTECTED, panoScenes: SCENES });
+    await screen.findByTestId('splat');
+    expect(screen.getByRole('button', { name: '3D walkthrough · quality not verified' })).toBeTruthy();
+  });
+});
+
+describe('every tour entry point hands the viewer its quality label (T12.10)', () => {
+  // The workspace, Property View, the dossier, the homeowner's portal and the
+  // Neoh entity sheet each open the viewer. Only the entity sheet passed the
+  // server's label and caveats; the others showed a bare "3D walkthrough".
+  const callers = [
+    'src/components/HouseWorkspace.jsx',
+    'src/components/PropertyViewTab.jsx',
+    'src/components/DossierPanel.jsx',
+    'src/components/SecureDossierPage.jsx',
+    'src/neoh/EntitySheet.jsx',
+  ];
+
+  it.each(callers)('%s passes splatLabel and splatCaveats', (path) => {
+    const source = readFileSync(path, 'utf8');
+    const opened = source.split('<TourViewer').slice(1);
+    expect(opened.length).toBeGreaterThan(0);
+    for (const element of opened) {
+      const props = element.slice(0, element.indexOf('/>'));
+      expect(props).toMatch(/splatLabel=\{[^}]*splat_label\}/);
+      expect(props).toMatch(/splatCaveats=\{[^}]*splat_caveats/);
+    }
+  });
 });

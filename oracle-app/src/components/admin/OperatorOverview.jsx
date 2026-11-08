@@ -295,10 +295,33 @@ function BillingCard({ data }) {
   const hooks = data?.webhooks || {};
   const refusals = Object.entries(hooks.refused_since_start || {});
   const usage = data?.usage_metering || {};
-  const any = groups.some(([k]) => (data?.[k] || []).length) || (data?.reactivated_90d || []).length;
+  // Two plans that may both bill one brokerage: first, and listed until a
+  // person cancels one in Stripe (the security list buries the alert).
+  const duplicates = data?.duplicate_subscriptions || [];
+  const any = duplicates.length || groups.some(([k]) => (data?.[k] || []).length)
+    || (data?.reactivated_90d || []).length;
   return (
     <>
       {!any ? <Empty>No billing exceptions.</Empty> : null}
+      {duplicates.length ? (
+        <div className={styles.group}>
+          <h4 className={styles.minor}>Two live subscriptions ({duplicates.length})</h4>
+          <p className={styles.warnNote}>
+            Each may bill. Decide which to keep, then cancel and refund the other in Stripe. Nothing was cancelled or refunded automatically.
+          </p>
+          <ul className={styles.list}>
+            {duplicates.slice(0, 8).map((d) => (
+              <li key={d.tenant_id} className={styles.item}>
+                <span>{d.name || d.tenant_id}</span>
+                <span className={styles.sub}>
+                  {(d.subscriptions || []).map((s) => `${s.stripe_subscription_ref} (${s.status})`).join(', ')}
+                  {relTime(d.flagged_at) ? ` · flagged ${relTime(d.flagged_at)}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {groups.map(([key, label]) => {
         const rows = data?.[key] || [];
         if (!rows.length) return null;

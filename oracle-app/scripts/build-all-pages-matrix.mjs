@@ -47,8 +47,30 @@ function loadVerdicts() {
     if (!VERDICT_VALUES.has(v?.verdict) || !v.evidence || !v.reviewer || !v.date) {
       throw new Error(`all-pages-verdicts.json: ${id} needs verdict (pass|fail|setup_required), evidence, reviewer and date`);
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.date))) {
+      throw new Error(`all-pages-verdicts.json: ${id} date must be YYYY-MM-DD`);
+    }
   }
   return raw;
+}
+
+/**
+ * A `pass` must rest on evidence the repo holds: the page's last crawl was
+ * `clean` and opening it attempted no writes, and it is not a legacy (MLS)
+ * page. `fail` and `setup_required` need no crawl. Returns the problems found.
+ */
+export function verdictProblems(verdicts, rows, crawlPages = {}) {
+  const problems = [];
+  for (const [id, v] of Object.entries(verdicts)) {
+    if (id.startsWith('//') || v.verdict !== 'pass') continue;
+    const row = rows.find((r) => r.id === id);
+    const crawl = crawlPages[id];
+    if (row?.legacy) problems.push(`${id}: a legacy page cannot pass (${row.legacy})`);
+    if (!crawl) problems.push(`${id}: pass needs a crawl entry`);
+    else if (crawl.status !== 'clean') problems.push(`${id}: pass needs a clean crawl, found ${crawl.status}`);
+    else if (crawl.writes_attempted_on_open?.length) problems.push(`${id}: pass is not allowed when opening the page attempted writes`);
+  }
+  return problems;
 }
 
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
@@ -235,6 +257,8 @@ export async function buildMatrix() {
   }
   const unknown = Object.keys(verdicts).filter((id) => !id.startsWith('//') && !rows.some((r) => r.id === id));
   if (unknown.length) throw new Error(`all-pages-verdicts.json names pages that do not exist: ${unknown.join(', ')}`);
+  const problems = verdictProblems(verdicts, rows, crawl.pages);
+  if (problems.length) throw new Error(`all-pages-verdicts.json: ${problems.join('; ')}`);
   return rows;
 }
 

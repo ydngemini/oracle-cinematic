@@ -729,6 +729,25 @@ def test_local_fallback_keeps_receipts_for_writes_that_already_committed(monkeyp
     assert applied[0]["action_id"] == "a-1"
 
 
+#: The brokerage a test call belongs to: a voice reply is spent from its AI
+#: budget (T18.07, tests/test_ai_budget_hosted_calls.py).
+_VOICE_TENANT = "11111111-1111-1111-1111-111111111111"
+
+
+def _admit_voice_budget(monkeypatch):
+    import ai_budget
+
+    async def reserve(_ctx, call_key, estimate):
+        return ai_budget.Hold(call_key=call_key, tokens=estimate, state="unlimited", held=False)
+
+    async def settle(*_a):
+        return None
+
+    monkeypatch.setattr(ai_budget, "reserve", reserve)
+    monkeypatch.setattr(ai_budget, "settle", settle)
+    monkeypatch.setattr(ai_budget, "release_hold", settle)
+
+
 def test_voice_reply_abandons_a_slow_tier_inside_the_live_call_budget(monkeypatch):
     """A phone caller is waiting and Twilio will not.
 
@@ -759,9 +778,11 @@ def test_voice_reply_abandons_a_slow_tier_inside_the_live_call_budget(monkeypatc
     monkeypatch.setattr(ai_chat_agent, "VOICE_REPLY_BUDGET_SECONDS", 0.3)
     monkeypatch.setattr(ai_chat_agent, "_local_chat", never_answers)
     monkeypatch.setattr(ai_chat_agent, "_foundry_response", fake_foundry)
+    # Each hosted tier is held first (T18.07); the budget admits it here.
+    _admit_voice_budget(monkeypatch)
 
     started = time.monotonic()
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
     elapsed = time.monotonic() - started
 
     assert elapsed < 3, f"voice reply overran the live-call budget ({elapsed:.1f}s)"
@@ -796,7 +817,7 @@ def test_voice_reply_gives_the_gateway_the_whole_call_budget(monkeypatch):
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
     monkeypatch.setattr(llm_gateway, "complete", _complete)
 
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
 
     assert reply == "Sure, I can help with that."
     assert captured["timeout"] == ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
@@ -814,7 +835,7 @@ def test_voice_reply_returns_the_stall_line_rather_than_raising(monkeypatch):
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
     monkeypatch.setattr(llm_gateway, "complete", _boom)
 
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
     assert reply == ai_chat_agent._VOICE_STALL_LINE
 
 
@@ -827,7 +848,7 @@ def test_voice_reply_is_capped_so_the_caller_is_not_read_a_monologue(monkeypatch
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
     monkeypatch.setattr(llm_gateway, "complete", _long)
 
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
     assert len(reply) <= 300
 
 
@@ -840,7 +861,7 @@ def test_a_blank_completion_becomes_the_stall_line(monkeypatch):
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
     monkeypatch.setattr(llm_gateway, "complete", _blank)
 
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
     assert reply == ai_chat_agent._VOICE_STALL_LINE
 
 
@@ -856,7 +877,7 @@ def test_without_a_gateway_the_original_ladder_still_answers_callers(monkeypatch
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [])
     monkeypatch.setattr(ai_chat_agent, "_voice_reply_direct", _direct)
 
-    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
     assert called.get("used") is True
     assert reply == "answered by the direct path"
 

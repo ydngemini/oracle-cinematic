@@ -511,6 +511,11 @@ def test_local_vllm_hot_swaps_validated_state_and_agent_scopes(monkeypatch, tmp_
             ),
             encoding="utf-8",
         )
+    # A state adapter is an underwriter: it mounts only with a card declaring
+    # observed-transaction targets (audit A08, L11-06).
+    (state_path / "model-card.json").write_text(
+        json.dumps({"dataset": {"targets": {"provenance": "observed_transactions"}}}), encoding="utf-8"
+    )
 
     underwriter = EdgeUnderwriter(adapter_root=str(tmp_path), gpu_memory_utilization=0.8)
     state_result = underwriter.hot_swap_state_lora("de").underwrite_batch([{"parcel": "1"}])[0]
@@ -528,3 +533,31 @@ def test_local_vllm_hot_swaps_validated_state_and_agent_scopes(monkeypatch, tmp_
 
     with pytest.raises(ValueError):
         EdgeUnderwriter(adapter_root=str(tmp_path), gpu_memory_utilization=0.99)
+
+
+@pytest.mark.parametrize("card", [
+    None,                                                            # no card at all
+    {"dataset": {"kind": "synthetic_heuristic_underwriting", "targets": {"provenance": "heuristic"}}},
+    {"dataset": {"targets": {"provenance": "unrecorded"}}},
+    "not json",
+])
+def test_local_vllm_never_serves_a_heuristic_or_unrecorded_state_underwriter(monkeypatch, tmp_path: Path, card):
+    """train_lora leaves its heuristic adapter in adapters/<state>, exactly
+    where EdgeUnderwriter discovers state underwriters (L11-06)."""
+    _install_fake_vllm(monkeypatch)
+    from ml_forge.edge_forge.local_vllm_adapter import BASE_MODEL, EdgeUnderwriter, UnverifiedTargetsError
+
+    state_path = tmp_path / "de"
+    state_path.mkdir()
+    (state_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": BASE_MODEL, "r": 8}), encoding="utf-8")
+    if card is not None:
+        (state_path / "model-card.json").write_text(
+            card if isinstance(card, str) else json.dumps(card), encoding="utf-8")
+
+    underwriter = EdgeUnderwriter(adapter_root=str(tmp_path), gpu_memory_utilization=0.8)
+    assert "DE" in underwriter.skipped_adapters, "discovery skips it and says why"
+    with pytest.raises(KeyError):
+        underwriter.hot_swap_state_lora("DE")
+    with pytest.raises(UnverifiedTargetsError):
+        underwriter.register_adapter("DE", str(state_path))

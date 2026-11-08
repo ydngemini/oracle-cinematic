@@ -1,8 +1,10 @@
 """
 Synthetic Lawyer — generates Delaware real estate assignment contract records as JSONL.
 
-Uses Bedrock (Llama 70B primary, DeepSeek v3.2 fallback) to produce
-legally-formatted wholesale assignment contracts for training data.
+Uses Bedrock (PRIMARY_MODEL, falling back to SECONDARY_MODEL; both are named
+below) to produce legally-formatted wholesale assignment contracts for training
+data. Every generated record is synthetic, and its _meta names the model that
+actually answered.
 """
 
 import json
@@ -519,13 +521,15 @@ def normalize_assignment_payload(transaction_data: Mapping[str, Any]) -> dict[st
             "client.full_name",
             "Assignee (Cash Buyer)",
         ),
+        # payload.owner_name is the owner of record from an unconfirmed
+        # public-record match (F11.04), never the contract's Seller; without a
+        # stated seller the gate below reports seller_name as missing.
         "seller_name": _first_value(
             data,
             "seller_name",
             "seller.name",
             "seller_full_name",
             "payload.seller_name",
-            "payload.owner_name",
             "Original Seller",
         ),
         "property_address": _property_address(data),
@@ -1489,7 +1493,9 @@ async def fetch_assignment_transaction_for_client(client_id: str, ctx: Any) -> d
 
     The query is parameterized and runs through tenant_tx(ctx), so RLS supplies
     tenant isolation. It intentionally returns sparse data; the drafting gate
-    decides whether the contract can be generated.
+    decides whether the contract can be generated. The Seller comes only from a
+    linked seller client or a stated seller name, never the lead's public-record
+    owner of record (F11.04).
     """
     try:
         uuid.UUID(str(client_id))
@@ -1516,7 +1522,7 @@ async def fetch_assignment_transaction_for_client(client_id: str, ctx: Any) -> d
             SELECT
                 buyer.full_name AS assignee_name,
                 COALESCE(listings.address, leads.address, leads.payload->>'address') AS property_address,
-                COALESCE(seller.full_name, leads.payload->>'seller_name', leads.payload->>'owner_name') AS seller_name,
+                COALESCE(seller.full_name, leads.payload->>'seller_name') AS seller_name,
                 leads.contract_execution_date,
                 leads.contract_expires_at,
                 leads.underwriting,
@@ -1622,9 +1628,11 @@ def generate_record(record_num: int) -> dict | None:
         city=city,
     )
 
+    model = PRIMARY_MODEL
     result = invoke_bedrock_model(PRIMARY_MODEL, prompt, max_tokens=2048)
 
     if not result:
+        model = SECONDARY_MODEL
         result = invoke_bedrock_model(SECONDARY_MODEL, prompt, max_tokens=2048)
 
     if not result:
@@ -1637,7 +1645,8 @@ def generate_record(record_num: int) -> dict | None:
             record = json.loads(result[json_start:json_end])
             record["_meta"] = {
                 "generated_at": datetime.utcnow().isoformat(),
-                "model": PRIMARY_MODEL,
+                "model": model,  # the one that answered, not always the primary
+                "synthetic": True,
                 "record_num": record_num,
             }
             return record

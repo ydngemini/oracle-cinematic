@@ -17,10 +17,11 @@ vi.mock('../components/DossierPanel', () => ({
   ),
 }));
 vi.mock('../components/TourViewer', () => ({
-  default: ({ embedded, splatUrl, splatFormat, splatScene, panoScenes, tourpoints, isThisProperty }) => (
+  default: ({ embedded, splatUrl, splatFormat, splatScene, panoScenes, tourpoints, isThisProperty,
+    splatLabel, splatCaveats }) => (
     <div data-testid="tour" data-embedded={embedded} data-url={splatUrl} data-format={splatFormat}
       data-scene={splatScene?.version} data-panos={panoScenes?.length} data-stops={tourpoints?.length}
-      data-real={isThisProperty}>
+      data-real={isThisProperty} data-label={splatLabel ?? ''} data-caveats={(splatCaveats || []).join('|')}>
       <button>Tour control</button>
     </div>
   ),
@@ -83,6 +84,18 @@ describe('property to tour continuity', () => {
     fireEvent.keyDown(document.activeElement, { key: 'Escape' });
     expect(onDismiss).toHaveBeenCalledTimes(1);
   }, 15000);
+
+  it('hands the viewer the quality label and caveats the server gave (T12.10)', async () => {
+    crmGet.mockResolvedValue({
+      ...capture,
+      splat_label: '3D walkthrough · reduced quality',
+      splat_caveats: ['Some views may look soft or blurry'],
+    });
+    render(<Harness initiallyOpen />);
+    const viewer = await screen.findByTestId('tour');
+    expect(viewer.dataset.label).toBe('3D walkthrough · reduced quality');
+    expect(viewer.dataset.caveats).toBe('Some views may look soft or blurry');
+  });
 
   it('opens the same experience from the embedded dossier action', async () => {
     render(<Harness />);

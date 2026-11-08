@@ -24,23 +24,32 @@ from tenancy import Role, TenantContext
 
 _ACTOR = "client-note-seal-backfill"
 
+# Each batch picks its rows in a MATERIALIZED CTE (L17-24): as
+# `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)` the planner may run
+# a nested-loop semi join that re-runs the locking subquery per outer row, so
+# a "batch of 1" sealed 3 notes. A locking CTE runs exactly once.
+
 _SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM client_notes
+        WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL AND body <> ''
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE client_notes
        SET body_ciphertext = pgp_sym_encrypt(body, $2::text, 's2k-mode=1'), body = ''
-     WHERE id IN (SELECT id FROM client_notes
-                   WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL AND body <> ''
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 
 _UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM client_notes
+        WHERE tenant_id = $1::uuid AND body_ciphertext IS NOT NULL
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE client_notes
        SET body = pgp_sym_decrypt(body_ciphertext, $2::text), body_ciphertext = NULL
-     WHERE id IN (SELECT id FROM client_notes
-                   WHERE tenant_id = $1::uuid AND body_ciphertext IS NOT NULL
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 

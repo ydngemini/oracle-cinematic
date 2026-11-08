@@ -243,6 +243,14 @@
 .actionReceipt small { display: block; margin-top: 2px; color: rgba(var(--oracle-ink-rgb), 0.62); font-size: var(--text-xs); line-height: 1.4; overflow-wrap: anywhere; }
 .actionReceipt button { min-height: 36px; padding: 0 12px; border: 1px solid rgba(var(--oracle-ink-rgb), 0.18); border-radius: 8px; color: rgba(var(--oracle-ink-rgb), 0.8); background: transparent; font-size: var(--text-xs); cursor: pointer; }
 
+/* The one precise question's choices: picking one answers it (L05-09). */
+.choices { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+.choices button { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid rgba(255, 188, 31, 0.33); border-radius: 10px; color: rgba(var(--oracle-ink-rgb), 0.86); background: rgba(255, 188, 31, 0.08); font-size: var(--text-xs); cursor: pointer; }
+.choices button small { color: rgba(var(--oracle-ink-rgb), 0.5); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.choices button:hover:not(:disabled) { background: rgba(255, 188, 31, 0.16); }
+.choices button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.choices button:disabled { opacity: 0.5; cursor: default; }
+
 .composerZone { padding: 10px 12px calc(10px + var(--safe-bottom)); border-top: 1px solid rgba(var(--oracle-ink-rgb), 0.1); background: rgba(8, 8, 8, 0.78); }
 .composer { min-height: 54px; padding: 5px; display: flex; align-items: flex-end; gap: 3px; border: 1px solid rgba(var(--oracle-ink-rgb), 0.14); border-radius: 18px; background: rgba(171, 171, 171, 0.06); box-shadow: inset 0 1px rgba(var(--oracle-ink-rgb), 0.025); }
 .composer:focus-within { border-color: rgba(255, 188, 31, 0.37); box-shadow: 0 0 0 3px rgba(255, 188, 31, 0.06), inset 0 1px rgba(var(--oracle-ink-rgb), 0.04); }

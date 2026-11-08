@@ -343,7 +343,9 @@ class WorkflowEngine:
                     "as_is": cma_result.estimated_value if cma_result else 0,
                     "assumptions": cma_result.valuation_assumptions if cma_result else [],
                     "distress_severity": cma_result.distress_severity if cma_result else "UNKNOWN",
-                    "owner_name": hit["owner_name"],
+                    # No owner_name: the hit's owner is an unconfirmed
+                    # public-record owner of record, not the Seller (F11.04).
+                    # A hit states no seller, so the panel asks for one.
                 }
                 # format_for_websocket returns a JSON *string*; _send takes a
                 # dict so the hub can attach routing fields, so decode it here

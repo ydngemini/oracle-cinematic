@@ -5,6 +5,7 @@ import {
   SEARCH_KINDS,
   degradedMessage,
   emptyMessage,
+  failedKinds,
   groupHits,
   isSearchKind,
 } from './searchModel';
@@ -60,5 +61,37 @@ describe('empty and degraded messages', () => {
     expect(degradedMessage({ degraded: [] })).toBeNull();
     expect(degradedMessage({ degraded: ['records', 'deals'] }))
       .toBe('Public records, deals could not be searched just now. Results below are from the other kinds.');
+  });
+});
+
+describe('failed legs come from the per-leg C6 status (T06.06)', () => {
+  const at = '2026-10-16T00:00:00Z';
+  const response = {
+    counts: { people: 0, deals: 0, conversations: 0, properties: 0 },
+    degraded: [],
+    source_status: {
+      people: { status: 'checked', matched: 0, checked_at: at, elapsed_ms: 12 },
+      deals: { status: 'timed_out', reason: 'upstream_timeout', elapsed_ms: 3000 },
+      conversations: { status: 'unavailable', reason: 'upstream_error', elapsed_ms: 40 },
+    },
+  };
+
+  it('a timed-out or unavailable leg is failed; a verified zero is not', () => {
+    expect(failedKinds(response)).toEqual(['deals', 'conversations', 'properties']);
+  });
+
+  it('a leg with no status at all is failed, never a verified miss', () => {
+    expect(failedKinds(response)).toContain('properties');
+    expect(emptyMessage('sarah', response)).toMatch(/properties could not be searched/);
+  });
+
+  it('a too-short query (not_applicable) is not failed', () => {
+    expect(failedKinds({ counts: { people: 0 }, source_status: { people: { status: 'not_applicable' } } }))
+      .toEqual([]);
+  });
+
+  it('still honours the bare list from an older API or a failed request', () => {
+    expect(failedKinds({ degraded: ['people', 'deals'] })).toEqual(['people', 'deals']);
+    expect(failedKinds(undefined)).toEqual([]);
   });
 });

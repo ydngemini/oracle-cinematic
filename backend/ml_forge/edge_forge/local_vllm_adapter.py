@@ -71,6 +71,29 @@ UNDERWRITE_JSON_SCHEMA = {
 }
 
 
+class UnverifiedTargetsError(ValueError):
+    """A state adapter whose card does not show observed-transaction targets."""
+
+
+def _require_observed_targets(state_code: str, adapter_path: str) -> None:
+    try:
+        from .train_lora import ADAPTER_CARD, targets_observed
+    except ImportError:  # run as a script: python local_vllm_adapter.py
+        from train_lora import ADAPTER_CARD, targets_observed
+
+    card_path = os.path.join(adapter_path, ADAPTER_CARD)
+    try:
+        with open(card_path, "r", encoding="utf-8") as handle:
+            card = json.load(handle)
+    except (OSError, ValueError):
+        card = None
+    if not targets_observed(card):
+        raise UnverifiedTargetsError(
+            f"state adapter {state_code.upper()} has no {ADAPTER_CARD} declaring observed-transaction "
+            "targets; heuristic or unrecorded targets are never served as an underwriter"
+        )
+
+
 class EdgeUnderwriter:
     """Single resident base model with validated state and agent LoRA adapters."""
 
@@ -131,6 +154,8 @@ class EdgeUnderwriter:
         self._active_agent_id: Optional[str] = None
         self._active_request: Optional[Any] = None
         self._adapter_metadata: Dict[str, dict] = {}
+        #: State adapters discovery found but would not mount, and why.
+        self.skipped_adapters: Dict[str, str] = {}
         self._telemetry = {
             "base_model": self.base_model,
             "swaps": 0,
@@ -160,7 +185,10 @@ class EdgeUnderwriter:
             if os.path.isdir(path) and os.path.exists(
                 os.path.join(path, "adapter_config.json")
             ):
-                self.register_adapter(name.upper(), path)
+                try:
+                    self.register_adapter(name.upper(), path)
+                except UnverifiedTargetsError as exc:
+                    self.skipped_adapters[name.upper()] = str(exc)
 
     @staticmethod
     def _registry_key(scope: str, identifier: str) -> str:
@@ -178,7 +206,13 @@ class EdgeUnderwriter:
         *,
         model_version: Optional[str] = None,
     ):
-        """Register a state adapter after base-model/rank compatibility checks."""
+        """Register a state adapter after base-model/rank compatibility checks.
+
+        A state adapter is an underwriter: its ARV / rehab / MAO are served as
+        valuations, so it mounts only when the model card beside it declares
+        targets learned from observed transactions (audit A08). The trainer's
+        heuristic adapter, or one with no card, is refused."""
+        _require_observed_targets(state_code, adapter_path)
         return self._register_scoped_adapter(
             "state", state_code.upper(), adapter_path, model_version=model_version
         )

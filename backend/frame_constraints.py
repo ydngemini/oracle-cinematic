@@ -429,6 +429,40 @@ def check_tool(
     return None
 
 
+@dataclass(frozen=True)
+class Pending:
+    """The records this turn is still asking about (T05.10): every authorised
+    choice of every ambiguous mention, not only the one the question names."""
+    records: frozenset[str]
+
+
+#: Creating a record while a question is open is the guess the question exists
+#: to prevent ("never fabricate a record to avoid asking"); it gets its own
+#: wording, which tells the person how to ask for someone new.
+_CREATES_A_PERSON = frozenset({"create_client"})
+
+
+def check_pending(
+    pending: Optional[Pending],
+    tool_name: str,
+    *,
+    lang: Optional[str] = None,
+) -> Optional[Refusal]:
+    """None if the call may run. While the turn is asking which record the
+    person meant, every effectful call is refused — whatever it targets: a
+    deal, a property, a note or a call with no recognisable target could each
+    be acting on the guessed record (fail closed, as applies_to does). Reads
+    run: the model may look at the records to help the person choose. The
+    message names nobody (it reaches logs and ledgers by code only)."""
+    if pending is None or not pending.records or tool_name in READ_ONLY_TOOLS:
+        return None
+    risk = TOOL_RISK.get(tool_name)
+    if risk is None or risk is ActionRisk.READ_ONLY:
+        return None
+    key = "refuse.clarify_create" if tool_name in _CREATES_A_PERSON else "refuse.clarify"
+    return Refusal("clarify", "FRAME_CLARIFY", lang_.t(key, lang))
+
+
 # ---------------------------------------------------------------------------
 # The mission step boundary (08)
 # ---------------------------------------------------------------------------

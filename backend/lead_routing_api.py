@@ -26,7 +26,7 @@ from contact_truth import (
     seal_json,
 )
 from db.connection import tenant_tx
-from outreach_lifecycle import ACCEPTED_DISPOSITIONS
+from outreach_lifecycle import ACCEPTED_DISPOSITIONS, REPLY_WINDOW_DAYS
 from platform_policy import Feature, feature_enabled
 from speed_to_lead import enqueue_speed_to_lead
 from tenancy import Role, TenantContext, apply_rls_context, require_context, require_role
@@ -549,6 +549,7 @@ async def routing_metrics(
                    count(*) FILTER (WHERE disposition='blocked')::int AS blocked,
                    count(*) FILTER (WHERE disposition='skipped')::int AS skipped,
                    count(*) FILTER (WHERE disposition='failed')::int AS failed,
+                   count(*) FILTER (WHERE replied_at IS NOT NULL)::int AS replied,
                    count(*) FILTER (
                        WHERE disposition = ANY($2::text[]) AND accepted_at IS NULL
                    )::int AS accepted_untimed,
@@ -585,6 +586,12 @@ async def routing_metrics(
     )
     # What the latency numbers measure, so nobody reads them as time-to-draft.
     resp_json["latency_measured_to"] = "accepted"
+    # A reply is an inbound text from the same client/contact within the
+    # window after the response was accepted (0158). Its own count, beside the
+    # dispositions it does not change; never the removed `responded` key.
+    resp_json["replied_measured_as"] = (
+        f"inbound text from the same client or contact within "
+        f"{REPLY_WINDOW_DAYS} days of the accepted response")
     # Leads that arrived but produced no response row at all. Without this the
     # latency numbers describe only the leads the automation reached — the same
     # survivorship bias the ledger's 'blocked' rows exist to avoid.
@@ -854,6 +861,19 @@ async def receive_lead(
                 contact["id"],
                 assigned_agent_id,
             )
+
+        if payload.phone:
+            # Texts and calls from this phone that came before the contact
+            # existed (or before it had this number) join it now (L04-04).
+            import contact_linking
+
+            linked_client = (client["id"] if not duplicate else contact["legacy_client_id"]) or await conn.fetchval(
+                "SELECT id FROM clients WHERE contact_id=$1::uuid AND archived_at IS NULL ORDER BY created_at LIMIT 1",
+                contact["id"])
+            await contact_linking.link_earlier(
+                conn, tenant_id=tenant_id, contact_id=str(contact["id"]),
+                client_id=str(linked_client) if linked_client else None,
+                phone_e164=payload.phone, phone_hash=phone_hash)
 
         if assigned_agent_id:
             await conn.execute(

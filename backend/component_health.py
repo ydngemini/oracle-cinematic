@@ -22,7 +22,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 HEALTHY, DEGRADED, UNAVAILABLE = "HEALTHY", "DEGRADED", "UNAVAILABLE"
 RATE_LIMITED, AUTH_FAILED, STALE = "RATE_LIMITED", "AUTH_FAILED", "STALE"
@@ -37,7 +37,19 @@ ROLE = {
     "database": "core", "realtime_fanout": "core", "workers": "core", "scheduler": "core",
     "job_queue": "core", "valkey": "important", "mls": "important", "ai": "important",
     "outbound_side_effects": "important", "email_outbox": "important",
+    # Property data (L19-04, T19.07 / AC19.07): what the brokerage's property
+    # and market answers are built from now that MLS is off (D-2026-10-12-01).
+    "property_harvesters": "optional", "market_data": "optional", "valuation_providers": "optional",
+    # The platform email relay's own last sends (0164, L10-11 / L19-06).
+    "platform_email_relay": "optional",
 }
+
+#: The components read from Postgres in _db_components, in one place (the
+#: unknown/unavailable fallbacks used to repeat this list three times).
+_DB_KEYS: tuple[str, ...] = (
+    "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
+    "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
+)
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -107,8 +119,7 @@ async def _db_components() -> dict[str, dict]:
     pool = get_pool()
     out: dict[str, dict] = {}
     if pool is None:
-        return {k: _c(UNKNOWN, "database unavailable") for k in
-                ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
+        return {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
     from db.connection import tenant_tx
     from tenancy import Role, TenantContext
 
@@ -146,6 +157,19 @@ async def _db_components() -> dict[str, dict]:
             "SELECT count(*) FILTER (WHERE status='sending' AND error LIKE 'delivery_unknown%') AS unknown, "
             "count(*) FILTER (WHERE status='queued' AND updated_at < now() - interval '15 minutes') AS stuck "
             "FROM email_outbox WHERE status IN ('sending','queued')")
+        harvest = await conn.fetchrow(
+            """
+            SELECT count(*) FILTER (WHERE enabled) AS enabled,
+                   count(*) FILTER (WHERE enabled AND circuit_state <> 'closed') AS open_circuits,
+                   count(*) FILTER (WHERE enabled AND (last_succeeded_at IS NULL OR last_succeeded_at
+                       < now() - make_interval(secs => schedule_seconds * 2 + 3600))) AS overdue
+              FROM harvest_sources
+            """)
+        market = await conn.fetchrow(
+            "SELECT count(*) AS states, EXTRACT(EPOCH FROM now() - max(updated_at))::int AS age_s "
+            "FROM state_market_stats")
+        providers = [dict(r) for r in await conn.fetch(
+            "SELECT provider, consecutive_failures, last_failure_kind FROM provider_health")]
     workers = [b for b in beats if b["role"] in ("worker", "all")]
     from process_heartbeat import STALE_AFTER  # same bound as /health/workers (4 missed beats)
 
@@ -181,7 +205,94 @@ async def _db_components() -> dict[str, dict]:
     unknown, stuck = int(mail["unknown"] or 0), int(mail["stuck"] or 0)
     out["email_outbox"] = (_c(DEGRADED, "emails waiting or with unknown delivery", unknown=unknown, stuck=stuck)
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
+    out["property_harvesters"] = _property_harvesters(dict(harvest))
+    out["market_data"] = _market_data(dict(market))
+    out["valuation_providers"] = _valuation_providers(providers)
+    out["platform_email_relay"] = _platform_email_relay(providers)
     return out
+
+
+def _syncs_paused() -> bool:
+    """Recovery mode stops every non-internal periodic task (L17-03), so data
+    those tasks refresh goes stale by design: reported, not paged."""
+    from recovery_mode import is_recovery_mode
+
+    return is_recovery_mode()
+
+
+def _property_harvesters(row: dict) -> dict:
+    """Public-record harvesters (harvest_sources): counts only, never a source
+    name or its error text."""
+    enabled = int(row.get("enabled") or 0)
+    open_circuits, overdue = int(row.get("open_circuits") or 0), int(row.get("overdue") or 0)
+    if not enabled:
+        return _c(NOT_CONFIGURED, "no public-record harvester enabled")
+    if open_circuits:
+        return _c(DEGRADED, f"{open_circuits} public-record source(s) paused after repeated failures",
+                  sources=enabled, open_circuits=open_circuits, overdue=overdue)
+    if overdue:
+        if _syncs_paused():
+            return _c(NOT_CONFIGURED, "public-record syncs are paused (recovery mode)",
+                      sources=enabled, overdue=overdue)
+        return _c(STALE, f"{overdue} public-record source(s) have not refreshed on schedule",
+                  sources=enabled, overdue=overdue)
+    return _c(HEALTHY, "public-record sources refreshing on schedule", sources=enabled)
+
+
+def _market_data(row: dict) -> dict:
+    """State market statistics (state_market_stats, refreshed by the
+    market_research task). Stale after three missed refreshes."""
+    states, age = int(row.get("states") or 0), row.get("age_s")
+    if not states:
+        return _c(NOT_CONFIGURED, "no market statistics loaded")
+    interval_h = max(6.0, float(os.getenv("ORACLE_MARKET_RESEARCH_INTERVAL_HOURS", "24")))
+    limit = int(interval_h * 3600 * 3)
+    if age is not None and int(age) > limit:
+        if _syncs_paused():
+            return _c(NOT_CONFIGURED, "market refresh is paused (recovery mode)", states=states, age_s=int(age))
+        return _c(STALE, "market statistics have not refreshed on schedule",
+                  states=states, age_s=int(age), limit_s=limit)
+    return _c(HEALTHY, "market statistics current", states=states, age_s=int(age or 0))
+
+
+def _valuation_providers(rows: Optional[list[dict]] = None) -> dict:
+    """RentCast / ATTOM (avm_client), from the last outcome each call recorded
+    (provider_health, 0160). A configured provider with no recorded call is
+    UNKNOWN — never HEALTHY on the strength of a key being set (AC19.07)."""
+    configured = [name for name, var in (("rentcast", "RENTCAST_API_KEY"), ("attom", "ATTOM_API_KEY"))
+                  if os.getenv(var, "").strip()]
+    if not configured:
+        return _c(NOT_CONFIGURED, "no valuation provider key set")
+    seen = {r["provider"]: r for r in (rows or []) if r.get("provider") in configured}
+    if not seen:
+        return _c(UNKNOWN, "valuation provider configured; no call recorded yet", configured=len(configured))
+    failing = {p: r for p, r in seen.items() if int(r.get("consecutive_failures") or 0) > 0}
+    kinds = {r.get("last_failure_kind") for r in failing.values()}
+    detail = {"configured": len(configured), "observed": len(seen), "failing": len(failing)}
+    if "credential_rejected" in kinds:
+        return _c(AUTH_FAILED, "a valuation provider rejected its credential; valuations fall back", **detail)
+    if "rate_limited" in kinds:
+        return _c(RATE_LIMITED, "a valuation provider is throttling requests", **detail)
+    if any(int(r.get("consecutive_failures") or 0) >= 3 for r in failing.values()):
+        return _c(DEGRADED, "a valuation provider is failing repeatedly", **detail)
+    return _c(HEALTHY, "valuation providers answering", **detail)
+
+
+def _platform_email_relay(rows: Optional[list[dict]] = None) -> dict:
+    """The platform SMTP relay, from the outcome of its own last sends
+    (provider_health 'platform_smtp', recorded by send_smtp_email; 0164).
+    Settings with no recorded send are UNKNOWN, never HEALTHY."""
+    if not (os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME")):
+        return _c(NOT_CONFIGURED, "no platform email relay configured")
+    row = next((r for r in (rows or []) if r.get("provider") == "platform_smtp"), None)
+    if row is None:
+        return _c(UNKNOWN, "platform email relay configured; no send recorded yet")
+    failures = int(row.get("consecutive_failures") or 0)
+    if not failures:
+        return _c(HEALTHY, "platform email relay delivering to the mail server")
+    if row.get("last_failure_kind") == "credential_rejected":
+        return _c(AUTH_FAILED, "the platform email relay's login was refused", failing=failures)
+    return _c(DEGRADED, "platform email relay sends are failing", failing=failures)
 
 
 def _mls(rows: list[dict]) -> dict:
@@ -226,16 +337,18 @@ async def _snapshot() -> dict:
             rest = await asyncio.wait_for(_db_components(), timeout=4.0)
         except Exception as exc:  # noqa: BLE001
             rest = {k: _c(UNKNOWN, "health query did not answer", reason=type(exc).__name__)
-                    for k in ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
+                    for k in _DB_KEYS}
     else:
-        rest = {k: _c(UNKNOWN, "database unavailable")
-                for k in ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
+        rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
     components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest}
     for name, comp in components.items():
         comp["role"] = ROLE.get(name, "optional")
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]
+    # An optional component that cannot be observed (valuation providers keep
+    # no outcome record) is reported, not counted against the whole system.
+    counted = [c for c in components.values() if not (c["role"] == "optional" and c["state"] == UNKNOWN)]
     overall = UNAVAILABLE if components["database"]["state"] == UNAVAILABLE else (
-        DEGRADED if core_bad or any(c["state"] not in (HEALTHY, NOT_CONFIGURED) for c in components.values())
+        DEGRADED if core_bad or any(c["state"] not in (HEALTHY, NOT_CONFIGURED) for c in counted)
         else HEALTHY)
     return {"state": overall, "checked_at": time.time(), "components": components}
 
@@ -248,6 +361,7 @@ USER_MESSAGES = {
     "email_outbox": "Some emails are waiting to send.",
     "valkey": "Calling is temporarily unavailable.",
     "realtime_fanout": "Live updates may be delayed — refresh to see the latest.",
+    "platform_email_relay": "Some emails may not be sending right now.",
 }
 
 

@@ -138,10 +138,17 @@ def extract_preferences(raw: Any) -> BuyerPreferences:
 
 @dataclass
 class Signal:
-    """One dimension's verdict, with the sentence an agent would read."""
+    """One dimension's verdict, with the sentence an agent would read.
+
+    A match also carries `key` and `params`: the same sentence as a catalogue
+    key and its values, so a Spanish card can say it from the facts rather
+    than translating the English note (L05-06; `semantic_language` "fit.*").
+    """
     name: str
     verdict: str          # "match" | "conflict" | "unknown"
     note: str
+    key: str = ""
+    params: dict = field(default_factory=dict)
 
 
 def _location_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
@@ -150,9 +157,10 @@ def _location_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
     if not prefs.zips and not prefs.cities:
         return Signal("location", "unknown", "no target area recorded")
     if zip_code and zip_code in prefs.zips:
-        return Signal("location", "match", f"looking in {zip_code}")
+        return Signal("location", "match", f"looking in {zip_code}", "location", {"where": zip_code})
     if city and city in prefs.cities:
-        return Signal("location", "match", f"looking in {listing.get('city')}")
+        return Signal("location", "match", f"looking in {listing.get('city')}",
+                      "location", {"where": listing.get("city")})
     where = ", ".join(prefs.zips[:3] or prefs.cities[:3])
     return Signal("location", "conflict", f"looking in {where}, not {listing.get('city') or zip_code}")
 
@@ -169,15 +177,19 @@ def _budget_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
         over = (price - prefs.budget_max) / prefs.budget_max
         if over <= 0.10:
             return Signal("budget", "match",
-                          f"${price:,.0f} is {over:.0%} over their ${prefs.budget_max:,.0f} budget")
+                          f"${price:,.0f} is {over:.0%} over their ${prefs.budget_max:,.0f} budget",
+                          "budget_stretch", {"price": f"${price:,.0f}", "over": f"{over:.0%}",
+                                             "budget": f"${prefs.budget_max:,.0f}"})
         return Signal("budget", "conflict",
                       f"budget up to ${prefs.budget_max:,.0f}, this is ${price:,.0f}")
     if prefs.budget_min is not None and price < prefs.budget_min:
         return Signal("budget", "conflict",
                       f"looking above ${prefs.budget_min:,.0f}, this is ${price:,.0f}")
     if prefs.budget_max is not None:
-        return Signal("budget", "match", f"budget up to ${prefs.budget_max:,.0f}")
-    return Signal("budget", "match", f"looking above ${prefs.budget_min:,.0f}")
+        return Signal("budget", "match", f"budget up to ${prefs.budget_max:,.0f}",
+                      "budget_max", {"budget": f"${prefs.budget_max:,.0f}"})
+    return Signal("budget", "match", f"looking above ${prefs.budget_min:,.0f}",
+                  "budget_min", {"budget": f"${prefs.budget_min:,.0f}"})
 
 
 def _beds_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
@@ -187,7 +199,8 @@ def _beds_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
     if beds is None:
         return Signal("beds", "unknown", "listing does not state bedrooms")
     if beds >= prefs.beds_min:
-        return Signal("beds", "match", f"wants {prefs.beds_min}+ bedrooms, this has {int(beds)}")
+        return Signal("beds", "match", f"wants {prefs.beds_min}+ bedrooms, this has {int(beds)}",
+                      "beds", {"wants": prefs.beds_min, "has": int(beds)})
     return Signal("beds", "conflict", f"wants {prefs.beds_min}+ bedrooms, this has {int(beds)}")
 
 
@@ -198,7 +211,8 @@ def _type_signal(listing: dict, prefs: BuyerPreferences) -> Signal:
     if not listing_type:
         return Signal("property_type", "unknown", "listing has no property type")
     if any(t in listing_type or listing_type in t for t in prefs.property_types):
-        return Signal("property_type", "match", f"wants {prefs.property_types[0]}")
+        return Signal("property_type", "match", f"wants {prefs.property_types[0]}",
+                      "property_type", {"type": prefs.property_types[0]})
     return Signal("property_type", "conflict",
                   f"wants {', '.join(prefs.property_types[:2])}, this is {listing_type}")
 
@@ -214,6 +228,8 @@ class BuyerMatch:
     #: How many independent dimensions agreed. NOT a probability, and never
     #: rendered as a percentage — see the module docstring.
     matched_signals: int
+    #: The matched notes as {dimension, key, params}, in `evidence` order.
+    matched_detail: list[dict] = field(default_factory=list)
 
 
 def match_listing_to_buyer(listing: dict, client: dict) -> BuyerMatch:
@@ -247,6 +263,7 @@ def match_listing_to_buyer(listing: dict, client: dict) -> BuyerMatch:
         unknowns=[s.note for s in unknown],
         conflicts=[s.note for s in conflicts],
         matched_signals=len(matched),
+        matched_detail=[{"dimension": s.name, "key": s.key, "params": s.params} for s in matched],
     )
 
 
@@ -445,6 +462,7 @@ async def property_buyer_matches(conn, ctx, *, lead_id: Optional[str] = None,
                 "name": m.name,
                 "verdict": m.verdict,
                 "matched_criteria": m.evidence,
+                "matched_detail": m.matched_detail,
                 "unknown": m.unknowns,
                 "matched_signals": m.matched_signals,
                 "stated_needs": needs.get(m.client_id, []),

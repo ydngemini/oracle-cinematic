@@ -159,6 +159,35 @@ def test_an_undecodable_video_fails_loudly(tmp_path, monkeypatch):
         asyncio.run(_gather(tmp_path / "work"))
 
 
+def test_capture_that_contributes_nothing_is_recorded_as_skipped(tmp_path, monkeypatch):
+    """Unreadable bytes, and a video that decodes to no frames, are in the
+    input set but were never used: certification must be able to tell them
+    from capture the measurements cover (T12.09, AC12.06)."""
+    unreadable, empty_video, photo = str(uuid4()), str(uuid4()), str(uuid4())
+    _patch_media(
+        monkeypatch,
+        [{"id": unreadable, "kind": "photo", "s3_key": "k", "bytes": None,
+          "content_type": "image/jpeg"},
+         {"id": empty_video, "kind": "video", "s3_key": "k", "bytes": None,
+          "content_type": "video/mp4"},
+         {"id": photo, "kind": "photo", "s3_key": "k", "bytes": None,
+          "content_type": "image/jpeg"}],
+        {empty_video: b"decodes-to-nothing", photo: b"\xff\xd8\xff-not-decoded"},
+    )
+
+    async def _no_frames(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(worker, "_extract_video_frames", _no_frames)
+
+    images, counts = asyncio.run(_gather(tmp_path / "work"))
+
+    assert len(images) == 1 and counts["photos"] == 1
+    assert counts["videos"] == 0 and counts["frames"] == 0
+    assert counts["input_media_ids"] == sorted([unreadable, empty_video, photo])
+    assert counts["skipped_media_ids"] == sorted([unreadable, empty_video])
+
+
 def test_photo_only_captures_are_unaffected(tmp_path, monkeypatch):
     """The common path must not have changed shape."""
     photo_id = str(uuid4())
@@ -171,5 +200,9 @@ def test_photo_only_captures_are_unaffected(tmp_path, monkeypatch):
 
     images, counts = asyncio.run(_gather(tmp_path / "work"))
 
-    assert counts == {"photos": 1, "videos": 0, "frames": 0}
+    # The counts are unchanged; beside them, the input set the build read
+    # (T12.09: what a later upload is compared against).
+    assert counts == {"photos": 1, "videos": 0, "frames": 0,
+                      "input_media_ids": [photo_id], "skipped_media_ids": [],
+                      "newest_input_at": None}
     assert len(images) == 1

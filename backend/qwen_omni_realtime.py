@@ -57,6 +57,11 @@ class QwenCallLimitReached(QwenRealtimeError):
     """Raised when a call reaches the configured conversation-turn ceiling."""
 
 
+class QwenCallOptOut(QwenCallLimitReached):
+    """The outbound callee said "stop" (voice_opt_out, L09-05). A limit
+    subclass so every carrier's handler already ends the call on it."""
+
+
 @dataclass(frozen=True)
 class QwenRealtimeSettings:
     api_key: str
@@ -348,6 +353,14 @@ class QwenOmniRealtimeBridge:
     async def _on_transcript_completed(self, role: str, transcript: str) -> None:
         if role != "caller":
             return
+        state = getattr(self, "_call_state", None)
+        import voice_opt_out
+
+        if voice_opt_out.is_outbound(state) and voice_opt_out.spoken_opt_out(transcript):
+            # The disclosure promised it: suppress the number, then end the call.
+            # Checked per utterance; nothing said is stored.
+            await voice_opt_out.honour(state, self.call_connection_id)
+            raise QwenCallOptOut("outbound callee asked not to be contacted")
         self._turns += 1
         logger.info(
             "Qwen caller turn transcribed: cid=%s chars=%d turn=%d",

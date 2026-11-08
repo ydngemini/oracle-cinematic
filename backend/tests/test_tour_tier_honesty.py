@@ -114,9 +114,15 @@ def test_captured_splat_is_tier_three_and_says_so(monkeypatch):
     # existence alone (audit A03, prompt 12 AC12.06).
     assert result["badge"] == "3D Walkthrough · quality not verified"
     assert result["splat_quality_state"] == "pending"
-    assert "actual home" in result["honest_note"]
+    # It is this home's capture, and the note says so without promising the
+    # photoreal "actual home" quality that only a verified space may claim.
+    assert "this home" in result["honest_note"]
+    assert "photoreal" not in result["honest_note"]
+    assert "not been verified" in result["honest_note"]
     assert result["tiers"]["splat"] is True
+    # Navigable, which is all `walkable` ever meant — not a quality claim.
     assert result["walkable_interior"] is True
+    assert result["whole_home_verified"] is False
 
 
 def test_a_synthetic_splat_never_outranks_real_photos(monkeypatch):
@@ -204,7 +210,7 @@ def test_public_records_carry_the_tenants_lead_id():
         {"id": "r1", "parcel_id": "P-1", "state": "DE", "address": "1 Main St"},
         {"id": "r2", "parcel_id": "P-2", "state": "DE", "address": "2 Main St"},
     ]
-    lead_ids = {("P-1", "DE"): LEAD_ID}
+    lead_ids = {("P-1", "DE"): {"lead_id": LEAD_ID, "linked": False, "heads_by_record": {}}}
 
     first = mls_portal._public_record_json(rows[0], lead_ids)
     second = mls_portal._public_record_json(rows[1], lead_ids)
@@ -216,15 +222,26 @@ def test_public_records_carry_the_tenants_lead_id():
 
 
 def test_lead_lookup_is_one_query_for_the_whole_page():
-    """Per-row lookups would add a query per card on every search."""
+    """Per-row lookups would add a query per card on every search.
+
+    The same query carries whether the house is linked to a client and the
+    newest property-match decision per record (0168, T11.03): a correlated
+    subquery per lead, not a second round trip. RLS scopes both tables, so no
+    tenant predicate is written here.
+    """
+    import re
+
     import mls_portal
 
     calls = []
+    head = {"id": "h1", "record_id": "r1", "decision": "confirmed", "same_client": True,
+            "decided_at": "2026-10-17T16:00:00+00:00"}
 
     class _Conn:
         async def fetch(self, query, *args):
             calls.append((query, args))
-            return [{"parcel_id": "P-1", "state": "DE", "id": LEAD_ID}]
+            return [{"parcel_id": "P-1", "state": "DE", "id": LEAD_ID, "linked": True,
+                     "heads": [head]}]
 
     rows = [
         {"parcel_id": f"P-{i}", "state": "DE"} for i in range(20)
@@ -232,7 +249,12 @@ def test_lead_lookup_is_one_query_for_the_whole_page():
     result = asyncio.run(mls_portal._lead_ids_for_records(_Conn(), rows))
 
     assert len(calls) == 1, f"expected a single batched query, made {len(calls)}"
-    assert result == {("P-1", "DE"): LEAD_ID}
+    assert result == {("P-1", "DE"): {"lead_id": LEAD_ID, "linked": True, "heads_by_record": {"r1": head}}}
+    query = re.sub(r"\s+", " ", calls[0][0])
+    assert "seller_client_id IS NOT NULL AS linked" in query
+    assert "FROM property_match_decisions h WHERE h.lead_id = leads.id" in query
+    assert "NOT EXISTS (SELECT 1 FROM property_match_decisions n WHERE n.supersedes_id = h.id)" in query
+    assert "tenant_id" not in query
 
 
 def test_lead_lookup_skips_the_query_when_no_row_has_a_parcel():
@@ -349,8 +371,11 @@ def test_a_captured_splat_still_outranks_panos(monkeypatch):
 
 
 @pytest.mark.parametrize("limitations, state, badge", [
-    ([], "measured", "3D Walkthrough"),
-    (["floaters_present"], "measured", "3D Walkthrough"),
+    # No caveat is not a measurement: "measured" used to mean only that no
+    # caveat was found, and it labelled the space as if quality were checked.
+    ([], "pending", "3D Walkthrough · quality not verified"),
+    (["floaters_present"], "pending", "3D Walkthrough · quality not verified"),
+    (["camera_poses_missing", "scale_unknown"], "pending", "3D Walkthrough · quality not verified"),
     (["quality_unverified"], "pending", "3D Walkthrough · quality not verified"),
     (["quality_low"], "degraded", "3D Walkthrough · reduced quality"),
     (["partial_registration", "quality_low"], "incomplete", "Partial 3D Walkthrough"),
@@ -371,9 +396,16 @@ def test_the_3d_label_follows_the_quality_verdict(monkeypatch, limitations, stat
         assert result["splat_caveats"], "a reduced-quality space says why"
 
 
-def test_nothing_in_the_tour_says_full_or_verified():
+def test_only_a_verified_space_may_say_full_or_verified():
+    """`Full 3D Walkthrough` and "verified" belong to the certification state
+    `verified` alone (T12.09); every other label is plain or qualified."""
     import tour_api as t
 
-    labels = list(t._TIER_BADGE.values()) + list(t._SPLAT_BADGE.values()) + list(t._SPLAT_LABEL.values())
+    assert t._SPLAT_BADGE["verified"] == "Full 3D Walkthrough"
+    labels = list(t._TIER_BADGE.values()) + [
+        text for table in (t._SPLAT_BADGE, t._SPLAT_LABEL, t._SPLAT_NOTE)
+        for key, text in table.items() if key != "verified"]
     assert not any("Full" in x for x in labels)
-    assert not any("verified" in x.replace("not verified", "") for x in labels), "no label claims verification"
+    assert not any("verified" in x.replace("not verified", "").replace("has not been verified", "")
+                   for x in labels), "no label claims verification"
+    assert not any("photoreal" in x or "professional" in x.lower() for x in labels)

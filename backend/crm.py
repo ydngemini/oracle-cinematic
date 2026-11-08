@@ -1392,8 +1392,10 @@ async def send_message(
 ):
     """Persist a comms entry without overstating delivery.
 
-    Email is queued in email_outbox. SMS is currently log-only because this
-    route has no SMS provider, and carries an explicit ``not_sent`` marker.
+    Email is queued in email_outbox, and only for a brokerage that may contact
+    clients (billing.entitlement_refusal: 402 lapsed, 423 closing).
+    SMS is currently log-only because this route has no SMS provider, and
+    carries an explicit ``not_sent`` marker.
     ``note``/legacy ``message`` entries are internal and have no direction.
     Threads continue the latest stored channel thread or start a fresh one.
     """
@@ -1411,8 +1413,19 @@ async def send_message(
     direction = None if is_internal else body.direction
     outbound = direction == "outbound"
     if stored_channel == "email" and outbound:
+        import billing
         import commercial_email
 
+        # The same reading as releasing a command's email (F18.07): a lapsed or
+        # closing brokerage emails nobody from the composer either. Only
+        # outbound email — logging what a client sent and internal notes stay
+        # open, and outbound SMS here is log-only (never sent). Not the route
+        # gate, which lets a platform admin through: email_outbox.deliver
+        # refuses for the tenant whoever queued it, so an admin would get a
+        # "queued" email that can never go out.
+        refusal = await billing.entitlement_refusal(ctx)
+        if refusal is not None:
+            raise HTTPException(status_code=refusal[0], detail=refusal[1])
         try:
             await commercial_email.require_postal_address(ctx.tenant_id)
         except commercial_email.PostalAddressRequired as exc:
@@ -1817,34 +1830,33 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
                 -- latest touch per client (the join on s), never carried
                 -- through the CTE: a materialized CTE of every touch with its
                 -- ciphertexts made this page ~6x slower on a 5,000-row bench.
+                -- L17-25: one pass. Every touch is grouped once into its
+                -- client's count and newest id, instead of two correlated
+                -- scans of the whole touches set per client (quadratic in
+                -- brokerage size). The newest touch is read back by primary
+                -- key for the <= 200 rows returned.
                 WITH touches AS (
                     SELECT COALESCE(il.client_id, ld.seller_client_id) AS cid,
-                           il.id, il.interaction_type, il.direction, il.subject,
-                           left(il.payload->>'body', 80) AS snippet_body,
-                           il.created_at
+                           il.id, il.created_at
                       FROM interaction_logs il
                       LEFT JOIN leads ld ON ld.id = il.lead_id
                      WHERE COALESCE(il.client_id, ld.seller_client_id) IS NOT NULL
+                ), per_client AS (
+                    SELECT cid, count(*) AS cnt,
+                           (array_agg(id ORDER BY created_at DESC, id DESC))[1] AS last_id
+                      FROM touches
+                     GROUP BY cid
                 )
                 SELECT c.id, c.full_name, c.email, c.phone, c.client_type,
-                       t.interaction_type, t.direction, t.subject,
-                       t.snippet_body, t.created_at,
+                       s.interaction_type, s.direction, s.subject,
+                       left(s.payload->>'body', 80) AS snippet_body, s.created_at,
                        s.subject_ciphertext, s.tenant_id AS subject_ciphertext_tenant_id,
                        s.content_ciphertext, s.tenant_id AS content_ciphertext_tenant_id,
-                       COALESCE(n.cnt, 0) AS cnt
+                       COALESCE(p.cnt, 0) AS cnt
                   FROM clients c
-                  LEFT JOIN LATERAL (
-                        SELECT id, interaction_type, direction, subject, snippet_body, created_at
-                          FROM touches
-                         WHERE cid = c.id
-                         ORDER BY created_at DESC
-                         LIMIT 1
-                  ) t ON true
-                  LEFT JOIN interaction_logs s ON s.id = t.id
-                  LEFT JOIN LATERAL (
-                        SELECT count(*) AS cnt FROM touches WHERE cid = c.id
-                  ) n ON true
-                 ORDER BY t.created_at DESC NULLS LAST, c.created_at DESC
+                  LEFT JOIN per_client p ON p.cid = c.id
+                  LEFT JOIN interaction_logs s ON s.id = p.last_id
+                 ORDER BY s.created_at DESC NULLS LAST, c.created_at DESC
                  LIMIT 200
                 """
             )

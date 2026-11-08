@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -35,6 +35,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.responses import RedirectResponse, Response
 
+import ai_budget
 import pan_redaction
 import record_access
 import sealed_text
@@ -57,6 +58,7 @@ from command_providers import (
 from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
+from llm_gateway import SpendRefused, SpendUnavailable
 from outreach_compliance import Channel, guard_outreach
 from platform_policy import (
     ActionRisk,
@@ -65,6 +67,7 @@ from platform_policy import (
     require_feature,
 )
 from tenancy import Role, TenantContext, require_context, require_role
+import billing
 from billing import require_active_subscription
 
 if TYPE_CHECKING:
@@ -500,26 +503,36 @@ def _oauth_return_url(return_path: str, outcome: str) -> str:
     )
 
 
-async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
-    """Load an agent token, refreshing it before expiry without exposing either token."""
-    key = _provider_key(ctx.tenant_id)
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_GOOGLE_ROW_SQL = """
             SELECT id,token_ciphertext,refresh_ciphertext,expires_at
               FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider='google'
                AND account_label=$2 AND disabled_at IS NULL
              ORDER BY updated_at DESC LIMIT 1
-            """,
-            ctx.tenant_id,
-            account_label,
-        )
+"""
+
+
+def _google_token_fresh(row: Any) -> bool:
+    return not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(seconds=60)
+
+
+async def has_google_calendar(ctx: TenantContext, account_label: str) -> bool:
+    """Whether _load_google_access_token could hand out a token for this label:
+    a non-disabled row that is unexpired or refreshable. An access token that
+    has merely expired is not a disconnected calendar (channel_setup, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
+    return row is not None and (_google_token_fresh(row) or bool(row["refresh_ciphertext"]))
+
+
+async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
+    """Load an agent token, refreshing it before expiry without exposing either token."""
+    key = _provider_key(ctx.tenant_id)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
         if row is None:
             return None
-        if not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(
-            seconds=60
-        ):
+        if _google_token_fresh(row):
             return await decrypt_pii(conn, row["token_ciphertext"], key)
         if not row["refresh_ciphertext"]:
             return None
@@ -585,26 +598,7 @@ def _resolve_email_provider():
         ) from None
 
 
-async def _load_provider_credential(
-    ctx: TenantContext,
-    provider: str,
-    *,
-    account_label: Optional[str] = None,
-    exact: bool = False,
-) -> Any:
-    """Decrypt a tenant credential only inside the executing worker.
-
-    Preference order: the caller's own labelled row, then 'default', then
-    whichever active row is newest — so a broker who saved a credential under
-    a custom label (the account_label field on PUT /providers/{provider} is
-    free text) is still found even when the caller asked for a specific
-    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
-    caller named one specific row) to require that exact account_label match
-    rather than silently falling back to someone else's credential.
-    """
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_PROVIDER_ROW_SQL = """
             SELECT token_ciphertext,expires_at FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider=$2 AND disabled_at IS NULL
                AND ($4 IS FALSE OR account_label=$3)
@@ -624,15 +618,44 @@ async def _load_provider_credential(
                       END,
                       updated_at DESC
              LIMIT 1
-            """,
-            ctx.tenant_id,
-            provider,
-            account_label,
-            exact,
-        )
-        if row is None:
-            return None
-        if row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc):
+"""
+
+
+def _credential_row_live(row: Any) -> bool:
+    return row is not None and not (row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc))
+
+
+async def has_provider_credential(
+    ctx: TenantContext, provider: str, *, account_label: Optional[str] = None,
+) -> bool:
+    """Whether _load_provider_credential would find a usable row for this
+    caller — the same selection and expiry rule, without decrypting anything
+    (channel_setup, T07.04, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, False)
+    return _credential_row_live(row)
+
+
+async def _load_provider_credential(
+    ctx: TenantContext,
+    provider: str,
+    *,
+    account_label: Optional[str] = None,
+    exact: bool = False,
+) -> Any:
+    """Decrypt a tenant credential only inside the executing worker.
+
+    Preference order: the caller's own labelled row, then 'default', then
+    whichever active row is newest — so a broker who saved a credential under
+    a custom label (the account_label field on PUT /providers/{provider} is
+    free text) is still found even when the caller asked for a specific
+    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
+    caller named one specific row) to require that exact account_label match
+    rather than silently falling back to someone else's credential.
+    """
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, exact)
+        if not _credential_row_live(row):
             return None
         return await decrypt_pii(conn, row["token_ciphertext"], _provider_key(ctx.tenant_id))
 
@@ -1181,13 +1204,21 @@ async def parse_personal_command(
     else:
         generated = None
         if _mind_service is not None:
-            generated = await _mind_service.generate_command_draft(
-                raw_text=body.raw_text,
-                intent=intent.value,
-                profile=profile,
-                client=client,
-                property_context=property_context,
-            )
+            # The draft's hosted step is spent from the brokerage's AI budget
+            # (T18.07): held before it is sent, metered after. A refusal is
+            # answered as one (402/503 with its code) — never the deterministic
+            # draft dressed up as the assistant's, and nothing is staged.
+            try:
+                async with ai_budget.spending(ctx, "parse"):
+                    generated = await _mind_service.generate_command_draft(
+                        raw_text=body.raw_text,
+                        intent=intent.value,
+                        profile=profile,
+                        client=client,
+                        property_context=property_context,
+                    )
+            except SpendRefused as refused:
+                raise ai_budget.http_refusal(refused) from None
         draft_payload = (
             generated.get("draft_payload")
             if isinstance(generated, dict) and isinstance(generated.get("draft_payload"), dict)
@@ -2019,7 +2050,15 @@ async def release_command(
     trail the first path writes.
 
     `row` is a command_executions row already checked to be awaiting approval.
+
+    Entitlement is checked HERE, not only on the Approve route: a mission's
+    self-release calls this directly, and must not queue a send for a lapsed
+    or closing brokerage either (F18.07). Refused, the command stays awaiting
+    approval and nothing is queued.
     """
+    refusal = await billing.entitlement_refusal(ctx)
+    if refusal is not None:
+        raise HTTPException(status_code=refusal[0], detail=refusal[1])
     command_id = str(row["id"])
     approval = await decide_approval(
         ctx, str(row["approval_id"]), decision="approved", reason=reason
@@ -2090,8 +2129,15 @@ async def reject_command(
     row = await _get_command(ctx, command_id)
     if not row:
         raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+    return await withdraw_command(ctx, row, reason=body.reason)
+
+
+async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason: str) -> dict:
+    """Reject a staged command's approval and cancel the command — the Reject
+    button, and a correction that supersedes it (correction.py, F05.04)."""
+    command_id = str(row["id"])
     approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="rejected", reason=body.reason
+        ctx, str(row["approval_id"]), decision="rejected", reason=reason
     )
     async with tenant_tx(ctx) as conn:
         updated = await conn.fetchrow(
@@ -2309,9 +2355,104 @@ async def acs_webhook(request: Request):
     return {"accepted": True}
 
 
+#: How long a realtime phone bridge waits for its brokerage's AI budget to be
+#: read before the call is refused as unreadable (T18.07): the caller is on
+#: the line, and a read that stalls is never a pass.
+_REALTIME_ADMISSION_SECONDS = 5.0
+#: Who a realtime call's admission is read as: the call's brokerage, as a
+#: service actor (as a phone-call reply is, ai_chat_agent._VOICE_ACTOR).
+_REALTIME_ACTOR = "voice-realtime"
+
+
+async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
+    """None when a realtime phone bridge may open for the call's brokerage,
+    or the refusal that stops it (T18.07).
+
+    The bridges (qwen_omni_realtime, elevenlabs_realtime) run a hosted
+    realtime model billed to the brokerage for the whole call. They report no
+    per-call token usage here, so nothing holds or meters them (a stated
+    limit, ai_budget.NOT_COUNTED). What they do honour is admission, read as
+    a chat turn's is (ai_budget.admission): the deploy-time halt, the
+    platform switch, the brokerage's pause and a cap already used up. A call
+    with no brokerage, or whose budget cannot be read in time, is refused as
+    unknown — never a pass."""
+    if not tenant_id:
+        return SpendUnavailable("unknown", ai_budget.CODES["unknown"],
+                                "This call's brokerage is not known, so no model was asked.")
+    ctx = TenantContext(agent_id=_REALTIME_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    try:
+        await asyncio.wait_for(ai_budget.admission(ctx), timeout=_REALTIME_ADMISSION_SECONDS)
+    except SpendRefused as refused:
+        return refused
+    except asyncio.TimeoutError:
+        logger.warning("Realtime call held: the AI budget could not be read within %.1fs",
+                       _REALTIME_ADMISSION_SECONDS)
+        return ai_budget.refusal("unknown", ctx)
+    return None
+
+
+async def _state_tenant(load: Any, call_id: str) -> Optional[str]:
+    """The brokerage a provider call's state names, or None when there is no
+    state, it names none, or it cannot be read (unknown, not a pass)."""
+    try:
+        state = await load(call_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("realtime call state unreadable for its AI budget (%s)", type(exc).__name__)
+        return None
+    return str((state or {}).get("tenant_id") or "") or None
+
+
+def _log_realtime_refused(provider_name: str, call_id: str, refused: SpendRefused) -> None:
+    # The provider's call id and the code: never the caller's number.
+    logger.info("Realtime bridge not opened: provider=%s call=%s code=%s",
+                provider_name, call_id, refused.code)
+
+
+async def _say_refused_and_end(provider_name: str, call_id: str) -> None:
+    """Move a call whose realtime bridge was not opened to the refusal
+    document (voice_refused_markup): the caller hears VOICE_REFUSED_LINE in
+    the provider's own speech, then the call hangs up. No model and no
+    text-to-speech is bought for it. If the call cannot be moved (no public
+    base URL, the provider's API failing), the socket still closes and the
+    stream markup's own goodbye line ends the call."""
+    from voice_provider import get_voice_provider
+
+    base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    try:
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError("ORACLE_PUBLIC_BASE_URL is not an absolute HTTP(S) URL")
+        await get_voice_provider(provider_name).transfer_call(
+            call_id, redirect_url=f"{base}/api/commands/webhooks/{provider_name}/refused")
+    except Exception as exc:  # noqa: BLE001 — the call still ends with its stream
+        logger.warning("Realtime refusal line not said on %s (%s); the stream's goodbye ends the call",
+                       provider_name, type(exc).__name__)
+
+
+@router.post("/webhooks/{provider_name}/refused", include_in_schema=False)
+async def voice_refused_markup(provider_name: str):
+    """The refusal line, then a hang-up, for a call whose realtime bridge was
+    not opened (T18.07, _say_refused_and_end).
+
+    Unauthenticated, like twilio_tts_audio, and safe for the same reason: it
+    reads nothing from the request and returns one fixed document to anyone —
+    the sentence every refused caller hears, and <Hangup/>. It names no
+    brokerage, call or number, and does nothing."""
+    from ai_chat_agent import VOICE_REFUSED_LINE
+    from voice_provider import get_voice_provider
+
+    if provider_name not in {"twilio", "plivo"}:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return Response(content=get_voice_provider(provider_name).safe_hangup_markup(VOICE_REFUSED_LINE),
+                    media_type="application/xml")
+
+
 @router.websocket("/media/acs")
 async def acs_qwen_media(websocket: WebSocket):
-    """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni."""
+    """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni.
+
+    Admitted for the call's brokerage before the bridge opens (T18.07): a
+    call it cannot spend on hears the refusal line and ends."""
     from qwen_omni_realtime import (
         QwenCallLimitReached,
         QwenOmniRealtimeBridge,
@@ -2333,10 +2474,21 @@ async def acs_qwen_media(websocket: WebSocket):
     if not call_connection_id:
         await websocket.close(code=4400)
         return
-    from acs_call_handler import authorize_qwen_media_call
+    from acs_call_handler import authorize_qwen_media_call, call_tenant, refuse_qwen_media
 
     if not await authorize_qwen_media_call(call_connection_id):
         await websocket.close(code=4403)
+        return
+
+    refused = await _realtime_refusal(await call_tenant(call_connection_id))
+    if refused is not None:
+        _log_realtime_refused("acs", call_connection_id, refused)
+        try:
+            await refuse_qwen_media(call_connection_id)
+        except Exception as exc:  # noqa: BLE001 — the bridge stays closed either way
+            logger.warning("ACS refused call could not be ended (%s): cid=%s",
+                           type(exc).__name__, call_connection_id)
+        await websocket.close(code=1000)
         return
 
     await websocket.accept()
@@ -2602,19 +2754,28 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             return None
         await conn.execute(
             "UPDATE live_call_sessions SET transcript_status='complete' WHERE id=$1", session["id"])
-        if session["client_id"] is None:
-            # chk_call_anchor allows a lead-only call; leads have no notes table.
-            logger.warning("call notes not attached — lead-only call: %s", provider_call_id)
+        client_id = session["client_id"]
+        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
+        if client_id is None and session["lead_id"] is not None:
+            # A lead-only call (chk_call_anchor allows it; leads have no notes
+            # table). A lead that is a client's own house follows that client
+            # (0143), so its notes do too (L09-06, T09.17).
+            client_id = await conn.fetchval(
+                "SELECT seller_client_id FROM leads WHERE id=$1", session["lead_id"])
+        if client_id is None:
+            # A prospect with no client record: there is nowhere the agent can
+            # review a note, so nothing the callee said is kept — and the agent
+            # is told so, once, instead of the notes vanishing into a log line.
+            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id, len(clean))
             return None
         if await conn.fetchval(
             """SELECT 1 FROM client_activities
                 WHERE client_id=$1 AND meta->>'provider_call_id'=$2 AND meta->>'source'='ai_call_notes'""",
-            session["client_id"], provider_call_id,
+            client_id, provider_call_id,
         ):
             return None
-        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
         assignee = await conn.fetchval(
-            "SELECT assignee_id FROM clients WHERE id=$1", session["client_id"])
+            "SELECT assignee_id FROM clients WHERE id=$1", client_id)
         mode = await call_note_settings.read_mode(conn, session["tenant_id"], requester)
         review_state = "proposed" if mode == "review" else "approved"
         # What the customer said is sealed at rest under the brokerage's key,
@@ -2625,7 +2786,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             """INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id,
                                          pinned, review_state)
                VALUES ($1, $2, '', $3, $4, false, $5) RETURNING id""",
-            session["tenant_id"], session["client_id"], sealed, AI_CALL_NOTE_AUTHOR, review_state,
+            session["tenant_id"], client_id, sealed, AI_CALL_NOTE_AUTHOR, review_state,
         )
         summary = f"Call notes from Neoh ({len(clean)})"
         if review_state == "proposed":
@@ -2633,7 +2794,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         await conn.execute(
             """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
                VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
-            session["tenant_id"], session["client_id"], summary,
+            session["tenant_id"], client_id, summary,
             json.dumps({
                 "source": "ai_call_notes", "note_id": str(note["id"]),
                 "provider_call_id": provider_call_id,
@@ -2646,7 +2807,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         )
     frame = {
         "type": "CALL_NOTES", "version": 1,
-        "client_id": str(session["client_id"]),
+        "client_id": str(client_id),
         "command_id": str(session["command_id"]) if session["command_id"] else None,
         "note_id": str(note["id"]), "notes": clean, "review_state": review_state,
     }
@@ -2654,12 +2815,39 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     # client (a revoked share, a reassignment) — C3.4/C3.6, 0145.
     try:
         await ws_hub.broadcast_record(
-            str(session["tenant_id"]), frame, client_id=session["client_id"],
+            str(session["tenant_id"]), frame, client_id=client_id,
             contact_id=session["contact_id"], only=call_note_recipients(requester, assignee),
             mirror=False)  # private to its recipients, as broadcast_user was
     except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
         logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
     return str(note["id"])
+
+
+async def _tell_requester_notes_not_kept(conn: Any, session: Any, requester: str,
+                                         provider_call_id: str, count: int) -> None:
+    """A task for the agent who asked for the call: notes were taken but not
+    kept, because the call was about a lead with no client record. Carries no
+    note content. Idempotent per call."""
+    marker = f"Call {provider_call_id}"
+    if not requester or await conn.fetchval(
+        """SELECT 1 FROM client_tasks
+            WHERE tenant_id=$1 AND created_by=$2 AND details LIKE $3""",
+        session["tenant_id"], AI_CALL_NOTE_AUTHOR, f"%{marker}%",
+    ):
+        return
+    await conn.execute(
+        """INSERT INTO client_tasks (tenant_id, client_id, title, details, status, priority,
+                                     assignee_id, created_by)
+           VALUES ($1, NULL, $2, $3, 'open', 'normal', $4, $5)""",
+        session["tenant_id"],
+        "Call notes were not kept: this lead has no client record",
+        (f"Neoh took {count} note(s) with the callee's consent on a call about a lead "
+         f"(lead {session['lead_id']}), but the lead is not linked to a client, so there "
+         f"is nowhere to keep them for your review and nothing was saved. Add the person "
+         f"as a client before the next call to keep its notes. {marker}."),
+        requester, AI_CALL_NOTE_AUTHOR,
+    )
+    logger.info("call notes not kept — lead with no client; requester told: %s", provider_call_id)
 
 
 def call_note_recipients(requester: Optional[str], assignee: Optional[str]) -> list[str]:
@@ -2950,6 +3138,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     await reporter.progress(15, "compliance check")
     submission_started = False
     try:
+        # Approved while the brokerage was entitled is not enough: a send
+        # queued (or scheduled) before the subscription lapsed must not go out
+        # after it (F18.07, C3.4). Terminal — see billing.NotEntitled.
+        refusal = await billing.entitlement_refusal(ctx)
+        if refusal is not None:
+            raise billing.NotEntitled(f"Not sent: {refusal[1]}")
         if not await _requester_may_contact(tenant_id, command):
             raise RuntimeError(
                 "Not sent: the person who asked for this can no longer contact this "
@@ -3544,6 +3738,7 @@ async def twilio_qwen_media(websocket: WebSocket):
     )
     from twilio_call_handler import (
         authorize_twilio_media,
+        load_twilio_call_state,
         mark_twilio_streaming,
         verify_twilio_websocket_signature,
     )
@@ -3598,6 +3793,14 @@ async def twilio_qwen_media(websocket: WebSocket):
         await websocket.close(code=4403)
         return
 
+    # Admitted for the call's brokerage before the model opens (T18.07).
+    refused = await _realtime_refusal(await _state_tenant(load_twilio_call_state, call_sid))
+    if refused is not None:
+        _log_realtime_refused("twilio", call_sid, refused)
+        await _say_refused_and_end("twilio", call_sid)
+        await websocket.close(code=1000)
+        return
+
     try:
         bridge = TwilioQwenRealtimeBridge(
             websocket,
@@ -3642,7 +3845,7 @@ async def plivo_qwen_media(websocket: WebSocket):
         QwenCallLimitReached,
         QwenRealtimeError,
     )
-    from plivo_call_handler import authorize_plivo_media, mark_plivo_streaming
+    from plivo_call_handler import authorize_plivo_media, load_plivo_call_state, mark_plivo_streaming
 
     bridge_token = websocket.query_params.get("bridge_token", "")
     if not bridge_token:
@@ -3682,6 +3885,14 @@ async def plivo_qwen_media(websocket: WebSocket):
         await websocket.close(code=4403)
         return
 
+    # Admitted for the call's brokerage before either model opens (T18.07).
+    refused = await _realtime_refusal(await _state_tenant(load_plivo_call_state, call_uuid))
+    if refused is not None:
+        _log_realtime_refused("plivo", call_uuid, refused)
+        await _say_refused_and_end("plivo", call_uuid)
+        await websocket.close(code=1000)
+        return
+
     from elevenlabs_realtime import (
         ElevenLabsCallLimitReached,
         ElevenLabsRealtimeError,
@@ -3701,8 +3912,10 @@ async def plivo_qwen_media(websocket: WebSocket):
         await bridge.run()
     except WebSocketDisconnect:
         logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
-    except (QwenCallLimitReached, ElevenLabsCallLimitReached):
-        logger.info("Qwen realtime turn limit reached: uuid=%s", call_uuid)
+    except (QwenCallLimitReached, ElevenLabsCallLimitReached) as exc:
+        # A spoken opt-out (L09-05) is a limit subclass: same hang-up.
+        logger.info("Realtime call ended (%s): uuid=%s",
+                    "callee opted out" if "opt" in type(exc).__name__.lower() else "turn limit", call_uuid)
         from voice_provider import get_voice_provider
 
         await get_voice_provider("plivo").abort_call(call_uuid)
@@ -3741,10 +3954,30 @@ async def twilio_speech(request: Request):
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
+    from ai_chat_agent import _generate_voice_reply
+    from twilio_call_handler import load_twilio_call_state
+
+    # Whose AI budget this reply is spent from (T18.07): the brokerage the
+    # call's state names. A turn that cannot be attributed — no state, a state
+    # with no brokerage, or a state that cannot be read (unknown is not "no
+    # brokerage") — is not answered by a model: spend no brokerage can be held
+    # for is never a pass.
+    try:
+        state = await load_twilio_call_state(call_sid)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("twilio speech webhook: call state unreadable (%s)", type(exc).__name__)
+        state = None
+    tenant_id = str((state or {}).get("tenant_id") or "")
+    if not tenant_id:
+        logger.info("twilio speech webhook: call_sid=%s has no brokerage; ending the call", call_sid)
+        return _voice_refused_twiml()
+
     ai_reply = "I'm sorry, I'm having trouble processing that. Could you try again?"
     try:
-        from ai_chat_agent import _generate_voice_reply
-        ai_reply = await _generate_voice_reply(call_sid, speech_text)
+        ai_reply = await _generate_voice_reply(call_sid, speech_text, tenant_id=tenant_id)
+    except SpendRefused as refused:
+        logger.info("twilio speech webhook: call_sid=%s stopped by the AI budget (%s)", call_sid, refused.code)
+        return _voice_refused_twiml()
     except Exception:
         import logging
         logging.getLogger("oracle.twilio").exception("Twilio AI reply failed")
@@ -3767,6 +4000,42 @@ async def twilio_speech(request: Request):
     </Gather>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+def _voice_refused_twiml() -> Response:
+    """The line a caller hears when a reply cannot be spent for them (T18.07),
+    then the call ends. Said with <Say>, not voice_tts: no text-to-speech is
+    bought to say it."""
+    from ai_chat_agent import VOICE_REFUSED_LINE
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">{_xml_escape(VOICE_REFUSED_LINE)}</Say>
+    <Hangup/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+async def _call_session_tenant(provider_call_id: str) -> Optional[str]:
+    """The brokerage a provider call belongs to (live_call_sessions), read as
+    the platform exactly as _update_call_session_async reads it. None when no
+    session names the call or it cannot be read — either way no brokerage's
+    budget can hold the reply."""
+    platform_ctx = TenantContext(
+        agent_id="custom-call-webhook",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    try:
+        async with tenant_tx(platform_ctx) as conn:
+            value = await conn.fetchval(
+                "SELECT tenant_id FROM live_call_sessions WHERE provider_call_id=$1 LIMIT 1",
+                provider_call_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("custom-call webhook: call session unreadable (%s)", type(exc).__name__)
+        return None
+    return str(value) if value else None
 
 
 @router.post("/webhooks/custom-call", include_in_schema=False)
@@ -3827,10 +4096,24 @@ async def custom_call_webhook(request: Request):
     if not speech:
         return {"accepted": True}
 
-    try:
-        from ai_chat_agent import _generate_voice_reply
+    from ai_chat_agent import VOICE_REFUSED_LINE, _generate_voice_reply
 
-        ai_reply = await _generate_voice_reply(from_number, speech)
+    def _refused(code: str) -> dict:
+        # Said, then the call ends (T18.07): never silence, never the stall line.
+        return {"call_id": call_id, "event": "reply", "text": VOICE_REFUSED_LINE,
+                "tts": True, "end_call": True, "code": code}
+
+    # The reply is spent from the brokerage the call session belongs to; a call
+    # no session names cannot be held against any budget, so no model is asked.
+    tenant_id = await _call_session_tenant(call_id) if call_id else None
+    if not tenant_id:
+        logger.info("custom-call webhook: call_id=%s has no brokerage; ending the call", call_id)
+        return _refused("CALL_NOT_ATTRIBUTED")
+    try:
+        ai_reply = await _generate_voice_reply(from_number, speech, tenant_id=tenant_id)
+    except SpendRefused as refused:
+        logger.info("custom-call webhook: call_id=%s stopped by the AI budget (%s)", call_id, refused.code)
+        return _refused(refused.code)
     except Exception:
         logger.exception("Custom call AI reply failed for %s", call_id)
         ai_reply = "I'm sorry, I couldn't process that. Could you try again?"

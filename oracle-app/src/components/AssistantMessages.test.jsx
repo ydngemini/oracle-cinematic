@@ -146,3 +146,42 @@ describe('AssistantMessages', () => {
     expect(onReview).toHaveBeenCalled();
   });
 });
+
+
+describe('the one precise question (T05.10, L05-09)', () => {
+  const choices = [
+    { type: 'client', id: 'aaaaaaaa-0000-0000-0000-000000000001', label: 'Sarah Chen' },
+    { type: 'client', id: 'aaaaaaaa-0000-0000-0000-000000000002', label: 'Sarah Lee' },
+  ];
+
+  it('offers each record Neoh asked about as a button, and a click answers with that record', () => {
+    const onChoose = vi.fn();
+    render(
+      <AssistantMessages
+        messages={[{ id: 'm1', role: 'assistant', content: 'Which Sarah?', choices }]}
+        onUndo={vi.fn()}
+        undoing={null}
+        onChoose={onChoose}
+      />,
+    );
+    const group = screen.getByRole('group', { name: 'Which one did you mean?' });
+    expect(group).toBeTruthy();
+    screen.getByRole('button', { name: /Sarah Lee/ }).click();
+    expect(onChoose).toHaveBeenCalledWith(choices[1]);
+  });
+
+  it('shows nothing when the turn asked no question, and never on the person’s own message', () => {
+    render(
+      <AssistantMessages
+        messages={[
+          { id: 'm1', role: 'assistant', content: 'Done.', choices: [] },
+          { id: 'm2', role: 'user', content: 'Sarah', choices },
+        ]}
+        onUndo={vi.fn()}
+        undoing={null}
+        onChoose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('group', { name: 'Which one did you mean?' })).toBeNull();
+  });
+});

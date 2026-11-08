@@ -2,7 +2,9 @@
 // platform_admin/broker_owner, so this app must obtain a real JWT before it can
 // connect. Mirrors the main Neoh app: POST {VITE_API_BASE}/auth/login with
 // { agent_id, passphrase } → { token, role, ... }.
-const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
+// `?.`: Vite replaces import.meta.env at build time; under Node's own test
+// runner (no Vite) it is undefined, and this module still loads.
+const API_BASE = (import.meta.env?.VITE_API_BASE || '').replace(/\/+$/, '');
 
 // Roles the backend WS accepts (must match _OBS_ALLOWED_ROLES in aws_observability.py).
 export const OBS_ROLES = new Set(['platform_admin', 'broker_owner']);

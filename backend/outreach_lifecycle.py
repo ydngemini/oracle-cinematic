@@ -124,6 +124,11 @@ DISPOSITION_STAGE: dict[str, Stage] = {
 #: The ledger dispositions that count as "reached at least accepted".
 ACCEPTED_DISPOSITIONS: tuple[str, ...] = ("accepted", "sent", "delivered")
 
+#: How long after a first response an inbound text still counts as the
+#: lead's reply to it (0158, L04-03). A text weeks later is a new
+#: conversation, not an answer to the speed-to-lead message.
+REPLY_WINDOW_DAYS = 7
+
 
 def call_status_stage(status: str, duration_seconds: Optional[int] = None) -> Stage:
     """A carrier call status → stage. Only an answer is delivery.
@@ -152,6 +157,11 @@ def _earlier_dispositions(target: Stage) -> list[str]:
     """Ledger dispositions a row may move FROM to reach ``target``."""
     if target is Stage.CANCELLED:
         return ["staged", "approved"]
+    if target is Stage.FAILED:
+        # A carrier's failure report for a message the provider took: from
+        # approved (acceptance bookkeeping missed) or accepted, never after
+        # delivered, never from another terminal state.
+        return ["approved", "accepted", "sent"]
     target_rank = _rank(target)
     return [
         disposition for disposition, stage in DISPOSITION_STAGE.items()
@@ -200,6 +210,17 @@ _ADVANCE_SQL = {
            SET disposition = $3, updated_at = now()
          WHERE tenant_id = $1::uuid AND command_id = $2::uuid
            AND disposition = ANY($4::text[])""",
+    # Like delivered, a claim about a provider: only a command the provider
+    # took can fail at the carrier.
+    Stage.FAILED: """
+        UPDATE lead_response_events
+           SET disposition = $3, updated_at = now()
+         WHERE tenant_id = $1::uuid AND command_id = $2::uuid
+           AND disposition = ANY($4::text[])
+           AND EXISTS (SELECT 1 FROM command_executions c
+                        WHERE c.id = lead_response_events.command_id
+                          AND c.tenant_id = lead_response_events.tenant_id
+                          AND c.state = 'succeeded')""",
 }
 
 
@@ -223,7 +244,7 @@ async def advance_first_response(
     already happened, and the caller's own write must stay committable.
     Returns True when the row moved.
     """
-    if stage not in (Stage.APPROVED, Stage.ACCEPTED, Stage.DELIVERED, Stage.CANCELLED):
+    if stage not in (Stage.APPROVED, Stage.ACCEPTED, Stage.DELIVERED, Stage.CANCELLED, Stage.FAILED):
         raise ValueError(f"the first-response ledger does not record {stage.value!r}")
     at = occurred_at or datetime.now(timezone.utc)
     column = _STAGE_COLUMN.get(stage)
@@ -294,36 +315,38 @@ async def meter_delivered_engagement(conn: Any, *, tenant_id: str, command_id: s
 
 
 async def reconcile_command_delivery(conn: Any, *, tenant_id: str, command_id: str) -> bool:
-    """Apply delivery evidence that arrived BEFORE the acceptance was recorded.
+    """Apply carrier evidence that arrived BEFORE the acceptance was recorded.
 
     A Telnyx receipt can beat the worker's ``succeeded`` write; it then finds no
     accepted command and is dropped. Called right after acceptance, this looks
-    for a delivery the message log already holds. Returns True if delivered.
+    for a delivery — or a carrier failure — the message log already holds.
+    Returns True if delivered.
     """
     try:
         async with conn.transaction():
-            delivered = await conn.fetchval(
+            status = await conn.fetchval(
                 """
-                SELECT 1
+                SELECT m.status
                   FROM command_executions c
                   JOIN sms_messages m
                     ON m.tenant_id = c.tenant_id AND m.provider = c.provider
                    AND m.provider_message_id = c.provider_reference
                  WHERE c.tenant_id = $1::uuid AND c.id = $2::uuid
                    AND c.state = 'succeeded' AND m.direction = 'outbound'
-                   AND m.status = 'delivered'
+                   AND m.status IN ('delivered', 'failed', 'undelivered')
                 """,
                 str(tenant_id), str(command_id),
             )
     except Exception:  # noqa: BLE001
         logger.warning("delivery evidence unreadable for command %s", command_id, exc_info=True)
         return False
-    if not delivered:
+    if not status:
         return False
-    await advance_first_response(
-        conn, tenant_id=tenant_id, command_id=command_id, stage=Stage.DELIVERED,
-    )
-    return True
+    stage = SMS_STATUS_STAGE.get(str(status))
+    if stage not in (Stage.DELIVERED, Stage.FAILED):
+        return False
+    await advance_first_response(conn, tenant_id=tenant_id, command_id=command_id, stage=stage)
+    return stage is Stage.DELIVERED
 
 
 async def record_sms_delivered(conn: Any, *, provider: str, provider_message_id: str) -> int:
@@ -359,6 +382,81 @@ async def record_sms_delivered(conn: Any, *, provider: str, provider_message_id:
         ):
             advanced += 1
     return advanced
+
+
+async def record_sms_failed(conn: Any, *, provider: str, provider_message_id: str) -> int:
+    """A carrier failure receipt ('failed' / 'undelivered') → the commands that
+    sent that message: their first response becomes ``failed`` (it reached the
+    provider, not the lead). Never after delivered (sms_messages status and the
+    ledger both move forward only), never billable. Returns rows moved."""
+    try:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT c.tenant_id, c.id
+                  FROM sms_messages m
+                  JOIN command_executions c
+                    ON c.tenant_id = m.tenant_id AND c.provider = m.provider
+                   AND c.provider_reference = m.provider_message_id
+                 WHERE m.provider = $1 AND m.provider_message_id = $2
+                   AND m.direction = 'outbound' AND m.status IN ('failed', 'undelivered')
+                   AND c.command_type = 'SMS' AND c.state = 'succeeded'
+                """,
+                provider, provider_message_id,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("failure receipt not linked to a command", exc_info=True)
+        return 0
+    moved = 0
+    for row in rows:
+        if await advance_first_response(
+            conn, tenant_id=str(row["tenant_id"]), command_id=str(row["id"]),
+            stage=Stage.FAILED,
+        ):
+            moved += 1
+    return moved
+
+
+_REPLY_SQL = """
+    UPDATE lead_response_events
+       SET replied_at = $5, reply_sms_message_id = $2::uuid, updated_at = now()
+     WHERE id = (SELECT r.id FROM lead_response_events r
+                  WHERE r.tenant_id = $1::uuid AND r.replied_at IS NULL
+                    AND r.disposition = ANY($6::text[])
+                    AND (r.client_id = $3::uuid OR r.contact_id = $4::uuid)
+                    AND COALESCE(r.accepted_at, r.delivered_at) <= $5
+                    AND COALESCE(r.accepted_at, r.delivered_at) > $5 - make_interval(days => $7)
+                  ORDER BY COALESCE(r.accepted_at, r.delivered_at) DESC
+                  LIMIT 1
+                  FOR UPDATE SKIP LOCKED)
+       AND replied_at IS NULL
+    RETURNING id
+"""
+
+
+async def record_reply(conn: Any, *, tenant_id: str, sms_message_id: str,
+                       client_id: Optional[str], contact_id: Optional[str],
+                       received_at: datetime) -> bool:
+    """An inbound text from a client or contact → the newest first response
+    to them that the provider accepted (or delivered) in the last
+    REPLY_WINDOW_DAYS and that has no reply yet: stamp ``replied_at`` and the
+    message as its evidence (0158). The disposition does not change, so
+    delivered counts and metering are untouched. A failed, cancelled or
+    blocked response cannot be replied to. Written once; SAVEPOINTed and
+    never raises (the inbound message is already stored). True if stamped."""
+    if not (client_id or contact_id):
+        return False
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                _REPLY_SQL, str(tenant_id), str(sms_message_id),
+                str(client_id) if client_id else None, str(contact_id) if contact_id else None,
+                received_at, list(ACCEPTED_DISPOSITIONS), REPLY_WINDOW_DAYS,
+            )
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.warning("reply not linked to a first response for message %s", sms_message_id, exc_info=True)
+        return False
+    return row is not None
 
 
 async def record_call_answered(conn: Any, *, provider_call_id: str) -> int:

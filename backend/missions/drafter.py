@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from llm_gateway import SpendRefused
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,10 @@ async def draft_message(
                 response_format=DRAFT_SCHEMA, max_tokens=DRAFT_TOKEN_BUDGET,
                 temperature=0.4,
             )
+        except SpendRefused:
+            # Not "no model could write it": the brokerage's AI budget stopped
+            # it before anything was sent (T18.07). The tick defers the action.
+            raise
         except Exception as exc:  # noqa: BLE001 — includes LLMUnavailable
             raise DraftUnavailable(f"no model could write the message: {exc}") from exc
 

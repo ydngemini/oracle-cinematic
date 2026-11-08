@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchCopilotReply } from '../lib/api';
+import { copilotAnswer } from '../lib/copilotError';
 import './AICopilot.css';
 
 // Compact the live snapshot into a small JSON context the LLM can reason over
@@ -153,13 +154,16 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
     setIsTyping(true);
 
     try {
-      // Real LLM (Bedrock) with the live infra snapshot as context.
-      const { reply } = await fetchCopilotReply(userMessage, buildContext(infrastructure, metrics, alerts));
-      const content = reply || generateCopilotResponse(userMessage, infrastructure, metrics);
+      // Real LLM (Bedrock) with the live infra snapshot as context. When the
+      // brokerage's AI budget (or the platform's AI switch) stopped the
+      // question, the answer says so: the rule-based answer in its place
+      // would read as the model's. Only an unreachable LLM falls back to the
+      // rule-based responder (copilotAnswer; tested in lib/copilot.test.js).
+      const content = await copilotAnswer(
+        () => fetchCopilotReply(userMessage, buildContext(infrastructure, metrics, alerts)),
+        () => generateCopilotResponse(userMessage, infrastructure, metrics),
+      );
       setChatHistory(prev => [...prev, { role: 'assistant', content }]);
-    } catch {
-      // LLM unreachable → graceful fallback to the rule-based responder.
-      setChatHistory(prev => [...prev, { role: 'assistant', content: generateCopilotResponse(userMessage, infrastructure, metrics) }]);
     } finally {
       setIsTyping(false);
     }

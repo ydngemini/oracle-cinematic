@@ -344,7 +344,7 @@ def test_thread_rollup_includes_tenant_scoped_clients_without_history(monkeypatc
 
     result = asyncio.run(crm.comms_threads(CTX))
 
-    assert "LEFT JOIN LATERAL" in conn.query
+    assert "LEFT JOIN per_client" in conn.query  # untouched clients stay (L17-25: one pass, no lateral rescans)
     assert "NULLS LAST" in conn.query
     assert seen_contexts == [CTX]
     assert result["threads"][0] == {

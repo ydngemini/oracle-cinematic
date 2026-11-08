@@ -164,12 +164,17 @@ async def _market_median(ctx: TenantContext) -> Optional[float]:
 
 async def briefing(
     ctx: TenantContext, *, lookback_hours: int = DEFAULT_LOOKBACK_HOURS,
+    lang: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Everything the first screen needs, in one round trip."""
+    """Everything the first screen needs, in one round trip.
+
+    `lang` writes the opportunity cards' sentences in en/es (the ⌘K call
+    queue passes the request's language; the Command Center screen does not,
+    so it stays English). The horizon labels are English either way."""
     now = datetime.now(timezone.utc)
     since = now - timedelta(hours=lookback_hours)
 
-    scan = await opportunity_engine.scan(ctx)
+    scan = await opportunity_engine.scan(ctx, lang=lang)
     changed = await _changed_since(ctx, since)
     median = await _market_median(ctx)
 

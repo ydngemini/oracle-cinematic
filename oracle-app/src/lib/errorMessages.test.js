@@ -28,6 +28,22 @@ describe('friendlyError — one product-language path', () => {
     expect(friendlyError(api('That email is already invited.', 409))).toBe('That email is already invited.');
   });
 
+  it("says why a 402 stopped the work and who can change it, not 'Something went wrong'", () => {
+    // The server's refusal when a brokerage's AI budget stops a CMA, a draft
+    // or a parse (T18.07): {detail: {code, message, state}}.
+    const owner = "This month's Neoh AI budget for your brokerage is used up, so Neoh stopped before "
+      + 'asking a model. Raise it in Settings under AI budget; it renews on the 1st (UTC).';
+    const insufficient = "Too little of this month's Neoh AI budget for your brokerage is left for this "
+      + 'request, so Neoh stopped before asking a model. Ask your broker to raise it; it renews on the 1st (UTC).';
+    for (const message of [owner, insufficient]) {
+      const refused = new ApiError({ code: 'AI_BUDGET_EXHAUSTED', message }, 402);
+      expect(friendlyError(refused)).toBe(message);
+      expect(friendlyError(refused, { fallback: 'Script drafting failed.' })).toBe(message);
+    }
+    // A 402 whose text is a code still never reaches the person.
+    expect(friendlyError(api('AI_BUDGET_EXHAUSTED', 402))).toBe(ERROR_MESSAGES.DEFAULT);
+  });
+
   it('does not pass developer-facing validation text through', () => {
     expect(friendlyError(api('client_id must be a UUID', 422))).toBe(ERROR_MESSAGES.VALIDATION_ERROR);
     expect(friendlyError(api('Tenant boundary violation', 403))).toBe(ERROR_MESSAGES.FORBIDDEN);

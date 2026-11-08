@@ -47,23 +47,31 @@ _ACTOR = "sealed-text-backfill"
 _PLATFORM_TENANT = "00000000-0000-0000-0000-000000000000"
 
 # Literal statements only (bandit B608). $1 tenant, $2 key, $3 batch size.
+# Every batch picks its rows in a MATERIALIZED CTE (L17-24): as
+# `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)` the planner may run
+# a nested-loop semi join that re-runs the locking subquery per outer row, so
+# a "batch of 1" sealed 3 rows. A locking CTE runs exactly once.
 _SMS_SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM sms_messages
+        WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL
+        AND COALESCE(body, '') <> ''
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE sms_messages
        SET body_ciphertext = pgp_sym_encrypt(body, $2::text, 's2k-mode=1'), body = NULL
-     WHERE id IN (SELECT id FROM sms_messages
-                   WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL
-                     AND COALESCE(body, '') <> ''
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _SMS_UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM sms_messages
+        WHERE tenant_id = $1::uuid AND body_ciphertext IS NOT NULL
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE sms_messages
        SET body = pgp_sym_decrypt(body_ciphertext, $2::text), body_ciphertext = NULL
-     WHERE id IN (SELECT id FROM sms_messages
-                   WHERE tenant_id = $1::uuid AND body_ciphertext IS NOT NULL
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _TRANSCRIPT = "SELECT seal_negotiation_transcripts($1::uuid, $2::text, $3::int, $4::boolean)"
@@ -73,6 +81,13 @@ _INTERACTION_LOG = "SELECT seal_interaction_logs($1::uuid, $2::text, $3::int, $4
 # 0154 (L17-22). The app may UPDATE these four tables, under RLS in the
 # platform context of the row's own tenant.
 _EMAIL_SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM email_outbox
+        WHERE tenant_id = $1::uuid AND body_html IS NULL
+        AND ((subject_ciphertext IS NULL AND subject <> '')
+        OR (body_text_ciphertext IS NULL AND body_text <> ''))
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE email_outbox
        SET subject_ciphertext = COALESCE(subject_ciphertext,
                                          pgp_sym_encrypt(NULLIF(subject, ''), $2::text, 's2k-mode=1')),
@@ -80,84 +95,93 @@ _EMAIL_SEAL = """
            body_text_ciphertext = COALESCE(body_text_ciphertext,
                                            pgp_sym_encrypt(NULLIF(body_text, ''), $2::text, 's2k-mode=1')),
            body_text = ''
-     WHERE id IN (SELECT id FROM email_outbox
-                   WHERE tenant_id = $1::uuid AND body_html IS NULL
-                     AND ((subject_ciphertext IS NULL AND subject <> '')
-                          OR (body_text_ciphertext IS NULL AND body_text <> ''))
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _EMAIL_UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM email_outbox
+        WHERE tenant_id = $1::uuid
+        AND (subject_ciphertext IS NOT NULL OR body_text_ciphertext IS NOT NULL)
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE email_outbox
        SET subject = COALESCE(pgp_sym_decrypt(subject_ciphertext, $2::text), subject),
            subject_ciphertext = NULL,
            body_text = COALESCE(pgp_sym_decrypt(body_text_ciphertext, $2::text), body_text),
            body_text_ciphertext = NULL
-     WHERE id IN (SELECT id FROM email_outbox
-                   WHERE tenant_id = $1::uuid
-                     AND (subject_ciphertext IS NOT NULL OR body_text_ciphertext IS NOT NULL)
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _TOOL_SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM ai_tool_operations
+        WHERE tenant_id = $1::uuid AND result_ciphertext IS NULL AND result IS NOT NULL
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE ai_tool_operations
        SET result_ciphertext = pgp_sym_encrypt(result::text, $2::text, 's2k-mode=1'), result = NULL
-     WHERE id IN (SELECT id FROM ai_tool_operations
-                   WHERE tenant_id = $1::uuid AND result_ciphertext IS NULL AND result IS NOT NULL
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _TOOL_UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM ai_tool_operations
+        WHERE tenant_id = $1::uuid AND result_ciphertext IS NOT NULL
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE ai_tool_operations
        SET result = pgp_sym_decrypt(result_ciphertext, $2::text)::jsonb, result_ciphertext = NULL
-     WHERE id IN (SELECT id FROM ai_tool_operations
-                   WHERE tenant_id = $1::uuid AND result_ciphertext IS NOT NULL
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _BELIEF_SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM beliefs
+        WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NULL
+        AND COALESCE(source_quote, '') <> ''
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE beliefs
        SET source_quote_ciphertext = pgp_sym_encrypt(source_quote, $2::text, 's2k-mode=1'), source_quote = NULL
-     WHERE id IN (SELECT id FROM beliefs
-                   WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NULL
-                     AND COALESCE(source_quote, '') <> ''
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 _BELIEF_UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT id FROM beliefs
+        WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NOT NULL
+        ORDER BY id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE beliefs
        SET source_quote = pgp_sym_decrypt(source_quote_ciphertext, $2::text), source_quote_ciphertext = NULL
-     WHERE id IN (SELECT id FROM beliefs
-                   WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NOT NULL
-                   ORDER BY id LIMIT $3
-                   FOR UPDATE SKIP LOCKED)
+     WHERE id IN (SELECT id FROM picked)
     RETURNING id
 """
 # user_profiles.tenant_id is text (0009); passed exactly as stored.
 _PROFILE_SEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT user_id FROM user_profiles
+        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NULL
+        AND COALESCE(profile_summary, '') <> ''
+        ORDER BY user_id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE user_profiles
        SET profile_summary_ciphertext = pgp_sym_encrypt(profile_summary, $2::text, 's2k-mode=1'),
            profile_summary = ''
-     WHERE user_id IN (SELECT user_id FROM user_profiles
-                        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NULL
-                          AND COALESCE(profile_summary, '') <> ''
-                        ORDER BY user_id LIMIT $3
-                        FOR UPDATE SKIP LOCKED)
+     WHERE user_id IN (SELECT user_id FROM picked)
     RETURNING user_id
 """
 _PROFILE_UNSEAL = """
+    WITH picked AS MATERIALIZED (
+        SELECT user_id FROM user_profiles
+        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NOT NULL
+        ORDER BY user_id LIMIT $3
+        FOR UPDATE SKIP LOCKED)
     UPDATE user_profiles
        SET profile_summary = pgp_sym_decrypt(profile_summary_ciphertext, $2::text),
            profile_summary_ciphertext = NULL
-     WHERE user_id IN (SELECT user_id FROM user_profiles
-                        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NOT NULL
-                        ORDER BY user_id LIMIT $3
-                        FOR UPDATE SKIP LOCKED)
+     WHERE user_id IN (SELECT user_id FROM picked)
     RETURNING user_id
 """
 _DIRECT = {  # field -> (seal, unseal), plain UPDATEs the app role may run

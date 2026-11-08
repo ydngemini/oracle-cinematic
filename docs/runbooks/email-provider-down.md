@@ -1,6 +1,8 @@
 # Runbook: email (SMTP) down
 
 **You see:**
+- `platform_email_relay` AUTH_FAILED (the relay's login was refused) or DEGRADED (sends failing), from the relay's own last sends (`provider_health` 'platform_smtp', 0164); UNKNOWN only means no send has been recorded since deploy;
+- the delivery page's Email card reading "Last send failed" or "Not yet verified by a send" instead of "Ready";
 - `email_outbox` DEGRADED (emails waiting, or delivery unknown);
 - invitations showing "Email not delivered";
 - the operator sign-in code not arriving.

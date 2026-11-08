@@ -437,7 +437,7 @@ def test_caller_speech_reaches_the_model_without_the_card(monkeypatch):
 
     monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: ["fireworks"])
     monkeypatch.setattr(llm_gateway, "complete", complete)
-    assert asyncio.run(ai_chat_agent._generate_voice_reply("+13025550100", SAID)) == "Thanks."
+    assert asyncio.run(ai_chat_agent._generate_voice_reply("+13025550100", SAID, tenant_id=TENANT)) == "Thanks."
     _assert_no_pan(*sent[0])
     assert pan_redaction.PAYMENT_CARD_RULE in sent[0][1]
 

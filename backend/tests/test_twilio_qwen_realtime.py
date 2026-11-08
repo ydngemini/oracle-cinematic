@@ -361,6 +361,13 @@ def test_twilio_media_endpoint_binds_start_frame_to_live_call(monkeypatch):
     monkeypatch.setattr(twilio_call_handler, "mark_twilio_streaming", _mark)
     monkeypatch.setattr(qwen_omni_realtime, "TwilioQwenRealtimeBridge", _Bridge)
 
+    async def admitted(_tenant_id):
+        # The call's brokerage may spend on a realtime model (T18.07; the gate
+        # itself is tested in tests/test_ai_budget_hosted_calls.py).
+        return None
+
+    monkeypatch.setattr(commands_api, "_realtime_refusal", admitted)
+
     asyncio.run(commands_api.twilio_qwen_media(websocket))
 
     assert websocket.accepted

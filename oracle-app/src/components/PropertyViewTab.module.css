@@ -219,6 +219,54 @@
   color: var(--oracle-amber, #f0b429);
 }
 
+/* How the record matched. Pushed to the row's end so a long address cannot
+   crowd the qualifier out; a possible match reads tentative (dashed). */
+.candidateFlag {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 1px solid var(--oracle-border-subtle, rgba(255, 255, 255, 0.18));
+  font-size: 0.625rem;
+  color: var(--oracle-text-dim, rgba(244, 244, 245, 0.62));
+}
+.candidateFlag[data-possible] {
+  border-style: dashed;
+  border-color: var(--oracle-amber, #f0b429);
+  color: var(--oracle-amber, #f0b429);
+}
+
+.candidateWarn {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--oracle-amber, #f0b429);
+}
+
+/* The chosen record, named for as long as it is the subject. Wraps on a
+   phone so a long address never pushes "Change record" off screen. */
+.attachTo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  border: 1px solid var(--oracle-border-subtle, rgba(255, 255, 255, 0.18));
+  font-size: 0.8125rem;
+  color: var(--oracle-text-dim, rgba(244, 244, 245, 0.62));
+}
+.attachTo > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.attachTo strong { color: var(--oracle-text, #f4f4f5); font-weight: 600; }
+.attachTo button {
+  padding: 6px 10px;
+  border: 1px solid var(--oracle-border-subtle, rgba(255, 255, 255, 0.18));
+  background: transparent;
+  color: #f4f4f5;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+.attachTo button:hover:not(:disabled) { border-color: var(--oracle-amber, #f0b429); }
+.attachTo button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ── surfaces ────────────────────────────────────────────────────────────── */
 .surfaceTabs {
   display: flex;

@@ -74,6 +74,11 @@ DECRYPT: dict[str, dict[str, str]] = {
     "ai_tool_operations": {"result_ciphertext": "sealed_result"},
     "beliefs": {"source_quote_ciphertext": "sealed_source_quote"},
     "user_profiles": {"profile_summary_ciphertext": "sealed_profile_summary"},
+    # 0167 (T11.03): a title finding's review reason, only ever stored sealed.
+    "title_findings": {"review_reason_ciphertext": "sealed_review_reason"},
+    # 0168 (T11.03): the reason for a decision that a public record is a
+    # linked client's house, only ever stored sealed.
+    "property_match_decisions": {"reason_ciphertext": "sealed_reason"},
 }
 _MAX_MEDIA_BYTES = int(os.getenv("ORACLE_EXPORT_MAX_MEDIA_BYTES", str(2 * 1024 ** 3)))
 

@@ -165,3 +165,48 @@ def test_the_sent_email_carries_the_footer_and_the_one_click_url(env, monkeypatc
     assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "sent"}
     assert calls[0]["body"].endswith("footer")
     assert calls[0]["list_unsubscribe_url"] == "https://neoh.test/u"
+
+
+def _entitlement(monkeypatch, refusal):
+    calls = []
+
+    async def reading(ctx):
+        calls.append((ctx.tenant_id, ctx.role.value))
+        if isinstance(refusal, Exception):
+            raise refusal
+        return refusal
+
+    monkeypatch.setattr(email_outbox.billing, "entitlement_refusal", reading)
+    return calls
+
+
+def test_a_subscription_that_lapsed_after_queueing_blocks_the_send(env, monkeypatch):
+    """F18.07: queued while the brokerage paid, sent after it lapsed — no. The
+    re-check reads the tenant's own subscription (as the platform: the worker
+    has no person), and blocked is final, never retried."""
+    calls = _sender(monkeypatch, None)
+    reads = _entitlement(monkeypatch, (402, "An active Neoh subscription is required for this action."))
+    assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "blocked"}
+    assert calls == [] and reads == [(T, "platform_admin")]
+    assert _statuses(env) == ["failed"]
+    error = next(args[3] for sql, args in env.executed if "SET status=$3" in sql)
+    assert error == "blocked: An active Neoh subscription is required for this action."
+    assert not any("last_contacted_at" in sql for sql, _ in env.executed)
+
+
+def test_an_unreadable_subscription_status_holds_the_email(env, monkeypatch):
+    """Unknown is not missing: neither sent nor finally blocked; the job retries."""
+    from fastapi import HTTPException
+
+    calls = _sender(monkeypatch, None)
+    _entitlement(monkeypatch, HTTPException(status_code=503, detail="Billing status is unavailable."))
+    with pytest.raises(HTTPException):
+        asyncio.run(email_outbox.deliver(T, "o1"))
+    assert calls == [] and _statuses(env) == ["queued"]
+
+
+def test_an_entitled_brokerage_still_sends(env, monkeypatch):
+    calls = _sender(monkeypatch, None)
+    _entitlement(monkeypatch, None)
+    assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "sent"}
+    assert len(calls) == 1

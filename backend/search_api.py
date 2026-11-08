@@ -7,13 +7,13 @@ else, and "155 Main" found nothing unless the right tab was already open.
 This is a fan-out over the service functions that already exist, in one
 round trip, with two properties the six filters never had:
 
-**Every leg runs, and a failed leg is named.** `asyncio.gather` with
-`return_exceptions=True`, and the response carries `degraded: [kind, ...]`
-for any leg that raised, plus `source_status: {kind: entry}` in the CONTRACT
-C6 vocabulary (`source_status.py`: checked | timed_out | unavailable |
-not_applicable). A search that silently returns three of four kinds
-is a lie about the corpus; an agent who cannot find a deal needs to know
-whether it is absent or whether the deals leg fell over.
+**Every leg runs, and a failed leg is named.** Every leg is gathered under
+its own wall-clock bound, and the response carries `source_status: {kind:
+entry}` in the CONTRACT C6 vocabulary (`source_status.py`: checked |
+timed_out | unavailable | not_applicable) with each leg's elapsed time, and
+`bundle_degraded` (T06.06). A search that silently returns three of four
+kinds is a lie about the corpus; an agent who cannot find a deal needs to
+know whether it is absent or whether the deals leg fell over.
 
 **One hit shape.** `{kind, id, label, sublabel, href, score}` for every kind,
 so the surface that renders results has no per-kind branch and a generative
@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -75,6 +76,12 @@ MAX_PER_KIND = 25
 #: shape: a public-records ILIKE on a term every Delaware row contains.
 LEG_TIMEOUT_MS = 2000
 
+#: Wall-clock bound on a whole leg (T06.06). statement_timeout covers a
+#: query, not the wait for a pooled connection nor the comms rollup's own
+#: work; a leg still running at this point is cancelled and reported
+#: `timed_out`, so one stuck leg cannot hold the box open.
+LEG_WALL_CLOCK_S = LEG_TIMEOUT_MS / 1000 + 1.0
+
 
 async def _budget(conn: Any) -> None:
     """Cap this transaction's statements. SET LOCAL resets at commit, so it
@@ -82,7 +89,8 @@ async def _budget(conn: Any) -> None:
     await conn.execute(f"SET LOCAL statement_timeout = {int(LEG_TIMEOUT_MS)}")
 
 
-def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, score: float) -> dict[str, Any]:
+def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, score: float,
+         record: Optional[dict[str, str]] = None) -> dict[str, Any]:
     return {
         "kind": kind,
         "id": str(id_),
@@ -90,6 +98,10 @@ def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, sc
         "sublabel": sublabel,
         "href": href,
         "score": round(float(score), 3),
+        # Which record this hit IS ({type, id}: client | contact), for a caller
+        # that acts on it rather than opens it (semantic_turn, L05-10). None
+        # for legs whose hits are not records a frame can hold.
+        "record": record,
     }
 
 
@@ -166,6 +178,7 @@ async def _people(ctx: TenantContext, q: str, limit: int) -> list[dict[str, Any]
             " · ".join(p for p in (row["client_type"], row["stage"], row["email"]) if p) or None,
             f"/p/{row['id']}",
             score_match(q, row["full_name"], row["email"]),
+            record={"type": "client", "id": str(row["id"])},
         ))
     for row in contacts:
         legacy = row.get("legacy_client_id")
@@ -180,6 +193,9 @@ async def _people(ctx: TenantContext, q: str, limit: int) -> list[dict[str, Any]
             email if name else None,
             target,
             score_match(q, name, email) or 0.4,
+            # A contact that is also a client is that client: the record the
+            # frame authorises and the executor acts on.
+            record=({"type": "client", "id": str(legacy)} if legacy else {"type": "contact", "id": str(row["id"])}),
         ))
     return hits
 
@@ -351,8 +367,30 @@ LEGS: dict[str, Callable[[TenantContext, str, int], Awaitable[list[dict[str, Any
 }
 
 
+async def _timed(leg: Callable[[TenantContext, str, int], Awaitable[list[dict[str, Any]]]],
+                 ctx: TenantContext, q: str, limit: int) -> tuple[Any, int]:
+    """(hits or the exception, elapsed ms). Never raises: an exception is the
+    leg's outcome, a wall-clock overrun is an asyncio.TimeoutError."""
+    started = time.monotonic()
+    try:
+        outcome: Any = await asyncio.wait_for(leg(ctx, q, limit), LEG_WALL_CLOCK_S)
+    except Exception as exc:  # noqa: BLE001 — reported per leg, never swallowed
+        outcome = exc
+    return outcome, int(round((time.monotonic() - started) * 1000))
+
+
 async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> dict[str, Any]:
-    """Run every requested leg at once and say which ones failed."""
+    """Run every requested leg at once and say how each one ended.
+
+    The bundle (T06.06, AC06.01): `source_status[kind]` is a C6 entry —
+    status, a stable reason code, `required`, `matched`, `checked_at` (the
+    freshness: every leg reads the live tables in this request, nothing is
+    cached) and `elapsed_ms`. `bundle_degraded` is true when a required leg
+    is not `checked` (source_status.degraded). Every requested leg is
+    required: the caller asked for it. `degraded` — the bare list of failed
+    kinds — is kept only so a client from the previous release still shows
+    its banner; read `source_status` / `bundle_degraded` instead.
+    """
     q = (q or "").strip()
     limit = max(1, min(MAX_PER_KIND, int(limit)))
     kinds = [k for k in kinds if k in LEGS]
@@ -362,33 +400,26 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
             kinds.append("records")
 
     if len(q) < 2:
+        # Not asked, so not a verified miss either.
+        statuses = {k: {**ss.not_applicable(ss.QUERY_TOO_SHORT), "elapsed_ms": 0} for k in kinds}
         return {
             "query": q, "results": [], "counts": {k: 0 for k in kinds}, "degraded": [],
-            # Not asked, so not a verified miss either.
-            "source_status": {k: ss.not_applicable(ss.QUERY_TOO_SHORT) for k in kinds},
+            "source_status": statuses, "bundle_degraded": ss.degraded(statuses),
         }
 
-    outcomes = await asyncio.gather(
-        *(LEGS[k](ctx, q, limit) for k in kinds), return_exceptions=True,
-    )
+    outcomes = await asyncio.gather(*(_timed(LEGS[k], ctx, q, limit) for k in kinds))
 
     results: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
-    degraded: list[str] = []
-    # One C6 status per leg (source_status.py). `degraded` stays as the list
-    # of failed kinds for the callers that already read it; `source_status`
-    # says HOW each failed (timed_out vs unavailable) and that an empty leg
-    # beside it was `checked` — a verified miss rather than a silent one.
     statuses: dict[str, dict[str, Any]] = {}
-    for kind, outcome in zip(kinds, outcomes):
+    for kind, (outcome, elapsed_ms) in zip(kinds, outcomes):
         if isinstance(outcome, BaseException):
-            logger.warning("search leg %s failed", kind, exc_info=outcome)
-            degraded.append(kind)
+            logger.warning("search leg %s failed after %d ms", kind, elapsed_ms, exc_info=outcome)
             counts[kind] = 0
-            statuses[kind] = ss.failure(outcome)
+            statuses[kind] = {**ss.failure(outcome), "elapsed_ms": elapsed_ms}
             continue
         counts[kind] = len(outcome)
-        statuses[kind] = ss.checked(matched=len(outcome))
+        statuses[kind] = {**ss.checked(matched=len(outcome)), "elapsed_ms": elapsed_ms}
         results.extend(outcome)
 
     # Score first, then kind order as a stable tiebreak, so the same query
@@ -396,8 +427,9 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
     order = {k: i for i, k in enumerate(KINDS)}
     results.sort(key=lambda h: (-h["score"], order.get(h["kind"], 99), h["label"]))
     return {
-        "query": q, "results": results, "counts": counts, "degraded": degraded,
-        "source_status": statuses,
+        "query": q, "results": results, "counts": counts,
+        "degraded": [k for k in kinds if ss.is_failed(statuses[k])],
+        "source_status": statuses, "bundle_degraded": ss.degraded(statuses),
     }
 
 

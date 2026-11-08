@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import re
 from datetime import datetime
@@ -17,7 +18,7 @@ from approval_service import create_approval, decide_approval
 from automation_jobs import enqueue_job, register_handler
 from db.connection import tenant_tx
 from model_training import runpod_train
-from ml_forge.edge_forge.train_lora import redact_pii
+from ml_forge.edge_forge.train_lora import declared_targets, redact_pii, targets_observed
 from platform_policy import ActionRisk, Feature, require_feature
 from tenancy import Role, TenantContext, require_context, require_role
 from billing import require_active_subscription
@@ -25,6 +26,18 @@ from billing import require_active_subscription
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: Model kinds whose output is a valuation: the state underwriter predicts ARV,
+#: rehab and an offer ceiling. A pass flag is not enough to promote one (audit
+#: A08): its targets must be observed transactions, and a passed, reviewed
+#: evaluation must publish per-region error and uncertainty. A model of any
+#: kind whose card declares training targets is held to the same gate.
+VALUATION_KINDS = frozenset({"state_lora"})
+
+#: A registered version may be overwritten only before anything was decided on
+#: it; afterwards a new artifact or card is a new version (L11-06).
+_REWRITABLE = ("candidate", "rejected")
+_NEW_VERSION = "This version is already {status}; register the new artifact or card as a new version."
 
 
 def _json(value: Any) -> Any:
@@ -34,6 +47,48 @@ def _json(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+def _measured(value: Any, *, minimum: float = 0.0, integer: bool = False) -> bool:
+    """A real measurement: a finite number (an integer where asked) at or
+    above `minimum`. Booleans, strings and overflowing integers are not."""
+    if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value >= minimum
+    except OverflowError:
+        return False
+
+
+def _per_region_published(metrics: Any) -> bool:
+    """At least one region, and EVERY region with a whole sample count of at
+    least one and a non-negative error and uncertainty that were measured."""
+    metrics = _json(metrics)
+    regions = metrics.get("per_region") if isinstance(metrics, dict) else None
+    if not isinstance(regions, dict) or not regions:
+        return False
+    return all(
+        isinstance(r, dict) and _measured(r.get("n"), minimum=1, integer=True)
+        and _measured(r.get("error")) and _measured(r.get("uncertainty"))
+        for r in regions.values()
+    )
+
+
+def needs_valuation_gate(model_kind: str, model_card: Any) -> bool:
+    return model_kind in VALUATION_KINDS or declared_targets(_json(model_card)) is not None
+
+
+def valuation_promotion_problem(model_card: Any, evaluation_metrics: list[Any]) -> Optional[str]:
+    """Why a valuation model may not be activated, or None (audit A08). An
+    unrecorded or malformed provenance is not "observed": it is refused like a
+    heuristic, never crashes."""
+    if not targets_observed(_json(model_card)):
+        return ("This underwriting model was trained on heuristic or unrecorded targets, not observed "
+                "transactions, so it cannot be activated as a valuation.")
+    if not any(_per_region_published(m) for m in evaluation_metrics):
+        return ("Publish per-region error and uncertainty from a passed, reviewed evaluation before "
+                "activating this valuation model.")
+    return None
 
 
 def _row(row: Any) -> dict[str, Any]:
@@ -164,6 +219,7 @@ async def register_model(
                 compatibility=EXCLUDED.compatibility,
                 minimum_gpu_mb=EXCLUDED.minimum_gpu_mb,
                 updated_at=now()
+            WHERE model_registry.status IN ('candidate','rejected')
             RETURNING *
             """,
             ctx.tenant_id,
@@ -180,6 +236,13 @@ async def register_model(
             body.minimum_gpu_mb,
             ctx.agent_id,
         )
+        if row is None:
+            existing = await conn.fetchval(
+                "SELECT status FROM model_registry WHERE name=$1 AND version=$2 AND scope_type=$3 AND scope_key=$4",
+                body.name, body.version, body.scope_type,
+                body.scope_key.upper() if body.scope_type == "state" else body.scope_key,
+            )
+            raise HTTPException(status_code=409, detail=_NEW_VERSION.format(status=existing or "decided"))
     return _row(row)
 
 
@@ -257,6 +320,20 @@ async def activate_model(
         )
         if not passed:
             raise HTTPException(status_code=409, detail="Required evaluation gate has not passed.")
+        if needs_valuation_gate(model["model_kind"], model.get("model_card")):
+            evaluations = await conn.fetch(
+                """
+                SELECT metrics FROM model_evaluations
+                WHERE model_id=$1 AND passed=true AND leakage_reviewed=true
+                  AND geographic_bias_reviewed=true
+                """,
+                model_id,
+            )
+            problem = valuation_promotion_problem(
+                model.get("model_card"), [row["metrics"] for row in evaluations]
+            )
+            if problem:
+                raise HTTPException(status_code=409, detail=problem)
         old = await conn.fetchrow(
             """
             SELECT id FROM model_registry
@@ -589,6 +666,7 @@ async def _training_job(payload: dict[str, Any], reporter) -> dict[str, Any]:
                 artifact_sha256=EXCLUDED.artifact_sha256,
                 model_card=EXCLUDED.model_card,
                 compatibility=EXCLUDED.compatibility,updated_at=now()
+            WHERE model_registry.status IN ('candidate','rejected')
             RETURNING id
             """,
             tenant_id,
@@ -609,24 +687,36 @@ async def _training_job(payload: dict[str, Any], reporter) -> dict[str, Any]:
                 }
             ),
         )
-        await conn.execute(
-            """
-            UPDATE model_training_runs
-               SET status='succeeded',completed_at=now(),artifact_sha256=$2,
-                   model_card=$3::jsonb,error=NULL
-             WHERE id=$1::uuid
-            """,
-            run_id,
-            checksum,
-            json.dumps(card),
-        )
-        await conn.execute(
-            """
-            UPDATE team_memberships m SET training_status='awaiting_validation'
-              FROM users u WHERE u.id=m.user_id AND u.agent_id=$1
-            """,
-            manifest.get("agent_id"),
-        )
+        if model is not None:
+            await conn.execute(
+                """
+                UPDATE model_training_runs
+                   SET status='succeeded',completed_at=now(),artifact_sha256=$2,
+                       model_card=$3::jsonb,error=NULL
+                 WHERE id=$1::uuid
+                """,
+                run_id,
+                checksum,
+                json.dumps(card),
+            )
+            await conn.execute(
+                """
+                UPDATE team_memberships m SET training_status='awaiting_validation'
+                  FROM users u WHERE u.id=m.user_id AND u.agent_id=$1
+                """,
+                manifest.get("agent_id"),
+            )
+    if model is None:
+        # The same version was already decided on: its artifact is never
+        # swapped (L11-06). The run fails, saying so.
+        reason = _NEW_VERSION.format(status="validated or active")
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE model_training_runs SET status='failed',completed_at=now(),error=$2 WHERE id=$1::uuid",
+                run_id,
+                reason,
+            )
+        raise ValueError(reason)
     return {**result, "model_registry_id": str(model["id"]), "model_version": version}
 
 

@@ -174,7 +174,12 @@ async def _scenario():
         await messaging_data.record_delivery_update(
             provider="telnyx", provider_message_id=failed_ref, status="failed",
             error_reason="carrier rejected")
-        assert (await disposition(failed))["disposition"] == "accepted"
+        # The carrier's failure is the first response's outcome (L04-02): it
+        # reached the provider, not the lead. Terminal, never billable.
+        assert (await disposition(failed))["disposition"] == "failed"
+        await messaging_data.record_delivery_update(
+            provider="telnyx", provider_message_id=failed_ref, status="delivered", error_reason=None)
+        assert (await disposition(failed))["disposition"] == "failed", "a late receipt cannot revive it"
 
         never_sent = await command("failed")
         await stage(never_sent, str(uuid.uuid4()))
@@ -280,7 +285,10 @@ async def _scenario():
         first = metrics["first_response"]
         assert first["attempts"] == 7
         assert first["staged"] == 1, "the never-sent draft is staged, not a response"
-        assert first["accepted"] == 5 and first["delivered"] == 4 and first["cancelled"] == 1
+        # The carrier-failed text is counted as failed, not as an accepted
+        # (fast) response (L04-02).
+        assert first["accepted"] == 4 and first["delivered"] == 4 and first["cancelled"] == 1
+        assert first["failed"] == 1
         # The call went straight from staged to answered: accepted, untimed.
         assert first["accepted_untimed"] == 1
         assert first["latency_measured_to"] == "accepted"

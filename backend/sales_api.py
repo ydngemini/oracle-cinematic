@@ -402,16 +402,32 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
             },
         )
     route_data = dict(route) if route else {}
-    env_twilio = bool(
-        os.getenv("TWILIO_ACCOUNT_SID")
-        and (os.getenv("TWILIO_AUTH_TOKEN") or (os.getenv("TWILIO_API_KEY") and os.getenv("TWILIO_API_SECRET")))
-        and os.getenv("ORACLE_TWILIO_CREDENTIALS_VALIDATED", "").lower() in {"1", "true", "yes", "on"}
-    )
     twilio_capabilities = providers["twilio"].get("capabilities") or {}
     smtp_capabilities = providers["smtp"].get("capabilities") or {}
-    # Platform-level senders count as an email channel even with no tenant
-    # credential — they are what sends when a tenant has configured nothing.
-    env_smtp = bool(os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME"))
+    # The platform relay is what sends when a tenant has configured nothing.
+    # Environment variables say it is configured, not that it works: it
+    # counts as an email channel only after a real send succeeded with no
+    # failure since (provider_health, 0164; T10.09, L10-11).
+    import provider_health
+
+    env_smtp_configured = bool(os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME"))
+    relay = await provider_health.last_outcome(provider_health.PLATFORM_SMTP) if env_smtp_configured else None
+    env_smtp = env_smtp_configured and provider_health.verified(relay)
+    platform_sender_state = provider_health.state(env_smtp_configured, relay)
+    # The platform Twilio account, by the same rule (0165, L10-12): set
+    # credentials say it is configured; only a text or a call it actually
+    # placed, with no failure since, makes that channel Ready. An operator
+    # flag (the former ORACLE_TWILIO_CREDENTIALS_VALIDATED) proves nothing.
+    env_twilio_configured = bool(
+        os.getenv("TWILIO_ACCOUNT_SID")
+        and (os.getenv("TWILIO_AUTH_TOKEN") or (os.getenv("TWILIO_API_KEY") and os.getenv("TWILIO_API_SECRET")))
+    )
+    sms_outcome = voice_outcome = None
+    if env_twilio_configured:
+        sms_outcome = await provider_health.last_outcome(provider_health.PLATFORM_TWILIO_SMS)
+        voice_outcome = await provider_health.last_outcome(provider_health.PLATFORM_TWILIO_VOICE)
+    env_twilio_sms = env_twilio_configured and provider_health.verified(sms_outcome)
+    env_twilio_voice = env_twilio_configured and provider_health.verified(voice_outcome)
     twilio_voice = providers["twilio"]["configured"] and bool(twilio_capabilities.get("voice"))
     twilio_sms = providers["twilio"]["configured"] and bool(twilio_capabilities.get("sms"))
     twilio_agent = providers["twilio"]["configured"] and bool(twilio_capabilities.get("agent_call"))
@@ -422,20 +438,27 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
         # What sends when nobody connected their own email: the platform relay,
         # with replies routed to the drafting agent (commands_api).
         "platform_sender": (os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME") or "").strip() or None,
+        # not_configured | not_yet_verified | verified_by_send | failing
+        "platform_sender_state": platform_sender_state,
+        # The same states for the platform Twilio account's texts and calls.
+        "platform_channel_states": {
+            "sms": provider_health.state(env_twilio_configured, sms_outcome),
+            "ai_call": provider_health.state(env_twilio_configured, voice_outcome),
+        },
         "channels": {
             # A connected Google account no longer implies email works — that
             # grant is calendar-only now, so only real senders count here.
             "email": (smtp_email or env_smtp),
             "sms": (
-                (twilio_sms or env_twilio)
+                (twilio_sms or env_twilio_sms)
                 and bool(route_data.get("sms_sender_e164") and route_data.get("sms_sender_type"))
             ),
             "ai_call": (
                 twilio_voice
-                or env_twilio
+                or env_twilio_voice
             ),
             "agent_call": (
-                (twilio_agent or (env_twilio and bool(os.getenv("TWILIO_TWIML_APP_SID"))))
+                (twilio_agent or (env_twilio_voice and bool(os.getenv("TWILIO_TWIML_APP_SID"))))
                 and bool(route_data.get("voice_caller_id_verified"))
                 and bool(route_data.get("voice_caller_id_e164"))
             ),
@@ -1285,7 +1308,15 @@ async def cancel_enrollment(enrollment_id: str, ctx: TenantContext = Depends(req
 @router.get("/providers")
 async def providers(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
     snapshot = await _provider_snapshot(ctx)
-    return {"providers": list(snapshot["providers"].values()), "channels": snapshot["channels"], "route": snapshot["route"], "credential_exposed": False}
+    return {
+        "providers": list(snapshot["providers"].values()), "channels": snapshot["channels"],
+        "route": snapshot["route"], "credential_exposed": False,
+        # The page shows who sends when the agent connected nothing, and
+        # whether that relay has proved it works (T10.09, L10-11).
+        "platform_sender": snapshot["platform_sender"],
+        "platform_sender_state": snapshot["platform_sender_state"],
+        "platform_channel_states": snapshot["platform_channel_states"],
+    }
 
 
 @router.put("/providers/{provider}")

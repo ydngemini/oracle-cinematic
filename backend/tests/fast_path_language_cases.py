@@ -144,7 +144,7 @@ def hit(kind, label, id_=CLIENT_ID, sublabel=None):
 
 @contextlib.contextmanager
 def data(*, people=(), properties=(), deals=(), record=RECORD, intent=None, timeline=TIMELINE,
-         candidates=CANDIDATES, lookup=None, deal=None, deal_milestones=(), brief=None):
+         candidates=CANDIDATES, lookup=None, deal=None, deal_milestones=(), brief=None, linked=()):
     lookup = {"status": "checked"} if lookup is None else lookup
     legs = {"people": list(people), "properties": list(properties), "deals": list(deals)}
 
@@ -157,6 +157,11 @@ def data(*, people=(), properties=(), deals=(), record=RECORD, intent=None, time
     async def candidates_for(_ctx, _id):
         return list(candidates), dict(lookup)
 
+    # The houses linked to the client (T11.03): none in the golden cases, so
+    # their English answers stay byte-identical.
+    async def linked_houses_for(_ctx, _id):
+        return [dict(h) for h in linked], len(linked)
+
     async def deal_detail(_ctx, _id):
         return (dict(deal) if deal else None), list(deal_milestones)
 
@@ -166,6 +171,7 @@ def data(*, people=(), properties=(), deals=(), record=RECORD, intent=None, time
     with mock.patch.object(intents, "_search", search), \
             mock.patch.object(intents, "_person_detail", person_detail), \
             mock.patch.object(intents, "_candidates_for", candidates_for), \
+            mock.patch.object(intents, "_linked_houses_for", linked_houses_for), \
             mock.patch.object(intents, "_deal_detail", deal_detail), \
             mock.patch("command_center.briefing", the_briefing):
         yield

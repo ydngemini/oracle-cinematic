@@ -8,17 +8,21 @@ brokerage's globally unique slug too: ``/sites/{brokerage}/{site}``.
 Only a site whose status is ``published`` and that has a published revision is
 served, and only its public content (name, template, theme, content). Draft,
 preview and archived sites, and anything internal to a revision (IDX feed list,
-source manifest, authorship), never leave. Responses are ``no-cache`` with an
-ETag of the revision's content hash: a client may keep a copy but revalidates
-every view, so unpublishing or archiving takes effect on the next request.
+source manifest, authorship), never leave. Responses are ``no-cache``: a client
+may keep a copy but revalidates every view, and every view reads the database,
+so a rollback, unpublish or archive takes effect on the next request (F14.07).
+The ETag names the live revision, its content hash and when it went live, so
+re-pointing between two revisions with identical content (a rollback, T14.04)
+still changes it. A 404 is ``no-store``: a missing page is never kept.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
@@ -53,14 +57,26 @@ def _object(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def page_etag(row: Mapping[str, Any]) -> str:
+    published_at = row["published_at"].isoformat() if row["published_at"] else ""
+    digest = hashlib.sha256(
+        f'{row["revision_id"]}\n{row["content_sha256"]}\n{published_at}'.encode("utf-8")
+    ).hexdigest()
+    return f'"{digest}"'
+
+
+def _not_found() -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, "site not found", headers={"Cache-Control": "no-store"})
+
+
 @router.get("/{tenant_slug}/{site_slug}")
 async def public_site(tenant_slug: str, site_slug: str, request: Request, response: Response) -> Any:
     if not _SLUG_RE.fullmatch(tenant_slug or "") or not _SLUG_RE.fullmatch(site_slug or ""):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "site not found")
+        raise _not_found()
     async with tenant_tx(_reader()) as conn:
         row = await conn.fetchrow(
             """SELECT s.name, s.template_key, s.published_at,
-                      r.revision, r.brand_theme, r.content, r.content_sha256
+                      r.id AS revision_id, r.revision, r.brand_theme, r.content, r.content_sha256
                  FROM hyperlocal_sites s
                  JOIN tenants t ON t.id = s.tenant_id
                  JOIN hyperlocal_site_revisions r
@@ -69,8 +85,8 @@ async def public_site(tenant_slug: str, site_slug: str, request: Request, respon
             tenant_slug, site_slug,
         )
     if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "site not found")
-    etag = f'"{row["content_sha256"]}"'
+        raise _not_found()
+    etag = page_etag(row)
     headers = {"Cache-Control": "no-cache", "ETag": etag}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)

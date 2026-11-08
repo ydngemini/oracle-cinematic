@@ -106,6 +106,7 @@ async def record_inference(
     response: Any,
     *,
     idempotency_key: str,
+    conn: Any = None,
 ) -> tuple[int, int]:
     """Meter one model call's token consumption. Returns what was recorded.
 
@@ -117,6 +118,9 @@ async def record_inference(
     A call that reports no usage records nothing rather than a zero. Zero is a
     real measurement — "this call cost nothing" — and a provider that simply
     omits the field has not made that measurement.
+
+    ``conn`` is the caller's own transaction (ai_budget.settle records the
+    usage and drops the call's hold in one), as for record_usage.
     """
     from llm_gateway import token_usage_of
 
@@ -130,6 +134,7 @@ async def record_inference(
             metric="ai_prompt_tokens",
             quantity=prompt_tokens,
             idempotency_key=f"{idempotency_key}:prompt",
+            conn=conn,
         )
     if completion_tokens:
         await record_usage(
@@ -137,6 +142,7 @@ async def record_inference(
             metric="ai_completion_tokens",
             quantity=completion_tokens,
             idempotency_key=f"{idempotency_key}:completion",
+            conn=conn,
         )
     return (prompt_tokens, completion_tokens)
 

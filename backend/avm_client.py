@@ -444,6 +444,12 @@ async def _value_property_uncached(subject: dict) -> AVMResult:
         else:
             estimates.append(outcome[0])
             statuses[provider] = outcome[1]
+    # What each provider actually did, for health (0160, L19-05). Counts and a
+    # fixed kind only; never raises, never delays the answer past its timeout.
+    import provider_health
+
+    await asyncio.gather(*(provider_health.record(p, provider_health.kind_for(st))
+                           for p, st in statuses.items()))
     result = reconcile(estimates, int(subject.get("assessed_value") or 0), int(subject.get("sqft") or 0))
     return _with_source_status(result, statuses)
 

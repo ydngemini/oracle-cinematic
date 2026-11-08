@@ -123,9 +123,10 @@ class TenantContext:
 # ---------------------------------------------------------------------------
 
 def can_read_private(ctx: TenantContext, row: dict) -> bool:
-    """clients / leads — the tenant wall (clients_tenant_isolation). For clients
-    and contacts the agent scope narrows it further: see client_access() and
-    contact_access()."""
+    """The tenant wall only (<table>_tenant_isolation). It is never the whole
+    answer for an agent: clients and contacts narrow it by client_access() /
+    contact_access(), leads by lead_access() (L03-12; held to the live
+    policies by tests/test_tenancy_mirrors_live.py)."""
     return ctx.is_platform_admin or row.get("tenant_id") == ctx.tenant_id
 
 
@@ -194,6 +195,29 @@ def _record_access(
     return granted if granted in ("view", "edit") else None
 
 
+def lead_access(
+    ctx: TenantContext,
+    row: dict,
+    seller_client_access: Optional[str],
+) -> Optional[str]:
+    """Mirror of leads_linked_read / _update (0143): None, "view" or "edit".
+
+    A lead with a seller client follows that client — `seller_client_access`
+    is client_access() for the caller on row["seller_client_id"]'s client
+    (None when it is not visible). A lead with no client (a harvested
+    prospect) is the brokerage pool, open to everyone in the tenant."""
+    if not can_read_private(ctx, row):
+        return None
+    if (
+        ctx.is_platform_admin
+        or ctx.is_broker_owner
+        or (ctx.record_scope == "brokerage" and not ctx.verify_session)
+        or row.get("seller_client_id") is None
+    ):
+        return "edit"
+    return seller_client_access if seller_client_access in ("view", "edit") else None
+
+
 def can_read_listing(
     ctx: TenantContext,
     row: dict,
@@ -211,8 +235,10 @@ def can_read_listing(
 
 
 def can_write(ctx: TenantContext, row: dict) -> bool:
-    """Any mutation (clients, leads, listings) — own tenant only, even when a
-    listing is shared. platform_admin may write anywhere."""
+    """listings_write — own tenant only, even when a listing is shared;
+    platform_admin may write anywhere. For clients, contacts and leads this is
+    only the tenant wall: a write also needs "edit" from client_access(),
+    contact_access() or lead_access()."""
     return ctx.is_platform_admin or row.get("tenant_id") == ctx.tenant_id
 
 

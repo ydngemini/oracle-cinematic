@@ -33,6 +33,7 @@ from tenancy import (
     can_read_private,
     can_read_listing,
     can_write,
+    lead_access,
     require_role,
     require_context,
 )
@@ -94,6 +95,20 @@ def test_private_read_own_tenant_only():
     assert can_read_private(CTX_A, row_a) is True
     assert can_read_private(CTX_A, row_b) is False        # cross-tenant blocked
     assert can_read_private(CTX_ADMIN, row_b) is True      # god-mode
+
+
+def test_a_lead_follows_its_seller_client():
+    """lead_access mirrors leads_linked_* (0143, L03-12); the live check is
+    tests/test_tenancy_mirrors_live.py."""
+    agent = TenantContext(agent_id="a@x", tenant_id=TENANT_A, role=Role.AGENT)
+    with_client = {"tenant_id": TENANT_A, "seller_client_id": "c1"}
+    harvested = {"tenant_id": TENANT_A, "seller_client_id": None}
+    assert lead_access(agent, with_client, None) is None          # client not visible
+    assert lead_access(agent, with_client, "view") == "view"      # a view share reads, never writes
+    assert lead_access(agent, with_client, "edit") == "edit"
+    assert lead_access(agent, harvested, None) == "edit"          # the brokerage pool
+    assert lead_access(CTX_A, with_client, None) == "edit"        # broker owner
+    assert lead_access(agent, {**with_client, "tenant_id": TENANT_B}, "edit") is None
 
 
 # --- listing read: own / shared MLS / explicit grant ------------------------

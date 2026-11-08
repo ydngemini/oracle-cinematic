@@ -112,7 +112,7 @@ async def _who_to_call(ctx: TenantContext, _match: re.Match, lang: str = "en") -
     """
     import command_center
 
-    briefing = await command_center.briefing(ctx)
+    briefing = await command_center.briefing(ctx, lang=lang)
     return render.who_to_call(briefing, lang)
 
 
@@ -172,7 +172,11 @@ async def _properties_for(ctx: TenantContext, match: re.Match, lang: str = "en")
 
     name = matches[0].get("label") or query
     candidates, lookup = await _candidates_for(ctx, matches[0].get("id"))
-    return _with_status(render.properties_for(name, candidates, lookup, lang), statuses)
+    # A read that fails raises, and ask() hands the question to chat: never
+    # "nothing linked" because the houses could not be read.
+    linked, linked_total = await _linked_houses_for(ctx, matches[0].get("id"))
+    return _with_status(render.properties_for(name, candidates, lookup, lang,
+                                              linked=linked, linked_total=linked_total), statuses)
 
 
 async def _deal_blocker(ctx: TenantContext, match: re.Match, lang: str = "en") -> dict[str, Any]:
@@ -445,6 +449,94 @@ async def _candidates_for(
         [c for c in candidates if isinstance(c, dict)],
         lookup if isinstance(lookup, dict) else {},
     )
+
+
+def _linked_houses_sql() -> str:
+    """The client's linked houses, newest first: its leads (each with the
+    newest decision per public record, read as Houses reads them) and the
+    listings linked to it that are not one of those leads (a manual house).
+    `total` counts every one, before the LIMIT."""
+    import property_match_api
+
+    return f"""
+        SELECT linked.kind, linked.id::text AS id, linked.lead_id::text AS lead_id,
+               linked.address, linked.parcel_id, linked.state, linked.heads,
+               count(*) OVER () AS total
+          FROM (
+                SELECT 'lead' AS kind, l.id, l.id AS lead_id,
+                       COALESCE(l.address, l.payload->>'address') AS address,
+                       l.parcel_id, l.state, l.updated_at,
+                       {property_match_api.current_heads_sql("l")} AS heads
+                  FROM leads l
+                 WHERE l.seller_client_id = $1::uuid
+                UNION ALL
+                SELECT 'listing', s.id, NULL, s.address, NULL, NULL, s.updated_at, NULL
+                  FROM listings s
+                 WHERE s.seller_client_id = $1::uuid
+                   AND NOT EXISTS (SELECT 1 FROM leads p
+                                    WHERE p.id = s.lead_id AND p.seller_client_id = $1::uuid)
+               ) linked
+         ORDER BY linked.updated_at DESC, linked.id ASC
+         LIMIT {render.MAX_COMPARISON}
+    """
+
+
+async def _linked_houses_for(
+    ctx: TenantContext, client_id: Optional[str],
+) -> tuple[list[dict], int]:
+    """The houses linked to a client, with the broker owner's decision on
+    each lead's public record (0168, T11.03), and how many there are.
+
+    The decision is read exactly as Houses reads it (property_match_api.
+    current_heads_sql, linked_house_confirmation): verified only while the
+    newest decision on (lead, record) is a confirmation for the client the
+    house is linked to now. The WHERE fixes that client to this one in the
+    same snapshot, so a house re-linked to someone else is simply not theirs.
+    A record counts only while it still sits on the lead's own parcel and
+    state, the key Houses pairs them by: re-keyed or purged reads not
+    verified. The records are read by primary key; joining the catalog on a
+    parcel would scan the state (0050's only parcel index is an expression
+    index, unusable under FORCE RLS). RLS alone scopes both reads, and who
+    decided, the evidence and the sealed reason are never selected.
+
+    The stored candidates cannot carry this: the producer stores none once a
+    house is linked, and a decision enqueues no reconcile, so a stored value
+    would outlive a withdrawal or a re-link."""
+    import property_match_api
+    from db.connection import tenant_tx
+
+    if not client_id:
+        return [], 0
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(_linked_houses_sql(), client_id)
+        heads = {str(r["id"]): property_match_api.heads_by_record(r["heads"])
+                 for r in rows if r["kind"] == "lead"}
+        record_ids = sorted({rid for by_record in heads.values() for rid in by_record})
+        keys: dict[str, tuple[str, str]] = {}
+        if record_ids:
+            for record in await conn.fetch(
+                "SELECT id::text AS id, parcel_id, state FROM public_property_records WHERE id = ANY($1::uuid[])",
+                record_ids,
+            ):
+                keys[record["id"]] = (str(record["parcel_id"]), str(record["state"]))
+
+    houses = []
+    for r in rows:
+        lead_heads = heads.get(str(r["id"]), {})
+        own_key = (str(r["parcel_id"]), str(r["state"])) if r["parcel_id"] and r["state"] else None
+        on_parcel = {rid for rid in lead_heads if own_key is not None and keys.get(rid) == own_key}
+        decided = property_match_api.linked_house_confirmation(lead_heads, on_parcel)
+        houses.append({
+            "kind": r["kind"],
+            "id": r["id"],
+            "lead_id": r["lead_id"],
+            "address": r["address"],
+            "parcel_id": r["parcel_id"],
+            "state": r["state"],
+            "verified": decided["verified"],
+            "confirmation": decided["confirmation"],
+        })
+    return houses, int(rows[0]["total"]) if rows else 0
 
 
 async def _deal_detail(

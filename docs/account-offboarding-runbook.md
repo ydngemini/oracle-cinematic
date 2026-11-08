@@ -80,6 +80,27 @@ set to `canceled`. The app then:
 - deletes nothing. `ORACLE_CANCELED_ACCOUNT_ERASURE_DAYS` (default: never)
   decides whether an abandoned, unclosed account is ever erased automatically.
 
+`canceled` is final for that subscription (T18.05): a later `invoice.paid`
+(an open dunning invoice paid afterwards), `customer.subscription.updated` or
+checkout event does not reopen it, because Stripe will never bill it again. To
+resume, the owner subscribes again through checkout, which reuses the
+brokerage's Stripe customer.
+
+A brokerage with two live subscriptions (a second checkout paid before the
+first one's webhook arrived) raises a `second_live_subscription` alert
+(severity high) in the operator console's anomaly list. That list is newest
+first and shared with routine security alerts, so the brokerage is also listed
+under **Billing exceptions → Two live subscriptions**
+(`GET /api/admin/billing/exceptions`, `duplicate_subscriptions`) with both
+Stripe subscription ids, read from the subscriptions themselves; it stays
+there until one of the two is cancelled. Both plans keep the brokerage
+entitled and both bill: decide with the owner which one to keep, then cancel
+and refund the other in Stripe. Nothing does that automatically.
+
+An owner whose plan is `unpaid`, `incomplete` or `paused` is locked out and
+refused a second checkout (409); the locked billing overlay offers **Manage
+billing**, which opens the Stripe portal on that plan's customer.
+
 ## 5. Closing a brokerage
 
 **Settings → Account & data → Close this brokerage.** The owner types the

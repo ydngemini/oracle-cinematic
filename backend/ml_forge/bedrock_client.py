@@ -28,8 +28,9 @@ MAX_DELAY = 64.0
 # ── Fireworks AI ──────────────────────────────────────────────────────────────
 # Every AI feature outside the chat agent (tour copy, CMA, voice intel,
 # disposition, synthetic lawyer, client enterprise, observability) funnels
-# through invoke_bedrock_model. Routing it here fixes all of them at once
-# without touching seven call sites.
+# through invoke_bedrock_model — or, when a brokerage pays for the call,
+# through invoke_async under its spend scope (T18.07). Routing it here fixes
+# all of them at once.
 FIREWORKS_API_KEY = os.environ.get("ORACLE_FIREWORKS_API_KEY", "") or os.environ.get(
     "FIREWORKS_API_KEY", ""
 )
@@ -239,7 +240,22 @@ def invoke_bedrock_model(
     Fireworks is selected the request goes there instead of Bedrock; the
     signature and the None-on-failure contract are unchanged, so the callers
     that escalate PRIMARY -> SECONDARY keep working untouched.
+
+    Never under a spend scope (T18.07). asyncio.to_thread copies the caller's
+    scope into this thread: the gateway would hold from a nested event loop,
+    and any failure — a budget refusal included, which complete_sync reads as
+    "no answer" — would send the call down the direct path below, unheld,
+    unmetered and retried up to MAX_RETRIES times. A caller spending for a
+    brokerage awaits invoke_async instead; reaching here under a scope fails
+    closed, before any provider is contacted.
     """
+    import llm_gateway
+
+    if llm_gateway.spend_scope.get() is not None:
+        raise RuntimeError(
+            "invoke_bedrock_model() was called under a spend scope; await invoke_async() "
+            "so the call is held and metered."
+        )
     # Through the gateway when it can reach a provider; the direct Bedrock and
     # Fireworks paths below stay as they were so a deployment without litellm
     # installed keeps working exactly as before.
@@ -303,6 +319,123 @@ def invoke_bedrock_model(
 
     logger.error(f"Bedrock: exhausted {MAX_RETRIES} retries for model {model_id}")
     return None
+
+
+# ── Held calls (T18.07) ───────────────────────────────────────────────────────
+# A caller spending for a brokerage runs under llm_gateway.spend_scope
+# (ai_budget.spending) and awaits invoke_async: every hosted call is held
+# before it is sent and metered by the usage its provider reports.
+
+def _messages(system: str, prompt: str) -> list[dict]:
+    return ([{"role": "system", "content": system}] if system else []) + [
+        {"role": "user", "content": prompt}
+    ]
+
+
+def _fireworks_once(model_id: str, system: str, prompt: str, max_tokens: int) -> dict:
+    """One Fireworks request, no retry: the raw response, usage included.
+    Raises on any failure, so the caller's hold is released."""
+    import urllib.request
+
+    body = json.dumps(
+        {
+            "model": _fireworks_model_for(model_id),
+            "messages": _messages(system, prompt),
+            "max_tokens": max(max_tokens, FIREWORKS_MIN_TOKENS),
+            "temperature": 0.6,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        FIREWORKS_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {FIREWORKS_API_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=FIREWORKS_TIMEOUT) as response:
+        return json.loads(response.read())
+
+
+def _bedrock_converse_once(model_id: str, system: str, prompt: str, max_tokens: int) -> dict:
+    """One Bedrock Converse request, no retry (the client's own retries are
+    off): Converse reports usage (inputTokens/outputTokens), invoke_model's
+    Llama body does not. Bounded by the client's 10 s connect and 120 s read
+    timeouts, below ai_budget.HOLD_SECONDS."""
+    kwargs: dict = {
+        "modelId": model_id,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.6, "topP": 0.9},
+    }
+    if system:
+        kwargs["system"] = [{"text": system}]
+    return _get_client().converse(**kwargs)
+
+
+def _fireworks_text(data: dict) -> str:
+    choice = (data.get("choices") or [{}])[0]
+    return str((choice.get("message") or {}).get("content") or "")
+
+
+def _converse_text(data: dict) -> str:
+    content = ((data.get("output") or {}).get("message") or {}).get("content") or []
+    return "".join(str(block.get("text") or "") for block in content if isinstance(block, dict))
+
+
+async def invoke_async(
+    model_id: str,
+    prompt: str,
+    max_tokens: int = 2048,
+    *,
+    system: str = "",
+) -> Optional[str]:
+    """invoke_bedrock_model for async callers, held and metered under a spend
+    scope. Text, or None when no provider answered (the same contract, so
+    PRIMARY -> SECONDARY escalation on None is unchanged).
+
+    With no scope it is exactly the old seam, in a worker thread. Under one:
+      * the gateway when it can reach a provider — each provider attempt is
+        held and settled by llm_gateway.complete. A budget refusal raises
+        SpendRefused (never a fallback); a gateway that could not answer
+        returns None — the unheld direct path is not tried after it;
+      * otherwise one direct request, no retry, held through
+        spend_guarded_thread and metered by its reported usage (Fireworks'
+        JSON, or Bedrock Converse rather than invoke_model).
+    """
+    import asyncio
+
+    import llm_gateway
+
+    if llm_gateway.spend_scope.get() is None:
+        joined = f"{system}\n\n{prompt}" if system else prompt
+        return await asyncio.to_thread(invoke_bedrock_model, model_id, joined, max_tokens)
+    if _gateway_enabled():
+        task = "fast" if model_id == SECONDARY_MODEL else "analysis"
+        try:
+            return await llm_gateway.complete(prompt, task=task, system=system, max_tokens=max_tokens)
+        except llm_gateway.SpendRefused:
+            raise
+        except llm_gateway.LLMUnavailable as exc:
+            logger.warning("bedrock_client: no provider answered a held call: %s", type(exc).__name__)
+            return None
+    try:
+        if FIREWORKS_ENABLED:
+            ceiling = max(max_tokens, FIREWORKS_MIN_TOKENS)
+            data = await llm_gateway.spend_guarded_thread(
+                "fireworks", llm_gateway.estimate_tokens(_messages(system, prompt), completion=ceiling),
+                _fireworks_once, model_id, system, prompt, max_tokens)
+            text = _fireworks_text(data)
+        else:
+            data = await llm_gateway.spend_guarded_thread(
+                "bedrock", llm_gateway.estimate_tokens(_messages(system, prompt), completion=max_tokens),
+                _bedrock_converse_once, model_id, system, prompt, max_tokens)
+            text = _converse_text(data)
+    except llm_gateway.SpendRefused:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the None contract; the hold was released
+        logger.error("bedrock_client: held direct call failed (%s)", type(exc).__name__)
+        return None
+    return text if text.strip() else None
 
 
 def _stream_fireworks(

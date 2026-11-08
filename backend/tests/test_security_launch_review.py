@@ -439,8 +439,11 @@ def test_oauth_callback_requires_the_starting_browser():
 def test_a_colleagues_personal_credential_is_never_a_fallback():
     import commands_api
 
-    assert "lower(u.agent_id) = lower(provider_credentials.account_label)" in inspect.getsource(
-        commands_api._load_provider_credential)
+    # One row selection, read by the decrypting loader and by the setup check
+    # that only asks whether a usable row exists (channel_setup, L07-03).
+    assert "lower(u.agent_id) = lower(provider_credentials.account_label)" in commands_api._PROVIDER_ROW_SQL
+    for reader in (commands_api._load_provider_credential, commands_api.has_provider_credential):
+        assert "_PROVIDER_ROW_SQL" in inspect.getsource(reader)
 
 
 def test_capability_tokens_and_query_secrets_are_redacted_from_logs():

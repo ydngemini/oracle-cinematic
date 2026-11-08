@@ -30,11 +30,14 @@ from pydantic import BaseModel, ConfigDict
 from audit_middleware import AuditCategory, audit_now
 from db.connection import tenant_tx
 import record_access
+import space_certification
 from record_access import require_lead_edit, require_linked_edit
 from tenancy import Role, TenantContext, brokerage_scope, require_context
 from billing import require_active_subscription
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
-from reconstruction_worker import QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, enqueue
+from reconstruction_worker import (
+    QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, capture_input_sql, enqueue,
+)
 
 log = logging.getLogger("oracle.tour_api")
 
@@ -47,65 +50,73 @@ _TIER_BADGE = {
     2: "360° Walkthrough",
     3: "3D Walkthrough",
 }
-# What a captured 3D space may honestly be called, by its quality state
-# (prompt 12 T12.09/T12.10, audit A03). "Full 3D Walkthrough" was given to every
-# captured splat — including ones whose quality was never measured or that
-# only partly registered. No certification process exists yet, so nothing is
-# "verified"; a measured space with no quality caveats is a plain walkthrough.
-_QUALITY_LIMITATIONS = {"quality_unverified", "partial_registration", "quality_low",
-                        "pose_error_high", "compression_loss"}
+# What a captured 3D space may honestly be called is bound to its certification
+# state (space_certification; prompt 12 T12.09/T12.10, audit A03). "Full 3D
+# Walkthrough" and "photoreal … the actual home" were given to every captured
+# splat, including ones whose quality was never measured or that only partly
+# registered. Only `verified` may say either; nothing stored today reaches it.
+#
+# Keyed by display key: a space `incomplete` because part of it is known not to
+# connect reads "Partial"; one `incomplete` only for want of evidence reads as
+# not verified, which is what it is.
 _SPLAT_BADGE = {
-    "measured": "3D Walkthrough",
-    "pending": "3D Walkthrough · quality not verified",
+    "verified": "Full 3D Walkthrough",
+    "partial": "Partial 3D Walkthrough",
     "degraded": "3D Walkthrough · reduced quality",
-    "incomplete": "Partial 3D Walkthrough",
+    "pending": "3D Walkthrough · quality not verified",
+    "rejected": "3D Walkthrough · failed quality checks",
 }
 _SPLAT_LABEL = {
-    "measured": "3D walkthrough",
-    "pending": "3D walkthrough · quality not verified",
+    "verified": "3D walkthrough · quality verified",
+    "partial": "Partial 3D walkthrough",
     "degraded": "3D walkthrough · reduced quality",
-    "incomplete": "Partial 3D walkthrough",
+    "pending": "3D walkthrough · quality not verified",
+    "rejected": "3D walkthrough · failed quality checks",
+}
+_UNVERIFIED_SPLAT_NOTE = ("Free-roam a 3D reconstruction built from this home's photos and video. "
+                          "Its quality has not been verified.")
+_SPLAT_NOTE = {
+    "verified": "Free-roam the actual home in a photoreal 3D reconstruction.",
+    "partial": _UNVERIFIED_SPLAT_NOTE,
+    "degraded": _UNVERIFIED_SPLAT_NOTE,
+    "pending": _UNVERIFIED_SPLAT_NOTE,
+    "rejected": ("Free-roam a 3D reconstruction built from this home's photos and video. "
+                 "It did not pass quality checks and has not been verified."),
 }
 
 
-def splat_quality(row) -> tuple[str, list[str]]:
-    """(quality_state, limitation keys) for one splat row.
+def _display_key(cert: "space_certification.Certification") -> str:
+    if cert.state == space_certification.INCOMPLETE:
+        return "partial" if cert.coverage_gap else "pending"
+    return cert.state
 
-    `pending` when quality was never measured (no job verdict, or the verdict
-    says quality_unverified) — a missing metric is missing evidence (C6).
-    `incomplete` when parts of the capture could not be placed. `degraded`
-    when a measured quality caveat applies. `measured` otherwise. Never
-    `verified`: that needs the certification T12.09 has not built yet.
-    """
+
+def _limitations(row) -> list[str]:
     raw = row.get("quality_limitations") if hasattr(row, "get") else None
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except ValueError:
             raw = None
-    if not isinstance(raw, list):
-        return "pending", []
-    limitations = [x for x in raw if isinstance(x, str)]
-    if "partial_registration" in limitations:
-        return "incomplete", limitations
-    if "quality_unverified" in limitations:
-        return "pending", limitations
-    if any(x in _QUALITY_LIMITATIONS for x in limitations):
-        return "degraded", limitations
-    return "measured", limitations
+    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
 
 
-def _caveats(limitations: list[str]) -> list[str]:
+def _caveats(limitations: list[str], cert=None) -> list[str]:
+    """The published caveats, then the certification's reasons, each once."""
     from space_status import LIMITATION_LABELS
 
-    return [LIMITATION_LABELS[x] for x in limitations if x in LIMITATION_LABELS]
+    out = [LIMITATION_LABELS[x] for x in limitations if x in LIMITATION_LABELS]
+    if cert is not None:
+        out += cert.public()["reasons"]
+    return list(dict.fromkeys(out))
 
 
 _TIER_NOTE = {
     0: "Photoreal exterior 3D for this address. No interior has been captured yet.",
     1: "Photoreal exterior 3D plus uploaded photos. No walkable interior captured yet.",
     2: "Walk room-to-room through 360° captures of the actual home.",
-    3: "Free-roam the actual home in a photoreal 3D reconstruction.",
+    # Tier 3's note depends on the space's certification: _SPLAT_NOTE.
+    3: _UNVERIFIED_SPLAT_NOTE,
 }
 
 # Every note above tier 0 says "the actual home". A splat that was generated
@@ -253,6 +264,60 @@ def _delivery_format(row) -> Optional[str]:
     return f".{ext.lower()}"
 
 
+#: The evidence behind a published space (alias `pm`): the newest build that
+#: produced it — NULL for a splat no build produced (a phone scan). Only the
+#: parts certification reads are pulled out of its diagnostics.
+_EVIDENCE_LATERAL = """
+  LEFT JOIN LATERAL (
+      SELECT j.id, j.status, j.started_at,
+             j.diagnostics -> 'limitations' AS lim,
+             j.diagnostics -> 'quality' AS quality,
+             j.diagnostics -> 'capture' -> 'input_media_ids' AS inputs,
+             j.diagnostics -> 'capture' -> 'skipped_media_ids' AS skipped
+        FROM reconstruction_jobs j
+       WHERE pm.kind = 'splat' AND j.media_id = pm.id
+       ORDER BY j.updated_at DESC
+       LIMIT 1
+  ) ev ON true"""
+
+#: The same property's capture media, by the build's own definition of input.
+_SUBJECT_CAPTURE = f"""
+      SELECT 1 FROM property_media src
+       WHERE {capture_input_sql("src")}
+         AND ((pm.lead_id IS NOT NULL AND src.lead_id = pm.lead_id)
+           OR (pm.listing_id IS NOT NULL AND src.listing_id = pm.listing_id))"""
+
+#: Derived on every read, never stored, so a late upload invalidates an old
+#: proof without anything being rewritten (T12.09, F12.06):
+#:   true  — the build's recorded input set holds every current capture row.
+#:           Comparing ids, not times, also catches an upload whose transaction
+#:           began before the gather but committed after it.
+#:   false — a capture row exists that the build never read.
+#:   NULL  — no build, or a legacy build that recorded no input set and no
+#:           capture row is newer than its start: unknown, never assumed fresh.
+#: evidence_unread counts the current capture rows the build considered but
+#: could not use (unreadable bytes, a video with no frames): in its input set,
+#: so not stale, but never measured, so never verified.
+_EVIDENCE_COLUMNS = f"""
+       ev.id AS evidence_job_id,
+       ev.status AS evidence_job_status,
+       ev.lim AS quality_limitations,
+       ev.quality AS quality_metrics,
+       CASE
+         WHEN ev.id IS NULL THEN NULL
+         WHEN jsonb_typeof(ev.inputs) = 'array' THEN NOT EXISTS ({_SUBJECT_CAPTURE}
+                AND NOT (ev.inputs ? src.id::text))
+         WHEN EXISTS ({_SUBJECT_CAPTURE}
+                AND src.created_at > ev.started_at) THEN false
+       END AS evidence_fresh,
+       CASE
+         WHEN ev.id IS NULL THEN NULL
+         WHEN jsonb_typeof(ev.skipped) = 'array' THEN (SELECT count(*) FROM ({_SUBJECT_CAPTURE}
+                AND ev.skipped ? src.id::text) AS unread)::int
+         ELSE 0
+       END AS evidence_unread"""
+
+
 async def fetch_tour_rows(conn, lead_id, listing_id):
     """The three reads behind a tour, on a caller-supplied connection.
 
@@ -261,24 +326,19 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
     is already running in.
     """
     rows = await conn.fetch(
-        """
-        SELECT id, kind, url, sort_order, s3_key, scene_override,
-               COALESCE(provenance, 'captured') AS provenance,
-               -- The reconstruction's own verdict (recon_quality via
-               -- _record_summary). NULL for a splat no job produced.
-               CASE WHEN kind = 'splat' THEN (
-                   SELECT j.diagnostics -> 'limitations'
-                     FROM reconstruction_jobs j
-                    WHERE j.media_id = property_media.id
-                    ORDER BY j.updated_at DESC LIMIT 1
-               ) END AS quality_limitations
-          FROM property_media
-         WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
-             OR ($2::uuid IS NOT NULL AND listing_id = $2))
+        f"""
+        SELECT pm.id, pm.kind, pm.url, pm.sort_order, pm.s3_key, pm.scene_override,
+               COALESCE(pm.provenance, 'captured') AS provenance,
+               -- What certification reads (space_certification.from_tour_row).
+               {_EVIDENCE_COLUMNS}
+          FROM property_media pm
+          {_EVIDENCE_LATERAL}
+         WHERE (($1::uuid IS NOT NULL AND pm.lead_id = $1)
+             OR ($2::uuid IS NOT NULL AND pm.listing_id = $2))
            -- A replaced space is kept for rollback but never shown: publish
            -- stamps the old one in the same transaction as it inserts the new.
-           AND NOT (kind = 'splat' AND superseded_at IS NOT NULL)
-         ORDER BY sort_order ASC, created_at ASC
+           AND NOT (pm.kind = 'splat' AND pm.superseded_at IS NOT NULL)
+         ORDER BY pm.sort_order ASC, pm.created_at ASC
         """,
         lead_id, listing_id,
     )
@@ -362,8 +422,10 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
     else:
         best = 0
 
-    _primary_quality = splat_quality(splats[0]) if has_splat else ("pending", [])
-    _splat_badge = _SPLAT_BADGE[_primary_quality[0]] if has_splat else _TIER_BADGE[3]
+    # The opening capture's certification decides every tier-3 word below.
+    primary = space_certification.from_tour_row(splats[0]) if has_splat else None
+    primary_key = _display_key(primary) if primary is not None else None
+    primary_verified = primary is not None and primary.state == space_certification.VERIFIED
 
     # A demo splat is walkable, so the viewer can open — but it is not a
     # walkable interior *of this home*, which is what the flag means to callers.
@@ -389,7 +451,8 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
 
     for row in all_splats:
         captured = _captured(row)
-        state, limitations = splat_quality(row) if captured else ("demo", [])
+        cert = space_certification.from_tour_row(row) if captured else None
+        key = _display_key(cert) if cert is not None else None
         assets.append({
             "kind": "splat",
             "url": row["url"],
@@ -400,11 +463,16 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
             "format": _delivery_format(row),
             "provenance": row["provenance"],
             "is_this_property": captured,
+            # Navigable: the viewer can move through it. Not a statement about
+            # quality or coverage — that is `certification`.
             "walkable": True,
-            "label": _SPLAT_LABEL[state] if captured else _DEMO_BADGE,
-            "quality_state": state,
-            "caveats": _caveats(limitations),
-            "note": _TIER_NOTE[3] if captured else _DEMO_NOTE,
+            "label": _SPLAT_LABEL[key] if captured else _DEMO_BADGE,
+            "quality_state": cert.state if cert is not None else "demo",
+            # A demo space is not evidence about this home, so it has none.
+            "certification": cert.public() if cert is not None else None,
+            "whole_home_verified": cert is not None and cert.state == space_certification.VERIFIED,
+            "caveats": _caveats(_limitations(row), cert) if captured else [],
+            "note": _SPLAT_NOTE[key] if captured else _DEMO_NOTE,
             "disclosure": SPATIAL_AI_DISCLOSURE,
         })
 
@@ -477,13 +545,18 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         # caller that renders only the winner drops real captures, which is the
         # bug this shape replaces. Read `assets` and render all of it.
         "best_tier": best,
-        "badge": _DEMO_BADGE if is_demo else (_splat_badge if best == 3 else _TIER_BADGE[best]),
-        # The opening splat's quality, so a viewer labels it honestly.
-        "splat_quality_state": _primary_quality[0] if has_splat else None,
-        "splat_label": _SPLAT_LABEL[_primary_quality[0]] if has_splat else None,
-        "splat_caveats": _caveats(_primary_quality[1]) if has_splat else [],
-        "honest_note": _DEMO_NOTE if is_demo else _TIER_NOTE[best],
+        "badge": _DEMO_BADGE if is_demo else (_SPLAT_BADGE[primary_key] if best == 3 else _TIER_BADGE[best]),
+        # The opening splat's certification, so every reader labels it the
+        # same way (T12.09/T12.10): its state, plain label and reasons.
+        "splat_quality_state": primary.state if primary is not None else None,
+        "splat_certification": primary.public() if primary is not None else None,
+        "splat_label": _SPLAT_LABEL[primary_key] if primary is not None else None,
+        "splat_caveats": _caveats(_limitations(splats[0]), primary) if primary is not None else [],
+        "honest_note": _DEMO_NOTE if is_demo else (_SPLAT_NOTE[primary_key] if best == 3 else _TIER_NOTE[best]),
+        # You can move through it — navigability, never a quality claim.
         "walkable_interior": best >= 2,  # the only tiers you can truly walk inside
+        # The quality claim: true only for a certified (verified) capture.
+        "whole_home_verified": primary_verified,
         # True only when the walkable asset depicts this address. The viewer
         # renders a persistent badge when it is False.
         "is_this_property": not is_demo,
@@ -730,6 +803,11 @@ _JOB_COLUMNS = """id, status, stage, provider, provider_job_id, progress, media_
 def _subject_filter() -> str:
     return ("(($1::uuid IS NOT NULL AND lead_id = $1) "
             "OR ($2::uuid IS NOT NULL AND listing_id = $2))")
+
+
+def _certification_view(cert, ctx: TenantContext) -> dict:
+    """A certification as this caller may see it: check detail is for operators."""
+    return cert.operator() if ctx.role in _OPERATOR_ROLES else cert.public()
 
 
 def _job_payload(row, ctx: TenantContext) -> dict:
@@ -1024,10 +1102,15 @@ async def space_summary(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id.")
     async with tenant_tx(ctx) as conn:
         published = await conn.fetchrow(
-            f"""SELECT id, s3_key, created_at, COALESCE(provenance, 'captured') AS provenance
-                  FROM property_media
-                 WHERE kind = 'splat' AND superseded_at IS NULL AND {_subject_filter()}
-                 ORDER BY (COALESCE(provenance, 'captured') = 'captured') DESC, created_at DESC
+            f"""SELECT pm.id, pm.s3_key, pm.created_at,
+                       COALESCE(pm.provenance, 'captured') AS provenance,
+                       {_EVIDENCE_COLUMNS}
+                  FROM property_media pm
+                  {_EVIDENCE_LATERAL}
+                 WHERE pm.kind = 'splat' AND pm.superseded_at IS NULL
+                   AND (($1::uuid IS NOT NULL AND pm.lead_id = $1)
+                     OR ($2::uuid IS NOT NULL AND pm.listing_id = $2))
+                 ORDER BY (COALESCE(pm.provenance, 'captured') = 'captured') DESC, pm.created_at DESC
                  LIMIT 1""",
             lead_id, listing_id,
         )
@@ -1047,6 +1130,11 @@ async def space_summary(
             "published_at": published["created_at"].isoformat() if published["created_at"] else None,
             "is_this_property": published["provenance"] == "captured",
             "format": _delivery_format(published),
+            # What the space may be called, separate from being viewable.
+            # None for a demo space, which is not evidence about the home.
+            # Operators also get each check, as on the job view.
+            "certification": (_certification_view(space_certification.from_tour_row(published), ctx)
+                              if published["provenance"] == "captured" else None),
         } if published else None),
         "previous_versions": int(previous or 0),
         "latest_build": _job_payload(latest, ctx) if latest else None,

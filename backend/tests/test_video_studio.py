@@ -513,7 +513,12 @@ def _job_row(*, kind="text", script="", images=None, size="720x1280"):
 def test_process_job_text_end_to_end(monkeypatch):
     conn = _FakeConn(quota_consumed=0.0)
     monkeypatch.setattr(studio, "tenant_tx", _fake_tenant_tx(conn))
-    monkeypatch.setattr(studio, "draft_script", lambda prop: "Welcome to 123 Main St.")
+
+    async def fake_script(prop, **_kw):
+        return "Welcome to 123 Main St."
+
+    # The worker drafts under the brokerage's spend scope (T18.07).
+    monkeypatch.setattr(studio, "draft_script_async", fake_script)
 
     async def fake_generate_clip(*args, **kwargs):
         return b"MP4BYTES"

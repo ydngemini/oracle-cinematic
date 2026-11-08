@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 // Parties and milestones — both served by portfolio_api since the deal room was
 // built, and both unreachable until now.
@@ -98,18 +98,33 @@ function normalizeInputDate(value) {
 export default function DealBook() {
   const [transactions, setTransactions] = useState([]);
   const [total, setTotal] = useState(0);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingQuietly, setLoadingQuietly] = useState(false);
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
 
-  const load = useCallback(() => {
-    const setLoadingState = transactions.length === 0 ? setLoading : setLoadingQuietly;
+  // Read through refs so `load` keeps one identity: the mount effect below
+  // depends on it, and a `load` that changed with the list re-ran that effect
+  // and refetched page one the moment "Show more" appended page two (L16-04).
+  const hasDataRef = useRef(false);
+  const extraPagesRef = useRef(false);
+
+  // `background`: the timer and external-change refreshes. They skip while
+  // extra pages are open, so a refresh never collapses what the agent loaded;
+  // the Refresh button (not background) always starts again from page one.
+  const load = useCallback((background = false) => {
+    if (background && extraPagesRef.current) return Promise.resolve();
+    const setLoadingState = hasDataRef.current ? setLoadingQuietly : setLoading;
     setLoadingState(true);
     return crmGet('/api/portfolio/transactions?limit=100').then(
       (payload) => {
+        hasDataRef.current = true;
+        extraPagesRef.current = false;
         setTransactions(payload.transactions || []);
         setTotal(payload.total || 0);
+        setNextCursor(payload.next_cursor || null);
         setError(null);
         setLoading(false);
         setLoadingQuietly(false);
@@ -120,17 +135,39 @@ export default function DealBook() {
         setLoadingQuietly(false);
       },
     );
-  }, [transactions.length]);
+  }, []);
 
   const refresh = useCallback(() => {
     load();
   }, [load]);
 
+  // The next page by cursor (T16.05): appended, never re-fetched from the top,
+  // so a deal edited meanwhile is not shown twice.
+  const loadMore = useCallback(() => {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    crmGet(`/api/portfolio/transactions?limit=100&after=${encodeURIComponent(nextCursor)}`).then(
+      (payload) => {
+        extraPagesRef.current = true;
+        setTransactions((prev) => {
+          const seen = new Set(prev.map((t) => t.id));
+          return [...prev, ...(payload.transactions || []).filter((t) => !seen.has(t.id))];
+        });
+        setNextCursor(payload.next_cursor || null);
+        setLoadingMore(false);
+      },
+      (reason) => {
+        setError(reason);
+        setLoadingMore(false);
+      },
+    );
+  }, [nextCursor]);
+
   useEffect(() => {
     const initialFrame = window.requestAnimationFrame(() => { void load(); });
-    const timer = window.setInterval(load, 75_000);
+    const timer = window.setInterval(() => load(true), 75_000);
     const onExternal = () => {
-      load();
+      load(true);
     };
     window.addEventListener('neoh:transactions-changed', onExternal);
     return () => {
@@ -148,6 +185,7 @@ export default function DealBook() {
   }, []);
 
   const summary = useMemo(() => countsByStatus(transactions), [transactions]);
+  const partial = transactions.length < total;
 
   const sorted = useMemo(
     () => [...transactions].sort((a, b) => new Date(b.updated_at).valueOf() - new Date(a.updated_at).valueOf()),
@@ -169,19 +207,22 @@ export default function DealBook() {
         </div>
 
         <div className={styles.meta} aria-label="Deal room overview">
-          <span className={styles.chip}>{total} shown</span>
-          <span className={styles.chip}>{summary.active} active</span>
-          <span className={styles.chip}>{summary.under_contract} under contract</span>
-          <span className={styles.chip}>{summary.closed} closed</span>
-          <span className={styles.chip}>{summary.cancelled} cancelled</span>
+          {/* The counts below are of the deals loaded so far; the first chip
+              says how many that is of the brokerage's total, so a partial list
+              never reads as the whole book. */}
+          <span className={styles.chip}>{partial ? `${transactions.length} of ${total} shown` : `${total} shown`}</span>
+          <span className={styles.chip}>{summary.active} active{partial ? ' (of shown)' : ''}</span>
+          <span className={styles.chip}>{summary.under_contract} under contract{partial ? ' (of shown)' : ''}</span>
+          <span className={styles.chip}>{summary.closed} closed{partial ? ' (of shown)' : ''}</span>
+          <span className={styles.chip}>{summary.cancelled} cancelled{partial ? ' (of shown)' : ''}</span>
         </div>
       </header>
 
       <dl className={styles.metrics}>
-        <Metric label="Active" value={summary.active} />
-        <Metric label="Under contract" value={summary.under_contract} />
-        <Metric label="Closed" value={summary.closed} />
-        <Metric label="Total" value={summary.all} />
+        <Metric label={partial ? 'Active (of shown)' : 'Active'} value={summary.active} />
+        <Metric label={partial ? 'Under contract (of shown)' : 'Under contract'} value={summary.under_contract} />
+        <Metric label={partial ? 'Closed (of shown)' : 'Closed'} value={summary.closed} />
+        <Metric label="Total" value={Math.max(total, summary.all)} />
       </dl>
 
       {error ? (
@@ -207,6 +248,11 @@ export default function DealBook() {
           ))}
         </ul>
       )}
+      {nextCursor ? (
+        <button type="button" className={styles.refresh} onClick={loadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading more deals…' : `Show more (${total - transactions.length} more)`}
+        </button>
+      ) : null}
       {loadingQuietly ? <span className={styles.empty} role="status" aria-live="polite">refreshing…</span> : null}
     </section>
   );

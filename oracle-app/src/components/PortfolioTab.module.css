@@ -370,6 +370,68 @@
 .flagList > li > span[data-type='TITLE'] { color: var(--oracle-red); }
 .flagList > li > span[data-type='ZONING'] { color: var(--oracle-green); }
 
+/* A title finding's review (T11.03): its state, and a broker owner's actions. */
+.flagList > li:has(> .reviewForm) { flex-wrap: wrap; padding-block: var(--space-2); }
+/* On a narrow screen the finding keeps the line and its review actions wrap
+   under it, instead of squeezing the evidence to nothing. */
+.flagList > li:has(> .reviewActions) { flex-wrap: wrap; padding-block: var(--space-2); }
+.flagList > li:has(> .reviewActions) > div { flex: 1 1 14rem; }
+.reviewActions { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); margin-left: auto; }
+.reviewActions button,
+.reviewForm button {
+  min-height: 44px;
+  border: 0;
+  padding: 0 var(--space-2);
+  color: var(--oracle-accent-ink);
+  background: transparent;
+  font: 650 var(--text-xs)/1 var(--font-display);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.reviewActions button:hover,
+.reviewForm button:hover:not(:disabled) { background: var(--oracle-amber-ghost); }
+.reviewForm button:disabled { color: var(--oracle-text-dim); }
+.reviewForm { display: grid; flex: 1 1 100%; gap: var(--space-2); min-width: 0; }
+.reviewForm label { color: var(--oracle-text); font-size: var(--text-xs); }
+.reviewForm textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: var(--space-2);
+  border: 1px solid var(--oracle-border);
+  color: var(--oracle-text);
+  background: var(--oracle-surface-sunken);
+  font: inherit;
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+/* The evidence and the decision's effect wrap: `.flagList small` cuts to one line. */
+.reviewForm small,
+.flagList small.titleEvidence { overflow: visible; color: var(--oracle-text-dim); font-size: var(--text-xs); white-space: normal; }
+.reviewForm p { margin: 0; color: var(--oracle-red); font-size: var(--text-xs); }
+.reviewForm div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+/* A decision's outcome outlives the reload that drops its row. */
+.reviewNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--oracle-green);
+  background: var(--oracle-surface-sunken);
+}
+.reviewNotice[data-tone='error'] { border-left-color: var(--oracle-red); }
+.reviewNotice p { flex: 1; min-width: 0; margin: 0; color: var(--oracle-text-dim); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.reviewNotice strong { color: var(--oracle-text); font-weight: 600; }
+.reviewNotice button {
+  min-height: 44px;
+  border: 0;
+  padding: 0 var(--space-2);
+  color: var(--oracle-accent-ink);
+  background: transparent;
+  font: 650 var(--text-xs)/1 var(--font-display);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
 .empty,
 .disclaimer {
   margin: 0;

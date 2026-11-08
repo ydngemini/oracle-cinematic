@@ -90,6 +90,20 @@ describe('receipts and reasons', () => {
     expect(chatErrorReason('AI_CHAT_REJECTED')).toBe('rejected');
     expect(chatErrorReason(undefined)).toBe('failed');
   });
+
+  it('names a budget stop as a budget, and an unreadable budget as unavailable (T18.07)', () => {
+    expect(chatErrorReason('AI_BUDGET_EXHAUSTED')).toBe('budget');
+    expect(chatErrorReason('AI_BUDGET_INSUFFICIENT')).toBe('budget');
+    expect(chatErrorReason('AI_SPEND_PAUSED')).toBe('budget');
+    expect(chatErrorReason('AI_SPEND_HALTED')).toBe('budget');
+    expect(chatErrorReason('AI_BUDGET_UNAVAILABLE')).toBe('unavailable');
+    // A refused turn is a valid error event, with its reason.
+    const [event] = eventsFromFacts({ messages: [turn('failed', { error_code: 'AI_BUDGET_EXHAUSTED' })] }, stamps)
+      .filter((e) => e.origin === 'chat');
+    expect(event.stage).toBe('error');
+    expect(event.reason).toBe('budget');
+    expect(validateAnimationEvent(event, T0).ok).toBe(true);
+  });
 });
 
 describe('createAvatarStore', () => {

@@ -5,14 +5,29 @@ AGENT LEGAL — contract generation and disclosure checklist module.
 import json
 from datetime import datetime, timedelta, timezone
 
+# Shown as the Seller until a person states a confirmed one (F11.04). A lead's
+# owner_name is the owner of record from an unconfirmed public-record parcel
+# match: it is never the contract's Seller, so this module does not read it.
+UNCONFIRMED_SELLER = "[SELLER_PLACEHOLDER: seller not confirmed]"
+
+
+def _stated_seller(property_data: dict) -> str:
+    seller = property_data.get("seller_name")
+    if isinstance(seller, str) and seller.strip():
+        return seller.strip()
+    return UNCONFIRMED_SELLER
+
 
 def generate_legal_package(property_data: dict, strategy: str = "wholesale") -> dict:
     """
     Generate a legal package for a given property and acquisition strategy.
 
     Args:
-        property_data: dict containing address, price, owner_name (and optionally
-                       mortgage_balance, bedrooms, bathrooms, etc.)
+        property_data: dict containing address and price (and optionally arv,
+                       as_is, assumptions, distress_severity). The Seller comes
+                       only from a stated ``seller_name``; without one the
+                       field shows UNCONFIRMED_SELLER. ``owner_name`` (the
+                       public-record owner of record) is ignored.
         strategy:      "wholesale" (Assignment Contract) or "standard" (Purchase Agreement)
 
     Returns:
@@ -35,7 +50,7 @@ def generate_legal_package(property_data: dict, strategy: str = "wholesale") -> 
 
     contract_fields = {
         "buyer": "[BUYER_PLACEHOLDER]",
-        "seller": property_data.get("owner_name", "Unknown Seller"),
+        "seller": _stated_seller(property_data),
         "property_address": property_data.get("address", ""),
         "purchase_price": price,
         "max_allowable_offer": price,

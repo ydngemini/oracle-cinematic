@@ -57,9 +57,14 @@ TABLES: dict[str, TableEntry] = {
     "account_security_acceptances": TableEntry(C.ACCOUNT, E),
     # ── contact PII / CRM ────────────────────────────────────────────────
     "clients": TableEntry(C.CONTACT_PII, E, "name/email/phone plaintext"),
+    "client_contact_index": TableEntry(C.CONTACT_PII, E, "keyed email/phone lookup hashes and name tokens "
+                                                         "(0156, L17-23); goes with its client (FK cascade)"),
     "agent_contacts": TableEntry(C.CONTACT_PII, E,
                                  "PII encrypted; HMAC lookups; assigned_user_id (0134) = canonical assignee, no PII"),
     "leads": TableEntry(C.BUSINESS_CRM, E, "payload holds owner names"),
+    "property_match_decisions": TableEntry(C.BUSINESS_CRM, E, "append-only (0168, T11.03): reason sealed "
+                                           "(reason_ciphertext), no plaintext column; decided_by is a staff "
+                                           "login; ids, evidence kinds and timestamps only"),
     "transaction_parties": TableEntry(C.CONTACT_PII, E),
     "contact_property_relationships": TableEntry(C.CONTACT_PII, E),
     "buyer_profiles": TableEntry(C.CONTACT_PII, E),
@@ -77,6 +82,7 @@ TABLES: dict[str, TableEntry] = {
     "listings": TableEntry(C.BUSINESS_CRM, E),
     "listing_grants": TableEntry(C.BUSINESS_CRM, VP, "grantor/grantee tenant columns; cascades from listings"),
     "transactions": TableEntry(C.BUSINESS_CRM, E),
+    "transaction_status_events": TableEntry(C.BUSINESS_CRM, E, "append-only deal status trail (0163); actor is an agent login id"),
     "transaction_offers": TableEntry(C.BUSINESS_CRM, E),
     "transaction_milestones": TableEntry(C.BUSINESS_CRM, E),
     "compliance_checklist_items": TableEntry(C.BUSINESS_CRM, E),
@@ -100,8 +106,16 @@ TABLES: dict[str, TableEntry] = {
     "hyperlocal_site_domains": TableEntry(C.BUSINESS_CRM, E),
     "hyperlocal_site_collaborators": TableEntry(C.BUSINESS_CRM, E),
     "hyperlocal_site_attribution_events": TableEntry(C.COMMUNICATION_METADATA, E),
+    "hyperlocal_site_events": TableEntry(
+        C.BUSINESS_CRM, E, "append-only site/domain trail (0173); actor is an agent login id"),
     "studio_campaigns": TableEntry(C.BUSINESS_CRM, E),
-    "tenant_action_budgets": TableEntry(C.OPERATIONAL, E),
+    "tenant_action_budgets": TableEntry(C.OPERATIONAL, E, "missions cents cap and AI token budget (0170); "
+                                                         "updated_by is the setter's sign-in email"),
+    "ai_token_reservations": TableEntry(C.OPERATIONAL, E, "token estimates of model calls in flight (0170); "
+                                                         "lapse in minutes; no prompt or answer text; "
+                                                         "call key = feature kind + chat message id or "
+                                                         "random id + provider + number, never a phone "
+                                                         "number or call id"),
     "tenant_contract_template_registrations": TableEntry(C.BUSINESS_CRM, E),
     "lead_pipeline_counts": TableEntry(C.DERIVED, E),
     # ── communication ────────────────────────────────────────────────────
@@ -145,6 +159,9 @@ TABLES: dict[str, TableEntry] = {
     "subscriptions": TableEntry(C.FINANCIAL_BILLING, R, "7 years; Stripe ids, no customer content"),
     "billing_usage_events": TableEntry(C.FINANCIAL_BILLING, R, "7 years"),
     "stripe_webhook_events": TableEntry(C.FINANCIAL_BILLING, G, "event ids only"),
+    "billing_checkout_sessions": TableEntry(C.CAPABILITY_TOKEN, E,
+                                            "0169 (T18.05): the open Stripe Checkout session id and its "
+                                            "payable url; no customer content"),
     # ── AI ───────────────────────────────────────────────────────────────
     "ai_chat_messages": TableEntry(C.AI_CHAT, E,
                                    "content encrypted; metadata.semantic_frame (05) = goal labels, "
@@ -169,7 +186,9 @@ TABLES: dict[str, TableEntry] = {
     "property_signals": TableEntry(C.DERIVED, E),
     "property_characteristic_inferences": TableEntry(C.DERIVED, E),
     "zoning_analyses": TableEntry(C.DERIVED, E),
-    "title_findings": TableEntry(C.DERIVED, E),
+    "title_findings": TableEntry(C.DERIVED, E, "notes plaintext (agent's working note); the reviewer's reason "
+                                               "(may name an owner) only sealed in review_reason_ciphertext "
+                                               "(0167, T11.03), no plaintext column; reviewed_by is an email"),
     "entity_nodes": TableEntry(C.DERIVED, E),
     "entity_links": TableEntry(C.DERIVED, E),
     # ── documents & media ────────────────────────────────────────────────
@@ -187,7 +206,7 @@ TABLES: dict[str, TableEntry] = {
     "capture_sessions": TableEntry(C.SPATIAL_SOURCE, E, "no FK to tenants"),
     "reconstruction_jobs": TableEntry(C.SPATIAL_DERIVED, E),
     "spatial_tour_variants": TableEntry(C.SPATIAL_DERIVED, E),
-    "video_studio_jobs": TableEntry(C.MEDIA, E),
+    "video_studio_jobs": TableEntry(C.MEDIA, E, "created_by is the requesting agent's sign-in email since 0166 (L03-13)"),
     "voice_walkthrough_jobs": TableEntry(C.CALL_AUDIO, E),
     # ── audit / security ─────────────────────────────────────────────────
     "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure"),
@@ -197,6 +216,10 @@ TABLES: dict[str, TableEntry] = {
     "api_rate_limit_windows": TableEntry(C.OPERATIONAL, G, "minutes-long windows"),
     "process_heartbeats": TableEntry(C.OPERATIONAL, G),
     "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),
+    "provider_health": TableEntry(C.OPERATIONAL, G, "last outcome per property-data provider (0160); "
+                                                     "no tenant, no customer data"),
+    "platform_spend_controls": TableEntry(C.OPERATIONAL, G, "platform kill switch per spend channel (0170); "
+                                                             "no tenant; updated_by is a platform admin"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────

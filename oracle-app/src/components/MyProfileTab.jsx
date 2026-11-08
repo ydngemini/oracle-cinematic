@@ -14,6 +14,8 @@ import { friendlyError } from '../lib/errorMessages';
 const AccountDataPanel = lazy(() => import('./AccountDataPanel'));
 // Two-step sign-in settings (L17-19): its own chunk, like the data panel.
 const TwoStepSettings = lazy(() => import('./TwoStepSettings'));
+// The brokerage's AI budget (T18.07): owner-only, its own chunk too.
+const AiBudgetPanel = lazy(() => import('./AiBudgetPanel'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -435,6 +437,13 @@ export default function MyProfileTab() {
               individual agent's licences and AI settings; the two are
               different questions and stay separate screens. */}
           <BrokerageSetupPanel />
+
+          {/* AI budget — what Neoh's chat used this month and the cap on it.
+              The server decides who may see it (403 renders nothing); this
+              only spares an agent the request. */}
+          {['broker_owner', 'platform_admin'].includes(sessionStorage.getItem('oracle_role')) && (
+            <Suspense fallback={null}><AiBudgetPanel /></Suspense>
+          )}
 
           <BrokerageOnboardingPanel />
 

@@ -1,0 +1,13 @@
+path,start,end,sha,reviewer,note
+backend/source_status.py,1,190,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full for L06-02 (C6 status helpers)
+backend/voice_opt_out.py,1,83,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (L09-05 module)
+backend/belief_store.py,1,120,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,provenance/decay constants for L06-03
+backend/belief_store.py,134,175,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,_row_to_belief read shape for L06-03
+backend/belief_store.py,258,325,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,beliefs_about and disputes for L06-03
+backend/db/migrations/0155_transactions_follow_the_lead.sql,1,156,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (L03-10)
+backend/db/migrations/0158_first_response_replied.sql,1,56,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (L04-03)
+backend/tests/test_first_response_reply_live.py,1,161,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (L04-03)
+backend/tests/test_sealing_batches_bounded_live.py,1,136,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (L17-24)
+backend/evidence.py,1,292,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,written and reviewed in full (L06-03)
+backend/tests/test_evidence_bundle.py,1,178,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,written and reviewed in full (L06-03)
+docs/claude-prompts/01-repository-source-audit.md,1,88,3083abe,claude-session-01XE2fEtZMMfEwk784wEoiVa,read in full (category 01 prompt)

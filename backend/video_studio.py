@@ -62,6 +62,10 @@ CLIP_SECONDS: int = int(os.getenv("ORACLE_VIDEO_CLIP_SECONDS", "8"))
 DAILY_QUOTA_SECONDS: int = int(os.getenv("ORACLE_VIDEO_DAILY_QUOTA", "120"))
 POLL_SECONDS: float = float(os.getenv("ORACLE_VIDEO_POLL_SECONDS", "5"))
 JOB_LEASE_SECONDS: int = int(os.getenv("ORACLE_VIDEO_JOB_LEASE_SECONDS", "900"))
+#: How long a worker waits before its next claim after the AI budget could
+#: not be read for a script (T18.07): the job is queued again, and an
+#: immediate re-claim would only meet the same unreadable budget.
+BUDGET_RETRY_SECONDS: float = 30.0
 
 ALLOWED_SIZES: frozenset[str] = frozenset({"720x1280", "1280x720"})
 ALLOWED_KINDS: frozenset[str] = frozenset({"text", "image"})
@@ -259,24 +263,80 @@ def _foundry_responses_client():
     return AIProjectClient(endpoint=endpoint, credential=credential).get_openai_client()
 
 
+#: The script call's output ceiling, and its request bound under a spend
+#: scope: one attempt, well below ai_budget.HOLD_SECONDS (the SDK's own
+#: defaults are 600 s and two retries, each retry billed).
+_SCRIPT_MAX_OUTPUT_TOKENS = 512
+_SCRIPT_REQUEST_SECONDS = 90.0
+
+
+def _script_response(summary: str):
+    """One Foundry Responses call for a script. Under a spend scope (T18.07)
+    it is bounded and sent once, as ai_chat_agent._foundry_response is."""
+    from llm_gateway import spend_scope
+
+    client = _foundry_responses_client()
+    if spend_scope.get() is not None:
+        client = client.with_options(timeout=_SCRIPT_REQUEST_SECONDS, max_retries=0)
+    return client.responses.create(
+        model=_SCRIPT_MODEL,
+        instructions=_SCRIPT_INSTRUCTIONS,
+        input=[{"role": "user", "content": f"PROPERTY DATA:\n{summary}"}],
+        max_output_tokens=_SCRIPT_MAX_OUTPUT_TOKENS,
+        reasoning={"effort": "low"},
+        store=False,
+    )
+
+
 def draft_script(property_info: dict[str, Any], *, max_chars: int = 800) -> str:
     """Draft a reel narration from property metadata. Falls back to a
-    deterministic template when the Foundry endpoint is not configured."""
+    deterministic template when the Foundry endpoint is not configured.
+
+    Not under a spend scope: a brokerage's script is drafted by
+    draft_script_async, held and metered (T18.07). A thread that carries a
+    scope here would spend unheld, so it fails closed."""
+    from llm_gateway import spend_scope
+
+    if spend_scope.get() is not None:
+        raise RuntimeError("draft_script() was called under a spend scope; await draft_script_async()")
     summary = _property_summary(property_info)
     try:
-        response = _foundry_responses_client().responses.create(
-            model=_SCRIPT_MODEL,
-            instructions=_SCRIPT_INSTRUCTIONS,
-            input=[{"role": "user", "content": f"PROPERTY DATA:\n{summary}"}],
-            max_output_tokens=512,
-            reasoning={"effort": "low"},
-            store=False,
-        )
+        response = _script_response(summary)
         text = str(getattr(response, "output_text", "") or "").strip()
         if text:
             return text[:max_chars]
     except Exception as exc:  # noqa: BLE001 — template fallback on any provider hiccup
-        logger.warning("Script drafting fell back to template: %s", exc)
+        logger.warning("Script drafting fell back to template: %s", type(exc).__name__)
+    return _template_script(property_info)
+
+
+async def draft_script_async(property_info: dict[str, Any], *, max_chars: int = 800) -> str:
+    """draft_script for a brokerage (T18.07): under its spend scope the
+    Foundry call is held before it is sent and metered by its reported usage
+    when its thread returns. A budget refusal is raised — never replaced by
+    the template, which would read as the model's script. Any other failure
+    keeps the template fallback."""
+    from llm_gateway import SpendRefused, estimate_tokens, spend_guarded_thread, spend_scope
+
+    if spend_scope.get() is None:
+        return await asyncio.to_thread(draft_script, property_info, max_chars=max_chars)
+    if not os.getenv("ORACLE_FOUNDRY_PROJECT_ENDPOINT", "").strip():
+        # No model is configured, so none would be asked: the template, with
+        # nothing held (a refused budget must not refuse a template).
+        return _template_script(property_info)
+    summary = _property_summary(property_info)
+    try:
+        response = await spend_guarded_thread(
+            "foundry",
+            estimate_tokens(_SCRIPT_INSTRUCTIONS, summary, completion=_SCRIPT_MAX_OUTPUT_TOKENS),
+            _script_response, summary, timeout=_SCRIPT_REQUEST_SECONDS)
+        text = str(getattr(response, "output_text", "") or "").strip()
+        if text:
+            return text[:max_chars]
+    except SpendRefused:
+        raise
+    except Exception as exc:  # noqa: BLE001 — template fallback on any provider hiccup
+        logger.warning("Script drafting fell back to template: %s", type(exc).__name__)
     return _template_script(property_info)
 
 
@@ -830,10 +890,18 @@ async def _process_job(row: dict[str, Any], worker_id: str) -> None:
     ctx = _job_ctx(row)
 
     # Script phase (text kind only — image jobs accept the script as-is).
+    # Spent from the brokerage's AI budget (T18.07): a refusal fails the job
+    # with its message (the worker loop) before any quota is reserved or any
+    # video is generated — never a template script rendered as if drafted. A
+    # budget that could not be read queues the job again under its code (the
+    # worker loop); the code is cleared once the script is drafted.
     if kind == "text" and not script.strip():
+        import ai_budget
+
         await _set_status(ctx, job_id, "scripting")
-        script = await asyncio.to_thread(draft_script, source.get("property") or {})
-        await _set_status(ctx, job_id, "scripting", script=script)
+        async with ai_budget.spending(ctx, "video_script"):
+            script = await draft_script_async(source.get("property") or {})
+        await _set_status(ctx, job_id, "scripting", script=script, error=None)
 
     # Quota gate: verify the tenant still has headroom before spending.
     clip_seconds = int(os.getenv("ORACLE_VIDEO_CLIP_SECONDS", str(CLIP_SECONDS)))
@@ -960,6 +1028,8 @@ async def _process_job(row: dict[str, Any], worker_id: str) -> None:
 
 
 async def _worker_loop(worker_id: str) -> None:
+    from llm_gateway import SpendUnavailable
+
     logger.info("Video studio worker %s online.", worker_id)
     while True:
         try:
@@ -971,6 +1041,21 @@ async def _worker_loop(worker_id: str) -> None:
                 await _process_job(row, worker_id)
             except asyncio.CancelledError:
                 raise
+            except SpendUnavailable as unknown:
+                # The AI budget could not be read for the script: not a
+                # refusal, so the job is queued again (nothing was sent and
+                # no quota reserved) rather than failed for good, carrying
+                # the code so the agent sees why it waits. If even that write
+                # fails, its lease lapses and it is reclaimed.
+                logger.warning("Video studio job %s deferred: the AI budget could not be read (%s)",
+                               row["id"], unknown.code)
+                try:
+                    await _set_status(_job_ctx(row), row["id"], "queued",
+                                      error=f"{unknown.code}: the brokerage's AI budget could not be "
+                                            "read, so the script waits to be drafted")
+                except Exception:  # noqa: BLE001
+                    logger.debug("could not requeue job %s", row["id"])
+                await asyncio.sleep(BUDGET_RETRY_SECONDS)
             except Exception as exc:  # noqa: BLE001 — one bad job must not kill the worker
                 logger.exception("Video studio job failed: job=%s tenant=%s", row["id"], row["tenant_id"])
                 try:

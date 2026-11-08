@@ -53,6 +53,14 @@ export function chatErrorReason(code) {
   if (value.includes('TIMEOUT')) return 'timeout';
   if (value === 'AI_RESPONSE_INTERRUPTED') return 'interrupted';
   if (value === 'AI_RESPONSE_UNAVAILABLE') return 'unavailable';
+  // The brokerage's AI budget stopped the turn before a model call (T18.07):
+  // spent, too little left for the request, paused by the broker, or paused
+  // across the platform. A budget that could not be read is retryable, so it
+  // reads as unavailable.
+  if (['AI_BUDGET_EXHAUSTED', 'AI_BUDGET_INSUFFICIENT', 'AI_SPEND_PAUSED', 'AI_SPEND_HALTED'].includes(value)) {
+    return 'budget';
+  }
+  if (value === 'AI_BUDGET_UNAVAILABLE') return 'unavailable';
   if (value.includes('REJECT') || value.includes('INVALID')) return 'rejected';
   return 'failed';
 }

@@ -207,6 +207,47 @@ pgcrypto per row, so 10,000 rows take about 5 s.
 **Rollback:** `--unseal` writes the plaintext back. Run it before rolling the
 code back to a release older than 0152 (or 0154 for its five fields).
 
+## `backend/client_contact_index.py` — keyed lookup hashes and name tokens for clients (0156)
+
+### When this is needed
+
+Normally never: the worker's internal-only periodic task `client_contact_index`
+(every 15 minutes, also under `ORACLE_RECOVERY_MODE`) fills it. Run it by hand
+to fill a large brokerage at once after deploying 0156, or to check progress.
+It writes only `client_contact_index` (HMAC lookup hashes of the normalised
+email and phone, keyed word-prefix name tokens: the `agent_contacts` scheme).
+It never changes a client, and nothing searches the index yet (L17-23).
+
+### Running it
+
+Requires `ORACLE_ENCRYPTION_MASTER_KEY` plus the usual `ORACLE_DB_*` vars
+(including `ORACLE_DB_PLATFORM_USER`: it runs in the platform context).
+
+```bash
+docker compose run --rm --no-deps \
+  -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
+  backend python /app/client_contact_index.py [--count] [--max-rows N]
+```
+
+Optional: `ORACLE_CLIENT_CONTACT_INDEX_BATCH` (default `500`, range 1–5000).
+
+### What to expect
+
+Bounded and restart-safe: each batch is one tenant's pending clients (no index
+row, or marked stale by an edit), locked `FOR SHARE ... SKIP LOCKED` while the
+values are computed, then written in the same short transaction. A client being
+edited at that moment is skipped and picked up next time. Prints counts and
+timings, never a name, email or phone. Measured (local PostgreSQL 16, 20,000
+synthetic clients, 2026-10-15): about 1,550 clients/s with 500-client batches.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Nothing pending (or `--count` / `--max-rows` was given). |
+| `1` | Clients remain (locked by a writer); run it again. |
+| `2` | Refused to start — missing `ORACLE_ENCRYPTION_MASTER_KEY`. |
+
+**Rollback:** none needed; the table is derived. `DROP TABLE` per the 0156 header.
+
 ## `backfill_property_coordinates.py` — geocode public property records
 
 **Why:** 8.59M `public_property_records` carry an address (93.8%) and an owner

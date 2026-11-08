@@ -41,9 +41,15 @@ def _model(**overrides):
         "status": "validated",
         "rollback_model_id": None,
         "artifact_uri": "s3://bucket/adapter.safetensors",
+        # A state underwriter is a valuation model: it also needs observed
+        # targets and per-region error (audit A08; test_valuation_honesty.py).
+        "model_card": {"dataset": {"targets": {"provenance": "observed_transactions"}}},
     }
     base.update(overrides)
     return base
+
+
+PER_REGION = {"per_region": {"New Castle": {"n": 140, "error": 0.08, "uncertainty": 0.12}}}
 
 
 class _Conn:
@@ -71,6 +77,12 @@ class _Conn:
         if "model_evaluations" in query:
             return self._gate_passed
         return None
+
+    async def fetch(self, query, *_args):
+        self.statements.append(query)
+        if "model_evaluations" in query and self._gate_passed:
+            return [{"metrics": PER_REGION}]
+        return []
 
     async def execute(self, query, *_args):
         self.statements.append(query)

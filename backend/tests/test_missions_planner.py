@@ -201,3 +201,93 @@ class TestRequest:
         gateway = _Gateway(_plan())
         _run(gateway)
         assert MISSION["objective_text"] in gateway.calls[0]["prompt"]
+
+
+class TestFeasibility:
+    """T08.04 / AC08.02 (L08-03): a plan only names channels a registered,
+    available tool (07's ToolCapability registry) can carry out."""
+
+    def test_every_channel_maps_to_a_registry_tool_or_says_why_not(self):
+        feasibility = planner.channel_feasibility()
+        assert set(feasibility) == set(planner.CHANNELS)
+        assert feasibility["email"] is None and feasibility["sms"] is None and feasibility["voice"] is None
+        assert "no executable tool" in feasibility["task"]
+
+    def test_a_task_step_is_refused_at_plan_time_not_skipped_later(self):
+        gateway = _Gateway(_plan(steps=[
+            {"candidate": 0, "channel": "task", "day_offset": 0, "intent": "remind me to call"},
+            {"candidate": 1, "channel": "sms", "day_offset": 0, "intent": "text him"},
+        ]))
+        steps, dropped, _ = _run(gateway, mission={**MISSION, "allowed_channels": ["sms", "task"]})
+        assert [s["channel"] for s in steps] == ["sms"]
+        assert "no executable tool" in dropped[0]["reason"]
+        assert "task" not in gateway.calls[0]["prompt"].split("Channels you may use:")[1].splitlines()[0]
+
+    def test_a_mission_that_can_only_use_task_is_told_why_and_never_asks(self):
+        gateway = _Gateway()
+        steps, _dropped, reasoning = _run(gateway, mission={**MISSION, "allowed_channels": ["task"]})
+        assert steps == [] and gateway.calls == []
+        assert "can be carried out" in reasoning and "no executable tool" in reasoning
+
+    def test_a_tool_missing_from_the_release_makes_its_channel_infeasible(self, monkeypatch):
+        import tool_capabilities
+
+        reg = dict(tool_capabilities.registry())
+        reg.pop("draft_sms")
+        monkeypatch.setattr(tool_capabilities, "registry", lambda: reg)
+        assert "draft_sms tool" in planner.channel_feasibility()["sms"]
+
+
+SMS_GAP = "texting isn't set up: connect and finish setting up text messages for your business number before sending."
+
+
+class TestSetupGaps:
+    """T08.04 / AC08.02 (L08-04): a plan also refuses channels this brokerage
+    has not set up, naming the missing integration in the executor's own words
+    (channel_setup via tool_offer.channel_gaps, L07-03)."""
+
+    @pytest.fixture
+    def gaps(self, monkeypatch):
+        import tool_offer
+
+        state = {"gaps": {"sms": SMS_GAP}, "asked_for": []}
+
+        async def channel_gaps(ctx):
+            state["asked_for"].append(ctx)
+            return state["gaps"]
+
+        monkeypatch.setattr(tool_offer, "channel_gaps", channel_gaps)
+        return state
+
+    def test_a_setup_gap_is_a_reason_after_the_release_check(self):
+        feasibility = planner.channel_feasibility({"sms": SMS_GAP})
+        assert feasibility["sms"] == f"sms steps cannot be carried out for this agent yet: {SMS_GAP}"
+        assert feasibility["email"] is None and "no executable tool" in feasibility["task"]
+        assert planner.channel_feasibility({"sms": ""})["sms"] is None, "an empty gap is no gap"
+        assert planner.channel_feasibility()["sms"] is None, "without the brokerage's state only the release is judged"
+
+    def test_a_step_on_an_unset_channel_is_refused_with_the_integration_named(self, gaps):
+        gateway = _Gateway(_plan(steps=[
+            {"candidate": 0, "channel": "sms", "day_offset": 0, "intent": "text her"},
+            {"candidate": 1, "channel": "email", "day_offset": 0, "intent": "email him"},
+        ]))
+        steps, dropped, _ = _run(gateway)
+        assert [s["channel"] for s in steps] == ["email"]
+        assert dropped[0]["reason"] == f"uses sms: sms steps cannot be carried out for this agent yet: {SMS_GAP}"
+        channels_line = gateway.calls[0]["prompt"].split("Channels you may use:")[1].splitlines()[0]
+        assert "sms" not in channels_line and "email" in channels_line
+        assert gaps["asked_for"] == [CTX], "the brokerage's state is read for the mission's agent"
+
+    def test_a_mission_whose_only_channel_is_unset_is_told_what_to_set_up_and_never_asks(self, gaps):
+        gateway = _Gateway()
+        steps, _dropped, reasoning = _run(gateway, mission={**MISSION, "allowed_channels": ["sms"]})
+        assert steps == [] and gateway.calls == []
+        assert "can be carried out" in reasoning and SMS_GAP in reasoning
+
+    def test_unknown_setup_state_changes_nothing(self, gaps):
+        gaps["gaps"] = {}
+        gateway = _Gateway(_plan(steps=[
+            {"candidate": 0, "channel": "sms", "day_offset": 0, "intent": "text her"},
+        ]))
+        steps, dropped, _ = _run(gateway)
+        assert [s["channel"] for s in steps] == ["sms"] and dropped == []

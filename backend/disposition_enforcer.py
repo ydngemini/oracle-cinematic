@@ -28,14 +28,18 @@ import logging
 import os
 from typing import Optional
 
+import ai_budget
 from db.connection import tenant_tx
-from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
+from llm_gateway import SpendRefused
+from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL
 from tenancy import Role, TenantContext
 import ws_hub
 
 logger = logging.getLogger("oracle.disposition")
 
 DANGER_ZONE_DAYS = int(os.getenv("ORACLE_DANGER_ZONE_DAYS", "15"))
+#: Who a lead's marketing is spent as: its brokerage, as a service actor.
+_SPENDER = "disposition-enforcer"
 SWEEP_INTERVAL_S = int(os.getenv("ORACLE_DISPOSITION_SWEEP_INTERVAL", "3600"))
 FIRST_SWEEP_DELAY_S = 30  # let the pool + WS clients settle after boot
 
@@ -102,9 +106,11 @@ async def _generate_marketing(lead: dict, days_remaining: int) -> Optional[dict]
         rehab=_fmt_money(under.get("rehab") or under.get("rehab_estimate")),
         distress=", ".join(prop.get("distress_flags") or []) or "none recorded",
     )
-    raw = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 1500)
+    # Held and metered under the lead's brokerage's spend scope (T18.07); a
+    # budget refusal is raised, never a reason to ask the secondary model.
+    raw = await invoke_async(PRIMARY_MODEL, prompt, 1500)
     if not raw:
-        raw = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt, 1500)
+        raw = await invoke_async(SECONDARY_MODEL, prompt, 1500)
     assets = _extract_json(raw) if raw else None
     if assets and {"email_subject", "email_body", "ig_caption"} <= assets.keys():
         return assets
@@ -174,8 +180,17 @@ async def sweep_once() -> None:
         )
 
         assets = None
+        assets_code = None
+        # Spent from the lead's brokerage's AI budget (T18.07), as that
+        # brokerage's service actor: held before each call, metered after.
+        spender = TenantContext(agent_id=_SPENDER, tenant_id=lead["tenant_id"], role=Role.AGENT)
         try:
-            assets = await _generate_marketing(lead, days)
+            async with ai_budget.spending(spender, "disposition"):
+                assets = await _generate_marketing(lead, days)
+        except SpendRefused as refused:
+            # Not generated, and said why; the next sweep tries again.
+            assets_code = refused.code
+            logger.info("Marketing for lead %s stopped by the AI budget (%s).", lead["id"], refused.code)
         except Exception:  # noqa: BLE001
             logger.exception("Marketing generation crashed for lead %s.", lead["id"])
 
@@ -210,6 +225,8 @@ async def sweep_once() -> None:
             "address": None if private else address,
             "days_remaining": days,
             "assets_ready": bool(assets),
+            # Why no assets, when the brokerage's AI budget stopped them.
+            "assets_code": assets_code,
         }, lead_id=str(lead["id"]))
 
 

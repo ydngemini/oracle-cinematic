@@ -46,7 +46,7 @@ from intelligence_engine import (
     calculate_mao as engine_calculate_mao,
     calculate_underwriting,
 )
-from state_compliance._common import DATASET_NOT_LOADED, dataset_load_hint
+from state_compliance._common import ALL_STATE_CODES, DATASET_NOT_LOADED, dataset_load_hint
 from tenancy import TenantContext
 from mls_health import visible_feed_predicate
 
@@ -202,7 +202,19 @@ def _state_code(value: Any) -> tuple[Optional[str], Optional[dict]]:
 
 
 _ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
-_TRAILING_STATE_RE = re.compile(r"\b([A-Z]{2})\b(?:\s+\d{5}(?:-\d{4})?)?\s*$")
+# A trailing ", ST ZIP": the separator before the state, the state, the ZIP.
+_ADDRESS_TAIL_RE = re.compile(r"([,\s])\s*([A-Za-z]{2})(?:[,\s]+(\d{5})(?:-\d{4})?)?\s*$")
+# Checked against the real set, territories included because the harvesters
+# cover them: a bare two-letter pattern reads the "St" in "15 Main St" as a state.
+_ADDRESS_STATE_CODES = frozenset(ALL_STATE_CODES) | {"AS", "GU", "MP", "PR", "VI"}
+# A comma-separated segment that names a unit, not a town: "Apt 2B", "Ste 100",
+# "#4". The unit's own label must hold a digit or be one or two letters, so a
+# town such as "Ste. Genevieve" is still read as the city.
+_UNIT_SEGMENT_RE = re.compile(
+    r"^(?:#|(?:apt|apartment|unit|ste|suite|bldg|building|fl|floor|lot)\b\.?)"
+    r"\s*#?\s*(?:[a-z0-9-]*\d[a-z0-9-]*|[a-z]{1,2})$",
+    re.IGNORECASE,
+)
 
 
 def _zip_code(value: Any) -> tuple[Optional[str], Optional[dict]]:
@@ -212,15 +224,29 @@ def _zip_code(value: Any) -> tuple[Optional[str], Optional[dict]]:
     return match.group(1), None
 
 
-def _state_in_address(address: str) -> Optional[str]:
-    """The state code from an address string, or None.
+def _address_parts(address: str) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """(street, city, state, zip) from a free-text address.
 
-    Only used to pick the *indexed* lookup path — an address without one still
-    resolves, through the trigram index, so this is an optimisation and never a
-    correctness gate.
+    Only a trailing ", ST ZIP" and the comma-separated city before it are
+    stripped; everything left of that is the street line. With no state that can
+    be read off the end, the whole text comes back as the street and the rest as
+    None. "15 Main Ct" and "1500 Main St NE" end in real state codes, so a state
+    counts only when a comma before it shows it is not the street's own suffix
+    or directional, ZIP or no ZIP. A last segment that names a unit ("Apt 2B")
+    stays in the street rather than becoming the city.
     """
-    match = _TRAILING_STATE_RE.search(address.strip().upper())
-    return match.group(1) if match else None
+    text = " ".join(address.split())
+    tail = _ADDRESS_TAIL_RE.search(text)
+    state = tail.group(2).upper() if tail else None
+    if state not in _ADDRESS_STATE_CODES:
+        return text, None, None, None
+    head = text[:tail.start()].strip(" ,")
+    if not head or not (tail.group(1) == "," or "," in head):
+        return text, None, None, None
+    street, _, city = head.rpartition(",")
+    if not street or _UNIT_SEGMENT_RE.match(city.strip()):
+        return head, None, state, tail.group(3)
+    return street.strip(), city.strip() or None, state, tail.group(3)
 
 
 def _search_term(value: Any, field: str) -> tuple[Optional[str], Optional[dict]]:
@@ -259,6 +285,95 @@ _SUBJECT_COLUMNS = """
 """
 
 
+def _normalised(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _street_words(value: Any) -> list[str]:
+    """The words of a street line, lower-cased, split at every space or mark.
+
+    ``_normalised`` drops the spaces too, which is what the index compares, so
+    "12 1st St" and "1 21st St" share a key; here they stay different streets.
+    """
+    return re.findall(r"[a-z0-9]+", re.sub(r"['’]", "", str(value or "").lower()))
+
+
+def _locality_check(row: dict, city: Optional[str], zip_code: Optional[str]) -> str:
+    """Whether the city or ZIP the caller gave is on the record.
+
+    ``agrees`` when at least one was compared and none contradicts it,
+    ``disagrees`` when one does, ``none_given`` when the caller gave neither,
+    and ``record_blank`` when the record has none of those given to compare.
+    A blank record is not a contradiction, but it corroborates nothing either.
+    """
+    if not city and not zip_code:
+        return "none_given"
+    checks = []
+    if city and row.get("city"):
+        checks.append(_normalised(city) == _normalised(row["city"]))
+    if zip_code and row.get("zip_code"):
+        checks.append(zip_code == str(row["zip_code"]).strip()[:5])
+    if not checks:
+        return "record_blank"
+    return "agrees" if all(checks) else "disagrees"
+
+
+def _subject_match(basis: str, status: str, state: Optional[str],
+                   reason: Optional[str] = None, record: Optional[dict] = None) -> dict:
+    """How the record was found, for a reader who must not take it as fact.
+
+    ``reason`` says why an exact street is still only a possible match:
+    ``street_words`` (equal only with spaces ignored), ``none_given``,
+    ``record_blank`` or ``disagrees``. ``verified`` is always False: no table
+    records a person confirming that a public record is the property the caller
+    meant (F11.04).
+    """
+    record = record or {}
+    scope = f" in {state}" if state else " in any state"
+    possible = "Treat it as a possible match, not as this property's record."
+    if status == "exact_address":
+        note = (f"The street address matched this record exactly{scope}, and the "
+                f"city or ZIP given agrees. No one has confirmed it is the same "
+                f"property.")
+    elif basis == "address_exact" and reason == "street_words":
+        note = (f"The street address matched{scope} only with spaces ignored: the "
+                f"record reads {record.get('address')!r}, which may be another "
+                f"address. {possible}")
+    elif basis == "address_exact" and reason == "none_given":
+        note = (f"The street address matched exactly{scope}, but no city or ZIP "
+                f"was given to check it against. {possible}")
+    elif basis == "address_exact" and reason == "record_blank":
+        # Every field given is blank on the record; name only those, so a
+        # record that has a city is never said to have none.
+        missing = ("city" if record.get("zip_code") else
+                   "ZIP" if record.get("city") else "city or ZIP")
+        note = (f"The street address matched exactly{scope}, but the record has "
+                f"no {missing} to check the one given against. {possible}")
+    elif basis == "address_exact":
+        on_record = " ".join(filter(None, (str(record.get("city") or "").strip(),
+                                           str(record.get("zip_code") or "").strip()[:5])))
+        note = (f"The street address matched exactly{scope}, but the city or ZIP "
+                f"given does not match the record ({on_record}). {possible}")
+    else:
+        note = (f"Found by a text search{scope}, not an address match. {possible}")
+    return {"basis": basis, "status": status, "verified": False, "note": note}
+
+
+def _record_label(subject: dict) -> str:
+    """The record as a reader can recognise it: its own address and locality."""
+    locality = " ".join(filter(None, (str(subject.get("state") or "").strip(),
+                                      str(subject.get("zip_code") or "").strip()[:5])))
+    return ", ".join(filter(None, (str(subject.get("address") or "").strip(),
+                                   str(subject.get("city") or "").strip(), locality)))
+
+
+def _record_reference(subject: dict, address: str) -> str:
+    """Names the resolved record without calling a possible match the property's own."""
+    kind = ("record matched to" if subject["match"]["status"] == "exact_address"
+            else "possibly matching record for")
+    return f"{kind} {address!r} ({_record_label(subject)})"
+
+
 async def _resolve_subject(conn, address: str) -> Optional[dict]:
     """Best public record for a free-text address, using an index either way.
 
@@ -266,29 +381,56 @@ async def _resolve_subject(conn, address: str) -> Optional[dict]:
     carries a state (``idx_public_property_address`` is keyed on state first,
     so without one it is unusable), and a trigram containment match otherwise.
     An unindexed match here would seq-scan ~7M rows on every call.
+
+    The row comes back with a ``match`` label. Only an exact street address,
+    word for word, whose city or ZIP also agrees is ``exact_address``;
+    everything else is a ``possible_match``, and nothing is ``verified``.
     """
     cleaned = address.strip()
-    state = _state_in_address(cleaned)
+    street, city, state, zip_code = _address_parts(cleaned)
     if state:
+        # Among the rows the index finds (it ignores spaces), the one whose
+        # words line up comes first, so "1 21ST ST" never hides "12 1ST ST".
+        # The city is not part of the index, so it only breaks ties between
+        # same-street rows in the state; the label then checks the one chosen.
         row = await conn.fetchrow(
             f"""SELECT {_SUBJECT_COLUMNS} FROM public_property_records
                  WHERE state=$1
                    AND regexp_replace(lower(coalesce(address,'')),'[^a-z0-9]','','g')
                      = regexp_replace(lower($2),'[^a-z0-9]','','g')
-                 ORDER BY record_refreshed_at DESC NULLS LAST
+                 ORDER BY (btrim(regexp_replace(regexp_replace(lower(coalesce(address,'')),'[''’]','','g'),
+                                                '[^a-z0-9]+',' ','g')) = $5::text) DESC,
+                          (regexp_replace(lower(city),'[^a-z0-9]','','g') = $3::text) IS TRUE DESC,
+                          (left(zip_code, 5) = $4::text) IS TRUE DESC,
+                          record_refreshed_at DESC NULLS LAST
                  LIMIT 1""",
-            state, re.sub(r",?\s*[A-Z]{2}\b.*$", "", cleaned, flags=re.IGNORECASE) or cleaned,
+            state, street, _normalised(city) or None, zip_code, " ".join(_street_words(street)),
         )
         if row:
-            return dict(row)
+            subject = dict(row)
+            # The index ignores spaces, so its "exact" is checked word by word.
+            reason = ("street_words"
+                      if _street_words(subject.get("address")) != _street_words(street)
+                      else _locality_check(subject, city, zip_code))
+            status = "exact_address" if reason == "agrees" else "possible_match"
+            subject["match"] = _subject_match("address_exact", status, state,
+                                              reason, subject)
+            return subject
+    # A state the address names is a fact about the subject, so the fuzzy path
+    # never answers from another one.
+    state_filter = " AND state=$2" if state else ""
     row = await conn.fetchrow(
         f"""SELECT {_SUBJECT_COLUMNS} FROM public_property_records
-             WHERE search_document ILIKE $1
+             WHERE search_document ILIKE $1{state_filter}
              ORDER BY record_refreshed_at DESC NULLS LAST
              LIMIT 1""",
-        f"%{cleaned}%",
+        f"%{cleaned}%", *([state] if state else []),
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+    subject = dict(row)
+    subject["match"] = _subject_match("text_contains", "possible_match", state)
+    return subject
 
 
 async def _comps_near(conn, subject: dict, *, radius_miles: float, limit: int,
@@ -511,10 +653,14 @@ async def _get_listing_detail(conn, ctx: TenantContext, tool_input: dict) -> dic
 
     # Beds/baths/sqft/zoning live on the public record, not on the listing row.
     # Absent a match, they come back null with the reason attached rather than
-    # silently missing from the payload.
+    # silently missing from the payload. A match comes back with how it was
+    # made, because a substring hit can be another house (F11.04).
     public_record = None
+    public_record_match = None
     if record.get("address"):
         public_record = await _resolve_subject(conn, str(record["address"]))
+        if public_record:
+            public_record_match = public_record.pop("match")
 
     unavailable: list[str] = []
     for field in ("beds", "baths", "sqft"):
@@ -529,6 +675,7 @@ async def _get_listing_detail(conn, ctx: TenantContext, tool_input: dict) -> dic
         media_count=counts["media_count"],
         showing_count=counts["showing_count"],
         public_record=_clean(public_record) if public_record else None,
+        public_record_match=public_record_match,
         fields_unavailable=sorted(set(unavailable)),
         fields_unavailable_reason=(
             "The listing row stores address, price and status only. Physical "
@@ -593,8 +740,9 @@ async def _gather_comps(conn, tool_input: dict, tool_name: str):
     if (subject.get("latitude") is None or subject.get("longitude") is None) \
             and not subject.get("zip_code"):
         return None, _err(
-            f"The public record for {address!r} carries neither a coordinate nor "
-            f"a ZIP code, so there is no neighbourhood to compare within."
+            f"The {_record_reference(subject, address)} carries neither a "
+            f"coordinate nor a ZIP code, so there is no neighbourhood to compare "
+            f"within."
         )
 
     months = _COMP_LOOKBACK_MONTHS
@@ -644,6 +792,7 @@ async def _list_comparable_sales(conn, ctx: TenantContext, tool_input: dict) -> 
         subject=_clean({k: subject[k] for k in (
             "address", "city", "county", "state", "zip_code",
             "building_area_sqft", "bedrooms", "bathrooms", "year_built")}),
+        subject_match=subject["match"],
         comparables=payload,
         count=len(payload),
         scope={
@@ -687,10 +836,11 @@ async def _estimate_arv(conn, ctx: TenantContext, tool_input: dict) -> dict:
     if sqft is None:
         sqft = subject.get("building_area_sqft")
     if not sqft:
+        address = str(tool_input.get("address") or "").strip()
         return _err(
-            "ARV is derived from price per square foot, and neither the request "
-            "nor the public record supplies a square footage for this property. "
-            "Pass sqft to proceed."
+            f"ARV is derived from price per square foot, and neither the request "
+            f"nor the {_record_reference(subject, address)} supplies a square "
+            f"footage. Pass sqft to proceed."
         )
 
     # The engine refuses a comparable without a positive sqft rather than
@@ -707,6 +857,7 @@ async def _estimate_arv(conn, ctx: TenantContext, tool_input: dict) -> dict:
                          "square footage, so a price-per-square-foot median cannot "
                          "be taken. No ARV is returned.",
             comparables_found=len(comps), comparables_usable=0,
+            subject_match=subject["match"],
             scope={"basis": gathered["basis"],
                    "radius_miles": (gathered["radius_miles"]
                                     if gathered["basis"] == "radius" else None),
@@ -745,6 +896,7 @@ async def _estimate_arv(conn, ctx: TenantContext, tool_input: dict) -> dict:
         subject={"address": subject.get("address"), "sqft": float(sqft),
                  "sqft_source": "request" if tool_input.get("sqft") else
                                 "public_property_records.building_area_sqft"},
+        subject_match=subject["match"],
         comparables=[_comp_payload(c) for c in usable],
         comparables_found=len(comps),
         comparables_usable=len(usable),
@@ -784,18 +936,22 @@ async def _estimate_rehab(conn, ctx: TenantContext, tool_input: dict) -> dict:
     subject = await _resolve_subject(conn, address)
     sqft = subject.get("building_area_sqft") if subject else None
     if not sqft:
+        found = (f"the {_record_reference(subject, address)} has no building area"
+                 if subject else
+                 f"no public record with a building area matches {address!r}")
         return _err(
-            f"A rehab estimate is square footage times a cost band, and no "
-            f"public record with a building area matches {address!r}. Without "
-            f"a square footage there is nothing to multiply."
+            f"A rehab estimate is square footage times a cost band, and {found}. "
+            f"Without a square footage there is nothing to multiply."
         )
 
     year_built, error = _number(tool_input.get("year_built"), "year_built",
                                 minimum=1600, maximum=2100)
     if error:
         return error
+    year_source = "request" if year_built is not None else None
     if year_built is None:
         year_built = subject.get("year_built")
+        year_source = "public_property_records.year_built" if year_built else None
 
     low_psf, high_psf = _REHAB_BANDS[condition]
     sqft = float(sqft)
@@ -803,17 +959,33 @@ async def _estimate_rehab(conn, ctx: TenantContext, tool_input: dict) -> dict:
     high = high_psf * sqft if high_psf is not None else None
     contingency = _REHAB_CONTINGENCY_PCT / 100.0
 
-    risk_flags: list[str] = []
+    # A possible match may be another house, so its year and area are reported
+    # as what that record says; a disclosure duty is never asserted on them.
+    possible = subject["match"]["status"] != "exact_address"
+    label = _record_label(subject)
+    hazards: list[tuple[str, str]] = []
     if year_built and float(year_built) < 1978:
-        risk_flags.append(
-            "Built before 1978: federal lead-based paint disclosure applies and "
-            "abatement is not included in these bands."
-        )
+        hazards.append((
+            "Built before 1978",
+            "federal lead-based paint disclosure applies and abatement is not "
+            "included in these bands.",
+        ))
     if year_built and float(year_built) < 1950:
-        risk_flags.append(
-            "Built before 1950: knob-and-tube wiring, galvanised supply and "
-            "asbestos-containing materials are common and priced separately."
-        )
+        hazards.append((
+            "Built before 1950",
+            "knob-and-tube wiring, galvanised supply and asbestos-containing "
+            "materials are common and priced separately.",
+        ))
+    if possible and year_source != "request":
+        risk_flags = [
+            f"The possibly matching record ({label}) says it was built in "
+            f"{int(year_built)}; if that is this property, {consequence}"
+            for _, consequence in hazards
+        ]
+    else:
+        risk_flags = [f"{when}: {consequence}" for when, consequence in hazards]
+    area = (f"the {sqft:,.0f} sqft on the possibly matching record ({label}), "
+            f"which may not be this property" if possible else f"{sqft:,.0f} sqft")
 
     return _ok(
         "estimate_rehab",
@@ -832,7 +1004,7 @@ async def _estimate_rehab(conn, ctx: TenantContext, tool_input: dict) -> dict:
         basis=(
             f"National rule-of-thumb band of ${low_psf}"
             + (f"-${high_psf}" if high_psf is not None else "+")
-            + f"/sqft for a {condition} scope, times {sqft:,.0f} sqft, plus a "
+            + f"/sqft for a {condition} scope, times {area}, plus a "
               f"{_REHAB_CONTINGENCY_PCT}% contingency. These are national bands: "
               f"no local labour or material rates were used, because this "
               f"deployment has no source for them."
@@ -840,7 +1012,9 @@ async def _estimate_rehab(conn, ctx: TenantContext, tool_input: dict) -> dict:
         method="national_band_times_area",
         subject={"address": subject.get("address"), "city": subject.get("city"),
                  "state": subject.get("state"),
-                 "sqft_source": "public_property_records.building_area_sqft"},
+                 "sqft_source": "public_property_records.building_area_sqft",
+                 "year_built_source": year_source},
+        subject_match=subject["match"],
     )
 
 
@@ -1515,11 +1689,13 @@ async def _list_contract_templates(conn, ctx: TenantContext, tool_input: dict) -
 # Ops reads
 # ---------------------------------------------------------------------------
 #
-# The allowlist decides what the model is *offered*; require_role decides what
-# this tenant may *do*. They are different questions, so the role check lives
+# The allowlist decides what the release *offers*; require_role decides what
+# this person may *do*. They are different questions, so the role check lives
 # here in the handler rather than in the allowlist: an agent asking about the
 # job queue should be told it is not their information, not silently handed a
-# model that pretends the tool does not exist.
+# model that pretends the tool does not exist. Since L07-03 (T07.04) the per-
+# turn offer (tool_offer) also withholds these nine from an agent and names
+# the reason in the system prompt; this check stays as the second line.
 
 # The tools whose handler calls _require_ops_role. Named here so the capability
 # registry (ai_capabilities) can tell an agent "broker-owner only" without
@@ -1962,6 +2138,13 @@ async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict
             "provenance": asset.get("provenance"),
             "walkable": asset.get("walkable", False),
             "count": asset.get("count"),
+            # A 3D capture's certification (T12.09/T12.10), so the agent can
+            # say "not verified yet, because…" instead of inferring quality
+            # from the space existing.
+            **({"quality_state": asset.get("quality_state"),
+                "caveats": asset.get("caveats") or [],
+                "whole_home_verified": bool(asset.get("whole_home_verified"))}
+               if asset["kind"] == "splat" else {}),
         }
         for asset in tour["assets"]
     ]
@@ -1985,7 +2168,10 @@ async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict
             "These are everything this property has; they combine into one tour "
             "rather than replacing each other. `shows_this_property` false means "
             "the asset is a demo or generated space and must never be described "
-            "as this home."
+            "as this home. `walkable` means it can be navigated, not that its "
+            "quality was checked. Never call a 3D space verified, professional, "
+            "full, complete or photoreal unless its quality_state is verified; "
+            "otherwise say its quality has not been verified and give its caveats."
         ),
     }
 
