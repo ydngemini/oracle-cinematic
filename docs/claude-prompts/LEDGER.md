@@ -3055,6 +3055,26 @@ updated: 2026-10-18
 ```
 Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
+#### L17-26 Operator routes refuse brokerage roles, and every admin path makes a choice (AC17.07)
+```yaml
+id: L17-26
+status: tests_pass
+env: local
+evidence_shas: [2e33c7d]   # base; test in the commit that adds this row
+files: [backend/tests/test_operator_routes_refuse_tenant_roles.py]
+tests_run:
+  - {cmd: "walk server.app's dependency graph for admin_ops.require_platform_admin", result: "28 operator routes (api/admin overview, users, brokerages + diagnostics, MFA reset, release, billing, comms, ai, pilot-metrics, privacy legal holds/erasures/purges, ai-spend, health, runtime-load, outbox, system, /admin/simulate-surge, /admin/surge-status); 4 more /api/admin routes are broker-owner governance on purpose (permission-policy, role-changes, role-change execute, anomalies)", date: 2026-11-08}
+  - {cmd: "pytest tests/test_operator_routes_refuse_tenant_roles.py (real app, CSRF cookie + header satisfied, signed broker_owner / agent / platform_admin tokens)", result: "63 passed: every operator route answers broker_owner and agent with exactly 403 {detail: Platform admin only.}; a platform admin passes the same gate on five routes (positive control, so the 403 is the role check, not CSRF); every /api/admin and /admin route is either gated or listed as a broker-owner route", date: 2026-11-08}
+  - {cmd: "mutant: require_platform_admin also admits broker_owner", result: "28 failed (every broker_owner case)", date: 2026-11-08}
+authz_checked: "Server-side role gate for all 28 platform-operator routes, both tenant roles; denial body reveals nothing beyond the fixed message."
+blockers:
+  - {type: scope, note: "Covers the dependency-gated operator surface. ~35 inline platform-admin checks elsewhere (e.g. aws_observability, WebSocket handlers) are not in this matrix; /api/aws is not mounted unless AWS observability is enabled."}
+audit_refs: []
+decision_refs: []
+next_task: "Extend the same graph walk to inline Role.PLATFORM_ADMIN checks, or move them behind require_platform_admin; then T17.11's 20-account role matrix."
+updated: 2026-11-08
+```
+
 ### L18
 Billing, seats and analytics.
 
