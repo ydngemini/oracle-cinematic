@@ -3076,6 +3076,26 @@ updated: 2026-10-18
 ```
 Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
+#### L17-27 SSRF: no user-supplied URL is fetched; the one allow-listed fetch can no longer be redirected off its list (T17.10)
+```yaml
+id: L17-27
+status: tests_pass
+env: local
+evidence_shas: [2971182]   # base; fix in the commit that adds this row
+files: [backend/market_research_agent.py, backend/tests/test_market_research_agent.py]
+tests_run:
+  - {cmd: "review of every server-side HTTP fetch with a non-literal URL (requests/httpx/aiohttp/urllib across backend/, 2026-11-08)", result: "no route fetches a URL a user or tenant supplies. Custom-call api_url is read from credentials but the only caller passes none (ORACLE_CUSTOM_CALL_API_URL, operator env); SMTP hosts must resolve to is_global addresses (smtp_mailer); site domains are verified by DNS, not HTTP; govinfo and site asset URLs are validated; video downloads take the provider's content_url (feature off); the rest are fixed provider or env URLs. One gap: market_research_agent checked its publisher allow-list on the first URL only, and urllib follows redirects", date: 2026-11-08}
+  - {cmd: "pytest tests/test_market_research_agent.py (fake connections behind urllib's handlers: an allow-listed host answers 302 to http://169.254.169.254/metadata/v1/)", result: "red: DID NOT RAISE (the redirect was followed and its body returned)", date: 2026-11-08}
+  - {cmd: "_PublisherRedirects checks every hop before urllib opens it; both downloaders use it", result: "18 passed (market tests); a redirect between two allow-listed HTTPS publishers is still followed", date: 2026-11-08}
+authz_checked: n/a (outbound fetch policy; no route or role change)
+blockers:
+  - {type: scope, note: "DNS answers for allow-listed publisher hosts are trusted (no resolve-and-pin to public IPs). Later code that fetches a user-supplied URL needs its own guard (smtp_mailer's is_global check is the pattern)."}
+audit_refs: []
+decision_refs: []
+next_task: "T17.10's other checks: request size limits, MIME validation and malware scanning on uploads, SBOM."
+updated: 2026-11-08
+```
+
 ### L18
 Billing, seats and analytics.
 

@@ -484,15 +484,36 @@ def _default_specs() -> list[DatasetSpec]:
     ]
 
 
-def _download_sync(url: str) -> Download:
+def _require_publisher_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _ALLOWED_HOSTS:
         raise ValueError("market dataset URL must use an allow-listed HTTPS publisher host")
+
+
+class _PublisherRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another allow-listed HTTPS publisher (T17.10).
+
+    The allow-list used to be checked on the first URL only, and urllib follows
+    redirects, so a publisher (or anyone answering for it) could send the
+    worker anywhere, including the cloud metadata address over plain HTTP.
+    Each hop is checked before urllib opens it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_publisher_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _publisher_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_PublisherRedirects)
+
+
+def _download_sync(url: str) -> Download:
+    _require_publisher_url(url)
     request = urllib.request.Request(
         url,
         headers={"User-Agent": _USER_AGENT, "Accept": "text/csv,application/octet-stream,*/*"},
     )
-    with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+    with _publisher_opener().open(request, timeout=_TIMEOUT_SECONDS) as response:
         status = int(getattr(response, "status", 200))
         if status != 200:
             raise RuntimeError(f"publisher returned HTTP {status}")
