@@ -353,10 +353,13 @@ describe('Capture Studio launches from Property View (T12.03, L12-03)', () => {
     useTour.mockReturnValue({ tour: { pano_scene_count: 0, photo_count: 0 } });
     await lookUpAProperty();
     fireEvent.click(screen.getByRole('button', { name: /capture with camera/i }));
-    const studio = await screen.findByRole('region', { name: 'Capture with camera' });
+    // CaptureStudio is a lazy chunk: its first import can exceed findBy's 1 s
+    // default when the whole suite is transforming modules in parallel.
+    const studio = await screen.findByRole('region', { name: 'Capture with camera' }, { timeout: 4000 });
     expect(studio).toBeTruthy();
-    // jsdom has no camera: the studio offers the existing picker instead.
-    expect(screen.getByRole('alert').textContent).toMatch(/camera/i);
+    // jsdom has no camera: the studio offers the existing picker instead. The
+    // camera request fails asynchronously, so wait for its alert.
+    expect((await screen.findByRole('alert')).textContent).toMatch(/camera/i);
     expect(screen.getAllByRole('button', { name: 'Choose files instead' }).length).toBeGreaterThan(0);
   });
 
