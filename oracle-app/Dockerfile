@@ -14,7 +14,7 @@
 # same base. The cost is that upstream patches no longer arrive by accident:
 # the release job's Trivy scan fails on a fixable CRITICAL, and that is the
 # signal to refresh this digest (docs/supply-chain-policy.md).
-FROM node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
+FROM node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source edits.
@@ -46,7 +46,7 @@ ENV VITE_MUNICIPAL_HARVESTS_ENABLED=${VITE_MUNICIPAL_HARVESTS_ENABLED}
 RUN npm run build
 
 # ---- serve stage ----------------------------------------------------------
-FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS serve
+FROM nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11 AS serve
 
 # Drop nginx's default site; install our SPA config (listens on 8080, non-root).
 RUN rm /etc/nginx/conf.d/default.conf
