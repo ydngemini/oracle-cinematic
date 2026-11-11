@@ -295,7 +295,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             await refused(video_studio_api.cancel_video_job(ids["video_studio_jobs"]["b"], ctx=ctx(who)), code)
             await refused(video_studio_api.delete_video_job(ids["video_studio_jobs"]["b"], ctx=ctx(who)), code)
             await refused(voice_intel.log_walkthrough(
-                str(lead["b"]), UploadFile(file=io.BytesIO(b"\x00" * 16), filename="walk.m4a"), ctx=ctx(who)), code)
+                str(lead["b"]), UploadFile(file=io.BytesIO(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 16), filename="walk.m4a"), ctx=ctx(who)), code)
         assert await admin.fetchval("SELECT count(*) FROM client_portals WHERE tenant_id=$1", tenant) == portals_before
         assert await admin.fetchval("SELECT revoked_at FROM client_portals WHERE id=$1",
                                     ids["client_portals"]["b"]) is None
