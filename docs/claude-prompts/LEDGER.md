@@ -49,7 +49,7 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites; L14-05 domain verification and rollback 0173 (local) | Owner: networks, listings on sites, rollback approval, claim expiry; edge serving of customer hostnames | T14.03 + AC14.03 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local); L18-06 Stripe events in order, one checkout per brokerage 0169; L18-07 payment failure keeps reads and export, stops sends; L18-08 AI token budget for Neoh chat 0170; L18-09 every hosted call outside chat under it (local) | D-2026-10-12-02 (billable stage; seat number and who counts; past_due length; AI inference when lapsed; budget numbers) | T18.07 remaining channels; AC18.03 in Stripe test mode (owner keys) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
@@ -3093,6 +3093,26 @@ blockers:
 audit_refs: []
 decision_refs: []
 next_task: "Extend the same graph walk to inline Role.PLATFORM_ADMIN checks, or move them behind require_platform_admin; then T17.11's 20-account role matrix."
+updated: 2026-11-08
+```
+
+#### L17-27 SSRF: no user-supplied URL is fetched; the one allow-listed fetch can no longer be redirected off its list (T17.10)
+```yaml
+id: L17-27
+status: tests_pass
+env: local
+evidence_shas: [2971182]   # base; fix in the commit that adds this row
+files: [backend/market_research_agent.py, backend/tests/test_market_research_agent.py]
+tests_run:
+  - {cmd: "review of every server-side HTTP fetch with a non-literal URL (requests/httpx/aiohttp/urllib across backend/, 2026-11-08)", result: "no route fetches a URL a user or tenant supplies. Custom-call api_url is read from credentials but the only caller passes none (ORACLE_CUSTOM_CALL_API_URL, operator env); SMTP hosts must resolve to is_global addresses (smtp_mailer); site domains are verified by DNS, not HTTP; govinfo and site asset URLs are validated; video downloads take the provider's content_url (feature off); the rest are fixed provider or env URLs. One gap: market_research_agent checked its publisher allow-list on the first URL only, and urllib follows redirects", date: 2026-11-08}
+  - {cmd: "pytest tests/test_market_research_agent.py (fake connections behind urllib's handlers: an allow-listed host answers 302 to http://169.254.169.254/metadata/v1/)", result: "red: DID NOT RAISE (the redirect was followed and its body returned)", date: 2026-11-08}
+  - {cmd: "_PublisherRedirects checks every hop before urllib opens it; both downloaders use it", result: "18 passed (tests/test_market_research_agent.py 9 + tests/test_state_market_projection.py 9; re-run after merging main 2026-11-09: 18 passed); a redirect between two allow-listed HTTPS publishers is still followed", date: 2026-11-08}
+authz_checked: n/a (outbound fetch policy; no route or role change)
+blockers:
+  - {type: scope, note: "DNS answers for allow-listed publisher hosts are trusted (no resolve-and-pin to public IPs). Later code that fetches a user-supplied URL needs its own guard (smtp_mailer's is_global check is the pattern)."}
+audit_refs: []
+decision_refs: []
+next_task: "T17.10's other checks: request size limits, MIME validation and malware scanning on uploads, SBOM."
 updated: 2026-11-08
 ```
 
