@@ -57,6 +57,30 @@ comms_router = APIRouter(prefix="/api/comms", tags=["Communications"])
 STAGING_DIR = Path(os.getenv("ORACLE_AUDIO_STAGING", "/tmp/oracle_audio"))
 MAX_AUDIO_BYTES = int(os.getenv("ORACLE_AUDIO_MAX_BYTES", str(25 * 1024 * 1024)))
 ALLOWED_SUFFIXES = {".m4a", ".wav", ".mp3", ".webm", ".ogg"}
+
+
+def _sniff_audio(data: bytes) -> Optional[str]:
+    """The allowed container a recording really is, as its canonical suffix.
+
+    faster-whisper opens the staged file with ffmpeg, which picks its demuxer
+    from the content, not the name: a ".mp3" holding an HLS playlist (or any
+    other demuxer's input) was queued and opened (T17.10). Only these five
+    containers are accepted.
+    """
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return ".m4a"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data.startswith(b"ID3"):
+        return ".mp3"
+    # MPEG audio frame sync; layer bits 00 is ADTS AAC, which is not MP3.
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0 and (data[1] >> 1) & 0x3:
+        return ".mp3"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return ".webm"
+    if data.startswith(b"OggS"):
+        return ".ogg"
+    return None
 QUEUE_MAX = int(os.getenv("ORACLE_VOICE_QUEUE_MAX", "100"))
 # Tunable alongside ORACLE_JOB_WORKERS and RECON_WORKER_COUNT. Transcription is
 # the heaviest per-task work in the process, so this is the knob that decides
@@ -307,6 +331,17 @@ async def log_walkthrough(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"unsupported audio format {suffix or '(none)'} — expected one of {sorted(ALLOWED_SUFFIXES)}",
         )
+    # The content decides, not the name: refuse anything that is not one of the
+    # allowed containers, and stage/queue it under the suffix it really has.
+    header = audio_file.file.read(64)
+    audio_file.file.seek(0)
+    sniffed = _sniff_audio(header)
+    if sniffed is None:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            "the file is not M4A, WAV, MP3, WebM or Ogg audio",
+        )
+    suffix = sniffed
 
     # The note becomes the lead's log row: 404 for a lead the caller cannot
     # see, 403 for a client's house shared view-only — before the audio is
