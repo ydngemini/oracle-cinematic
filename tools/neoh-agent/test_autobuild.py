@@ -170,7 +170,7 @@ class SideBranchTests(unittest.TestCase):
         with patch.object(autobuild.subprocess, "run") as run:
             for forbidden in ["main", "master", "feature/unsafe"]:
                 with self.assertRaises(ValueError):
-                    autobuild.push_side_branch(forbidden)
+                    autobuild.push_side_branch(forbidden, base_sha="b" * 40, main_sha="m" * 40)
             run.assert_not_called()
 
     def test_valid_push_only_targets_new_side_branch(self):
@@ -188,22 +188,23 @@ class SideBranchTests(unittest.TestCase):
                 return ""
             if args[0] == "rev-parse":
                 return "abc123"
-            if args[0] == "diff-tree":
+            if args[0] in ("diff-tree", "diff"):
                 return "oracle-app/src/App.jsx"
             raise AssertionError(args)
 
-        with patch.object(autobuild.runner, "git", side_effect=git):
+        with patch.object(autobuild.runner, "git", side_effect=git), \
+                patch.object(autobuild, "_publish_commit", return_value="c" * 40):
             with patch.object(autobuild.subprocess, "run",
                               return_value=subprocess.CompletedProcess(
                                   ["git"], 0, "", "")) as call:
-                url = autobuild.push_side_branch(branch)
+                url = autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
         self.assertEqual(
             url, "https://github.com/ydngemini/oracle-cinematic/tree/" + branch
         )
         arguments = call.call_args.args[0]
         self.assertEqual(arguments[0], "git")
         self.assertIn("origin", arguments)
-        self.assertIn("refs/heads/" + branch + ":refs/heads/" + branch, arguments)
+        self.assertIn("c" * 40 + ":refs/heads/" + branch, arguments)
         self.assertNotIn("--force", arguments)
         self.assertNotIn("main", arguments)
 
@@ -219,18 +220,19 @@ class SideBranchTests(unittest.TestCase):
                 return ""
             if args[0] == "rev-parse":
                 return "abc123"
-            if args[0] == "diff-tree":
+            if args[0] in ("diff-tree", "diff"):
                 return "oracle-app/src/App.jsx"
             raise AssertionError(args)
         token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
         stderr = ("remote: Invalid username or password.\n"
                   f"fatal: unable to access 'https://x:{token}@github.com/ydngemini/"
                   "oracle-cinematic.git/': Could not resolve host: github.com\n")
-        with patch.object(autobuild.runner, "git", side_effect=git):
+        with patch.object(autobuild.runner, "git", side_effect=git), \
+                patch.object(autobuild, "_publish_commit", return_value="c" * 40):
             with patch.object(autobuild.subprocess, "run",
                               return_value=subprocess.CompletedProcess(["git"], 128, "", stderr)):
                 with self.assertRaises(RuntimeError) as caught:
-                    autobuild.push_side_branch(branch)
+                    autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
         message = str(caught.exception)
         self.assertIn("exit 128", message)
         self.assertIn("Could not resolve host: github.com", message)
@@ -250,7 +252,7 @@ class SideBranchTests(unittest.TestCase):
         with patch.object(autobuild.runner, "git", side_effect=git):
             with patch.object(autobuild.subprocess, "run") as call:
                 with self.assertRaises(ValueError):
-                    autobuild.push_side_branch(branch)
+                    autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
                 call.assert_not_called()
 
     def test_never_push_before_checks_pass(self):
@@ -327,6 +329,105 @@ class SideBranchTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     autobuild.autobuild(args)
                 choose.assert_not_called()
+
+
+class PublishOntoMainTests(unittest.TestCase):
+    """Real git: what reaches origin is the cycle's commit on main, nothing else.
+
+    2026-11-11: a verified category-02 cycle was refused by GitHub because its
+    branch carried the supervisor's tooling history, including a change to
+    .github/workflows/ci.yml, and Noah's token has no workflow scope.
+    """
+
+    BRANCH = "auto/neoh-02-20261111T222649Z-24e9aa"
+
+    def _git(self, cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def _commit(self, repo, files, message):
+        for name, text in files.items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            self._git(repo, "add", name)
+        self._git(repo, "commit", "-q", "-m", message)
+        return self._git(repo, "rev-parse", "HEAD")
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="neoh-publish-test-"))
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)], check=False)
+        self.origin = self.tmp / "origin.git"
+        self.repo = self.tmp / "work"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        for key, value in (("user.name", "t"), ("user.email", "t@example.invalid"),
+                           ("commit.gpgsign", "false")):
+            self._git(self.repo, "config", key, value)
+        self._git(self.repo, "remote", "add", "origin", str(self.origin))
+        self.main_sha = self._commit(self.repo, {
+            "README.md": "neoh\n",
+            ".github/workflows/ci.yml": "on: push\n",
+            "oracle-app/src/page.js": "export const a = 1;\n",
+        }, "main")
+        self._git(self.repo, "push", "-q", "origin", "main")
+        # The supervisor branch: tooling commits main does not have.
+        self.base_sha = self._commit(self.repo, {
+            ".github/workflows/ci.yml": "on: push\n# supervisor tooling check\n",
+            "tools/neoh-agent/x.py": "TOOL = 1\n",
+        }, "ci(devtools): tooling")
+        self._git(self.repo, "switch", "-q", "-c", self.BRANCH)
+        self.cycle_sha = self._commit(self.repo, {
+            "oracle-app/src/page.js": "export const a = 2;\n",
+        }, "feat(neoh): autonomous category 02 implementation")
+        for target in (autobuild, autobuild.runner):
+            stack = patch.object(target, "ROOT", self.repo)
+            stack.start()
+            self.addCleanup(stack.stop)
+        trusted = patch.object(autobuild, "TRUSTED_ORIGIN",
+                               autobuild.re.compile(autobuild.re.escape(str(self.origin))))
+        trusted.start()
+        self.addCleanup(trusted.stop)
+
+    def test_only_the_cycle_commit_is_published_with_main_as_its_parent(self):
+        autobuild.push_side_branch(self.BRANCH, base_sha=self.base_sha, main_sha=self.main_sha)
+        ref = "refs/heads/" + self.BRANCH
+        pushed = self._git(self.origin, "rev-parse", ref)
+        self.assertEqual(self._git(self.origin, "rev-parse", ref + "^"), self.main_sha)
+        self.assertEqual(self._git(self.origin, "rev-list", "--count", self.main_sha + ".." + ref), "1")
+        self.assertEqual(self._git(self.origin, "diff", "--name-only", self.main_sha, ref),
+                         "oracle-app/src/page.js")
+        self.assertEqual(self._git(self.origin, "show", ref + ":.github/workflows/ci.yml"), "on: push")
+        self.assertEqual(self._git(self.origin, "show", ref + ":oracle-app/src/page.js"),
+                         "export const a = 2;")
+        self.assertEqual(self._git(self.origin, "log", "-1", "--format=%s", pushed),
+                         "feat(neoh): autonomous category 02 implementation")
+        # The local branch and working tree are untouched.
+        self.assertEqual(self._git(self.repo, "rev-parse", "HEAD"), self.cycle_sha)
+        self.assertEqual(self._git(self.repo, "status", "--porcelain"), "")
+
+    def test_a_cycle_that_no_longer_applies_to_main_is_not_pushed(self):
+        self._git(self.repo, "switch", "-q", "main")
+        moved = self._commit(self.repo, {"oracle-app/src/page.js": "export const a = 9;\n"}, "main moved")
+        self._git(self.repo, "push", "-q", "origin", "main")
+        self._git(self.repo, "switch", "-q", self.BRANCH)
+        with self.assertRaises(RuntimeError) as caught:
+            autobuild.push_side_branch(self.BRANCH, base_sha=self.base_sha, main_sha=moved)
+        self.assertIn("nothing was pushed", str(caught.exception))
+        refs = self._git(self.origin, "for-each-ref", "--format=%(refname)")
+        self.assertNotIn(self.BRANCH, refs)
+
+    def test_the_rejection_reason_is_kept_not_the_closing_line(self):
+        stderr = (
+            "To https://github.com/ydngemini/oracle-cinematic.git\n"
+            " ! [remote rejected] 67bd695 -> auto/neoh-02-x (refusing to allow an OAuth App to "
+            "create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\n"
+            "error: failed to push some refs to 'https://github.com/ydngemini/oracle-cinematic.git'\n"
+        )
+        detail = autobuild._push_failure_detail(stderr)
+        self.assertIn("without `workflow` scope", detail)
+        self.assertEqual(autobuild._push_failure_detail(""), "no message")
 
 
 if __name__ == "__main__":

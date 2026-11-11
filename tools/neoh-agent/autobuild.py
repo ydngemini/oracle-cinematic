@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -303,11 +304,71 @@ TRUSTED_ORIGIN = re.compile(
 )
 
 
-def push_side_branch(branch: str) -> str:
+_PUSH_REASON = re.compile(r"refusing|rejected|denied|fatal:|remote: error|GH\d{3}", re.IGNORECASE)
+
+
+def _push_failure_detail(stderr: str) -> str:
+    """The line that says why, not git's closing "failed to push some refs".
+
+    2026-11-11: the rejection reason (" ! [remote rejected] ... (refusing to
+    allow an OAuth App to create or update workflow ...)") came before the
+    last line, so keeping only the last line hid it.
+    """
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    if not lines:
+        return "no message"
+    reasons = [line for line in lines if _PUSH_REASON.search(line)]
+    return intelligence.redact(reasons[0] if reasons else lines[-1])[:300]
+
+
+def _publish_commit(base_sha: str, main_sha: str) -> str:
+    """Replay only this cycle's own commit (base_sha..HEAD) onto main.
+
+    The cycle branch grows from the supervisor branch, so its history carries
+    every unmerged tooling commit (about 46 on 2026-11-11, one of them editing
+    .github/workflows/ci.yml). Pushing that history leaked tooling into a
+    reviewable branch, and GitHub refuses it outright for a token without the
+    workflow scope. The published commit is the cycle's diff applied to
+    main_sha in a throwaway index: main is its only parent, and the working
+    tree is never touched.
+    """
+    head = runner.git("rev-parse", "--verify", "HEAD")
+    message = runner.git("log", "-1", "--format=%B", "HEAD") or "feat(neoh): autonomous implementation"
+    with tempfile.TemporaryDirectory(prefix="neoh-publish-") as tmp:
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = str(Path(tmp) / "index")
+
+        def git_bytes(*args: str, data: bytes | None = None) -> bytes:
+            result = subprocess.run(
+                ["git", "-C", str(ROOT), *args], env=env, input=data,
+                capture_output=True, check=False, timeout=120,
+            )
+            if result.returncode:
+                lines = [ln for ln in result.stderr.decode("utf-8", "replace").splitlines() if ln.strip()]
+                detail = intelligence.redact(lines[-1])[:200] if lines else "no message"
+                raise RuntimeError(
+                    f"Could not replay this cycle's commit onto main ({args[0]}): {detail}. "
+                    "Main changed underneath the cycle; nothing was pushed."
+                )
+            return result.stdout
+
+        git_bytes("read-tree", main_sha)
+        diff = git_bytes("diff", "--binary", "--full-index", base_sha, head)
+        if not diff.strip():
+            raise ValueError("Refusing to push an empty commit.")
+        git_bytes("apply", "--cached", "--whitespace=nowarn", data=diff)
+        tree = git_bytes("write-tree").decode().strip()
+        return git_bytes("commit-tree", tree, "-p", main_sha, "-F", "-",
+                         data=message.encode()).decode().strip()
+
+
+def push_side_branch(branch: str, *, base_sha: str, main_sha: str) -> str:
     """Only push the current, clean, automatically created branch to Neoh origin.
 
     No force pushes, no tags, no main/master, no token-bearing HTTPS remotes.
     Requires pre-configured git authentication on the developer machine.
+    What is pushed is this cycle's commit replayed onto main_sha
+    (_publish_commit), never the local branch's supervisor history.
     """
     if not SIDE_BRANCH.fullmatch(branch) or runner.git("branch", "--show-current") != branch:
         raise ValueError("Refusing to push a branch not created for this Neoh auto-build.")
@@ -323,22 +384,29 @@ def push_side_branch(branch: str) -> str:
     if not committed:
         raise ValueError("Refusing to push an empty commit.")
     changed_paths_are_safe(committed)
-    refspec = f"refs/heads/{branch}:refs/heads/{branch}"
+    publish = _publish_commit(base_sha, main_sha)
+    published = runner.git("diff", "--name-only", main_sha, publish).splitlines()
+    cycle = runner.git("diff", "--name-only", base_sha, "HEAD").splitlines()
+    if sorted(published) != sorted(cycle):
+        raise RuntimeError(
+            "Refusing to push: the commit replayed onto main changes different files "
+            "than this cycle did."
+        )
+    refspec = f"{publish}:refs/heads/{branch}"
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
     result = subprocess.run(
         ["git", "-c", "core.hooksPath=/dev/null", "push",
-         "--porcelain", "--set-upstream", "origin", refspec],
+         "--porcelain", "origin", refspec],
         cwd=str(ROOT), env=env, check=False, capture_output=True, text=True,
         timeout=180,
     )
     if result.returncode:
-        # Raw git stderr can carry authentication details, so keep only its last
-        # line, redacted: enough to tell a network drop from an auth refusal or
-        # a rejected ref (2026-11-08: a verified build was lost to a bare exit 1).
-        lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
-        detail = intelligence.redact(lines[-1])[:200] if lines else "no message"
+        # Raw git stderr can carry authentication details, so keep one line,
+        # redacted: the rejection reason when git gave one, else the last line
+        # (2026-11-08: a verified build was lost to a bare exit 1).
+        detail = _push_failure_detail(result.stderr)
         raise RuntimeError(
             f"Side-branch push failed (exit {result.returncode}): {detail}. "
             "Check GitHub authentication, repository permissions and network access."
@@ -433,7 +501,7 @@ def autobuild(args) -> int:
                             "Another auto/neoh branch exists for this category. "
                             "Do not publish a duplicate task."
                         )
-                    push_side_branch(branch)
+                    push_side_branch(branch, base_sha=base_sha, main_sha=main_sha)
             else:
                 print("[review] Changes remain uncommitted; no push.")
             print(f"[ready] branch={branch}; base={base_sha[:12]}; main untouched; no deploy.")
