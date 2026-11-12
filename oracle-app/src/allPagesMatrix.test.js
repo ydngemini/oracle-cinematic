@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildMatrix, verdictProblems, verdictShapeProblems } from '../scripts/build-all-pages-matrix.mjs';
+import { buildMatrix, verdictProblems, verdictQueue, verdictShapeProblems } from '../scripts/build-all-pages-matrix.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const committed = JSON.parse(readFileSync(join(HERE, '../../docs/claude-prompts/all-pages.json'), 'utf8')).pages;
@@ -67,6 +67,29 @@ describe('ALL-PAGES-MATRIX (prompt 02 AC02.01)', () => {
       expect(verdictShapeProblems({ a: { ...ok, reviewer: who } }), who).toHaveLength(1);
     }
     expect(verdictShapeProblems({ a: { ...ok, reviewer: 'Claudette Moreau' } })).toEqual([]);
+  });
+
+  it('builds a review queue and never marks a risky page ready (AC02.09)', () => {
+    const none = 'not_inspected';
+    const clean = { status: 'clean', writes_attempted_on_open: [] };
+    const rows = [
+      { id: 'ok', verdict: none, crawl: clean },
+      { id: 'signed', verdict: 'pass', crawl: clean },
+      { id: 'broken', verdict: none, crawl: { status: 'issues', writes_attempted_on_open: [] } },
+      { id: 'writer', verdict: none, crawl: { status: 'clean', writes_attempted_on_open: ['POST /api/x'] } },
+      { id: 'hidden', verdict: none, crawl: null },
+      { id: 'mls', verdict: none, legacy: 'out of scope', crawl: clean },
+      { id: 'failed', verdict: 'fail', crawl: null },
+    ];
+    expect(verdictQueue(rows)).toEqual({
+      total: 7,
+      recorded: ['signed', 'failed'],
+      ready_for_review: ['ok'],
+      needs_attention: ['broken (crawl issues)', 'writer (writes on open)'],
+      not_crawled: ['hidden'],
+      legacy: ['mls'],
+    });
+    expect(verdictQueue([]).total).toBe(0);
   });
 
   it('offers no MLS page (D-2026-10-12-01, prompt 11 T11.01)', async () => {
