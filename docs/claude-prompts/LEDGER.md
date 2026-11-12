@@ -1368,8 +1368,30 @@ blockers:
   - "No real call (T09.18)."
 audit_refs: []
 decision_refs: []
-next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds."
+next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds (per-brokerage Plivo/Twilio cap in L09-08)."
 updated: 2026-10-16
+```
+
+#### L09-08 Concurrent realtime AI calls per brokerage are capped (T09.10, AC09.02)
+```yaml
+id: L09-08
+status: implemented_untested
+env: local
+evidence_shas: [92d8e64]
+files: [backend/commands_api.py, backend/tests/test_realtime_call_cap.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api.plivo_qwen_media, twilio_qwen_media, _realtime_refusal (at 92d8e64)", result: "confirmed the T09.10 gap: admission checks the AI budget only; nothing limits how many realtime bridges (each a hosted model session) one brokerage holds open", date: 2026-11-12}
+  - {cmd: "pytest -q tests/test_realtime_call_cap.py", result: "NOT RUN (no shell in this session). Written: cap setting parse/fallback; slot acquire/release; refusal on Twilio, Plivo-Qwen and Plivo-ElevenLabs at the cap (no bridge, refusal line, close 1000, count unchanged); another brokerage unaffected; slot released when the bridge raises", date: 2026-11-12}
+authz_checked: "Keyed by the tenant in the call's own state (the same source admission uses); a call with no tenant is already refused before a slot is taken. Refusal reuses the existing refusal document; no customer content is logged (provider, call id, cap)."
+blockers:
+  - "Tests not run; status stays implemented_untested until they pass."
+  - "Count is per process, not cluster-wide: with several workers the effective cap is cap x workers. A shared counter (Redis/DB) is the follow-up."
+  - "Not covered: ACS route, per-agent cap, per-brokerage kill switch, audio-second/token caps, circuit breaker, stalled-media alerts. The default 20 matches seat count and is an owner-tunable guess (ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE; 0 disables)."
+  - "The caller hears the generic refusal line, not a 'busy' message. Not deployed (C4.4). T09.18 (real call) still needs owner approval."
+audit_refs: []
+decision_refs: []
+next_task: "Run the tests; then a cluster-wide counter and the ACS route; T09.18 with owner approval."
+updated: 2026-11-12
 ```
 
 ### L10
