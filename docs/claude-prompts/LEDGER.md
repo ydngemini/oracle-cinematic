@@ -304,6 +304,25 @@ next_task: "None for UX-001."
 updated: 2026-11-14
 ```
 
+#### L02-11 Review queue for the per-page verdicts (AC02.09)
+```yaml
+id: L02-11
+status: implemented_untested
+env: local
+evidence_shas: [a95fca2]   # base
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "vitest run src/allPagesMatrix.test.js", result: "NOT RUN (the agent session had no shell)", date: 2026-11-12}
+authz_checked: n/a (docs tooling; no runtime or API change)
+blockers:
+  - {type: human, note: "No verdict was recorded. A verdict is a named reviewer's functional sign-off (L02-08); an agent cannot sign. all-pages-verdicts.json is unchanged."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "A reviewer runs `node scripts/build-all-pages-matrix.mjs --verdicts` in oracle-app/, reviews the ready_for_review pages, enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`. Needs-attention and not-crawled pages need a fresh crawl first."
+updated: 2026-11-12
+```
+New exported `verdictQueue(rows)` and a read-only `--verdicts` flag split the pages into recorded, ready for review (clean crawl, no writes on open, not legacy), needs attention, not crawled and legacy. It writes no file; the generated matrix is unchanged. The Playwright and crawl work for AC02.04, AC02.05 and AC02.08 is still owed.
+
 ### L03
 Brokerage tenancy and hybrid access.
 
