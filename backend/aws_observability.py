@@ -23,7 +23,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from admin_ops import require_platform_admin
-from tenancy import require_context, TenantContext
+from tenancy import (
+    TenantContext,
+    admit_operator_stream,
+    require_context,
+    watch_operator_stream,
+)
 from log_redaction import actor_ref
 
 # Roles allowed to read AWS infra observability: the WebSocket's gate, kept
@@ -1215,8 +1220,11 @@ async def observability_websocket(websocket: WebSocket):
         await websocket.close(code=4403)  # 4403: application "forbidden"
         log.warning("Observability WS rejected — role %r not permitted.", ctx.role.value)
         return
+    if not await admit_operator_stream(websocket, ctx):  # SEC-001: a demoted admin's token
+        return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    session_watch = watch_operator_stream(websocket, ctx)
     from audit_middleware import record_platform_websocket
     record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     _obs_websockets.add(websocket)
@@ -1280,5 +1288,6 @@ async def observability_websocket(websocket: WebSocket):
                 log.warning("WebSocket recv error: %s", e)
                 break
     finally:
+        session_watch.cancel()
         _obs_websockets.discard(websocket)
         log.info("Observability WebSocket disconnected — %d clients", len(_obs_websockets))
