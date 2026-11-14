@@ -416,11 +416,14 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     deployments = tmp_path / "deployments.json"
     deployments.write_text(json.dumps([{"id": "dep-active", "phase": "ACTIVE",
                                         "created_at": "2026-10-03T20:00:00Z", "spec": active}]))
+    app = tmp_path / "app.json"  # `doctl apps get`: the live app, checked before applying (DEP-03)
+    app.write_text(json.dumps([{"id": "app-123", "spec": active}]))
     doctl = fake / "doctl"
     doctl.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{calls}"\n'
         f'if [ "$1 $2" = "apps list-deployments" ]; then cat "{deployments}"; exit 0; fi\n'
+        f'if [ "$1 $2" = "apps get" ]; then cat "{app}"; exit 0; fi\n'
         # Keep a copy of the spec it was handed, to check the digests.
         'for a in "$@"; do case "$prev" in --spec) cp "$a" "' + str(tmp_path) + '/applied.yaml";; esac; prev="$a"; done\n'
         "exit 0\n"
@@ -619,3 +622,85 @@ def test_the_scanner_itself_is_pinned():
 def test_every_release_keeps_an_sbom():
     uploads = [s for s in _steps("release") if s.get("uses", "").startswith("actions/upload-artifact")]
     assert any("sbom-" in u["with"]["name"] for u in uploads)
+
+
+# ── DEP-02 / DEP-03 / DEP-03b: the rollback is judged against what is live ──
+#
+# The real script, with real manifests and a stand-in doctl that records each
+# call. `apps list-deployments` fails on purpose: reaching it proves the
+# identity checks passed, and nothing is ever updated.
+
+FAKE_DOCTL = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "apps get") printf '%s' "$FAKE_APP_JSON" ;;
+  "apps list-deployments") exit 1 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _rollback(tmp_path, *args, app_name="neoh", live_domains=(), domain=None):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "doctl").write_text(FAKE_DOCTL)
+    (bin_dir / "doctl").chmod(0o755)
+    head = sorted(p.name for p in (REPO / "backend" / "db" / "migrations").glob("*.sql"))[-1]
+    manifest = {"release_id": "abc1234", "backend_digest": "sha256:" + "a" * 64,
+                "frontend_digest": "sha256:" + "b" * 64, "migration_head": head}
+    (tmp_path / "to.json").write_text(json.dumps(manifest))
+    (tmp_path / "from.json").write_text(json.dumps({**manifest, "release_id": "def5678"}))
+    app = [{"spec": {"name": app_name, "domains": [{"domain": d} for d in live_domains]}}]
+    env = {k: v for k, v in os.environ.items() if k != "NEOH_DOMAIN"}
+    env.update(PATH=f"{bin_dir}:{pathlib.Path(sys.executable).parent}:{env['PATH']}",
+               FAKE_LOG=str(tmp_path / "doctl.log"), FAKE_APP_JSON=json.dumps(app),
+               DIGITALOCEAN_APP_ID="app-1", ORACLE_ROLLBACK_SPEC=str(tmp_path / "spec.yaml"))
+    if domain:
+        env["NEOH_DOMAIN"] = domain
+    argv = [a.replace("{to}", str(tmp_path / "to.json")).replace("{from}", str(tmp_path / "from.json"))
+            for a in args]
+    done = subprocess.run(["bash", str(ROLLBACK), *argv], env=env, capture_output=True, text=True,
+                          timeout=120)
+    log = tmp_path / "doctl.log"
+    return done, done.stdout + done.stderr, log.read_text() if log.exists() else ""
+
+
+def test_apply_without_the_deployed_manifest_is_refused(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--apply")
+    assert done.returncode == 1 and "--apply needs --from" in out, out
+    assert calls == ""
+
+
+def test_the_rollback_spec_keeps_the_production_domain(tmp_path):
+    done, out, _ = _rollback(tmp_path, "--to", "{to}", domain="app.neoh.example")
+    assert done.returncode == 0, out
+    spec = (tmp_path / "spec.yaml").read_text()
+    assert "app.neoh.example" in spec and "run_migrations.py" not in spec
+    assert "sha256:" + "a" * 64 in spec
+
+
+def test_apply_refuses_an_app_that_is_not_production(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 app_name="neoh-staging")
+    assert done.returncode == 1 and "does not match" in out and "neoh-staging" in out, out
+    assert "apps get app-1" in calls and "list-deployments" not in calls and "update" not in calls
+
+
+def test_apply_refuses_to_detach_a_live_domain(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 live_domains=["app.neoh.example"])
+    assert done.returncode == 1 and "would detach app.neoh.example" in out, out
+    assert "update" not in calls
+
+
+def test_a_matching_app_and_domain_pass_to_the_next_step(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 live_domains=["app.neoh.example"], domain="app.neoh.example")
+    assert "target app 'neoh' confirmed" in out, out
+    assert "list-deployments" in calls and "apps update" not in calls
+    assert done.returncode == 1 and "could not read the app's deployments" in out
