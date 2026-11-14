@@ -130,15 +130,25 @@ FORCED="$("${Q[@]}" -c "
    WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity;" 2>/dev/null)"
 POLICIES="$("${Q[@]}" -c "SELECT count(*)::text FROM pg_policies WHERE schemaname='public';" 2>/dev/null)"
 
-[ "${RLS_TABLES:-0}" -gt 0 ] \
-  && ok "row-level security enabled on $RLS_TABLES tables" \
-  || bad "NO table has row-level security — every tenant can read every other tenant"
-[ "${FORCED:-0}" -gt 0 ] \
-  && ok "FORCE row-level security on $FORCED tables" \
-  || bad "no table FORCEs RLS — the owner role bypasses every policy"
-[ "${POLICIES:-0}" -gt 0 ] \
-  && ok "$POLICIES policies present" \
-  || bad "no RLS policies present"
+# REC-04: "> 0" passed a restore that lost RLS on all but one table. The
+# manifest now records the exact counts at backup time; all must come back.
+rls_check() {
+  local label="$1" got="$2" want="$3" none="$4"
+  if [ -n "$want" ]; then
+    [ "${got:-x}" = "$want" ] \
+      && ok "$label: $got, as backed up" \
+      || bad "$label: ${got:-none}, but the backup had $want — tenant isolation did not fully come back"
+  else
+    [ "${got:-0}" -gt 0 ] \
+      && ok "$label: $got (this manifest predates exact RLS counts, so only '> 0' is checked)" \
+      || bad "$none"
+  fi
+}
+rls_check "tables with row-level security" "$RLS_TABLES" "$(m rls_tables)" \
+  "NO table has row-level security — every tenant can read every other tenant"
+rls_check "tables that FORCE row-level security" "$FORCED" "$(m rls_forced_tables)" \
+  "no table FORCEs RLS — the owner role bypasses every policy"
+rls_check "RLS policies" "$POLICIES" "$(m rls_policies)" "no RLS policies present"
 
 # The functions the policies are written in terms of. A policy referencing a
 # missing function does not fail closed — it fails to create, and the table is

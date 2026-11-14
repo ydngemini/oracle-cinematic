@@ -139,6 +139,13 @@ LEAD_COUNT="$(count_of leads)"
 CIPHERTEXT_COLUMNS="$("${PSQL[@]}" -c \
   "SELECT count(*)::text FROM information_schema.columns
     WHERE data_type='bytea' AND table_schema='public';" 2>/dev/null || echo unknown)"
+# REC-04: exact tenant-isolation counts, so the verifier can require the
+# restore to bring back ALL of them, not merely "at least one".
+RLS_TABLES="$("${PSQL[@]}" -c "SELECT count(*)::text FROM pg_class c JOIN pg_namespace n
+  ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity;" 2>/dev/null)"
+RLS_FORCED="$("${PSQL[@]}" -c "SELECT count(*)::text FROM pg_class c JOIN pg_namespace n
+  ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity;" 2>/dev/null)"
+RLS_POLICIES="$("${PSQL[@]}" -c "SELECT count(*)::text FROM pg_policies WHERE schemaname='public';" 2>/dev/null)"
 
 # A manifest whose migration head is "unknown" cannot be verified against
 # anything later, which defeats the point of having one.
@@ -443,6 +450,9 @@ cat > "$MANIFEST_PATH" <<JSON
   "roles_count": "$ROLE_COUNT",
   "roles_note": "Roles carry NO passwords. Apply the roles file BEFORE the dump, then set the login password from the secret store.",
   "ciphertext_columns": "$CIPHERTEXT_COLUMNS",
+  "rls_tables": "$RLS_TABLES",
+  "rls_forced_tables": "$RLS_FORCED",
+  "rls_policies": "$RLS_POLICIES",
   "requires_master_key": true,
   "master_key_note": "ORACLE_ENCRYPTION_MASTER_KEY is NOT in this dump by design. Without it, oracle_decrypt() returns NULL and the restored data reads as empty rather than as encrypted. Escrow the key separately."
 }

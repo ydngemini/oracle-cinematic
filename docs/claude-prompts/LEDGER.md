@@ -3645,6 +3645,26 @@ next_task: "DEP-04: make the staging/production drift guard fail closed when the
 updated: 2026-11-13
 ```
 
+#### L19-09 A restore with unexplained pg_restore errors stops, keeps its log, and tenant isolation must come back in full (external audit REC-03, REC-04)
+```yaml
+id: L19-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [scripts/restore-postgres.sh, scripts/backup-postgres.sh, scripts/verify-restore.sh, backend/tests/test_backup_restore_scripts.py]
+tests_run:
+  - {cmd: "read restore-postgres.sh:233-272, verify-restore.sh:133-141 at 54740ef", result: "REC-03: every pg_restore error was printed, called 'not automatically a failure', and the log deleted at the end, leaving the decision to a verifier that samples a subset. REC-04: RLS passed when ANY one table had RLS, ANY one FORCEd it and ANY policy existed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (new tests against 54740ef's scripts)", result: "red: 7 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (after; the real scripts against stand-in psql/pg_restore)", result: "45 passed: an unexplained 'pg_restore: error' stops the restore before 'NOT DONE YET' and keeps restore-<UTC>.log beside the manifest; an error matched by ORACLE_RESTORE_EXPECTED_ERRORS lets it continue and says so; a clean restore keeps its log. The backup manifest records rls_tables, rls_forced_tables, rls_policies; the verifier FAILs any shortfall ('the backup had 120') and, for an older manifest, falls back to '> 0' and says so", date: 2026-11-13}
+authz_checked: n/a (recovery tooling)
+blockers:
+  - {type: scope, note: "The CI DR drill (real PostgreSQL) exercises both on a clean restore (zero errors; counts match) but no negative restore. REC-03's exhaustive row reconciliation (counts for every authoritative table) is not done. A manifest from before this change verifies RLS only weakly."}
+audit_refs: []
+decision_refs: []
+next_task: "Row-count reconciliation for every authoritative table in the manifest (REC-03 remainder)."
+updated: 2026-11-13
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
