@@ -208,6 +208,7 @@ class PlivoElevenLabsBridge:
         self._turns = 0
         self._max_turns = max(1, min(80, int(os.getenv("QWEN_REALTIME_MAX_TURNS", "20"))))
         self._handoff_started = False
+        self._inbound_opt_out_recorded = False  # RUN-02: once per call is enough
         self.conversation_id = ""
         #: None until the callee answers; notes are kept only after a True
         #: that the call's session row recorded.
@@ -417,6 +418,11 @@ class PlivoElevenLabsBridge:
             # the call. Checked per utterance; nothing said is stored.
             await voice_opt_out.honour(self._call_state, self.call_uuid)
             raise ElevenLabsCallOptOut("outbound callee asked not to be contacted")
+        if (voice_opt_out.is_inbound(self._call_state) and not self._inbound_opt_out_recorded
+                and voice_opt_out.spoken_opt_out(text)):
+            # RUN-02: written now, not only by finalize at hang-up.
+            self._inbound_opt_out_recorded = await voice_opt_out.honour_inbound(
+                self._call_state, self.call_uuid)
         self._turns += 1
         if await self._maybe_hand_off():
             raise ElevenLabsHandoffRequested("caller asked for a human agent")

@@ -134,6 +134,15 @@ describe('OperatorOverview', () => {
     expect(screen.getByText(/Production degraded/)).toBeTruthy();
   });
 
+  it('says the open alerts could not be read instead of implying there are none (OBS-001)', async () => {
+    const health = { ...FIXTURES['/api/admin/health/components'], open_alerts: [], alerts_status: 'unavailable' };
+    respond({ '/api/admin/health/components': health });
+    render(<OperatorOverview />);
+    const card = (await screen.findByRole('heading', { name: 'Production health' })).closest('section');
+    expect(await within(card).findByText(/Open alerts could not be read/)).toBeTruthy();
+    expect(within(card).queryByText(/Open alerts \(/)).toBeNull();
+  });
+
   it('shows the release and warns when workers run another build', async () => {
     render(<OperatorOverview />);
     expect(await screen.findByText('Workers are not running the same build as this API')).toBeTruthy();

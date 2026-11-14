@@ -396,6 +396,113 @@ def test_opt_out_finalization_creates_compliance_task_and_suppresses_voice(monke
     assert "do_not_contact" in call_update
 
 
+# ── RUN-02: an inbound opt-out is written when it is said ───────────────────
+INBOUND_STATE = {"direction": "inbound", "tenant_id": TENANT_ID, "agent_id": "agent@example.test"}
+
+
+def _optout_db(monkeypatch, *, row, fail_on=None):
+    executed = []
+
+    class FakeConn:
+        async def fetchrow(self, query, *args):
+            if "FROM inbound_voice_calls" in query:
+                return row
+            raise AssertionError(query)
+
+        async def execute(self, query, *args):
+            if fail_on and fail_on in query:
+                raise OSError("database went away")
+            executed.append((query, args))
+            return "UPDATE 1"
+
+    @asynccontextmanager
+    async def fake_tx(_ctx):
+        yield FakeConn()
+
+    async def fake_decrypt(_conn, ciphertext, _key):
+        assert ciphertext == b"caller-ct"
+        return "(302) 407-8981"
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-master-key")
+    monkeypatch.setattr(inbound_voice, "tenant_tx", fake_tx)
+    monkeypatch.setattr(inbound_voice, "decrypt_pii", fake_decrypt)
+    return executed
+
+
+CALL_ROW = {"id": CALL_ID, "contact_id": CONTACT_ID, "caller_phone_ciphertext": b"caller-ct"}
+
+
+def test_record_inbound_opt_out_suppresses_the_caller_brokerage_wide(monkeypatch):
+    executed = _optout_db(monkeypatch, row=CALL_ROW)
+    assert asyncio.run(inbound_voice.record_inbound_opt_out(CALL_SID, INBOUND_STATE)) is True
+    suppress = next(args for q, args in executed if "INSERT INTO outreach_suppression" in q)
+    assert suppress == (TENANT_ID, "+13024078981")
+    assert any("UPDATE agent_contacts" in q for q, _ in executed)
+    flag = next(args for q, args in executed if "SET opt_out_requested=true" in q)
+    assert flag == (TENANT_ID, CALL_ID)
+
+
+def test_a_failed_inbound_opt_out_write_is_raised_not_swallowed(monkeypatch):
+    _optout_db(monkeypatch, row=CALL_ROW, fail_on="INSERT INTO outreach_suppression")
+    with pytest.raises(inbound_voice.InboundOptOutNotRecorded):
+        asyncio.run(inbound_voice.record_inbound_opt_out(CALL_SID, INBOUND_STATE))
+    _optout_db(monkeypatch, row=None)
+    with pytest.raises(inbound_voice.InboundOptOutNotRecorded):
+        asyncio.run(inbound_voice.record_inbound_opt_out(CALL_SID, INBOUND_STATE))
+
+
+@pytest.mark.parametrize("state", [
+    None, {}, {**INBOUND_STATE, "direction": "outbound"}, {**INBOUND_STATE, "tenant_id": "t-1"},
+    {**INBOUND_STATE, "agent_id": ""},
+])
+def test_only_a_real_inbound_call_is_recorded(monkeypatch, state):
+    executed = _optout_db(monkeypatch, row=CALL_ROW)
+    assert asyncio.run(inbound_voice.record_inbound_opt_out(CALL_SID, state)) is False
+    assert asyncio.run(inbound_voice.record_inbound_opt_out("not-a-call-id", INBOUND_STATE)) is False
+    assert executed == []
+
+
+def test_finalize_never_undoes_an_opt_out_recorded_mid_call(monkeypatch):
+    """The cleaned transcript may not show the utterance any more; the row's
+    flag still makes this a do-not-contact call."""
+    executed = []
+
+    class FakeConn:
+        async def fetchrow(self, query, *args):
+            if "SELECT id,client_id,contact_id" in query:
+                return {"id": CALL_ID, "client_id": CLIENT_ID, "contact_id": CONTACT_ID,
+                        "intake_mode": "seller", "callback_task_id": None,
+                        "contact_intake_session_id": None, "intake_handoff_task_id": None,
+                        "caller_phone_ciphertext": b"caller-ct", "opt_out_requested": True}
+            if "INSERT INTO client_tasks" in query:
+                return {"id": "88888888-8888-4888-8888-888888888888"}
+            raise AssertionError(query)
+
+        async def execute(self, query, *args):
+            executed.append((query, args))
+            return "UPDATE 1"
+
+    @asynccontextmanager
+    async def fake_tx(_ctx):
+        yield FakeConn()
+
+    async def fake_encrypt(_conn, _plaintext, _key):
+        return b"encrypted"
+
+    async def fake_decrypt(_conn, _ciphertext, _key):
+        return "(302) 407-8981"
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-master-key")
+    monkeypatch.setattr(inbound_voice, "tenant_tx", fake_tx)
+    monkeypatch.setattr(inbound_voice, "encrypt_pii", fake_encrypt)
+    monkeypatch.setattr(inbound_voice, "decrypt_pii", fake_decrypt)
+    asyncio.run(inbound_voice.finalize_inbound_voice_call(
+        CALL_SID, [{"role": "caller", "text": "I'd like to sell my house."}], INBOUND_STATE))
+    call_update = next(args for q, args in executed if "UPDATE inbound_voice_calls" in q)
+    assert call_update[8] is True and "do_not_contact" in call_update
+    assert any("INSERT INTO outreach_suppression" in q for q, _ in executed)
+
+
 # ── Live agent hand-off ──────────────────────────────────────────────────────
 FORWARD_E164 = "+13025550147"
 

@@ -26,7 +26,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from tenancy import Role, require_context
+from tenancy import Role, admit_operator_stream, require_context, watch_operator_stream
 
 import db.connection as _dbc  # pool via _dbc.get_pool() — read live (it is created in the lifespan, AFTER this import)
 
@@ -995,8 +995,11 @@ async def audit_trail_ws(websocket: WebSocket) -> None:
         logger.warning("Audit WebSocket rejected a non-admin role.")
         await websocket.close(code=4403)
         return
+    if not await admit_operator_stream(websocket, ctx):  # SEC-001: a demoted admin's token
+        return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    session_watch = watch_operator_stream(websocket, ctx)
     from audit_middleware import record_platform_websocket
     record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     ledger.subscribe(websocket)
@@ -1014,4 +1017,5 @@ async def audit_trail_ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        session_watch.cancel()
         ledger.unsubscribe(websocket)

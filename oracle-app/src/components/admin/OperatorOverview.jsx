@@ -99,6 +99,11 @@ function HealthCard({ data }) {
           ))}
         </ul>
       )}
+      {data?.alerts_status === 'unavailable' ? (
+        <p className={styles.sub} role="status">
+          Open alerts could not be read, so this card cannot say there are none.
+        </p>
+      ) : null}
       {alerts.length > 0 ? (
         <>
           <h4 className={styles.minor}>Open alerts ({alerts.length})</h4>

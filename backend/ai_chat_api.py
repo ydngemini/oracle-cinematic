@@ -263,6 +263,31 @@ async def undo(
     return await undo_action(ctx, str(action_id))
 
 
+async def enqueue_chat_turn(ctx: TenantContext, *, request_id: str, assistant_id: str,
+                            lang: str | None = None) -> None:
+    """Queue the worker job for one accepted chat turn. Idempotent per
+    request (the key), so the accept path and the reconciliation sweep's
+    orphaned-turn step (RUN-01) can both call it."""
+    await enqueue_job(
+        ctx, job_type="ai_chat:response",
+        payload={
+            "tenant_id": ctx.tenant_id, "user_id": ctx.agent_id,
+            # The turn runs as the person who asked (L07-03), never wider
+            # than a broker-owner (ai_chat_agent._worker_role).
+            "role": ctx.role.value,
+            "request_id": str(request_id), "assistant_id": str(assistant_id),
+            # Only a spoken turn carries it; a code, never words (L05-05).
+            **({"lang_hint": lang} if lang else {}),
+        },
+        idempotency_key=f"ai-chat:{ctx.agent_id}:{request_id}",
+        created_by=ctx.agent_id, priority=20, max_attempts=3,
+        # A person is waiting: the interactive pool, never behind an MLS
+        # backfill on the shared queue (automation_jobs.INTERACTIVE_QUEUE).
+        queue_name=INTERACTIVE_QUEUE,
+        risk=ActionRisk.INTERNAL_EDIT,
+    )
+
+
 async def _reject(websocket: WebSocket, request_id: Optional[str], code: str, message: str) -> None:
     await websocket.send_json({
         "type": "AI_CHAT_REJECTED", "version": 1, "request_id": request_id,
@@ -331,24 +356,8 @@ async def handle_chat_websocket(
     if created["duplicate"]:
         return
     try:
-        await enqueue_job(
-            ctx, job_type="ai_chat:response",
-            payload={
-                "tenant_id": ctx.tenant_id, "user_id": ctx.agent_id,
-                # The turn runs as the person who asked (L07-03), never wider
-                # than a broker-owner (ai_chat_agent._worker_role).
-                "role": ctx.role.value,
-                "request_id": str(frame.request_id), "assistant_id": created["assistant_id"],
-                # Only a spoken turn carries it; a code, never words (L05-05).
-                **({"lang_hint": frame.lang} if frame.lang else {}),
-            },
-            idempotency_key=f"ai-chat:{ctx.agent_id}:{frame.request_id}",
-            created_by=ctx.agent_id, priority=20, max_attempts=3,
-            # A person is waiting: the interactive pool, never behind an MLS
-            # backfill on the shared queue (automation_jobs.INTERACTIVE_QUEUE).
-            queue_name=INTERACTIVE_QUEUE,
-            risk=ActionRisk.INTERNAL_EDIT,
-        )
+        await enqueue_chat_turn(ctx, request_id=str(frame.request_id),
+                                assistant_id=created["assistant_id"], lang=frame.lang)
     except Exception as exc:  # noqa: BLE001
         logger.exception("AI chat enqueue failed: %s", exc)
         # No worker will run its finally block when enqueueing fails.
