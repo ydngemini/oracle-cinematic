@@ -266,6 +266,25 @@ updated: 2026-11-08
 ```
 New exported `verdictShapeProblems` replaces the inline check in `loadVerdicts`. Before, a whitespace-only evidence or reviewer, a non-string evidence, or a non-existent date such as 2026-02-31 was accepted (the old check only tested truthiness and the date's shape). Now each is reported by page id, all problems at once, and a reviewer naming an automated agent (claude, agent, bot, auto, neoh-agent) is refused. The verdicts file and the generated matrix are unchanged.
 
+#### L02-10 The service banner says when status cannot be checked (external audit UX-001)
+```yaml
+id: L02-10
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/components/ServiceStatusBanner.jsx, oracle-app/src/components/ServiceStatusBanner.test.jsx]
+tests_run:
+  - {cmd: "read ServiceStatusBanner.jsx:15-23 at 54740ef", result: "every failed /api/status poll was swallowed, so a status endpoint that stayed down showed no banner — read by the agent as all clear", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx (new case against 54740ef)", result: "red: 1 failed", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx; eslint (after)", result: "5 passed, eslint clean: one failed check stays quiet (the existing test), three in a row show 'Service status can't be checked right now.', the next success clears it", date: 2026-11-14}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for UX-001."
+updated: 2026-11-14
+```
+
 ### L03
 Brokerage tenancy and hybrid access.
 
