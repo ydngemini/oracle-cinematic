@@ -121,3 +121,32 @@ describe('capture originals are staged until acknowledged', () => {
     expect(await none.pending('s')).toEqual([]);
   });
 });
+
+describe('the staged-capture database yields to sign-out (WEB-001)', () => {
+  it('closes its cached connection on versionchange and reopens on next use', async () => {
+    const { indexedDbAdapter } = await import('./captureStore.js');
+    const conns = [];
+    const fakeIdb = {
+      open() {
+        const conn = {
+          closed: false,
+          close() { this.closed = true; },
+          transaction() {
+            return { objectStore: () => ({ getAll: () => { const r = {}; queueMicrotask(() => { r.result = []; r.onsuccess?.(); }); return r; } }) };
+          },
+        };
+        conns.push(conn);
+        const req = { result: conn };
+        queueMicrotask(() => req.onsuccess?.());
+        return req;
+      },
+    };
+    const store = indexedDbAdapter(fakeIdb);
+    await store.all();
+    expect(conns).toHaveLength(1);
+    conns[0].onversionchange();            // sign-out's deleteDatabase is waiting
+    expect(conns[0].closed).toBe(true);
+    await store.all();                      // next use opens a fresh connection
+    expect(conns).toHaveLength(2);
+  });
+});

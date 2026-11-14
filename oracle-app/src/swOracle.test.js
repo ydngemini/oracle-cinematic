@@ -21,3 +21,19 @@ describe('the service worker serves cached media only through the rights check',
     expect(source).toMatch(/serveCachedSplat\(request,\s*\{\s*get: \(id\) => idbGet\(STORE_SPLATS, id\)/);
   });
 });
+
+describe('the service worker never holds the cache database open (WEB-001)', () => {
+  it('yields to a delete and closes after each transaction', () => {
+    expect(source).toMatch(/db\.onversionchange = \(\) => db\.close\(\)/);
+    for (const fn of ['idbPut', 'idbGet', 'idbDelete']) {
+      const body = source.slice(source.indexOf(`async function ${fn}(`), source.indexOf(`async function ${fn}(`) + 600);
+      expect(body, fn).toMatch(/db\.close\(\)/);
+    }
+  });
+
+  it('does not treat a blocked deletion as done', () => {
+    const clear = source.slice(source.indexOf("type === 'CLEAR_PRIVATE_CACHE'"), source.indexOf("type === 'CLEAR_PRIVATE_CACHE'") + 900);
+    expect(clear).not.toMatch(/onblocked = \(\) => resolve\(\)|req\.onblocked = \(\) => resolve/);
+    expect(clear).not.toMatch(/req\.onsuccess = req\.onerror = req\.onblocked/);
+  });
+});
