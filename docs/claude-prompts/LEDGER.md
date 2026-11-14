@@ -266,6 +266,25 @@ updated: 2026-11-08
 ```
 New exported `verdictShapeProblems` replaces the inline check in `loadVerdicts`. Before, a whitespace-only evidence or reviewer, a non-string evidence, or a non-existent date such as 2026-02-31 was accepted (the old check only tested truthiness and the date's shape). Now each is reported by page id, all problems at once, and a reviewer naming an automated agent (claude, agent, bot, auto, neoh-agent) is refused. The verdicts file and the generated matrix are unchanged.
 
+#### L02-09 Blocked browser storage cannot break sign-in, session expiry or sign-out (external audit WEB-002)
+```yaml
+id: L02-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/lib/safeStorage.js, oracle-app/src/lib/endSessionLocally.js, oracle-app/src/App.jsx, oracle-app/src/components/LoginVault.jsx, oracle-app/src/lib/safeStorage.test.js, oracle-app/src/lib/endSessionLocally.test.js, oracle-app/src/components/LoginVault.test.jsx]
+tests_run:
+  - {cmd: "read App.jsx:51,72,82 and LoginVault.jsx:51-53 at 54740ef", result: "unguarded sessionStorage/localStorage calls: a throw in the expiry or sign-out handler skipped clearing the private caches and the switch to sign-in (the server session was already revoked); in finishAuth it turned a successful sign-in (cookie already set) into an error; in rememberIdentity it made a restore read as 'Neoh can't be reached… still signed in'", date: 2026-11-14}
+  - {cmd: "vitest LoginVault.test.jsx (new case against 54740ef's LoginVault.jsx)", result: "red: 1 failed (sign-in never completed with storage throwing)", date: 2026-11-14}
+  - {cmd: "vitest safeStorage.test.js endSessionLocally.test.js LoginVault.test.jsx; eslint on the changed files (after)", result: "14 passed, eslint clean: safeSet/safeRemove never throw (including when reading window.sessionStorage throws); endSessionLocally clears the caches and shows sign-in even when storage or the cache clear fails; sign-in completes with storage blocked", date: 2026-11-14}
+authz_checked: n/a (client state only; the server session is unchanged)
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "WEB-001: close IndexedDB handles so sign-out's cache deletion is not blocked."
+updated: 2026-11-14
+```
+
 ### L03
 Brokerage tenancy and hybrid access.
 

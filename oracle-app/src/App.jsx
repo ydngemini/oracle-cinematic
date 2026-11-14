@@ -12,7 +12,8 @@ import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
 // A published site is the one page anonymous visitors load; keep it its own chunk.
 const PublicSite = lazy(() => import('./components/PublicSite'));
-import { clearPrivateCaches } from './lib/clearPrivateCaches.js';
+import { endSessionLocally } from './lib/endSessionLocally.js';
+import { safeSet } from './lib/safeStorage.js';
 import { useSessionRestore } from './lib/useSessionRestore';
 // Unauthenticated client capture page — the token in the URL is the whole
 // capability, so this route deliberately renders outside the auth shell.
@@ -48,7 +49,7 @@ function AuthedApp({ onSignOut }) {
 // What a restored identity leaves behind for the rest of the app.
 function rememberIdentity(identity) {
   if (identity?.authenticated && identity?.role) {
-    sessionStorage.setItem('oracle_role', identity.role);
+    safeSet('sessionStorage', 'oracle_role', identity.role);
   }
   // A restored session (cookie still valid, storage cleared) used to fall
   // back to the demo identity in state/identity.js, so Settings showed
@@ -68,20 +69,14 @@ function NeohApp() {
   });
 
   useEffect(() => {
-    const expireSession = () => {
-      sessionStorage.removeItem('oracle_role');
-      clearPrivateCaches();
-      setAuthed(false);
-    };
+    const expireSession = () => { endSessionLocally(setAuthed); };
     window.addEventListener('auth:expired', expireSession);
     return () => window.removeEventListener('auth:expired', expireSession);
   }, [setAuthed]);
 
   const signOut = useCallback(async () => {
     try { await apiPost('/auth/logout', {}, { retries: 0 }); } catch { /* expire locally regardless */ }
-    sessionStorage.removeItem('oracle_role');
-    await clearPrivateCaches();
-    setAuthed(false);
+    await endSessionLocally(setAuthed);
   }, [setAuthed]);
 
   return (
