@@ -51,7 +51,7 @@ Listed weakest to strongest:
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list); L17-28 local (plan images and walkthrough audio checked by content) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local); L18-06 Stripe events in order, one checkout per brokerage 0169; L18-07 payment failure keeps reads and export, stops sends; L18-08 AI token budget for Neoh chat 0170; L18-09 every hosted call outside chat under it (local) | D-2026-10-12-02 (billable stage; seat number and who counts; past_due length; AI inference when lapsed; budget numbers) | T18.07 remaining channels; AC18.03 in Stripe test mode (owner keys) |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local); L19-07 restore verified only by decrypting restored ciphertext (local, DR-001) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
@@ -3458,6 +3458,27 @@ audit_refs: [A04]
 decision_refs: [D-2026-10-12-01]
 next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO."
 updated: 2026-10-16
+```
+
+#### L19-07 A restore is verified only when the restored ciphertext opens with the real key (external audit DR-001, REC-02)
+```yaml
+id: L19-07
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [scripts/verify-restore.sh, scripts/dr-drill.sh, scripts/dr-drill-fixture.sql, backend/tests/test_backup_restore_scripts.py]
+tests_run:
+  - {cmd: "sed -n 176,189p scripts/verify-restore.sh at 54740ef", result: "with no ORACLE_ENCRYPTION_MASTER_KEY it printed a WARN and still exited 0 'RESTORE VERIFIED'; with a key it encrypted and decrypted the literal 'k', never the env key or restored data. The CI drill passed a dummy key over a fixture with no ciphertext, so restore decryptability had never been tested. docs/disaster-recovery-state-map.md claimed the opposite", date: 2026-11-13}
+  - {cmd: "python: crypto.derive_tenant_key vs HMAC(PRK=HMAC(zeros32, master), info||0x01)", result: "identical (9353a006…171a for the drill tenant): the derivation is two HMACs, which pgcrypto hmac() computes in the restored DB", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py, new tests against 54740ef's scripts", result: "red: 7 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (after; the real script run against a stand-in psql)", result: "44 passed: no key with restored ciphertext = FAIL and no RESTORE VERIFIED; a key that does not open it = FAIL; the right key = PASS naming the values decrypted; the key never reaches psql argv or stdin (\\getenv); a dump with no ciphertext needs no key; an unsampleable column is a FAIL; the drill fixture's sealed note uses exactly crypto.derive_tenant_key's output", date: 2026-11-13}
+authz_checked: n/a (recovery tooling)
+blockers:
+  - {type: scope, note: "The SQL derivation against real PostgreSQL is proven only by the CI DR drill (fixture note + validator refusing no key and a wrong key); it was not run locally (no Postgres client on this host, disks full). Samples 3 values per *_ciphertext column on tables with a tenant_id; encrypted_payload/encrypted_contact and tenant-less rows are not sampled. On a full 47 GB restore a mostly-NULL column is a sequential scan. Needs psql >= 15. REC-03/REC-04 still open. docs/disaster-recovery-state-map.md correction is in PR #46; update its wording to this behaviour after both merge."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch the CI DR drill on this PR (phase 7 must show the two refusals); then REC-03 (fail on unexplained pg_restore errors, keep the log) and REC-04 (exact RLS counts from the manifest)."
+updated: 2026-11-13
 ```
 
 ### L20
