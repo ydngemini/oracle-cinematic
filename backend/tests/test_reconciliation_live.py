@@ -31,7 +31,8 @@ async def _scenario(monkeypatch):
     T = str(uuid.uuid4())
     ids = {k: str(uuid.uuid4()) for k in ("client", "contact", "cmd_exec", "cmd_ref_ok", "cmd_ref_never",
                                          "cmd_noref", "chat", "recon", "intent", "purchase", "outbox", "lead",
-                                         "sending_lost", "sending_fresh", "sending_known")}
+                                         "sending_lost", "sending_fresh", "sending_known",
+                                         "orphan_turn", "orphan_user")}
     asked = []
 
     async def fake_ask(row):
@@ -64,6 +65,16 @@ async def _scenario(monkeypatch):
             await admin.execute(
                 f"INSERT INTO ai_chat_messages (id, tenant_id, user_id, role, content_ciphertext, request_id, status, updated_at) "
                 f"VALUES ($1,$2,'a@b.test','assistant','\\x00',$3,'pending',{old})", ids["chat"], T, str(uuid.uuid4()))
+            # RUN-01: committed 'pending' 5 minutes ago, and its job was never
+            # enqueued (the process died in between).
+            orphan_agent, orphan_request = f"orphan-{T[:8]}@b.test", str(uuid.uuid4())
+            await admin.execute("INSERT INTO users (id, tenant_id, agent_id, role) VALUES ($1,$2,$3,'agent')",
+                                ids["orphan_user"], T, orphan_agent)
+            await admin.execute(
+                "INSERT INTO ai_chat_messages (id, tenant_id, user_id, role, content_ciphertext, request_id, status, "
+                "created_at, updated_at) VALUES ($1,$2,$3,'assistant','\\x00',$4,'pending', "
+                "now() - interval '5 minutes', now() - interval '5 minutes')",
+                ids["orphan_turn"], T, orphan_agent, orphan_request)
             await admin.execute("INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score) "
                                 "VALUES ($1,$2,$3,'DE',1)", ids["lead"], T, f"P-{T[:8]}")
             await admin.execute(
@@ -130,6 +141,18 @@ async def _scenario(monkeypatch):
             "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND job_type='email:outbox' "
             "AND payload->>'outbox_id' = ANY($2::text[])", T,
             [ids["sending_lost"], ids["sending_fresh"], ids["sending_known"]]) == 0, "never resent"
+        # RUN-01: the orphaned turn got its job, as its own user and role; the
+        # two-hour-old turn was failed, not re-queued.
+        job = await admin.fetchrow(
+            "SELECT job_type, payload, queue_name FROM automation_jobs WHERE tenant_id=$1 AND idempotency_key=$2",
+            T, f"ai-chat:{orphan_agent}:{orphan_request}")
+        assert job is not None and job["job_type"] == "ai_chat:response", out
+        payload = json.loads(job["payload"]) if isinstance(job["payload"], str) else job["payload"]
+        assert payload["assistant_id"] == ids["orphan_turn"] and payload["role"] == "agent"
+        assert out["chat_turns_requeued"] >= 1
+        assert await admin.fetchval(
+            "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND payload->>'assistant_id'=$2",
+            T, ids["chat"]) == 0
         # bounded: a row is not re-asked within 10 minutes
         asked.clear()
         await reconciliation.run_sweep(only_tenant=T)
@@ -144,7 +167,7 @@ async def _scenario(monkeypatch):
         await admin.execute("SET session_replication_role = replica")
         for table in ("automation_jobs", "email_outbox", "provider_purchases", "agent_call_intents",
                       "reconstruction_jobs", "ai_chat_messages", "command_executions", "agent_contacts", "clients",
-                      "leads"):
+                      "leads", "users"):
             await admin.execute(f"DELETE FROM {table} WHERE tenant_id=$1", T)
         await admin.execute("DELETE FROM tenants WHERE id=$1", T)
         await admin.execute("SET session_replication_role = origin")
