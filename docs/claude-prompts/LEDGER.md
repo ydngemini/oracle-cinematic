@@ -1236,13 +1236,14 @@ evidence_shas: [1b18053]   # base; fix in the commit that adds this row
 files: [backend/missions/executor.py, backend/missions/planner.py]
 tests_run:
   - {cmd: "read missions/executor.py:228-230,271-288,298-305,550-556,637 and planner.py:52 at 54740ef", result: "the _stage docstring and a comment said draft bodies are not built and state_code has no source; drafter.draft_message is called at :298 and state_code comes from the client's latest lead (:554, :637). planner.py cited executor.py:178 for the task skip (it is at :209)", date: 2026-11-13}
-  - {cmd: "pytest mission tests (comments only)", result: "149 passed. tests/test_missions_planner.py has 11 failures when run ALONE, also on unmodified main: its fake llm_gateway module lacks ATTACHMENT_TOKENS, which the planner now imports; it passes in the full suite only by test order (pre-existing isolation bug, not changed here)", date: 2026-11-13}
+  - {cmd: "pytest mission tests (comments only)", result: "149 passed. tests/test_missions_planner.py has 11 failures when run ALONE, also on unmodified main: its fake llm_gateway module lacks ATTACHMENT_TOKENS, which the planner now imports; it passed in the full suite only by test order (pre-existing isolation bug)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_missions_planner.py alone, after its fake llm_gateway became a copy of the real module with only complete replaced", result: "22 passed (was 11 failed alone); mission + gateway tests 198 passed", date: 2026-11-13}
 authz_checked: n/a (comments)
 blockers:
-  - {type: scope, note: "The task channel itself stays unsupported (L08-01, PR #11 waits on the owner). The planner test isolation bug above is open."}
+  - {type: scope, note: "The task channel itself stays unsupported (L08-01, PR #11 waits on the owner)."}
 audit_refs: []
 decision_refs: []
-next_task: "Give test_missions_planner's fake llm_gateway the attributes the planner imports (ATTACHMENT_TOKENS)."
+next_task: "None for the docs; the task channel follows L08-01."
 updated: 2026-11-13
 ```
 
