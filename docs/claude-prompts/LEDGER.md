@@ -3539,15 +3539,15 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 
 | ID | Finding | P | Status at `54740ef` (2026-11-13) | Owning category | Ledger |
 |---|---|---|---|---|---|
-| RUN-02 | Inbound call finalize failure has no retry, including spoken opt-outs | P0 | open | 09 | — |
+| RUN-02 | Inbound call finalize failure has no retry, including spoken opt-outs | P0 | fixed in code, local, PR #48 (opt-out written when said; `inbound_calls` health) | 09 | L09-08 |
 | DEP-01 | Release pipeline blocked: `doctl auth` 401 since 2026-11-08 | P0 (pipeline) | open: owner must restore DigitalOcean access | 19 | L18-05 note |
-| DR-001 | Restore verifier passes without the master key | P1 (P0 pre-prod) | open; `docs/disaster-recovery-state-map.md` corrected | 19 | — |
-| REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | open | 19 | — |
+| DR-001 | Restore verifier passes without the master key | P1 (P0 pre-prod) | fixed in code, local, PR #49 (CI drill proves it); `docs/disaster-recovery-state-map.md` corrected | 19 | L19-07 |
+| REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | fixed in code, local, PR #49 | 19 | L19-07 |
 | REC-03 | `pg_restore` errors tolerated; log deleted | P1 | open | 19 | — |
 | REC-04 | RLS check passes if any one table has RLS | P1 | open | 19 | — |
-| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | open: owner action | 19 | row 17, L17-18, A04 |
+| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | partly: master key escrowed on the local machine's other partition (2026-11-13, owner's instruction; not off-host). Scheduled dump not installed: disks full, dev DB stopped. Off-host copy: owner action | 19 | row 17, L17-18, A04 |
 | SEC-001 | Operator WebSockets skip the live session check | P1 | fixed in code, local, PR #45 (`da3394b`) | 17 | L17-29 |
-| SEC-002 | `?token=` webhook secret accepted by default | P2 | open: owner confirms provider callback URLs, then flip the default | 17 | L17-10 |
+| SEC-002 | `?token=` webhook secret accepted by default | P2 | fixed in code, local, PR #47 (removed; checked on the local drive, consoles not checked) | 17 | L17-10 |
 | OBS-001 | Alert-query failure reads as zero open alerts | P2 | open | 19 | — |
 | AI-001 | Evidence bundle is not an end-to-end answer pipeline | P1 | open | 06 | L06-03 |
 | AI-002 | Mission `task` channel unsupported; stale docstrings | P2 | open | 08 | L08-01/03/04 |
