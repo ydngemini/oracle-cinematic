@@ -3479,6 +3479,25 @@ next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO.
 updated: 2026-10-16
 ```
 
+#### L19-10 The deploy drift guard stops when a running app's spec cannot be read (external audit DEP-04)
+```yaml
+id: L19-10
+status: in_progress
+env: local
+evidence_shas: [1b18053]   # base; change in the commit that adds this row
+files: [.github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read ci.yml:591-595 (staging) and 863-867 (production) at 54740ef", result: "any failure of `doctl apps spec get` printed 'first deploy' and skipped spec-drift.py, so a transient doctl/API error deployed a spec that could delete UI-added env vars and domains", date: 2026-11-13}
+  - {cmd: "yaml.safe_load(.github/workflows/ci.yml) after the change", result: "valid; the guard skips only when `doctl apps get` also fails (no app yet), and exits 1 when the app exists but its spec cannot be read", date: 2026-11-13}
+authz_checked: n/a (CI)
+blockers:
+  - {type: operator, note: "Not pushed: the gh token has no `workflow` scope, so GitHub refuses changes to .github/workflows. Local branch work/19-drift-guard-20261113 (patch in oracle-worktrees/audit-2026-11-13/). Owner: `gh auth refresh -s workflow`, then push and open the PR."}
+audit_refs: []
+decision_refs: []
+next_task: "Owner pushes the branch; CI then runs the guard on the next deploy."
+updated: 2026-11-13
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

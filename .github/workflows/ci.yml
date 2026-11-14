@@ -588,10 +588,16 @@ jobs:
       - name: Config drift against the running app (staging)
         run: |
           set -uo pipefail
+          # DEP-04: "spec get failed" used to read as a first deploy and skip the
+          # guard. Only an app that does not exist yet may skip it; one that
+          # exists but whose spec cannot be read stops the deploy.
           if doctl apps spec get "${DIGITALOCEAN_APP_ID}" --format yaml > /tmp/running.staging.yaml 2>/dev/null; then
             python3 scripts/spec-drift.py --running /tmp/running.staging.yaml --new /tmp/app.staging.yaml
+          elif doctl apps get "${DIGITALOCEAN_APP_ID}" -o json >/dev/null 2>&1; then
+            echo "::error::the staging app exists but its running spec could not be read; refusing to deploy blind"
+            exit 1
           else
-            echo "no running spec to compare — first deploy"
+            echo "no running app to compare — first deploy"
           fi
         env:
           ALLOW_SPEC_REMOVALS: ${{ vars.ALLOW_SPEC_REMOVALS }}
@@ -860,10 +866,16 @@ jobs:
       - name: Config drift against the running app (production)
         run: |
           set -uo pipefail
+          # DEP-04: "spec get failed" used to read as a first deploy and skip the
+          # guard. Only an app that does not exist yet may skip it; one that
+          # exists but whose spec cannot be read stops the deploy.
           if doctl apps spec get "${DIGITALOCEAN_APP_ID}" --format yaml > /tmp/running.production.yaml 2>/dev/null; then
             python3 scripts/spec-drift.py --running /tmp/running.production.yaml --new /tmp/app.production.yaml
+          elif doctl apps get "${DIGITALOCEAN_APP_ID}" -o json >/dev/null 2>&1; then
+            echo "::error::the production app exists but its running spec could not be read; refusing to deploy blind"
+            exit 1
           else
-            echo "no running spec to compare — first deploy"
+            echo "no running app to compare — first deploy"
           fi
         env:
           ALLOW_SPEC_REMOVALS: ${{ vars.ALLOW_SPEC_REMOVALS }}
