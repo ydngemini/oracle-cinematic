@@ -1616,6 +1616,25 @@ next_task: "T10.09 remainder: retry / circuit-breaker UI; AC10.05 Playwright che
 updated: 2026-10-16
 ```
 
+#### L10-13 An email lost mid-send is marked unknown and counted, never resent (external audit RUN-04 / COMMS-001)
+```yaml
+id: L10-13
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/reconciliation.py, backend/component_health.py, backend/tests/test_reconciliation_live.py, backend/tests/test_component_health_live.py]
+tests_run:
+  - {cmd: "read email_outbox.py:71-77,110,155-161; reconciliation.py:109-112; component_health.py:157 at 54740ef", result: "deliver() claims a row as 'sending' with no error. A worker killed after the claim, a failed requeue after a failed pre-send check, or a provider-accepted send whose 'sent' write failed all left it 'sending' unmarked; health counted only error LIKE 'delivery_unknown%' and the sweep only re-enqueued 'queued' rows, so it was invisible", date: 2026-11-13}
+  - {cmd: "pytest tests/test_email_outbox.py tests/test_component_health.py tests/test_health_readiness.py tests/test_reconciliation_live.py (no DB here: the live file skips)", result: "36 passed, 1 skipped", date: 2026-11-13}
+authz_checked: n/a (platform sweep and health aggregate; tenant-bounded by only_tenant in tests)
+blockers:
+  - {type: scope, note: "The new assertions are live (real PostgreSQL) and run only in CI's database job: the sweep marks an old unmarked 'sending' row delivery_unknown, leaves a fresh one and an already-marked one alone, and enqueues none of them; health counts a stale unmarked row (before + 1). Not run on this host (no Postgres). An unknown row still needs a person: the outbox has no provider-side lookup."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job on this PR; then RUN-05 (Plivo outcome write failure acknowledged)."
+updated: 2026-11-13
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

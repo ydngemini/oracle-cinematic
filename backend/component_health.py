@@ -154,7 +154,10 @@ async def _db_components() -> dict[str, dict]:
             "count(*) FILTER (WHERE state='failed' AND updated_at > now() - interval '15 minutes') AS failed_15m "
             "FROM command_executions WHERE state IN ('reconciliation_required','failed')")
         mail = await conn.fetchrow(
-            "SELECT count(*) FILTER (WHERE status='sending' AND error LIKE 'delivery_unknown%') AS unknown, "
+            # RUN-04: a 'sending' row with no outcome after 15 minutes counts too,
+            # even before (or without) the sweep marking it.
+            "SELECT count(*) FILTER (WHERE status='sending' AND (error LIKE 'delivery_unknown%' "
+            "OR updated_at < now() - interval '15 minutes')) AS unknown, "
             "count(*) FILTER (WHERE status='queued' AND updated_at < now() - interval '15 minutes') AS stuck "
             "FROM email_outbox WHERE status IN ('sending','queued')")
         harvest = await conn.fetchrow(

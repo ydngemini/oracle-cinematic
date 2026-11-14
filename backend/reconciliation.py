@@ -12,6 +12,7 @@ waiting for a human:
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
+* email_outbox rows left `sending` with no outcome → marked delivery_unknown, never resent
 * AI chat turns stuck `pending`/`streaming` → failed (they locked users out)
 * reconstruction jobs `running` with no progress → failed, needs attention
   (source media is never touched)
@@ -104,6 +105,20 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
                    updated_at=now()
              WHERE id IN (SELECT id FROM provider_purchases WHERE state='intended'
                            AND created_at < now() - interval '15 minutes'
+                           AND ($2::uuid IS NULL OR tenant_id = $2) LIMIT $1)
+            """, _BATCH, only_tenant))
+        # RUN-04 / COMMS-001: a row the worker claimed ('sending') and then lost
+        # — killed after the claim, a failed requeue, or the provider accepted
+        # it and the 'sent' write failed — kept no marker, so health counted it
+        # nowhere and nothing swept it. Mark it unknown; NEVER resend it.
+        out["emails_sending_to_unknown"] = _n(await conn.execute(
+            """
+            UPDATE email_outbox
+               SET error='delivery_unknown: still sending after 15 minutes (worker stopped mid-send?)',
+                   updated_at=now()
+             WHERE id IN (SELECT id FROM email_outbox WHERE status='sending'
+                           AND (error IS NULL OR error NOT LIKE 'delivery_unknown%')
+                           AND updated_at < now() - interval '15 minutes'
                            AND ($2::uuid IS NULL OR tenant_id = $2) LIMIT $1)
             """, _BATCH, only_tenant))
         stale_outbox = await conn.fetch(
