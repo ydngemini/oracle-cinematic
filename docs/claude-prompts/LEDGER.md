@@ -3532,3 +3532,50 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A08 | Heuristic valuation targets in model training | P1 | partly fixed in code, local, not on main (L11-05, L11-06): trainer, manifest, model card and CoT generator say the targets are heuristic, and a state underwriter is activated only with observed-transaction targets. Still open: the county $/sqft table and the 70% rule are still the only training targets (a second, different table in the CoT generator); the same heuristic adapter is served through the agent scope with no card check; the analyst agent serves an unrecorded valuation adapter and, without a market value, ARV = assessed x 1.38 with a fixed band, which reaches a contract's purchase price; no validation against real transactions | `backend/ml_forge/edge_forge/train_lora.py:211-213`, `backend/ml_forge/cot_synthesizer.py:29-33`; open: `backend/local_vllm_adapter.py:183`, `:220`, `backend/agents/agent_analyst.py:504`, `:545-551`, `backend/workflow_engine.py:341` | 11 | L11-05, L11-06 |
 | A09 | AI capability descriptions exceed executable tooling | P1 | partly fixed in code, local: one registry from the allowlist drives the persona, the capabilities API and the Personal AI page, and the executor refuses a tool not offered (L07-01, L07-02, L07-03). Still open (2026-10-18 re-check): the registry never reports setup required, so a brokerage with no channel set up is shown 'Needs your approval' while the model is told those tools are withheld; data-dependent tools (comps, ARV, market, disclosures) show Available without checking their data; the staged-claim reply guard does not run on the Foundry and Bedrock paths; two UI claims remain (ProductTour 'equity reviews', an onboarding toggle nothing reads); the AC07.02 Playwright check has not run | `backend/ai_chat_store.py:645`, `:704`, `:1906`; open: `backend/ai_capabilities.py:296-318`, `backend/ai_chat_agent.py:785`, `:1577`, `oracle-app/src/components/ProductTour.jsx:40`, `oracle-app/src/components/BrokerageOnboardingPanel.jsx:183-184` | 07 | L07-01, L07-02, L07-03 |
 | A10 | Local capacity test is not target-production evidence | P1 | open: nothing measured on DigitalOcean or any production-shaped target (`docs/capacity-plan.md:129` unchanged, figures from migration head 0116 with mocked providers); staging is reduced-size and in recovery mode; the T16.10 protocol is not written. The 0141 tenant wall, 0144 and JIT-off are on staging (0a76a72) but are query-plan fixes, not capacity evidence; L16-04 and L17-25 are local. Missing: SLOs and per-tier budgets (owner, T19.07); alert thresholds from targets (the job-queue alert fires at 600 s against a 60 s target); a request-latency or error-rate metric; the launch-gate load harness still calls MLS (404 under D-2026-10-12-01) | `docs/capacity-plan.md:22`, `:129`; `backend/component_health.py:189`; `performance/scenarios/read_load.js:71`, `performance/first10.sh:33-36` | 16 | L16-01, L16-03, L16-04, L17-25, L19-02 |
+
+## External audit 2026-11-13
+
+From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR #45 `5e71240`), re-verified at `54740ef` before entry (C1.5). Verdicts, evidence and suggested order: [docs/audits/2026-11-13](../audits/2026-11-13/README.md). Every row starts `open` unless noted; move a row when its owning category's ledger entry changes. Refuted findings are listed so nobody reopens them without new evidence.
+
+| ID | Finding | P | Status at `54740ef` (2026-11-13) | Owning category | Ledger |
+|---|---|---|---|---|---|
+| RUN-02 | Inbound call finalize failure has no retry, including spoken opt-outs | P0 | open | 09 | — |
+| DEP-01 | Release pipeline blocked: `doctl auth` 401 since 2026-11-08 | P0 (pipeline) | open: owner must restore DigitalOcean access | 19 | L18-05 note |
+| DR-001 | Restore verifier passes without the master key | P1 (P0 pre-prod) | open; `docs/disaster-recovery-state-map.md` corrected | 19 | — |
+| REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | open | 19 | — |
+| REC-03 | `pg_restore` errors tolerated; log deleted | P1 | open | 19 | — |
+| REC-04 | RLS check passes if any one table has RLS | P1 | open | 19 | — |
+| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | open: owner action | 19 | row 17, L17-18, A04 |
+| SEC-001 | Operator WebSockets skip the live session check | P1 | fixed in code, local, PR #45 (`da3394b`) | 17 | L17-29 |
+| SEC-002 | `?token=` webhook secret accepted by default | P2 | open: owner confirms provider callback URLs, then flip the default | 17 | L17-10 |
+| OBS-001 | Alert-query failure reads as zero open alerts | P2 | open | 19 | — |
+| AI-001 | Evidence bundle is not an end-to-end answer pipeline | P1 | open | 06 | L06-03 |
+| AI-002 | Mission `task` channel unsupported; stale docstrings | P2 | open | 08 | L08-01/03/04 |
+| AI-003 | Standing autonomy releases a mission | — | refuted at `54740ef` (revisit when tasks become executable) | 08 | — |
+| AI-004 | Agent Twin is observational | P2 | open: AC07.09 test missing | 07 | — |
+| AI-005 | Failed tool-call row never retryable; `call_index` collides across tiers; Bedrock bypasses the ledger | P1 | open | 07 | — |
+| BILL-001 | No alert for a delivered command with no usage row; `ai_budget.settle` drops the hold on a failed insert | P1 | open | 18 | A05 (partly) |
+| BILL-002 | Meter id truncated below key length | P2 | refuted in practice; guard test only | 18 | L18-06 |
+| BILL-003 | Quantity parse can raise (NaN, Infinity, text) | P2 | open | 18 | — |
+| COMMS-001 / RUN-04 | Email stuck in `sending` is invisible to health and the sweep | P1 | open | 10 | — |
+| COMMS-002 | Live jurisdiction/provider sign-off unverified | P1 gate | open | 10 / 20 | row 10, A04 |
+| JOB-001 | Reused idempotency key can return a job with different inputs | P2 | open | 08 | — |
+| JOB-01 | Job completion and attempt audit not atomic | P2 | open | 08 | — |
+| MIG-001 | Direct migration mode notices drift after applying | P2 | open | 19 | — |
+| DEP-02 | Rollback trusts local migration filenames | P1 | open | 19 | T19.11 |
+| DEP-03 | Rollback doesn't verify the target app | P1 | open | 19 | AC19.04 |
+| DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | open (found in verification) | 19 | — |
+| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | open | 19 | — |
+| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open | 19 | T19.06 |
+| DEP-06 | Post-rollback smoke is advisory | P2 | open | 19 | T19.11 |
+| DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
+| DEP-08 | Storage smoke can pass with storage broken | P2 | open | 19 | — |
+| DEP-09 | Saved readiness runs aren't launch proof | P1 | open | 19 | A04 |
+| WEB-001 | IndexedDB handles never closed; captures survive sign-out | P2 | open | 17 / 16 | — |
+| WEB-002 | Storage exceptions break login, restore and sign-out cleanup | P2 | open | 02 | — |
+| WEB-003 | Dashboard JWT in the WebSocket subprotocol | P2 | open (design check before mounting) | 19 | — |
+| UX-001 | Status banner hides an initial failure | P2 | open | 02 | — |
+| RUN-01 | Accepted chat turn can have no durable job | P1 | open | 07 | — |
+| RUN-03 | ElevenLabs says "saved" before the note is saved | P1 | open | 09 | — |
+| RUN-05 | Plivo callback acknowledged after a failed outcome write | P1 | open | 10 | A05 |
+| RUN-06 | Losing media task cancelled without await (opt-out write can abort) | P1 | open | 09 | — |
