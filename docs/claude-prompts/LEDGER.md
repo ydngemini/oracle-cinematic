@@ -41,7 +41,7 @@ Listed weakest to strongest:
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local); L07-03 per-actor offer names what is withheld (local) | Playwright check owed (L07-01); owner: archive_client | T08.04 + per-actor capability block |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local); L08-01 cancel path `tests_pass` (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local); L09-08 inbound spoken opt-out recorded when said (local, RUN-02) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes; L11-16 Neoh reads it too (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only); L12-04 certification state derived from fresh evidence, every label bound (local) | A03 positive certification (T12.06, T12.04); AC12.02 real-device protocol | Server upload sessions (T12.05); T12.06 room graph |
@@ -1409,6 +1409,28 @@ audit_refs: []
 decision_refs: []
 next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds."
 updated: 2026-10-16
+```
+
+#### L09-08 An inbound caller's spoken opt-out is recorded when it is said (external audit RUN-02, P0)
+```yaml
+id: L09-08
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/inbound_voice.py, backend/voice_opt_out.py, backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/component_health.py, backend/tests/test_elevenlabs_realtime.py, backend/tests/test_inbound_voice.py, backend/tests/test_component_health.py, backend/tests/test_inbound_v1_routing_and_idempotency.py]
+tests_run:
+  - {cmd: "read inbound_voice.py:754,909-915,716-718; elevenlabs_realtime.py:267-273; qwen_omni_realtime.py:545-557,787-799 at 54740ef", result: "the inbound suppression was written only inside finalize_inbound_voice_call at hang-up; all three bridges log and swallow a finalize failure; no retry existed although the docstring promised one; nothing read calls left transcript_status='active'. A DB blip or a pod killed at hang-up lost a TCPA opt-out and the outreach gate kept allowing calls", date: 2026-11-13}
+  - {cmd: "pytest new tests against 54740ef's source", result: "red: 10 failed, 4 errors (record_inbound_opt_out did not exist)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_component_health.py tests/test_health_readiness.py tests/test_elevenlabs_realtime.py tests/test_inbound_voice.py tests/test_voice_opt_out.py tests/test_qwen_omni_realtime.py tests/test_plivo_qwen_realtime.py tests/test_twilio_qwen_realtime.py (after)", result: "142 passed: on ElevenLabs and Qwen (Twilio, Plivo) inbound calls a caller opt-out is written as it is said, even when finalize then fails; written once per call, retried on the next opt-out if the write failed; the call is not ended; ordinary 'stop by the house' records nothing; record_inbound_opt_out suppresses the caller's number brokerage-wide on every channel plus the contact flag and sets opt_out_requested; a failed write raises; finalize keeps an opt-out recorded mid-call; component health 'inbound_calls' is DEGRADED for a call still active 10 min after it ended or 2 h after it started", date: 2026-11-13}
+  - {cmd: "pytest tests compliance_engine/tests (the CI unit job)", result: "6320 passed, 1 failed, 111 skipped: test_inbound_v1_routing_and_idempotency's fake finalize row lacked the newly selected opt_out_requested column; the fake now carries it and that file plus test_inbound_voice.py re-run 40 passed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_elevenlabs_realtime.py tests/test_voice_opt_out.py tests/test_inbound_voice.py (honour_inbound shielded, RUN-06)", result: "80 passed: cancelling the bridge's task as the caller hangs up does not cancel the mid-call suppression write", date: 2026-11-13}
+authz_checked: "Writes in the call's own brokerage context (brokerage_scope agent ctx, as finalize); only the number and a fixed source sentence are stored, never what was said."
+blockers:
+  - {type: scope, note: "If both the mid-call write and finalize fail, the opt-out is still unrecorded; health shows the call (inbound_calls DEGRADED) for a person to review. No automatic re-detection: an unfinalized call's transcript was never stored. ACS inbound (no call state) is not covered. No real call made (T09.18 needs owner approval)."}
+audit_refs: []
+decision_refs: []
+next_task: "Real inbound test call saying 'stop' with finalize forced to fail, once T09.18 is approved; then RUN-03 (save_note says Saved before saving)."
+updated: 2026-11-13
 ```
 
 ### L10
