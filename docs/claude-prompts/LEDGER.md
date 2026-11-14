@@ -3359,6 +3359,25 @@ next_task: "The next T18.07 channel: carrier minutes and SMS per brokerage (soft
 updated: 2026-10-18
 ```
 
+#### L18-11 An invalid usage quantity is refused, never raised or stored (external audit BILL-003)
+```yaml
+id: L18-11
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/billing_usage.py, backend/tests/test_billing_usage.py]
+tests_run:
+  - {cmd: "read billing_usage.py:177 at 54740ef", result: "Decimal(str(quantity)) < 0 raised InvalidOperation for text and NaN out of record_usage, documented never to raise; Infinity passed and would be stored (PostgreSQL 14+ numeric accepts it). No current caller passes one", date: 2026-11-13}
+  - {cmd: "pytest tests/test_billing_usage.py (new test against 54740ef's billing_usage.py)", result: "red: failed for text, NaN and Infinity", date: 2026-11-13}
+  - {cmd: "pytest tests/test_billing_usage.py (after)", result: "27 passed: text, NaN, Infinity, negative, None and a non-number are refused with a warning before any database work; the parsed value is the one inserted", date: 2026-11-13}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for BILL-003."
+updated: 2026-11-13
+```
+
 ### L19
 Production operations.
 
