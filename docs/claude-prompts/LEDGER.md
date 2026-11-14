@@ -1158,6 +1158,25 @@ next_task: "Plans read the same gaps since L08-04; one per-actor capability bloc
 updated: 2026-10-16
 ```
 
+#### L07-04 An accepted chat turn whose job was never queued is queued by the sweep (external audit RUN-01)
+```yaml
+id: L07-04
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_api.py, backend/reconciliation.py, backend/tests/test_reconciliation_live.py]
+tests_run:
+  - {cmd: "read ai_chat_store.py:154-314, ai_chat_api.py:330-360, reconciliation.py:78-84, useNeohChannel.js:153 at 54740ef", result: "the turn is committed 'pending' and acknowledged, then the job is enqueued: a process death in between left a turn no worker runs, failed only by the 15-minute sweep step (worst case ~30 min) with no frame to the open UI, and its chat slot held up to an hour (2 per agent). Re-sending does not help: the client mints a new request_id per send. enqueue_job opens its own transaction, so one-transaction enqueue would mean refactoring the job queue", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_chat*.py + non-live reconciliation tests (no DB here)", result: "35 passed (accept path unchanged: it now calls the shared enqueue_chat_turn helper)", date: 2026-11-13}
+authz_checked: "The re-queued turn runs as its own user with the role read from users (never wider; ai_chat_agent._worker_role still caps it)."
+blockers:
+  - {type: scope, note: "The new live assertions (an orphaned 5-minute-old turn gets exactly its job, as its user and role; a two-hour-old one is failed, not re-queued) run only in CI's database job. The sweep runs every 15 minutes, so an orphaned turn now waits 2-17 minutes instead of ~30 and then gets its answer, still without a live frame until the worker streams. A turn whose user row is gone is left for the 15-minute failure step. A one-transaction enqueue would close the window entirely."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job; consider a transactional enqueue (enqueue_job accepting the caller's connection)."
+updated: 2026-11-13
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
