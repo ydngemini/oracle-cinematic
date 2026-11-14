@@ -1235,6 +1235,26 @@ next_task: "Watch CI's database job; add a cross-tier staging test (tier 1 stage
 updated: 2026-11-13
 ```
 
+#### L07-06 A twin preference cannot release or reorder an action (AC07.09; external audit AI-004)
+```yaml
+id: L07-06
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; test in the commit that adds this row
+files: [backend/tests/test_agent_twin_advice_only.py]
+tests_run:
+  - {cmd: "grep agent_twin imports at 1b18053", result: "only intelligence_os_api (the twin's API) and the intelligence/ facade import the module; expected_value, missions/evaluator and missions/simulator take only wilson_interval. T07.11 makes the twin advice only; AC07.09 asked for a test and none existed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_agent_twin_advice_only.py", result: "3 passed: no module but the API and facade imports agent_twin; everything else may take only wilson_interval; command_center, autonomy, expected_value, opportunity_engine and missions policy/executor/planner never read an agent_twin attribute", date: 2026-11-14}
+  - {cmd: "mutant: `from agent_twin import policy` appended to command_center.py", result: "1 failed (test_everything_else_takes_only_the_statistics_helper); restored", date: 2026-11-14}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "Structural, not behavioural: it proves the twin cannot reach ordering or release, not what ordering would be if it did. Closing the loop needs outcomes and an owner decision (T07.11)."}
+audit_refs: []
+decision_refs: []
+next_task: "None until the owner decides the twin may influence ranking."
+updated: 2026-11-14
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
