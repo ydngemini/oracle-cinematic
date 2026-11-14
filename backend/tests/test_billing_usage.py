@@ -390,7 +390,11 @@ def test_an_invalid_quantity_is_refused_never_raised_or_stored(monkeypatch, quan
     import billing_usage
     from tenancy import Role, TenantContext
 
+    reached = []
+
     def no_db(*_a, **_k):
+        # record_usage swallows exceptions, so record the reach, not just raise.
+        reached.append(True)
         raise AssertionError("an invalid quantity must not reach the database")
 
     monkeypatch.setattr(billing_usage, "tenant_tx", no_db)
@@ -398,3 +402,4 @@ def test_an_invalid_quantity_is_refused_never_raised_or_stored(monkeypatch, quan
     metric = next(m for m in sorted(billing_usage.METRICS) if m not in billing_usage._STAGE_BOUND)
     assert asyncio.run(billing_usage.record_usage(ctx, metric=metric, quantity=quantity,
                                                   idempotency_key="k")) is False
+    assert reached == [], "refused before any database work"

@@ -3368,7 +3368,7 @@ evidence_shas: [1b18053]   # base; fix in the commit that adds this row
 files: [backend/billing_usage.py, backend/tests/test_billing_usage.py]
 tests_run:
   - {cmd: "read billing_usage.py:177 at 54740ef", result: "Decimal(str(quantity)) < 0 raised InvalidOperation for text and NaN out of record_usage, documented never to raise; Infinity passed and would be stored (PostgreSQL 14+ numeric accepts it). No current caller passes one", date: 2026-11-13}
-  - {cmd: "pytest tests/test_billing_usage.py (new test against 54740ef's billing_usage.py)", result: "red: failed for text, NaN and Infinity", date: 2026-11-13}
+  - {cmd: "pytest tests/test_billing_usage.py (new test against 54740ef's billing_usage.py)", result: "red: 6 failed (text, NaN twice, Infinity twice, a non-number); the test records whether the database was reached, since record_usage swallows exceptions", date: 2026-11-13}
   - {cmd: "pytest tests/test_billing_usage.py (after)", result: "27 passed: text, NaN, Infinity, negative, None and a non-number are refused with a warning before any database work; the parsed value is the one inserted", date: 2026-11-13}
 authz_checked: n/a
 blockers: []
