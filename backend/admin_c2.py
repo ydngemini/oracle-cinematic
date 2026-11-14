@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from admin_ops import require_platform_admin
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, admit_operator_stream, require_context, watch_operator_stream
 
 logger = logging.getLogger("oracle.admin_c2")
 
@@ -348,8 +348,11 @@ async def surge_telemetry_ws(websocket: WebSocket):
     if ctx.role is not Role.PLATFORM_ADMIN:
         await websocket.close(code=4403)
         return
+    if not await admit_operator_stream(websocket, ctx):  # SEC-001: a demoted admin's token
+        return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    session_watch = watch_operator_stream(websocket, ctx)
     from audit_middleware import record_platform_websocket
     record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     _surge_subscribers.append(websocket)
@@ -360,5 +363,6 @@ async def surge_telemetry_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        session_watch.cancel()
         if websocket in _surge_subscribers:
             _surge_subscribers.remove(websocket)

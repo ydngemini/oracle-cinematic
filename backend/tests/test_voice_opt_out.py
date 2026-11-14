@@ -86,3 +86,33 @@ def test_opt_out_later_in_the_call_still_counts():
 
 def test_empty_transcript_is_not_an_opt_out():
     assert _requested_opt_out([]) is False
+
+
+def test_a_hang_up_cannot_cancel_the_suppression_write(monkeypatch):
+    """RUN-06: the bridge cancels the media task as the caller hangs up; the
+    opt-out write it was awaiting used to be cancelled with it."""
+    import asyncio
+
+    import voice_opt_out
+
+    written = []
+
+    async def slow_record(state):
+        await asyncio.sleep(0.05)
+        written.append(state["callee"])
+
+    monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", slow_record)
+
+    async def scenario():
+        call = asyncio.ensure_future(voice_opt_out.honour({"callee": "+13025550101"}, "call-1"))
+        await asyncio.sleep(0.01)
+        call.cancel()                      # the caller hung up mid-write
+        try:
+            await call
+        except asyncio.CancelledError:
+            pass
+        assert call.cancelled(), "the cancellation still reaches the bridge"
+        await asyncio.sleep(0.1)
+        return written
+
+    assert asyncio.run(scenario()) == ["+13025550101"]

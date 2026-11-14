@@ -249,21 +249,60 @@ def test_the_claim_is_taken_before_the_dispatch_chain():
     assert claim < first_handler, "the claim must precede every tool handler"
 
 
-def test_call_index_is_monotonic_across_rounds_not_per_round():
-    """A per-round counter makes round 2's call 0 collide with round 1's.
+def test_call_index_is_monotonic_across_rounds_and_provider_tiers():
+    """A per-round counter makes round 2's call 0 collide with round 1's; a
+    per-TIER counter (AI-005) made the next provider tier's calls collide with
+    the tier that fell through. One counter on the turn's bundle serves both."""
+    import ai_chat_agent
 
-    Invisible until a turn actually runs two rounds, and then it replays the
-    wrong receipt — so it is asserted here rather than left to production.
-    """
+    bundle: dict = {}
+    first_tier = [ai_chat_agent._next_call_index(bundle) for _ in range(3)]
+    next_tier = [ai_chat_agent._next_call_index(bundle) for _ in range(2)]
+    assert first_tier == [0, 1, 2] and next_tier == [3, 4]
+    assert ai_chat_agent._next_call_index({}) == 0, "a job retry rebuilds the bundle and replays from 0"
+
     src = (BACKEND / "ai_chat_agent.py").read_text()
+    assert "call_index = 0" not in src, "no tier may restart the turn's counter"
     for loop in ("for round_index in range(2):", "for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):"):
         head = src.index(loop)
-        assert "call_index = 0" in src[max(0, head - 500):head], (
-            f"call_index must be initialised outside `{loop}`"
-        )
-        assert "call_index = 0" not in src[head:head + 1500], (
-            f"call_index must not reset inside `{loop}`"
-        )
+        assert "_next_call_index(bundle)" in src[head:head + 6000], f"`{loop}` must take the turn's index"
+
+
+def test_the_bedrock_tier_is_ledgered_too():
+    """AI-005: its execute_safe_tool call passed no call_index, so its writes had
+    no replay protection at all."""
+    src = (BACKEND / "ai_chat_agent.py").read_text()
+    at = src.index('tool_use.get("input") or {}, context_type, context_id,')
+    assert "_next_call_index(bundle)" in src[at:at + 200]
+
+
+def test_a_failed_row_with_different_work_is_also_retryable():
+    """Nothing committed under a 'failed' row, so it protects nothing — not even
+    its identity: another tier's call at this index may be different work."""
+    row = _Row(tool_name="create_task", arguments_hash="other", status="failed", result=None)
+    got = asyncio.run(_ledger_replay(_Conn(row), _ctx(), ASSISTANT, 0, "update_client", "h"))
+    assert got is None
+
+
+class _ClaimConn:
+    def __init__(self, won):
+        self.won, self.sql = won, ""
+
+    async def fetchval(self, sql, *_args):
+        self.sql = " ".join(sql.split())
+        return 1 if self.won else None
+
+
+def test_a_claim_takes_over_a_failed_row_and_never_a_completed_one():
+    """AI-005: a plain INSERT hit the unique key still held by the 'failed' row
+    and the retry reported "could not be persisted"."""
+    conn = _ClaimConn(won=True)
+    asyncio.run(ai_chat_store._ledger_claim(conn, _ctx(), "u", ASSISTANT, 0, "update_client", "h"))
+    assert "ON CONFLICT ON CONSTRAINT ai_tool_operations_identity DO UPDATE" in conn.sql
+    assert "WHERE ai_tool_operations.status = 'failed'" in conn.sql
+    with pytest.raises(ai_chat_store.ToolOperationClaimLost):
+        asyncio.run(ai_chat_store._ledger_claim(_ClaimConn(won=False), _ctx(), "u", ASSISTANT, 0,
+                                                "update_client", "h"))
 
 
 def test_migration_0087_grants_the_table_and_forces_rls():

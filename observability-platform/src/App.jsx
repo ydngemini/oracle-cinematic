@@ -13,7 +13,7 @@ import { resolveToken, logout } from './lib/auth';
 import './index.css';
 
 // Auth gate: the dashboard's WebSocket is now server-side gated to
-// platform_admin/broker_owner, so we must hold a JWT before mounting it. No
+// platform_admin, so we must hold a JWT before mounting it. No
 // token → show <Login>; a WS auth rejection drops us back here.
 export default function App() {
   const [token, setToken] = useState(() => resolveToken());
