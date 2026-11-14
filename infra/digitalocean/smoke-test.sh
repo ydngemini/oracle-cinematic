@@ -164,7 +164,22 @@ case "$api_code" in
   *) fail "GET /api/commands -> $api_code (unexpected — check for a 5xx boot error)" ;;
 esac
 
-echo "== 4. Spaces bucket =="
+echo "== 4. Object storage (the app's own credentials) =="
+# DEP-08: the checks below use THIS runner's credentials, which CI never has,
+# so on their own they could only warn. /health/storage makes the app probe its
+# bucket with its own keys: bad keys or a missing bucket fail the release; a
+# provider blip only warns.
+storage_body=$(curl -sS --max-time 15 "$APP_URL/health/storage" 2>/dev/null || true)
+storage_state=$(printf '%s' "$storage_body" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+case "$storage_state" in
+  healthy) pass "storage answers with the app's credentials" ;;
+  auth_failed) fail "storage refuses the app's credentials (ORACLE_S3_ACCESS_KEY_ID/SECRET)" ;;
+  misconfigured) fail "storage is misconfigured (bucket missing or unset)" ;;
+  unavailable) fail "the media mount is missing or read-only" ;;
+  degraded) warn "storage provider is degraded right now — NOT a release failure" ;;
+  not_probed) info "storage backend has no cheap probe; configured" ;;
+  *) warn "/health/storage gave no state (older release?): ${storage_body:0:120}" ;;
+esac
 if command -v aws >/dev/null 2>&1; then
   if aws --endpoint-url "$SPACES_ENDPOINT" s3api head-bucket --bucket "$SPACES_BUCKET" >/dev/null 2>&1; then
     pass "Spaces bucket $SPACES_BUCKET is reachable"
