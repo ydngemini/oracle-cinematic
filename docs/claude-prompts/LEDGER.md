@@ -3160,6 +3160,25 @@ next_task: "SBOM in CI (T17.10); malware scanning needs an owner decision on a s
 updated: 2026-11-11
 ```
 
+#### L17-30 dnspython 2.9.0 → 2.9.2 for CVE-2026-128089 (T17.10 dependency audit)
+```yaml
+id: L17-30
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; bump in the commit that adds this row
+files: [backend/requirements.txt]
+tests_run:
+  - {cmd: "CI backend job on PRs #45-#50 (2026-11-13)", result: "6296 passed, then pip_audit --strict failed every PR: dnspython 2.9.0 CVE-2026-128089, fixed in 2.9.2", date: 2026-11-13}
+  - {cmd: "python -m pip_audit --strict --skip-editable -r backend/requirements.txt (after)", result: "No known vulnerabilities found", date: 2026-11-13}
+  - {cmd: "pytest site_domains/DNS tests on dnspython 2.9.2", result: "53 passed", date: 2026-11-13}
+authz_checked: n/a (dependency)
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "Rebase or re-run PRs #45-#51 once this merges."
+updated: 2026-11-13
+```
+
 ### L18
 Billing, seats and analytics.
 
