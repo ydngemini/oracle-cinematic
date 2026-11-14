@@ -3443,6 +3443,26 @@ next_task: "The next T18.07 channel: carrier minutes and SMS per brokerage (soft
 updated: 2026-10-18
 ```
 
+#### L18-10 A refused token-usage row no longer takes the call off the AI budget cap (external audit BILL-001, cost half)
+```yaml
+id: L18-10
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_budget.py, backend/billing_usage.py, backend/tests/test_ai_budget.py]
+tests_run:
+  - {cmd: "read ai_budget.py:286-298, billing_usage.py:104-209 at 54740ef", result: "settle records usage and deletes the call's hold in one transaction; record_usage swallows an insert failure inside its savepoint and returns False (the same as an idempotent repeat), so the hold was deleted anyway and the call's tokens counted toward the monthly cap nowhere (_TOTALS reads usage rows plus live holds). The docstring called it a stated gap", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_budget.py (new tests against 54740ef's ai_budget.py and billing_usage.py)", result: "red: 1 failed (the hold was dropped)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_budget.py tests/test_ai_budget_hosted_calls.py tests/test_billing_usage.py (after)", result: "230 passed: a settled call drops its hold; when the usage INSERT fails the hold is kept, resized to the provider-reported tokens (GREATEST) and held to the end of the cap's UTC month, so the cap still counts the call; every other record_usage/record_inference caller keeps never-raise (raise_errors defaults False)", date: 2026-11-13}
+authz_checked: n/a (budget accounting inside the caller's own tenant)
+blockers:
+  - {type: scope, note: "The revenue half of BILL-001 is still open: no alert for a delivered speed-to-lead engagement with no lead_engaged row, and reconcile_lead_engagements has no caller. A kept hold is not a billing_usage_events row, so usage reports (not the cap) still miss those tokens. Not run against PostgreSQL here; the live budget tests run in CI."}
+audit_refs: []
+decision_refs: []
+next_task: "BILL-001 revenue half: schedule a missing-engagement check (delivered speed-to-lead response, succeeded command, no lead_engaged row) with an alert."
+updated: 2026-11-13
+```
+
 ### L19
 Production operations.
 

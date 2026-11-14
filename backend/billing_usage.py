@@ -107,6 +107,7 @@ async def record_inference(
     *,
     idempotency_key: str,
     conn: Any = None,
+    raise_errors: bool = False,
 ) -> tuple[int, int]:
     """Meter one model call's token consumption. Returns what was recorded.
 
@@ -121,6 +122,8 @@ async def record_inference(
 
     ``conn`` is the caller's own transaction (ai_budget.settle records the
     usage and drops the call's hold in one), as for record_usage.
+    ``raise_errors`` passes through to record_usage: settle must know a row
+    was refused, or it drops the hold and the tokens count nowhere (BILL-001).
     """
     from llm_gateway import token_usage_of
 
@@ -135,6 +138,7 @@ async def record_inference(
             quantity=prompt_tokens,
             idempotency_key=f"{idempotency_key}:prompt",
             conn=conn,
+            raise_errors=raise_errors,
         )
     if completion_tokens:
         await record_usage(
@@ -143,6 +147,7 @@ async def record_inference(
             quantity=completion_tokens,
             idempotency_key=f"{idempotency_key}:completion",
             conn=conn,
+            raise_errors=raise_errors,
         )
     return (prompt_tokens, completion_tokens)
 
@@ -155,6 +160,7 @@ async def record_usage(
     idempotency_key: str,
     occurred_at: Optional[datetime] = None,
     conn: Any = None,
+    raise_errors: bool = False,
 ) -> bool:
     """Append one usage row. Returns True when a NEW row was written.
 
@@ -206,6 +212,8 @@ async def record_usage(
         logger.warning(
             "Usage record deferred: metric=%s key=%s", metric, idempotency_key, exc_info=True,
         )
+        if raise_errors:
+            raise
         return False
 
 
