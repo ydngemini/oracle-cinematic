@@ -3479,6 +3479,25 @@ next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO.
 updated: 2026-10-16
 ```
 
+#### L19-11 The operator health card says when open alerts could not be read (external audit OBS-001)
+```yaml
+id: L19-11
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/admin_ops.py, backend/tests/test_operator_routes_refuse_tenant_roles.py, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.test.jsx]
+tests_run:
+  - {cmd: "read admin_ops.py:80-94 and OperatorOverview.jsx at 54740ef", result: "a failed ops_alerts query was swallowed and answered open_alerts: [] — the same as no open alerts — and the card then showed none", date: 2026-11-13}
+  - {cmd: "new tests against 54740ef's admin_ops.py and OperatorOverview.jsx", result: "red: backend 1 failed, frontend 1 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_operator_routes_refuse_tenant_roles.py; vitest OperatorOverview.test.jsx (after)", result: "64 passed; 12 passed: the response carries alerts_status ok|unavailable (logged on failure), open_alerts stays a list for compatibility, and the card says 'Open alerts could not be read' instead of nothing", date: 2026-11-13}
+authz_checked: "Unchanged: require_platform_admin."
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for OBS-001."
+updated: 2026-11-13
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
