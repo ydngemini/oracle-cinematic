@@ -3562,20 +3562,20 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | DEP-01 | Release pipeline blocked: `doctl auth` 401 since 2026-11-08 | P0 (pipeline) | open: owner must restore DigitalOcean access | 19 | L18-05 note |
 | DR-001 | Restore verifier passes without the master key | P1 (P0 pre-prod) | fixed in code, local, PR #49 (CI drill proves it); `docs/disaster-recovery-state-map.md` corrected | 19 | L19-07 |
 | REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | fixed in code, local, PR #49 | 19 | L19-07 |
-| REC-03 | `pg_restore` errors tolerated; log deleted | P1 | open | 19 | — |
-| REC-04 | RLS check passes if any one table has RLS | P1 | open | 19 | — |
+| REC-03 | `pg_restore` errors tolerated; log deleted | P1 | fixed in code, local, PR #58 (unexplained errors stop the restore; log kept); per-table row reconciliation open | 19 | L19-09 |
+| REC-04 | RLS check passes if any one table has RLS | P1 | fixed in code, local, PR #58 (exact counts from the manifest) | 19 | L19-09 |
 | OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | partly: master key escrowed on the local machine's other partition (2026-11-13, owner's instruction; not off-host). Scheduled dump not installed: disks full, dev DB stopped. Off-host copy: owner action | 19 | row 17, L17-18, A04 |
 | SEC-001 | Operator WebSockets skip the live session check | P1 | fixed in code, local, PR #45 (`da3394b`) | 17 | L17-29 |
 | SEC-002 | `?token=` webhook secret accepted by default | P2 | fixed in code, local, PR #47 (removed; checked on the local drive, consoles not checked) | 17 | L17-10 |
-| OBS-001 | Alert-query failure reads as zero open alerts | P2 | open | 19 | — |
+| OBS-001 | Alert-query failure reads as zero open alerts | P2 | fixed in code, local, PR #59 | 19 | L19-11 |
 | AI-001 | Evidence bundle is not an end-to-end answer pipeline | P1 | open | 06 | L06-03 |
 | AI-002 | Mission `task` channel unsupported; stale docstrings | P2 | open | 08 | L08-01/03/04 |
 | AI-003 | Standing autonomy releases a mission | — | refuted at `54740ef` (revisit when tasks become executable) | 08 | — |
 | AI-004 | Agent Twin is observational | P2 | open: AC07.09 test missing | 07 | — |
-| AI-005 | Failed tool-call row never retryable; `call_index` collides across tiers; Bedrock bypasses the ledger | P1 | open | 07 | — |
-| BILL-001 | No alert for a delivered command with no usage row; `ai_budget.settle` drops the hold on a failed insert | P1 | open | 18 | A05 (partly) |
+| AI-005 | Failed tool-call row never retryable; `call_index` collides across tiers; Bedrock bypasses the ledger | P1 | fixed in code, local, PR #57 | 07 | L07-05 |
+| BILL-001 | No alert for a delivered command with no usage row; `ai_budget.settle` drops the hold on a failed insert | P1 | cost half fixed in code, local, PR #56 (hold kept to month end); revenue half (missing lead_engaged alert) open | 18 | L18-10, A05 (partly) |
 | BILL-002 | Meter id truncated below key length | P2 | refuted in practice; guard test only | 18 | L18-06 |
-| BILL-003 | Quantity parse can raise (NaN, Infinity, text) | P2 | open | 18 | — |
+| BILL-003 | Quantity parse can raise (NaN, Infinity, text) | P2 | fixed in code, local, PR #60 | 18 | L18-11 |
 | COMMS-001 / RUN-04 | Email stuck in `sending` is invisible to health and the sweep | P1 | fixed in code, local, PR #50 (sweep marks unknown, health counts; live tests in CI) | 10 | L10-13 |
 | COMMS-002 | Live jurisdiction/provider sign-off unverified | P1 gate | open | 10 / 20 | row 10, A04 |
 | JOB-001 | Reused idempotency key can return a job with different inputs | P2 | open | 08 | — |
@@ -3584,7 +3584,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | DEP-02 | Rollback trusts local migration filenames | P1 | fixed in code, local, PR #53 (--apply needs --from) | 19 | L19-08, T19.11 |
 | DEP-03 | Rollback doesn't verify the target app | P1 | fixed in code, local, PR #53 | 19 | L19-08, AC19.04 |
 | DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed in code, local, PR #53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
-| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | open | 19 | — |
+| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed locally, NOT pushed: the gh token lacks `workflow` scope (branch work/19-drift-guard-20261113) | 19 | L19-10 |
 | DEP-05 | Rollback compatibility classifier is syntactic | P2 | open | 19 | T19.06 |
 | DEP-06 | Post-rollback smoke is advisory | P2 | open | 19 | T19.11 |
 | DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
@@ -3594,7 +3594,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | WEB-002 | Storage exceptions break login, restore and sign-out cleanup | P2 | open | 02 | — |
 | WEB-003 | Dashboard JWT in the WebSocket subprotocol | P2 | open (design check before mounting) | 19 | — |
 | UX-001 | Status banner hides an initial failure | P2 | open | 02 | — |
-| RUN-01 | Accepted chat turn can have no durable job | P1 | open | 07 | — |
+| RUN-01 | Accepted chat turn can have no durable job | P1 | fixed in code, local, PR #54 (sweep re-queues orphaned turns; 15-min cadence) | 07 | L07-04 |
 | RUN-03 | ElevenLabs says "saved" before the note is saved | P1 | open: needs an owner decision on mid-call note writes (update the one AI note vs one note per item) | 09 | — |
 | RUN-05 | Plivo callback acknowledged after a failed outcome write | P1 | fixed in code, local, PR #51 (503 + state kept; Plivo retry policy unverified) | 10 | L10-14, A05 |
 | RUN-06 | Losing media task cancelled without await (opt-out write can abort) | P1 | open | 09 | — |
