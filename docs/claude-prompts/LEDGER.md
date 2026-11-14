@@ -2667,7 +2667,7 @@ updated: 2026-10-14
 ```yaml
 id: L17-10
 status: tests_pass
-env: staging
+env: local   # removal 2026-11-13 is local; the header/signed-URL paths are on staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds backend/webhook_auth.py
 files: [backend/webhook_auth.py, backend/commands_api.py, backend/command_providers.py, backend/acs_call_handler.py, backend/log_redaction.py, backend/tests/test_webhook_auth.py, backend/tests/test_log_pii_guard.py, .env.example, docs/security-launch-review.md]
 tests_run:
@@ -2675,14 +2675,17 @@ tests_run:
   - {cmd: "read uvicorn 0.49.0 protocols/websockets/websockets_impl.py:263", result: "WebSocket handshake lines go to uvicorn.error with the path as the SECOND argument; log_redaction rewrote only the third argument on uvicorn.access, so ?bridge_token= (commands_api Plivo media bridge) reached the log", date: 2026-10-14}
   - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py", result: "95 passed: header token, body HMAC (body- and time-bound, 5 min), expiring path-bound signed URL (expired/other route/bad sig -> 403); Neoh's callback URLs carry no secret and no token=; old ?token= accepted with a deprecation warning that names the env var, not the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=0 refuses it", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "2026-11-13 removal (owner: settle it from the local drive). grep of the repo, its worktrees and every .env* under /media/ydn/SYPHER_CORE2 for a callback/webhook URL carrying ?token=", result: "none: only .env.example comments. No code builds one (commands_api.py:137, acs_call_handler/command_providers hand out signed URLs). The Azure subscription that hosted ACS is disabled (since 2026-08-09), so no live Event Grid delivery. Provider consoles were NOT checked", date: 2026-11-13}
+  - {cmd: "pytest tests/test_webhook_auth.py (new test against the old webhook_auth.py)", result: "red: 1 failed (the correct secret in ?token= still authenticated)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py tests/test_log_pii_guard.py (after)", result: "107 passed: ?token=<secret> is 403 and logs which webhook without the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=1 cannot bring it back; recovery tests authenticate with the header", date: 2026-11-13}
 authz_checked: "no secret -> 503 as before; any failed method -> 403"
 blockers:
-  - {type: operator, note: "Before the compat path is removed: point the ACS Event Grid subscription at the X-Neoh-Webhook-Token delivery header (or rely on the signed URL Neoh now hands ACS per call) and any custom-call provider at the header or X-Neoh-Signature. Calls placed by the previous release keep their ?token= URL until they end."}
+  - {type: operator, note: "Removed 2026-11-13 on the owner's instruction after the local check above. A provider still configured with ?token= now gets 403 and the app logs \"Refused a ?token= query secret on <ENV>\"; move it to the X-Neoh-Webhook-Token header or a signed URL."}
   - {type: scope, note: "The Plivo media bridge still takes a per-call bridge_token in the WebSocket query (a per-call capability, not the static secret); it is now redacted from both uvicorn loggers. Edge/CDN logs outside the app are not controlled here."}
 audit_refs: []
 decision_refs: []
-next_task: "Next release: delete the ?token= branch in webhook_auth.verify_webhook and ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT."
-updated: 2026-10-14
+next_task: "Done 2026-11-13 (external audit SEC-002). Watch staging logs for \"Refused a ?token= query secret\" after the next deploy."
+updated: 2026-11-13
 ```
 
 #### L17-11 Log-PII guard: account ids and exception text
