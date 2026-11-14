@@ -3460,6 +3460,26 @@ next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO.
 updated: 2026-10-16
 ```
 
+#### L19-08 A rollback is judged against the live release, checks its target app, and keeps the domain (external audit DEP-02, DEP-03, DEP-03b)
+```yaml
+id: L19-08
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [scripts/rollback.sh, backend/tests/test_release_immutability.py]
+tests_run:
+  - {cmd: "read scripts/rollback.sh:113-130,201-250 at 54740ef", result: "DEP-02: without --from the safety verdict used the working tree's newest migration, not the live schema, even with --apply. DEP-03: DIGITALOCEAN_APP_ID was never checked against the spec's app. DEP-03b (found in verification): the spec was sed over raw app.yaml with no domains block, and DigitalOcean replaces the whole spec on update, so a rollback would detach the production hostname", date: 2026-11-13}
+  - {cmd: "pytest tests/test_release_immutability.py, new tests against 54740ef's rollback.sh", result: "red: 5 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_release_immutability.py tests/test_render_app_spec.py tests/test_carry_secrets.py (after; the real script with a stand-in doctl)", result: "116 passed: --apply without --from (or with an unreadable migration_head) is refused before any doctl call; the spec is rendered by render-app-spec.py --env production with NEOH_DOMAIN, so it carries the domain and still no migration run; apply refuses an app whose spec name is not 'neoh' and a spec that would drop a live domain, before list-deployments/update; a matching app passes to the next step. The existing mocked apply test now also answers `apps get`", date: 2026-11-13}
+authz_checked: n/a (operator tooling)
+blockers:
+  - {type: scope, note: "No production app exists (L19-02), so this was never run against DigitalOcean. DEP-04 (drift guard fails open) is in .github/workflows/ci.yml, not changed here. DEP-05 and DEP-06 still open."}
+audit_refs: []
+decision_refs: []
+next_task: "DEP-04: make the staging/production drift guard fail closed when the running spec cannot be fetched (ci.yml)."
+updated: 2026-11-13
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
