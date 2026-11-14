@@ -4067,7 +4067,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | DEP-02 | Rollback trusts local migration filenames | P1 | fixed on main (#53 (--apply needs --from) | 19 | L19-08, T19.11 |
 | DEP-03 | Rollback doesn't verify the target app | P1 | fixed on main (#53 | 19 | L19-08, AC19.04 |
 | DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed on main (#53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
-| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed locally, NOT pushed: the gh token lacks `workflow` scope (branch work/19-drift-guard-20261113) | 19 | L19-10 |
+| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed on main (#72); exercised only on the next real deploy (staging token expired) | 19 | L19-10 |
 | DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback | 19 | T19.06 |
 | DEP-06 | Post-rollback smoke is advisory | P2 | fixed on main (#68) | 19 | L19-13, T19.11 |
 | DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
