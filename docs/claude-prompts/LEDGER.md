@@ -3158,6 +3158,26 @@ next_task: "Rebase or re-run PRs #45-#51 once this merges."
 updated: 2026-11-13
 ```
 
+#### L17-31 Sign-out's cache deletion is no longer blocked by open browser-database handles (external audit WEB-001)
+```yaml
+id: L17-31
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/sw-oracle.js, oracle-app/src/lib/clearPrivateCaches.js, oracle-app/src/lib/capture/captureStore.js, oracle-app/src/lib/clearPrivateCaches.test.js, oracle-app/src/lib/capture/capture.test.js, oracle-app/src/swOracle.test.js]
+tests_run:
+  - {cmd: "read sw-oracle.js:34-80,172-178, captureStore.js:41-48, clearPrivateCaches.js:31 at 54740ef", result: "the service worker opened a connection per read/write and never closed it; captureStore cached one with no versionchange handler; both clearPrivateCaches and the worker treated 'blocked' as deleted. So blocked was the normal outcome while the worker lived or Capture Studio was mounted, and the previous user's staged captures and cached splats stayed on disk after sign-out although Capture Studio says sign-out discards them. (The audit's cross-user read is not supported: online splat reads re-check access, L16-05.) The 'no auth check' comment was stale", date: 2026-11-14}
+  - {cmd: "vitest clearPrivateCaches.test.js capture.test.js swOracle.test.js (new tests against 54740ef)", result: "red: 5 failed", date: 2026-11-14}
+  - {cmd: "same, after; eslint on the changed files", result: "21 passed, eslint clean: a blocked delete is waited out (bounded 3 s) and reported in { blocked } if it never completes; the capture store's connection closes on versionchange and reopens on next use; the worker's connections yield to a delete and close after each transaction (source-pinned: the worker cannot load in jsdom)", date: 2026-11-14}
+authz_checked: n/a (client storage)
+blockers:
+  - {type: scope, note: "Not exercised in a real browser: the worker change is pinned by source, not run. Sign-out can now wait up to 3 s per still-blocked database."}
+audit_refs: []
+decision_refs: []
+next_task: "Verify on a real Chrome/Safari profile that IndexedDB is empty after sign-out with Capture Studio open."
+updated: 2026-11-14
+```
+
 ### L18
 Billing, seats and analytics.
 
