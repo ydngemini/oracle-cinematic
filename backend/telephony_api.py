@@ -1774,8 +1774,16 @@ async def plivo_outbound_status(request: Request) -> Response:
         await record_call_outcome(state.get("reference") or state.get("request_uuid")
                                   or request_uuid or call_uuid,
                                   call_status, duration if duration >= 0 else None)
-    except Exception:  # noqa: BLE001 — never let bookkeeping skip the cleanup below
-        logger.warning("Plivo outbound call outcome not recorded: uuid=%s", call_uuid, exc_info=True)
+    except Exception:  # noqa: BLE001 — answered below, never swallowed
+        # RUN-05: this used to log, clean up the call state and answer 204, so
+        # the outcome — including the only lead_engaged meter of a
+        # speed-to-lead call — was lost and a carrier retry found nothing.
+        # Keep the state and say so: record_call_outcome is idempotent, so a
+        # retry records it once; if none comes, the state's TTL ends it as
+        # before.
+        logger.error("Plivo outbound call outcome NOT recorded; state kept for a retry: uuid=%s",
+                     call_uuid, exc_info=True)
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     if call_status in _PLIVO_TERMINAL_STATUSES:
         try:
             await cleanup_plivo_call(call_uuid)

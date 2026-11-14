@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
-from tenancy import TenantContext, Role, require_context, require_role
+from admin_ops import require_platform_admin
+from tenancy import TenantContext, require_context
 
 # Authoritative attorney-at-closing list — single source of truth shared with
 # the compliance engine so the public state-profile API and ComplianceEngine
@@ -141,11 +142,10 @@ async def get_harvest_status(
 )
 async def run_harvest_task(
     task_name: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> dict:
     """Force a scheduled task to run immediately, outside its cadence. Useful
     for an on-demand refresh of a state/city dataset. Platform-admin only."""
-    require_role(ctx, Role.PLATFORM_ADMIN)
     from data_integrations.periodic import scheduler
 
     try:

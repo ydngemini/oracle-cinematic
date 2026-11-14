@@ -22,11 +22,22 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from tenancy import require_context, require_role, Role, TenantContext
+from admin_ops import require_platform_admin
+from tenancy import (
+    TenantContext,
+    admit_operator_stream,
+    require_context,
+    watch_operator_stream,
+)
 from log_redaction import actor_ref
 
-# Roles allowed to read AWS infra observability (mirrors the REST route gates).
-_OBS_ALLOWED_ROLES = {"platform_admin", "broker_owner"}
+# Roles allowed to read AWS infra observability: the WebSocket's gate, kept
+# equal to the REST routes' admin_ops.require_platform_admin. EC2 inventories,
+# the AWS bill and security findings are the platform's, not a brokerage's:
+# broker owners were admitted since the single-brokerage era and were refused
+# on 2026-11-11 (AC17.07, L17-29). The observability-platform client mirrors
+# this set as OBS_ROLES in src/lib/auth.js.
+_OBS_ALLOWED_ROLES = {"platform_admin"}
 
 log = logging.getLogger("oracle.aws_observability")
 
@@ -783,20 +794,18 @@ async def get_full_infrastructure_snapshot() -> dict[str, Any]:
 
 @router.get("/infrastructure")
 async def api_get_infrastructure(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get full AWS infrastructure snapshot."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     snapshot = await get_full_infrastructure_snapshot()
     return JSONResponse(snapshot)
 
 
 @router.get("/ec2/instances")
 async def api_get_ec2(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get EC2 instances."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     instances = await get_ec2_instances()
     return JSONResponse({"instances": instances})
 
@@ -804,10 +813,9 @@ async def api_get_ec2(
 @router.get("/ec2/{instance_id}/metrics")
 async def api_get_ec2_metrics(
     instance_id: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get EC2 detailed metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_ec2_detailed_metrics(instance_id)
     return JSONResponse(metrics)
 
@@ -833,12 +841,11 @@ async def api_metrics_history(
     type: str,
     id: str,
     range: str = "1h",
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Real historical CloudWatch series for one resource — feeds the dashboard
     time-series charts (replaces the old client-side fake sparkline). CloudWatch
     IS the time-series store (15-month retention); nothing is persisted here."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     if type not in _HISTORY_METRICS:
         return JSONResponse({"error": f"unknown type '{type}'"}, status_code=400)
     minutes, period = _HISTORY_RANGES.get(range, _HISTORY_RANGES["1h"])
@@ -870,12 +877,11 @@ def _build_copilot_prompt(message: str, context: dict) -> str:
 @router.post("/copilot/query")
 async def api_copilot_query(
     body: CopilotRequest,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Real LLM copilot (Bedrock) answering ops questions with the live infra
     snapshot as context. Replaces the client-side if/else responder; the frontend
     falls back to its rule-based answers if this is unavailable."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     _check_copilot_rate_limit(ctx)
     message = body.message.strip()
     if not message:
@@ -908,10 +914,9 @@ async def api_copilot_query(
 
 @router.get("/rds/instances")
 async def api_get_rds(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get RDS instances."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     instances = await get_rds_instances()
     return JSONResponse({"instances": instances})
 
@@ -919,18 +924,16 @@ async def api_get_rds(
 @router.get("/rds/{instance_id}/metrics")
 async def api_get_rds_metrics(
     instance_id: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get RDS detailed metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_rds_detailed_metrics(instance_id)
     return JSONResponse(metrics)
 
 
 @router.get("/lambda/functions")
-async def api_get_lambda(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+async def api_get_lambda(ctx: TenantContext = Depends(require_platform_admin)) -> JSONResponse:
     """Get Lambda functions."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     functions = await get_lambda_functions()
     return JSONResponse({"functions": functions})
 
@@ -938,18 +941,16 @@ async def api_get_lambda(ctx: TenantContext = Depends(require_context)) -> JSONR
 @router.get("/lambda/{function_name}/metrics")
 async def api_get_lambda_metrics(
     function_name: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get Lambda metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_lambda_metrics(function_name)
     return JSONResponse(metrics)
 
 
 @router.get("/ebs/volumes")
-async def api_get_ebs(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+async def api_get_ebs(ctx: TenantContext = Depends(require_platform_admin)) -> JSONResponse:
     """Get EBS volumes."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     volumes = await get_ebs_volumes()
     return JSONResponse({"volumes": volumes})
 
@@ -957,26 +958,23 @@ async def api_get_ebs(ctx: TenantContext = Depends(require_context)) -> JSONResp
 @router.get("/ebs/{volume_id}/metrics")
 async def api_get_ebs_metrics(
     volume_id: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get EBS metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_ebs_metrics(volume_id)
     return JSONResponse(metrics)
 
 
 @router.get("/elb")
-async def api_get_elb(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+async def api_get_elb(ctx: TenantContext = Depends(require_platform_admin)) -> JSONResponse:
     """Get Load Balancers."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     load_balancers = await get_load_balancers()
     return JSONResponse({"load_balancers": load_balancers})
 
 
 @router.get("/s3/buckets")
-async def api_get_s3(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+async def api_get_s3(ctx: TenantContext = Depends(require_platform_admin)) -> JSONResponse:
     """Get S3 buckets."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     buckets = await get_s3_buckets()
     return JSONResponse({"buckets": buckets})
 
@@ -984,30 +982,27 @@ async def api_get_s3(ctx: TenantContext = Depends(require_context)) -> JSONRespo
 @router.get("/s3/{bucket_name}/metrics")
 async def api_get_s3_metrics(
     bucket_name: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get S3 metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_s3_metrics(bucket_name)
     return JSONResponse(metrics)
 
 
 @router.get("/billing")
 async def api_get_billing(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get AWS billing metrics."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     billing = await get_billing_metrics()
     return JSONResponse(billing)
 
 
 @router.get("/security/findings")
 async def api_get_security_findings(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get Security Hub findings."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     findings = await get_security_hub_findings()
     iam_users = await get_iam_users()
     security_groups = await get_vpc_security_groups()
@@ -1022,18 +1017,16 @@ async def api_get_security_findings(
 
 @router.get("/security/groups")
 async def api_get_security_groups(
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Get VPC Security Groups."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     groups = await get_vpc_security_groups()
     return JSONResponse({"security_groups": groups})
 
 
 @router.get("/autoscaling/groups")
-async def api_get_asg(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+async def api_get_asg(ctx: TenantContext = Depends(require_platform_admin)) -> JSONResponse:
     """Get Auto Scaling Groups."""
-    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     groups = await get_auto_scaling_groups()
     return JSONResponse({"auto_scaling_groups": groups})
 
@@ -1042,10 +1035,9 @@ async def api_get_asg(ctx: TenantContext = Depends(require_context)) -> JSONResp
 async def api_scale_asg(
     group_name: str,
     request: ScaleRequest,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Scale an Auto Scaling Group."""
-    require_role(ctx, Role.PLATFORM_ADMIN)
     if not _ASG_NAME_RE.fullmatch(group_name):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid Auto Scaling group name.")
 
@@ -1075,10 +1067,9 @@ async def api_scale_asg(
 @router.post("/ec2/{instance_id}/restart")
 async def api_restart_ec2(
     instance_id: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
 ) -> JSONResponse:
     """Restart an EC2 instance."""
-    require_role(ctx, Role.PLATFORM_ADMIN)
     if not _EC2_INSTANCE_RE.fullmatch(instance_id):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid EC2 instance ID.")
 
@@ -1229,8 +1220,11 @@ async def observability_websocket(websocket: WebSocket):
         await websocket.close(code=4403)  # 4403: application "forbidden"
         log.warning("Observability WS rejected — role %r not permitted.", ctx.role.value)
         return
+    if not await admit_operator_stream(websocket, ctx):  # SEC-001: a demoted admin's token
+        return
 
     await websocket.accept(subprotocol="oracle.jwt")
+    session_watch = watch_operator_stream(websocket, ctx)
     from audit_middleware import record_platform_websocket
     record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     _obs_websockets.add(websocket)
@@ -1294,5 +1288,6 @@ async def observability_websocket(websocket: WebSocket):
                 log.warning("WebSocket recv error: %s", e)
                 break
     finally:
+        session_watch.cancel()
         _obs_websockets.discard(websocket)
         log.info("Observability WebSocket disconnected — %d clients", len(_obs_websockets))

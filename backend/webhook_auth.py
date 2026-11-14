@@ -17,11 +17,10 @@ Accepted now, strongest first:
    that can only call back a URL (the ACS mid-call callback, the custom-call
    ``callback_url``). The URL never contains the secret, and it expires
    (ORACLE_WEBHOOK_CALLBACK_TTL_SECONDS, default 24 h).
-4. Deprecated: ``?token=<secret>``. Still accepted for one release, because
-   calls placed and subscriptions configured by the previous release carry it,
-   and each use logs a deprecation warning that never contains the secret.
-   ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=0 turns it off; the next release
-   removes it.
+The old ``?token=<secret>`` form was accepted for one release with a
+deprecation warning and is now refused like any other bad credential
+(2026-11-13, L17-10 next task, external audit SEC-002). No code builds such a
+URL and none was found configured on the local drive.
 """
 
 from __future__ import annotations
@@ -111,7 +110,7 @@ def _signed_url_ok(request, secret: str, now: float) -> bool:
 
 async def verify_webhook(request, env_name: str, *, now: Optional[float] = None) -> str:
     """Authenticate a provider callback. Returns the method that passed
-    ("signature" | "header" | "signed_url" | "query_token_deprecated");
+    ("signature" | "header" | "signed_url");
     raises 503 when the secret is not configured and 403 otherwise."""
     secret = _secret(env_name)
     if not secret:
@@ -134,12 +133,9 @@ async def verify_webhook(request, env_name: str, *, now: Optional[float] = None)
     if _signed_url_ok(request, secret, now):
         return "signed_url"
 
-    legacy = str(_query(request).get("token", ""))
-    if legacy and os.getenv("ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT", "1") != "0" \
-            and hmac.compare_digest(legacy.encode(), secret.encode()):
-        # Never the secret, never the URL: only which webhook still uses it.
-        log.warning("DEPRECATED webhook credential: %s accepted a ?token= query secret. "
-                    "Move the provider to the %s header or a signed callback URL; "
-                    "the query form is removed next release (HOOK-3).", env_name, TOKEN_HEADER)
-        return "query_token_deprecated"
+    if _query(request).get("token"):
+        # A provider still configured with the removed query secret. Say which
+        # webhook, never the secret or the URL, so an operator can move it.
+        log.warning("Refused a ?token= query secret on %s: that form was removed (HOOK-3). "
+                    "Use the %s header or a signed callback URL.", env_name, TOKEN_HEADER)
     raise HTTPException(status_code=403, detail="Invalid webhook credential.")

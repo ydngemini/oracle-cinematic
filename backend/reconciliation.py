@@ -12,6 +12,8 @@ waiting for a human:
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
+* email_outbox rows left `sending` with no outcome → marked delivery_unknown, never resent
+* chat turns `pending` 2+ minutes with no job → job enqueued (RUN-01)
 * AI chat turns stuck `pending`/`streaming` → failed (they locked users out)
 * reconstruction jobs `running` with no progress → failed, needs attention
   (source media is never touched)
@@ -75,6 +77,24 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
                            AND updated_at < now() - make_interval(mins => $1)
                            AND ($3::uuid IS NULL OR tenant_id = $3) LIMIT $2)
             """, EXECUTING_STALE_MINUTES, _BATCH, only_tenant))
+        # RUN-01: a turn is committed 'pending' before its job is enqueued; a
+        # process that died in between left a turn no worker would ever run
+        # (and its chat slot held for an hour). A 'pending' turn has run no
+        # tools, so queueing it now is safe; the key makes a repeat a no-op.
+        orphaned_turns = await conn.fetch(
+            """
+            SELECT m.id, m.tenant_id, m.user_id, m.request_id, u.role
+              FROM ai_chat_messages m
+              JOIN users u ON u.tenant_id = m.tenant_id AND u.agent_id = m.user_id
+             WHERE m.role = 'assistant' AND m.status = 'pending'
+               AND m.created_at < now() - interval '2 minutes'
+               AND m.updated_at > now() - make_interval(mins => $3)
+               AND ($2::uuid IS NULL OR m.tenant_id = $2)
+               AND NOT EXISTS (SELECT 1 FROM automation_jobs j
+                                WHERE j.tenant_id = m.tenant_id
+                                  AND j.idempotency_key = 'ai-chat:' || m.user_id || ':' || m.request_id)
+             ORDER BY m.created_at LIMIT $1
+            """, _BATCH, only_tenant, CHAT_STUCK_MINUTES)
         out["chat_turns_failed"] = _n(await conn.execute(
             """
             UPDATE ai_chat_messages SET status='failed', error_code='AI_RESPONSE_TIMEOUT', updated_at=now()
@@ -106,10 +126,25 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
                            AND created_at < now() - interval '15 minutes'
                            AND ($2::uuid IS NULL OR tenant_id = $2) LIMIT $1)
             """, _BATCH, only_tenant))
+        # RUN-04 / COMMS-001: a row the worker claimed ('sending') and then lost
+        # — killed after the claim, a failed requeue, or the provider accepted
+        # it and the 'sent' write failed — kept no marker, so health counted it
+        # nowhere and nothing swept it. Mark it unknown; NEVER resend it.
+        out["emails_sending_to_unknown"] = _n(await conn.execute(
+            """
+            UPDATE email_outbox
+               SET error='delivery_unknown: still sending after 15 minutes (worker stopped mid-send?)',
+                   updated_at=now()
+             WHERE id IN (SELECT id FROM email_outbox WHERE status='sending'
+                           AND (error IS NULL OR error NOT LIKE 'delivery_unknown%')
+                           AND updated_at < now() - interval '15 minutes'
+                           AND ($2::uuid IS NULL OR tenant_id = $2) LIMIT $1)
+            """, _BATCH, only_tenant))
         stale_outbox = await conn.fetch(
             "SELECT id, tenant_id FROM email_outbox WHERE status='queued' "
             "AND updated_at < now() - interval '10 minutes' AND ($2::uuid IS NULL OR tenant_id = $2) "
             "ORDER BY updated_at LIMIT $1", _BATCH, only_tenant)
+    out["chat_turns_requeued"] = await _requeue_chat_turns(orphaned_turns)
     if recovery_mode.is_recovery_mode():
         # Nothing may leave a restored copy; re-enqueueing would only
         # dead-letter again every hour.
@@ -122,6 +157,21 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     out["commands"] = await _reconcile_commands(only_tenant)
     out["purchases"] = await _reconcile_purchases(only_tenant)
     return out
+
+
+async def _requeue_chat_turns(rows) -> int:
+    from ai_chat_api import enqueue_chat_turn
+
+    queued = 0
+    for row in rows:
+        ctx = TenantContext(agent_id=str(row["user_id"]), tenant_id=str(row["tenant_id"]),
+                            role=Role(str(row["role"])))
+        try:
+            await enqueue_chat_turn(ctx, request_id=str(row["request_id"]), assistant_id=str(row["id"]))
+            queued += 1
+        except Exception:  # noqa: BLE001 — the 15-minute step still fails it visibly
+            log.warning("orphaned chat turn not re-queued: %s", row["id"], exc_info=True)
+    return queued
 
 
 def _n(status: str) -> int:
