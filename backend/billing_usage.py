@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import stripe
@@ -107,6 +107,7 @@ async def record_inference(
     *,
     idempotency_key: str,
     conn: Any = None,
+    raise_errors: bool = False,
 ) -> tuple[int, int]:
     """Meter one model call's token consumption. Returns what was recorded.
 
@@ -121,6 +122,8 @@ async def record_inference(
 
     ``conn`` is the caller's own transaction (ai_budget.settle records the
     usage and drops the call's hold in one), as for record_usage.
+    ``raise_errors`` passes through to record_usage: settle must know a row
+    was refused, or it drops the hold and the tokens count nowhere (BILL-001).
     """
     from llm_gateway import token_usage_of
 
@@ -135,6 +138,7 @@ async def record_inference(
             quantity=prompt_tokens,
             idempotency_key=f"{idempotency_key}:prompt",
             conn=conn,
+            raise_errors=raise_errors,
         )
     if completion_tokens:
         await record_usage(
@@ -143,6 +147,7 @@ async def record_inference(
             quantity=completion_tokens,
             idempotency_key=f"{idempotency_key}:completion",
             conn=conn,
+            raise_errors=raise_errors,
         )
     return (prompt_tokens, completion_tokens)
 
@@ -155,6 +160,7 @@ async def record_usage(
     idempotency_key: str,
     occurred_at: Optional[datetime] = None,
     conn: Any = None,
+    raise_errors: bool = False,
 ) -> bool:
     """Append one usage row. Returns True when a NEW row was written.
 
@@ -176,8 +182,14 @@ async def record_usage(
             metric,
         )
         return False
-    if quantity is None or Decimal(str(quantity)) < 0:
-        logger.warning("Refusing to record negative usage: metric=%s qty=%r", metric, quantity)
+    # BILL-003: Decimal("abc") and NaN < 0 raised out of a function documented
+    # never to raise, and Infinity passed and would be stored as infinite usage.
+    try:
+        qty = Decimal(str(quantity)) if quantity is not None else None
+    except (InvalidOperation, ValueError, TypeError):
+        qty = None
+    if qty is None or not qty.is_finite() or qty < 0:
+        logger.warning("Refusing to record invalid usage: metric=%s qty=%r", metric, quantity)
         return False
 
     sql = """
@@ -188,7 +200,7 @@ async def record_usage(
         RETURNING id
     """
     args = (
-        ctx.tenant_id, metric, Decimal(str(quantity)),
+        ctx.tenant_id, metric, qty,
         occurred_at or datetime.now(timezone.utc), idempotency_key[:240],
     )
     try:
@@ -206,6 +218,8 @@ async def record_usage(
         logger.warning(
             "Usage record deferred: metric=%s key=%s", metric, idempotency_key, exc_info=True,
         )
+        if raise_errors:
+            raise
         return False
 
 

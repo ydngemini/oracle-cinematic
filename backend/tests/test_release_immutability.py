@@ -396,7 +396,8 @@ def test_the_aws_runbook_says_it_is_legacy_before_anything_else():
 # path. This is its DigitalOcean equivalent: rollback.sh --apply for real, with
 # a fake doctl on PATH that records what it was asked to do.
 
-def _run_rollback(tmp_path, target_head: str, current_head: str):
+def _run_rollback(tmp_path, target_head: str, current_head: str, *,
+                  app_url: str | None = "https://app.neoh.example", smoke_exit: int = 0):
     import json
     import os
     import subprocess
@@ -416,11 +417,14 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     deployments = tmp_path / "deployments.json"
     deployments.write_text(json.dumps([{"id": "dep-active", "phase": "ACTIVE",
                                         "created_at": "2026-10-03T20:00:00Z", "spec": active}]))
+    app = tmp_path / "app.json"  # `doctl apps get`: the live app, checked before applying (DEP-03)
+    app.write_text(json.dumps([{"id": "app-123", "spec": active}]))
     doctl = fake / "doctl"
     doctl.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{calls}"\n'
         f'if [ "$1 $2" = "apps list-deployments" ]; then cat "{deployments}"; exit 0; fi\n'
+        f'if [ "$1 $2" = "apps get" ]; then cat "{app}"; exit 0; fi\n'
         # Keep a copy of the spec it was handed, to check the digests.
         'for a in "$@"; do case "$prev" in --spec) cp "$a" "' + str(tmp_path) + '/applied.yaml";; esac; prev="$a"; done\n'
         "exit 0\n"
@@ -437,9 +441,15 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     current = tmp_path / "current.json"
     current.write_text(json.dumps({"migration_head": current_head}))
 
+    smoke = tmp_path / "smoke.sh"   # stands in for infra/digitalocean/smoke-test.sh (DEP-06)
+    smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; exit {smoke_exit}\n')
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
            "DIGITALOCEAN_APP_ID": "app-123",
-           "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml")}
+           "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml"),
+           "ORACLE_ROLLBACK_SMOKE": str(smoke)}
+    env.pop("APP_URL", None)
+    if app_url:
+        env["APP_URL"] = app_url
     proc = subprocess.run(
         ["bash", str(REPO / "scripts" / "rollback.sh"),
          "--to", str(target), "--from", str(current), "--apply"],
@@ -466,6 +476,30 @@ def test_do_rollback_applies_the_previous_digests(tmp_path):
     # A blank SECRET in the applied spec would WIPE it on the app.
     assert "EV[1:running-api-ORACLE_SECRET_KEY]" in applied, "secrets were not carried"
     assert "apps list-deployments app-123" in calls
+
+
+def test_a_rollback_without_app_url_is_reported_unverified(tmp_path):
+    """DEP-06: the smoke test was a printed suggestion, so a rollback exited 0
+    whether or not the rolled-back release worked."""
+    proc, calls, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql", app_url=None)
+    assert "apps update app-123 --spec" in calls, "the rollback itself still ran"
+    assert proc.returncode == 4 and "ROLLED_BACK_BUT_UNVERIFIED" in proc.stdout, proc.stdout + proc.stderr
+    assert not (work / "smoked").exists()
+
+
+def test_a_failed_smoke_test_after_rollback_exits_4(tmp_path):
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql", smoke_exit=1)
+    assert proc.returncode == 4 and "smoke test failed" in proc.stdout, proc.stdout + proc.stderr
+    assert (work / "smoked").read_text().split() == ["https://app.neoh.example", "goodsha"]
+
+
+def test_a_verified_rollback_exits_0_and_checked_the_target_release(tmp_path):
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
+    assert proc.returncode == 0 and "rolled back and verified" in proc.stdout, proc.stdout + proc.stderr
+    assert (work / "smoked").read_text().split() == ["https://app.neoh.example", "goodsha"]
 
 
 def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):
@@ -619,3 +653,85 @@ def test_the_scanner_itself_is_pinned():
 def test_every_release_keeps_an_sbom():
     uploads = [s for s in _steps("release") if s.get("uses", "").startswith("actions/upload-artifact")]
     assert any("sbom-" in u["with"]["name"] for u in uploads)
+
+
+# ── DEP-02 / DEP-03 / DEP-03b: the rollback is judged against what is live ──
+#
+# The real script, with real manifests and a stand-in doctl that records each
+# call. `apps list-deployments` fails on purpose: reaching it proves the
+# identity checks passed, and nothing is ever updated.
+
+FAKE_DOCTL = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "apps get") printf '%s' "$FAKE_APP_JSON" ;;
+  "apps list-deployments") exit 1 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _rollback(tmp_path, *args, app_name="neoh", live_domains=(), domain=None):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "doctl").write_text(FAKE_DOCTL)
+    (bin_dir / "doctl").chmod(0o755)
+    head = sorted(p.name for p in (REPO / "backend" / "db" / "migrations").glob("*.sql"))[-1]
+    manifest = {"release_id": "abc1234", "backend_digest": "sha256:" + "a" * 64,
+                "frontend_digest": "sha256:" + "b" * 64, "migration_head": head}
+    (tmp_path / "to.json").write_text(json.dumps(manifest))
+    (tmp_path / "from.json").write_text(json.dumps({**manifest, "release_id": "def5678"}))
+    app = [{"spec": {"name": app_name, "domains": [{"domain": d} for d in live_domains]}}]
+    env = {k: v for k, v in os.environ.items() if k != "NEOH_DOMAIN"}
+    env.update(PATH=f"{bin_dir}:{pathlib.Path(sys.executable).parent}:{env['PATH']}",
+               FAKE_LOG=str(tmp_path / "doctl.log"), FAKE_APP_JSON=json.dumps(app),
+               DIGITALOCEAN_APP_ID="app-1", ORACLE_ROLLBACK_SPEC=str(tmp_path / "spec.yaml"))
+    if domain:
+        env["NEOH_DOMAIN"] = domain
+    argv = [a.replace("{to}", str(tmp_path / "to.json")).replace("{from}", str(tmp_path / "from.json"))
+            for a in args]
+    done = subprocess.run(["bash", str(ROLLBACK), *argv], env=env, capture_output=True, text=True,
+                          timeout=120)
+    log = tmp_path / "doctl.log"
+    return done, done.stdout + done.stderr, log.read_text() if log.exists() else ""
+
+
+def test_apply_without_the_deployed_manifest_is_refused(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--apply")
+    assert done.returncode == 1 and "--apply needs --from" in out, out
+    assert calls == ""
+
+
+def test_the_rollback_spec_keeps_the_production_domain(tmp_path):
+    done, out, _ = _rollback(tmp_path, "--to", "{to}", domain="app.neoh.example")
+    assert done.returncode == 0, out
+    spec = (tmp_path / "spec.yaml").read_text()
+    assert "app.neoh.example" in spec and "run_migrations.py" not in spec
+    assert "sha256:" + "a" * 64 in spec
+
+
+def test_apply_refuses_an_app_that_is_not_production(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 app_name="neoh-staging")
+    assert done.returncode == 1 and "does not match" in out and "neoh-staging" in out, out
+    assert "apps get app-1" in calls and "list-deployments" not in calls and "update" not in calls
+
+
+def test_apply_refuses_to_detach_a_live_domain(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 live_domains=["app.neoh.example"])
+    assert done.returncode == 1 and "would detach app.neoh.example" in out, out
+    assert "update" not in calls
+
+
+def test_a_matching_app_and_domain_pass_to_the_next_step(tmp_path):
+    done, out, calls = _rollback(tmp_path, "--to", "{to}", "--from", "{from}", "--apply",
+                                 live_domains=["app.neoh.example"], domain="app.neoh.example")
+    assert "target app 'neoh' confirmed" in out, out
+    assert "list-deployments" in calls and "apps update" not in calls
+    assert done.returncode == 1 and "could not read the app's deployments" in out

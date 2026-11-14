@@ -328,3 +328,65 @@ async def _scenario():
             await admin.execute("SET session_replication_role = origin")
             await admin.close()
             await connection.close_pool()
+
+
+def test_the_sweep_re_meters_a_delivered_engagement_whose_meter_never_landed(monkeypatch):
+    """BILL-001 (revenue): record_lead_engagement swallows a failed insert, so
+    a delivered speed-to-lead response could stay unbilled with nothing
+    noticing. The sweep finds it, meters it once, and a second sweep adds none."""
+    monkeypatch.delenv("ORACLE_RECOVERY_MODE", raising=False)
+    asyncio.run(_unmetered())
+
+
+async def _unmetered():
+    import asyncpg
+
+    import component_health as ch
+    import reconciliation
+    import speed_to_lead
+    from db import connection
+    from tenancy import Role, TenantContext
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=3)
+    tenant, cid, intake = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    worker = TenantContext(agent_id="command-worker", tenant_id=tenant, role=Role.PLATFORM_ADMIN)
+    try:
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Meter')",
+                            uuid.UUID(tenant), f"meter-{tenant[:8]}")
+        await admin.execute(
+            """INSERT INTO command_executions (id, tenant_id, command_type, classification,
+                   risk_class, target, draft, state, idempotency_key, created_by)
+               VALUES ($1,$2,'SMS','outreach','external_send','{}','{}','succeeded',$3,'agent-a')""",
+            uuid.UUID(cid), uuid.UUID(tenant), f"live-{cid}")
+        await speed_to_lead._record_response_event(
+            worker, intake_event_id=intake, contact_id=None, client_id=None, lead_id=None,
+            channel="sms", disposition="staged", command_id=cid,
+            lead_created_at=datetime.now(timezone.utc) - timedelta(hours=3))
+        # Delivered two hours ago; the meter write that should have followed never landed.
+        await admin.execute(
+            "UPDATE lead_response_events SET disposition='delivered', delivered_at=now() - interval '2 hours' "
+            "WHERE command_id=$1", uuid.UUID(cid))
+        assert await admin.fetchval(
+            "SELECT count(*) FROM billing_usage_events WHERE tenant_id=$1 AND metric='lead_engaged'",
+            uuid.UUID(tenant)) == 0
+        health = (await ch._db_components())["billing_meter"]
+        assert health["state"] == ch.DEGRADED and health["detail"]["unmetered"] >= 1, health
+
+        out = await reconciliation.run_sweep(only_tenant=tenant)
+        assert out["engagements_metered"] == 1, out
+        rows = await admin.fetch(
+            "SELECT idempotency_key, lifecycle_stage, source_id::text FROM billing_usage_events "
+            "WHERE tenant_id=$1 AND metric='lead_engaged'", uuid.UUID(tenant))
+        assert [dict(r) for r in rows] == [{"idempotency_key": f"lead-engaged:{intake}",
+                                            "lifecycle_stage": "delivered", "source_id": cid}]
+        again = await reconciliation.run_sweep(only_tenant=tenant)
+        assert again["engagements_metered"] == 0
+    finally:
+        await admin.execute("SET session_replication_role = replica")
+        for table in ("billing_usage_events", "lead_response_events", "command_executions", "automation_jobs"):
+            await admin.execute(f"DELETE FROM {table} WHERE tenant_id=$1", uuid.UUID(tenant))
+        await admin.execute("DELETE FROM tenants WHERE id=$1", uuid.UUID(tenant))
+        await admin.execute("SET session_replication_role = origin")
+        await admin.close()
+        await connection.close_pool()

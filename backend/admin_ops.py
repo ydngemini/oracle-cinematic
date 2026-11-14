@@ -83,15 +83,19 @@ async def health_components(ctx: TenantContext = Depends(require_platform_admin)
     from db.connection import tenant_tx
 
     snap = await component_health.snapshot(fresh=True)
-    alerts = []
+    alerts: list[dict] = []
+    # OBS-001: a failed alert query used to answer exactly like "no open
+    # alerts". The components still answer, but the response says which.
+    alerts_status = "ok"
     try:
         async with tenant_tx(ctx) as conn:
             alerts = [dict(r) for r in await conn.fetch(
                 "SELECT component, state, summary, opened_at, last_seen_at, notified_at, notify_error "
                 "FROM ops_alerts WHERE resolved_at IS NULL ORDER BY opened_at")]
-    except Exception:  # noqa: BLE001 - components still answer without the alert table
-        pass
-    return {**snap, "open_alerts": alerts}
+    except Exception as exc:  # noqa: BLE001 - components still answer without the alert table
+        alerts_status = "unavailable"
+        logger.warning("open alerts could not be read (%s)", type(exc).__name__)
+    return {**snap, "open_alerts": alerts, "alerts_status": alerts_status}
 
 
 @router.get("/runtime-load")

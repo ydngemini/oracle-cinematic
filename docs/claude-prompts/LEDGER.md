@@ -41,7 +41,7 @@ Listed weakest to strongest:
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local); L07-03 per-actor offer names what is withheld (local) | Playwright check owed (L07-01); owner: archive_client | T08.04 + per-actor capability block |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local); L08-01 cancel path `tests_pass` (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local); L09-08 inbound spoken opt-out recorded when said (local, RUN-02) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes; L11-16 Neoh reads it too (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only); L12-04 certification state derived from fresh evidence, every label bound (local) | A03 positive certification (T12.06, T12.04); AC12.02 real-device protocol | Server upload sessions (T12.05); T12.06 room graph |
@@ -49,9 +49,9 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites; L14-05 domain verification and rollback 0173 (local) | Owner: networks, listings on sites, rollback approval, claim expiry; edge serving of customer hostnames | T14.03 + AC14.03 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list); L17-28 local (plan images and walkthrough audio checked by content) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list); L17-28 local (plan images and walkthrough audio checked by content); L17-29 local (inline platform-admin checks classified; AWS observability operator-only) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local); L18-06 Stripe events in order, one checkout per brokerage 0169; L18-07 payment failure keeps reads and export, stops sends; L18-08 AI token budget for Neoh chat 0170; L18-09 every hosted call outside chat under it (local) | D-2026-10-12-02 (billable stage; seat number and who counts; past_due length; AI inference when lapsed; budget numbers) | T18.07 remaining channels; AC18.03 in Stripe test mode (owner keys) |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local); L19-07 restore verified only by decrypting restored ciphertext (local, DR-001) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
@@ -265,6 +265,44 @@ next_task: "A reviewer enters verdicts in all-pages-verdicts.json and runs `npm 
 updated: 2026-11-08
 ```
 New exported `verdictShapeProblems` replaces the inline check in `loadVerdicts`. Before, a whitespace-only evidence or reviewer, a non-string evidence, or a non-existent date such as 2026-02-31 was accepted (the old check only tested truthiness and the date's shape). Now each is reported by page id, all problems at once, and a reviewer naming an automated agent (claude, agent, bot, auto, neoh-agent) is refused. The verdicts file and the generated matrix are unchanged.
+
+#### L02-09 Blocked browser storage cannot break sign-in, session expiry or sign-out (external audit WEB-002)
+```yaml
+id: L02-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/lib/safeStorage.js, oracle-app/src/lib/endSessionLocally.js, oracle-app/src/App.jsx, oracle-app/src/components/LoginVault.jsx, oracle-app/src/lib/safeStorage.test.js, oracle-app/src/lib/endSessionLocally.test.js, oracle-app/src/components/LoginVault.test.jsx]
+tests_run:
+  - {cmd: "read App.jsx:51,72,82 and LoginVault.jsx:51-53 at 54740ef", result: "unguarded sessionStorage/localStorage calls: a throw in the expiry or sign-out handler skipped clearing the private caches and the switch to sign-in (the server session was already revoked); in finishAuth it turned a successful sign-in (cookie already set) into an error; in rememberIdentity it made a restore read as 'Neoh can't be reached… still signed in'", date: 2026-11-14}
+  - {cmd: "vitest LoginVault.test.jsx (new case against 54740ef's LoginVault.jsx)", result: "red: 1 failed (sign-in never completed with storage throwing)", date: 2026-11-14}
+  - {cmd: "vitest safeStorage.test.js endSessionLocally.test.js LoginVault.test.jsx; eslint on the changed files (after)", result: "14 passed, eslint clean: safeSet/safeRemove never throw (including when reading window.sessionStorage throws); endSessionLocally clears the caches and shows sign-in even when storage or the cache clear fails; sign-in completes with storage blocked", date: 2026-11-14}
+authz_checked: n/a (client state only; the server session is unchanged)
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "WEB-001: close IndexedDB handles so sign-out's cache deletion is not blocked."
+updated: 2026-11-14
+```
+
+#### L02-10 The service banner says when status cannot be checked (external audit UX-001)
+```yaml
+id: L02-10
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/components/ServiceStatusBanner.jsx, oracle-app/src/components/ServiceStatusBanner.test.jsx]
+tests_run:
+  - {cmd: "read ServiceStatusBanner.jsx:15-23 at 54740ef", result: "every failed /api/status poll was swallowed, so a status endpoint that stayed down showed no banner — read by the agent as all clear", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx (new case against 54740ef)", result: "red: 1 failed", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx; eslint (after)", result: "5 passed, eslint clean: one failed check stays quiet (the existing test), three in a row show 'Service status can't be checked right now.', the next success clears it", date: 2026-11-14}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for UX-001."
+updated: 2026-11-14
+```
 
 ### L03
 Brokerage tenancy and hybrid access.
@@ -1158,6 +1196,65 @@ next_task: "Plans read the same gaps since L08-04; one per-actor capability bloc
 updated: 2026-10-16
 ```
 
+#### L07-04 An accepted chat turn whose job was never queued is queued by the sweep (external audit RUN-01)
+```yaml
+id: L07-04
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_api.py, backend/reconciliation.py, backend/tests/test_reconciliation_live.py]
+tests_run:
+  - {cmd: "read ai_chat_store.py:154-314, ai_chat_api.py:330-360, reconciliation.py:78-84, useNeohChannel.js:153 at 54740ef", result: "the turn is committed 'pending' and acknowledged, then the job is enqueued: a process death in between left a turn no worker runs, failed only by the 15-minute sweep step (worst case ~30 min) with no frame to the open UI, and its chat slot held up to an hour (2 per agent). Re-sending does not help: the client mints a new request_id per send. enqueue_job opens its own transaction, so one-transaction enqueue would mean refactoring the job queue", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_chat*.py + non-live reconciliation tests (no DB here)", result: "35 passed (accept path unchanged: it now calls the shared enqueue_chat_turn helper)", date: 2026-11-13}
+authz_checked: "The re-queued turn runs as its own user with the role read from users (never wider; ai_chat_agent._worker_role still caps it)."
+blockers:
+  - {type: scope, note: "The new live assertions (an orphaned 5-minute-old turn gets exactly its job, as its user and role; a two-hour-old one is failed, not re-queued) run only in CI's database job. The sweep runs every 15 minutes, so an orphaned turn now waits 2-17 minutes instead of ~30 and then gets its answer, still without a live frame until the worker streams. A turn whose user row is gone is left for the 15-minute failure step. A one-transaction enqueue would close the window entirely."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job; consider a transactional enqueue (enqueue_job accepting the caller's connection)."
+updated: 2026-11-13
+```
+
+#### L07-05 The tool-call ledger: a failed operation can be retried, one index per turn across provider tiers, the Bedrock tier is ledgered (external audit AI-005)
+```yaml
+id: L07-05
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_store.py, backend/ai_chat_agent.py, backend/tests/test_ai_tool_operations.py, backend/tests/test_tool_offer_live.py]
+tests_run:
+  - {cmd: "read ai_chat_store.py:1160-1240, ai_chat_agent.py:780,1178,1582 at 54740ef", result: "a 'failed' row was declared retryable but _ledger_claim was a plain INSERT on the unique (tenant, assistant, call_index) still held by it, so the retry failed as 'could not be persisted'; a failed row with different work raised a mismatch first. call_index restarted at 0 in each provider tier, so after a fall-through the next tier collided with the previous tier's rows; the Bedrock tier passed no call_index and was unledgered. All fail closed except Bedrock", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_tool_operations.py (new tests against 54740ef's source)", result: "red: 4 failed", date: 2026-11-13}
+  - {cmd: "pytest tool-ledger, chat, gateway, provider and hosted-call tests (after)", result: "20 tool-ledger tests and the chat/gateway suites pass: one counter on the turn's bundle (0,1,2 then 3,4 in the next tier; a job retry restarts at 0 and replays as before); no tier resets it; the Bedrock call takes it; a failed row (any work) replays as None; the claim is INSERT … ON CONFLICT DO UPDATE … WHERE status='failed' RETURNING 1 and raises ToolOperationClaimLost when a completed row holds the index, as the old unique violation did", date: 2026-11-13}
+authz_checked: "Same tenant transaction and RLS as before; a completed operation is never overwritten."
+blockers:
+  - {type: scope, note: "The reclaim against real PostgreSQL (app role, FORCE RLS) is a new test in test_tool_offer_live.py and runs only in CI's database job. Whether two tiers could stage the same gated draft twice was not tested."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job; add a cross-tier staging test (tier 1 stages a draft then fails; tier 2 must not stage it again)."
+updated: 2026-11-13
+```
+
+#### L07-06 A twin preference cannot release or reorder an action (AC07.09; external audit AI-004)
+```yaml
+id: L07-06
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; test in the commit that adds this row
+files: [backend/tests/test_agent_twin_advice_only.py]
+tests_run:
+  - {cmd: "grep agent_twin imports at 1b18053", result: "only intelligence_os_api (the twin's API) and the intelligence/ facade import the module; expected_value, missions/evaluator and missions/simulator take only wilson_interval. T07.11 makes the twin advice only; AC07.09 asked for a test and none existed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_agent_twin_advice_only.py", result: "3 passed: no module but the API and facade imports agent_twin; everything else may take only wilson_interval; command_center, autonomy, expected_value, opportunity_engine and missions policy/executor/planner never read an agent_twin attribute", date: 2026-11-14}
+  - {cmd: "mutant: `from agent_twin import policy` appended to command_center.py", result: "1 failed (test_everything_else_takes_only_the_statistics_helper); restored", date: 2026-11-14}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "Structural, not behavioural: it proves the twin cannot reach ordering or release, not what ordering would be if it did. Closing the loop needs outcomes and an owner decision (T07.11)."}
+audit_refs: []
+decision_refs: []
+next_task: "None until the owner decides the twin may influence ranking."
+updated: 2026-11-14
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
@@ -1225,6 +1322,46 @@ audit_refs: []
 decision_refs: []
 next_task: "T08.03 TaskGraph (typed steps with schema version); owner: standing grant (L08-01)."
 updated: 2026-10-16
+```
+
+#### L08-05 Mission executor and planner docs match the code (external audit AI-002, docs half)
+```yaml
+id: L08-05
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/missions/executor.py, backend/missions/planner.py]
+tests_run:
+  - {cmd: "read missions/executor.py:228-230,271-288,298-305,550-556,637 and planner.py:52 at 54740ef", result: "the _stage docstring and a comment said draft bodies are not built and state_code has no source; drafter.draft_message is called at :298 and state_code comes from the client's latest lead (:554, :637). planner.py cited executor.py:178 for the task skip (it is at :209)", date: 2026-11-13}
+  - {cmd: "pytest mission tests (comments only)", result: "149 passed. tests/test_missions_planner.py has 11 failures when run ALONE, also on unmodified main: its fake llm_gateway module lacks ATTACHMENT_TOKENS, which the planner now imports; it passed in the full suite only by test order (pre-existing isolation bug)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_missions_planner.py alone, after its fake llm_gateway became a copy of the real module with only complete replaced", result: "22 passed (was 11 failed alone); mission + gateway tests 198 passed", date: 2026-11-13}
+authz_checked: n/a (comments)
+blockers:
+  - {type: scope, note: "The task channel itself stays unsupported (L08-01, PR #11 waits on the owner)."}
+audit_refs: []
+decision_refs: []
+next_task: "None for the docs; the task channel follows L08-01."
+updated: 2026-11-13
+```
+
+#### L08-06 A job's terminal state and its attempt audit commit together (external audit JOB-01)
+```yaml
+id: L08-06
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/automation_jobs.py, backend/tests/test_job_attempt_atomic.py]
+tests_run:
+  - {cmd: "read automation_jobs.complete_job / fail_job / _finish_attempt at 54740ef", result: "the lease-checked job UPDATE committed in one transaction and finish_automation_job_attempt ran in a second, so a crash or connection loss between them left a succeeded/failed job with its attempt still open (or the attempt closed for a job whose update was lost)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_job_attempt_atomic.py (against 075bd2c's automation_jobs.py)", result: "red: 2 failed (completion and failure each used two transactions)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_job_attempt_atomic.py + automation-job suites (after)", result: "17 passed: complete_job and fail_job run the lease-checked UPDATE and the attempt close in ONE transaction; a failed attempt close rolls the completion back (the lease lapses and the job is reclaimed); a lost lease closes no attempt", date: 2026-11-14}
+authz_checked: n/a (worker internals)
+blockers:
+  - {type: scope, note: "No sweep for attempts orphaned before this change. Not exercised against PostgreSQL here; the job live tests run in CI."}
+audit_refs: []
+decision_refs: []
+next_task: "A one-off check for attempts still open on terminal jobs."
+updated: 2026-11-14
 ```
 
 ### L09
@@ -1370,6 +1507,48 @@ audit_refs: []
 decision_refs: []
 next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds."
 updated: 2026-10-16
+```
+
+#### L09-08 An inbound caller's spoken opt-out is recorded when it is said (external audit RUN-02, P0)
+```yaml
+id: L09-08
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/inbound_voice.py, backend/voice_opt_out.py, backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/component_health.py, backend/tests/test_elevenlabs_realtime.py, backend/tests/test_inbound_voice.py, backend/tests/test_component_health.py, backend/tests/test_inbound_v1_routing_and_idempotency.py]
+tests_run:
+  - {cmd: "read inbound_voice.py:754,909-915,716-718; elevenlabs_realtime.py:267-273; qwen_omni_realtime.py:545-557,787-799 at 54740ef", result: "the inbound suppression was written only inside finalize_inbound_voice_call at hang-up; all three bridges log and swallow a finalize failure; no retry existed although the docstring promised one; nothing read calls left transcript_status='active'. A DB blip or a pod killed at hang-up lost a TCPA opt-out and the outreach gate kept allowing calls", date: 2026-11-13}
+  - {cmd: "pytest new tests against 54740ef's source", result: "red: 10 failed, 4 errors (record_inbound_opt_out did not exist)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_component_health.py tests/test_health_readiness.py tests/test_elevenlabs_realtime.py tests/test_inbound_voice.py tests/test_voice_opt_out.py tests/test_qwen_omni_realtime.py tests/test_plivo_qwen_realtime.py tests/test_twilio_qwen_realtime.py (after)", result: "142 passed: on ElevenLabs and Qwen (Twilio, Plivo) inbound calls a caller opt-out is written as it is said, even when finalize then fails; written once per call, retried on the next opt-out if the write failed; the call is not ended; ordinary 'stop by the house' records nothing; record_inbound_opt_out suppresses the caller's number brokerage-wide on every channel plus the contact flag and sets opt_out_requested; a failed write raises; finalize keeps an opt-out recorded mid-call; component health 'inbound_calls' is DEGRADED for a call still active 10 min after it ended or 2 h after it started", date: 2026-11-13}
+  - {cmd: "pytest tests compliance_engine/tests (the CI unit job)", result: "6320 passed, 1 failed, 111 skipped: test_inbound_v1_routing_and_idempotency's fake finalize row lacked the newly selected opt_out_requested column; the fake now carries it and that file plus test_inbound_voice.py re-run 40 passed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_elevenlabs_realtime.py tests/test_voice_opt_out.py tests/test_inbound_voice.py (honour_inbound shielded, RUN-06)", result: "80 passed: cancelling the bridge's task as the caller hangs up does not cancel the mid-call suppression write", date: 2026-11-13}
+authz_checked: "Writes in the call's own brokerage context (brokerage_scope agent ctx, as finalize); only the number and a fixed source sentence are stored, never what was said."
+blockers:
+  - {type: scope, note: "If both the mid-call write and finalize fail, the opt-out is still unrecorded; health shows the call (inbound_calls DEGRADED) for a person to review. No automatic re-detection: an unfinalized call's transcript was never stored. ACS inbound (no call state) is not covered. No real call made (T09.18 needs owner approval)."}
+audit_refs: []
+decision_refs: []
+next_task: "Real inbound test call saying 'stop' with finalize forced to fail, once T09.18 is approved; then RUN-03 (save_note says Saved before saving)."
+updated: 2026-11-13
+```
+
+#### L09-09 A hang-up cannot cancel an outbound opt-out write already under way (external audit RUN-06, opt-out part)
+```yaml
+id: L09-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/voice_opt_out.py, backend/tests/test_voice_opt_out.py]
+tests_run:
+  - {cmd: "read elevenlabs_realtime.py:249-251,285-286,418 and qwen_omni_realtime.py:316-321 at 54740ef", result: "the bridges cancel the losing media task as soon as either side hangs up; a callee who says 'stop' and hangs up at once could cancel the suppression write awaiting the database", date: 2026-11-13}
+  - {cmd: "pytest tests/test_voice_opt_out.py -k hang_up (against 54740ef's voice_opt_out.py)", result: "red: 1 failed (the write was cancelled)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_voice_opt_out.py tests/test_elevenlabs_realtime.py (after)", result: "48 passed: honour() runs the write as a shielded, referenced task; cancelling the call's task still cancels the bridge but the suppression is written", date: 2026-11-13}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "The inbound counterpart (voice_opt_out.honour_inbound) arrives with L09-08 / PR #48 and gets the same shield there. RUN-06's other half — a final 'stop' spoken in the last second can be dropped because the agent leg is cut at hang-up — needs a bounded drain of the agent leg; not done."}
+audit_refs: []
+decision_refs: []
+next_task: "Bounded drain of the agent leg after hang-up (up to ~2 s) before cancelling it."
+updated: 2026-11-13
 ```
 
 ### L10
@@ -1614,6 +1793,45 @@ audit_refs: []
 decision_refs: []
 next_task: "T10.09 remainder: retry / circuit-breaker UI; AC10.05 Playwright check of the delivery page."
 updated: 2026-10-16
+```
+
+#### L10-13 An email lost mid-send is marked unknown and counted, never resent (external audit RUN-04 / COMMS-001)
+```yaml
+id: L10-13
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/reconciliation.py, backend/component_health.py, backend/tests/test_reconciliation_live.py, backend/tests/test_component_health_live.py]
+tests_run:
+  - {cmd: "read email_outbox.py:71-77,110,155-161; reconciliation.py:109-112; component_health.py:157 at 54740ef", result: "deliver() claims a row as 'sending' with no error. A worker killed after the claim, a failed requeue after a failed pre-send check, or a provider-accepted send whose 'sent' write failed all left it 'sending' unmarked; health counted only error LIKE 'delivery_unknown%' and the sweep only re-enqueued 'queued' rows, so it was invisible", date: 2026-11-13}
+  - {cmd: "pytest tests/test_email_outbox.py tests/test_component_health.py tests/test_health_readiness.py tests/test_reconciliation_live.py (no DB here: the live file skips)", result: "36 passed, 1 skipped", date: 2026-11-13}
+authz_checked: n/a (platform sweep and health aggregate; tenant-bounded by only_tenant in tests)
+blockers:
+  - {type: scope, note: "The new assertions are live (real PostgreSQL) and run only in CI's database job: the sweep marks an old unmarked 'sending' row delivery_unknown, leaves a fresh one and an already-marked one alone, and enqueues none of them; health counts a stale unmarked row (before + 1). Not run on this host (no Postgres). An unknown row still needs a person: the outbox has no provider-side lookup."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job on this PR; then RUN-05 (Plivo outcome write failure acknowledged)."
+updated: 2026-11-13
+```
+
+#### L10-14 A Plivo call outcome that was not stored is not acknowledged (external audit RUN-05)
+```yaml
+id: L10-14
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/telephony_api.py, backend/tests/test_plivo_outbound_webhooks.py]
+tests_run:
+  - {cmd: "read telephony_api.py:1770-1788 and commands_api.record_call_outcome at 54740ef", result: "a failed record_call_outcome was logged as a warning, then the call state was cleaned up and Plivo got 204: the outcome, including the only lead_engaged meter of a speed-to-lead call (A05: under-recorded), was lost and any retry found no state. record_call_outcome is idempotent (answered meter idempotent; session update; timeline NOT EXISTS), so a retry is safe", date: 2026-11-13}
+  - {cmd: "pytest tests/test_plivo_outbound_webhooks.py (new test against 54740ef's telephony_api.py)", result: "red: 1 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_plivo_outbound_webhooks.py tests/test_killer_demo_paths.py tests/test_security_launch_review.py tests/test_plivo_voice_provider.py tests/test_rate_limit_buckets.py tests/test_plivo_inbound_routing.py (after)", result: "187 passed: a failed outcome write answers 503 and keeps the call state; the retry records it once and then cleans up (204). Two tests had passed only because the unpatched write failed silently against no database; the fixture now makes it succeed by default", date: 2026-11-13}
+authz_checked: n/a (signature check unchanged and still first)
+blockers:
+  - {type: scope, note: "Whether Plivo retries a status callback on a 5xx was not verified (no external access); if it does not, the state's TTL ends it as before and the error log is the signal. No sweep re-asks Plivo for a missing outcome."}
+audit_refs: []
+decision_refs: []
+next_task: "Confirm Plivo's callback retry policy (docs or a staging call, with owner approval); if none, add a sweep that asks Plivo for the call's final status."
+updated: 2026-11-13
 ```
 
 ### L11
@@ -2667,7 +2885,7 @@ updated: 2026-10-14
 ```yaml
 id: L17-10
 status: tests_pass
-env: staging
+env: local   # removal 2026-11-13 is local; the header/signed-URL paths are on staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds backend/webhook_auth.py
 files: [backend/webhook_auth.py, backend/commands_api.py, backend/command_providers.py, backend/acs_call_handler.py, backend/log_redaction.py, backend/tests/test_webhook_auth.py, backend/tests/test_log_pii_guard.py, .env.example, docs/security-launch-review.md]
 tests_run:
@@ -2675,14 +2893,17 @@ tests_run:
   - {cmd: "read uvicorn 0.49.0 protocols/websockets/websockets_impl.py:263", result: "WebSocket handshake lines go to uvicorn.error with the path as the SECOND argument; log_redaction rewrote only the third argument on uvicorn.access, so ?bridge_token= (commands_api Plivo media bridge) reached the log", date: 2026-10-14}
   - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py", result: "95 passed: header token, body HMAC (body- and time-bound, 5 min), expiring path-bound signed URL (expired/other route/bad sig -> 403); Neoh's callback URLs carry no secret and no token=; old ?token= accepted with a deprecation warning that names the env var, not the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=0 refuses it", date: 2026-10-14}
   - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
+  - {cmd: "2026-11-13 removal (owner: settle it from the local drive). grep of the repo, its worktrees and every .env* under /media/ydn/SYPHER_CORE2 for a callback/webhook URL carrying ?token=", result: "none: only .env.example comments. No code builds one (commands_api.py:137, acs_call_handler/command_providers hand out signed URLs). The Azure subscription that hosted ACS is disabled (since 2026-08-09), so no live Event Grid delivery. Provider consoles were NOT checked", date: 2026-11-13}
+  - {cmd: "pytest tests/test_webhook_auth.py (new test against the old webhook_auth.py)", result: "red: 1 failed (the correct secret in ?token= still authenticated)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py tests/test_log_pii_guard.py (after)", result: "107 passed: ?token=<secret> is 403 and logs which webhook without the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=1 cannot bring it back; recovery tests authenticate with the header", date: 2026-11-13}
 authz_checked: "no secret -> 503 as before; any failed method -> 403"
 blockers:
-  - {type: operator, note: "Before the compat path is removed: point the ACS Event Grid subscription at the X-Neoh-Webhook-Token delivery header (or rely on the signed URL Neoh now hands ACS per call) and any custom-call provider at the header or X-Neoh-Signature. Calls placed by the previous release keep their ?token= URL until they end."}
+  - {type: operator, note: "Removed 2026-11-13 on the owner's instruction after the local check above. A provider still configured with ?token= now gets 403 and the app logs \"Refused a ?token= query secret on <ENV>\"; move it to the X-Neoh-Webhook-Token header or a signed URL."}
   - {type: scope, note: "The Plivo media bridge still takes a per-call bridge_token in the WebSocket query (a per-call capability, not the static secret); it is now redacted from both uvicorn loggers. Edge/CDN logs outside the app are not controlled here."}
 audit_refs: []
 decision_refs: []
-next_task: "Next release: delete the ?token= branch in webhook_auth.verify_webhook and ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT."
-updated: 2026-10-14
+next_task: "Done 2026-11-13 (external audit SEC-002). Watch staging logs for \"Refused a ?token= query secret\" after the next deploy."
+updated: 2026-11-13
 ```
 
 #### L17-11 Log-PII guard: account ids and exception text
@@ -3092,7 +3313,7 @@ blockers:
   - {type: scope, note: "Covers the dependency-gated operator surface. ~35 inline platform-admin checks elsewhere (e.g. aws_observability, WebSocket handlers) are not in this matrix; /api/aws is not mounted unless AWS observability is enabled."}
 audit_refs: []
 decision_refs: []
-next_task: "Extend the same graph walk to inline Role.PLATFORM_ADMIN checks, or move them behind require_platform_admin; then T17.11's 20-account role matrix."
+next_task: "Done in L17-29 (inline checks classified, AWS and 3 operator routes behind the gate); then T17.11's 20-account role matrix."
 updated: 2026-11-08
 ```
 
@@ -3139,6 +3360,29 @@ next_task: "SBOM in CI (T17.10); malware scanning needs an owner decision on a s
 updated: 2026-11-11
 ```
 
+#### L17-29 Inline platform-admin checks: each is a stated choice; AWS observability is operator-only (AC17.07)
+```yaml
+id: L17-29
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; change in the commit that adds this row
+files: [backend/aws_observability.py, backend/brokerage_onboarding.py, backend/state_compliance/routes_coverage.py, backend/tests/test_inline_platform_admin_checks.py, backend/tests/test_aws_observability_security.py, observability-platform/src/lib/auth.js, observability-platform/src/components/Login.jsx, observability-platform/src/App.jsx, observability-platform/src/hooks/useAwsWebSocket.jsx, observability-platform/DEPLOY.md, backend/tenancy.py, backend/audit_ledger.py, backend/admin_c2.py, backend/tests/test_operator_stream_sessions.py]
+tests_run:
+  - {cmd: "AST scan of every mounted endpoint body plus aws_observability.router (mounted or not) for Role.PLATFORM_ADMIN, is_platform_admin, the 'platform_admin' string and _OBS_ALLOWED_ROLES, routes behind require_platform_admin excluded", result: "before: 55 route-methods incl. 20 /api/aws (18 admitted broker_owner: EC2/RDS/Lambda/EBS/ELB/S3 inventories and metrics, the AWS bill, security findings and groups, autoscaling) and 3 inline operator routes (harvest run, MLS entitlement grant/revoke). After: 35 (32 HTTP + 3 WebSocket), each classified with its reason: 9 owner-or-operator governance, 3 billing routes where only the operator may name another tenant, 5 system lookups (token hash, signed intake, OAuth state, offer count), 13 wider view inside the caller's brokerage, 2 not a caller gate (login alert, role-change target), 3 operator WebSockets", date: 2026-11-12}
+  - {cmd: "pytest tests/test_inline_platform_admin_checks.py", result: "61 passed: every inline check classified, none stale; all 20 /api/aws HTTP routes depend on require_platform_admin and answer broker_owner and agent with 403 {detail: Platform admin only.}; /api/aws/ws closes 4403 for both; a platform admin reaches the handler (422 on a bad group name, no AWS call); a demoted operator is refused 401 by the session check the inline require_role never ran; harvest run and MLS grant/revoke are on the dependency gate; an agent gets 403 on all 9 governance routes", date: 2026-11-12}
+  - {cmd: "mutant: /api/aws/elb back to inline require_role(PLATFORM_ADMIN, BROKER_OWNER), and broker_owner back in _OBS_ALLOWED_ROLES", result: "7 failed (registry, AWS gate, both roles on /elb, role-set parity, broker_owner stream)", date: 2026-11-12}
+  - {cmd: "pytest inline, operator-routes, aws security, admin read audit, endpoint honesty, azure boot, AI budget, brokerage onboarding, MLS licensing/switch/entitlement, security launch review", result: "487 passed", date: 2026-11-12}
+  - {cmd: "pytest tests compliance_engine/tests (the CI unit job)", result: "6375 passed, 111 skipped (2026-11-12); with the stream session check 6387 passed, 111 skipped after test_audit_websocket_security states the session is current", date: 2026-11-13}
+  - {cmd: "pytest tests/test_operator_stream_sessions.py (SEC-001 of the 2026-11-13 external audit; CodeRabbit Major on PR #45)", result: "12 passed: with a signed platform-admin token, /api/aws/ws, /admin/audit-trail and /admin/surge-telemetry close 4401 before accept when the session has ended, 1011 (not a credential error) when it cannot be checked, admit a current operator, and close an OPEN stream 4401 once a re-check finds the session ended; the watch stays quiet while current. Against the handlers without the change: 10 failed (a 5 s deadline stops a wrongly open stream from hanging CI)", date: 2026-11-13}
+authz_checked: "Server-side gate for 20 AWS observability routes, the 3 operator streams (live session at handshake and every 60 s while open) and 3 operator routes (broker_owner, agent refused; operator admitted; demoted operator refused); agent refused on 9 brokerage governance routes. The other inline checks are recorded with their reason, not changed."
+blockers:
+  - {type: scope, note: "The scan reads endpoint bodies only; a role check inside a helper is not seen. Operator streams re-prove the session every 60 s (tenancy.SESSION_RECHECK_SECONDS), so a demoted operator's open stream can run up to that long. Broker owners lost the AWS dashboard: if a brokerage should see its own usage, that needs a tenant-scoped view, not platform infrastructure."}
+audit_refs: []
+decision_refs: []
+next_task: "T17.11: the 20-account role-by-resource matrix (assigned, shared, team manager, owner, suspended, second brokerage)."
+updated: 2026-11-13
+```
+
 #### L17-30 dnspython 2.9.0 → 2.9.2 for CVE-2026-128089 (T17.10 dependency audit)
 ```yaml
 id: L17-30
@@ -3156,6 +3400,26 @@ audit_refs: []
 decision_refs: []
 next_task: "Rebase or re-run PRs #45-#51 once this merges."
 updated: 2026-11-13
+```
+
+#### L17-31 Sign-out's cache deletion is no longer blocked by open browser-database handles (external audit WEB-001)
+```yaml
+id: L17-31
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/sw-oracle.js, oracle-app/src/lib/clearPrivateCaches.js, oracle-app/src/lib/capture/captureStore.js, oracle-app/src/lib/clearPrivateCaches.test.js, oracle-app/src/lib/capture/capture.test.js, oracle-app/src/swOracle.test.js]
+tests_run:
+  - {cmd: "read sw-oracle.js:34-80,172-178, captureStore.js:41-48, clearPrivateCaches.js:31 at 54740ef", result: "the service worker opened a connection per read/write and never closed it; captureStore cached one with no versionchange handler; both clearPrivateCaches and the worker treated 'blocked' as deleted. So blocked was the normal outcome while the worker lived or Capture Studio was mounted, and the previous user's staged captures and cached splats stayed on disk after sign-out although Capture Studio says sign-out discards them. (The audit's cross-user read is not supported: online splat reads re-check access, L16-05.) The 'no auth check' comment was stale", date: 2026-11-14}
+  - {cmd: "vitest clearPrivateCaches.test.js capture.test.js swOracle.test.js (new tests against 54740ef)", result: "red: 5 failed", date: 2026-11-14}
+  - {cmd: "same, after; eslint on the changed files", result: "21 passed, eslint clean: a blocked delete is waited out (bounded 3 s) and reported in { blocked } if it never completes; the capture store's connection closes on versionchange and reopens on next use; the worker's connections yield to a delete and close after each transaction (source-pinned: the worker cannot load in jsdom)", date: 2026-11-14}
+authz_checked: n/a (client storage)
+blockers:
+  - {type: scope, note: "Not exercised in a real browser: the worker change is pinned by source, not run. Sign-out can now wait up to 3 s per still-blocked database."}
+audit_refs: []
+decision_refs: []
+next_task: "Verify on a real Chrome/Safari profile that IndexedDB is empty after sign-out with Capture Studio open."
+updated: 2026-11-14
 ```
 
 ### L18
@@ -3359,6 +3623,65 @@ next_task: "The next T18.07 channel: carrier minutes and SMS per brokerage (soft
 updated: 2026-10-18
 ```
 
+#### L18-10 A refused token-usage row no longer takes the call off the AI budget cap (external audit BILL-001, cost half)
+```yaml
+id: L18-10
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_budget.py, backend/billing_usage.py, backend/tests/test_ai_budget.py]
+tests_run:
+  - {cmd: "read ai_budget.py:286-298, billing_usage.py:104-209 at 54740ef", result: "settle records usage and deletes the call's hold in one transaction; record_usage swallows an insert failure inside its savepoint and returns False (the same as an idempotent repeat), so the hold was deleted anyway and the call's tokens counted toward the monthly cap nowhere (_TOTALS reads usage rows plus live holds). The docstring called it a stated gap", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_budget.py (new tests against 54740ef's ai_budget.py and billing_usage.py)", result: "red: 1 failed (the hold was dropped)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_budget.py tests/test_ai_budget_hosted_calls.py tests/test_billing_usage.py (after)", result: "230 passed: a settled call drops its hold; when the usage INSERT fails the hold is kept, resized to the provider-reported tokens (GREATEST) and held to the end of the cap's UTC month, so the cap still counts the call; every other record_usage/record_inference caller keeps never-raise (raise_errors defaults False)", date: 2026-11-13}
+authz_checked: n/a (budget accounting inside the caller's own tenant)
+blockers:
+  - {type: scope, note: "The revenue half of BILL-001 is still open: no alert for a delivered speed-to-lead engagement with no lead_engaged row, and reconcile_lead_engagements has no caller. A kept hold is not a billing_usage_events row, so usage reports (not the cap) still miss those tokens. Not run against PostgreSQL here; the live budget tests run in CI."}
+audit_refs: []
+decision_refs: []
+next_task: "BILL-001 revenue half: schedule a missing-engagement check (delivered speed-to-lead response, succeeded command, no lead_engaged row) with an alert."
+updated: 2026-11-13
+```
+
+#### L18-11 An invalid usage quantity is refused, never raised or stored (external audit BILL-003)
+```yaml
+id: L18-11
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/billing_usage.py, backend/tests/test_billing_usage.py]
+tests_run:
+  - {cmd: "read billing_usage.py:177 at 54740ef", result: "Decimal(str(quantity)) < 0 raised InvalidOperation for text and NaN out of record_usage, documented never to raise; Infinity passed and would be stored (PostgreSQL 14+ numeric accepts it). No current caller passes one", date: 2026-11-13}
+  - {cmd: "pytest tests/test_billing_usage.py (new test against 54740ef's billing_usage.py)", result: "red: 6 failed (text, NaN twice, Infinity twice, a non-number); the test records whether the database was reached, since record_usage swallows exceptions", date: 2026-11-13}
+  - {cmd: "pytest tests/test_billing_usage.py (after)", result: "27 passed: text, NaN, Infinity, negative, None and a non-number are refused with a warning before any database work; the parsed value is the one inserted", date: 2026-11-13}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for BILL-003."
+updated: 2026-11-13
+```
+
+#### L18-12 A delivered speed-to-lead engagement whose meter never landed is re-metered by the sweep (external audit BILL-001, revenue half)
+```yaml
+id: L18-12
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/reconciliation.py, backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_engagement_lifecycle_live.py]
+tests_run:
+  - {cmd: "read billing_usage.record_lead_engagement and outreach_lifecycle.meter_delivered_engagement at 54740ef", result: "the only Stripe-reported metric (lead_engaged) is written once, at delivery; a failed insert is logged and swallowed, and nothing looked for a delivered, succeeded speed-to-lead response with no row (reconcile_lead_engagements has no caller and reads only existing rows): an unbilled engagement nobody saw. A redelivered receipt retries opportunistically only", date: 2026-11-14}
+  - {cmd: "pytest tests/test_component_health.py -k unmetered (against 075bd2c's component_health.py)", result: "red: 1 failed", date: 2026-11-14}
+  - {cmd: "pytest component_health, health_readiness, reconciliation/engagement/outreach/billing unit tests (after; no DB here)", result: "the unit suites pass; live assertions run in CI's database job: a delivered response two hours old with no usage row degrades billing_meter, the sweep meters it once (key lead-engaged:<intake>, stage delivered, source = the command), a second sweep meters none", date: 2026-11-14}
+authz_checked: n/a (platform sweep; metering re-reads tenant evidence)
+blockers:
+  - {type: scope, note: "Looks back 30 days. reconcile_lead_engagements (Stripe-reported vs local) still has no caller."}
+audit_refs: []
+decision_refs: []
+next_task: "Schedule reconcile_lead_engagements and alert on drift against Stripe."
+updated: 2026-11-14
+```
+
 ### L19
 Production operations.
 
@@ -3479,6 +3802,68 @@ next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO.
 updated: 2026-10-16
 ```
 
+#### L19-07 A restore is verified only when the restored ciphertext opens with the real key (external audit DR-001, REC-02)
+```yaml
+id: L19-07
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [scripts/verify-restore.sh, scripts/dr-drill.sh, scripts/dr-drill-fixture.sql, backend/tests/test_backup_restore_scripts.py]
+tests_run:
+  - {cmd: "sed -n 176,189p scripts/verify-restore.sh at 54740ef", result: "with no ORACLE_ENCRYPTION_MASTER_KEY it printed a WARN and still exited 0 'RESTORE VERIFIED'; with a key it encrypted and decrypted the literal 'k', never the env key or restored data. The CI drill passed a dummy key over a fixture with no ciphertext, so restore decryptability had never been tested. docs/disaster-recovery-state-map.md claimed the opposite", date: 2026-11-13}
+  - {cmd: "python: crypto.derive_tenant_key vs HMAC(PRK=HMAC(zeros32, master), info||0x01)", result: "identical (9353a006…171a for the drill tenant): the derivation is two HMACs, which pgcrypto hmac() computes in the restored DB", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py, new tests against 54740ef's scripts", result: "red: 7 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (after; the real script run against a stand-in psql)", result: "44 passed: no key with restored ciphertext = FAIL and no RESTORE VERIFIED; a key that does not open it = FAIL; the right key = PASS naming the values decrypted; the key never reaches psql argv or stdin (\\getenv); a dump with no ciphertext needs no key; an unsampleable column is a FAIL; the drill fixture's sealed note uses exactly crypto.derive_tenant_key's output", date: 2026-11-13}
+  - {cmd: "CI DR drill on PR #49 (run 43534928294, real PostgreSQL 16)", result: "phase 7: the validator refuses the restore with no master key and with a wrong one, then passes (19 checks) with the drill key: pgcrypto's SQL HKDF decrypted the fixture note sealed with crypto.derive_tenant_key's output. 45 checks, DRILL PASSED", date: 2026-11-13}
+authz_checked: n/a (recovery tooling)
+blockers:
+  - {type: scope, note: "The SQL derivation against real PostgreSQL is proven by the CI DR drill (fixture note + validator refusing no key and a wrong key); it was not run locally (no Postgres client on this host, disks full). Samples 3 values per *_ciphertext column on tables with a tenant_id; encrypted_payload/encrypted_contact and tenant-less rows are not sampled. On a full 47 GB restore a mostly-NULL column is a sequential scan. Needs psql >= 15. REC-03/REC-04 still open. docs/disaster-recovery-state-map.md correction is in PR #46; update its wording to this behaviour after both merge."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch the CI DR drill on this PR (phase 7 must show the two refusals); then REC-03 (fail on unexplained pg_restore errors, keep the log) and REC-04 (exact RLS counts from the manifest)."
+updated: 2026-11-13
+```
+
+#### L19-08 A rollback is judged against the live release, checks its target app, and keeps the domain (external audit DEP-02, DEP-03, DEP-03b)
+```yaml
+id: L19-08
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [scripts/rollback.sh, backend/tests/test_release_immutability.py]
+tests_run:
+  - {cmd: "read scripts/rollback.sh:113-130,201-250 at 54740ef", result: "DEP-02: without --from the safety verdict used the working tree's newest migration, not the live schema, even with --apply. DEP-03: DIGITALOCEAN_APP_ID was never checked against the spec's app. DEP-03b (found in verification): the spec was sed over raw app.yaml with no domains block, and DigitalOcean replaces the whole spec on update, so a rollback would detach the production hostname", date: 2026-11-13}
+  - {cmd: "pytest tests/test_release_immutability.py, new tests against 54740ef's rollback.sh", result: "red: 5 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_release_immutability.py tests/test_render_app_spec.py tests/test_carry_secrets.py (after; the real script with a stand-in doctl)", result: "116 passed: --apply without --from (or with an unreadable migration_head) is refused before any doctl call; the spec is rendered by render-app-spec.py --env production with NEOH_DOMAIN, so it carries the domain and still no migration run; apply refuses an app whose spec name is not 'neoh' and a spec that would drop a live domain, before list-deployments/update; a matching app passes to the next step. The existing mocked apply test now also answers `apps get`", date: 2026-11-13}
+authz_checked: n/a (operator tooling)
+blockers:
+  - {type: scope, note: "No production app exists (L19-02), so this was never run against DigitalOcean. DEP-04 (drift guard fails open) is in .github/workflows/ci.yml, not changed here. DEP-05 and DEP-06 still open."}
+audit_refs: []
+decision_refs: []
+next_task: "DEP-04: make the staging/production drift guard fail closed when the running spec cannot be fetched (ci.yml)."
+updated: 2026-11-13
+```
+
+#### L19-09 A restore with unexplained pg_restore errors stops, keeps its log, and tenant isolation must come back in full (external audit REC-03, REC-04)
+```yaml
+id: L19-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [scripts/restore-postgres.sh, scripts/backup-postgres.sh, scripts/verify-restore.sh, backend/tests/test_backup_restore_scripts.py]
+tests_run:
+  - {cmd: "read restore-postgres.sh:233-272, verify-restore.sh:133-141 at 54740ef", result: "REC-03: every pg_restore error was printed, called 'not automatically a failure', and the log deleted at the end, leaving the decision to a verifier that samples a subset. REC-04: RLS passed when ANY one table had RLS, ANY one FORCEd it and ANY policy existed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (new tests against 54740ef's scripts)", result: "red: 7 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_backup_restore_scripts.py (after; the real scripts against stand-in psql/pg_restore)", result: "45 passed: an unexplained 'pg_restore: error' stops the restore before 'NOT DONE YET' and keeps restore-<UTC>.log beside the manifest; an error matched by ORACLE_RESTORE_EXPECTED_ERRORS lets it continue and says so; a clean restore keeps its log. The backup manifest records rls_tables, rls_forced_tables, rls_policies; the verifier FAILs any shortfall ('the backup had 120') and, for an older manifest, falls back to '> 0' and says so", date: 2026-11-13}
+authz_checked: n/a (recovery tooling)
+blockers:
+  - {type: scope, note: "The CI DR drill (real PostgreSQL) exercises both on a clean restore (zero errors; counts match) but no negative restore. REC-03's exhaustive row reconciliation (counts for every authoritative table) is not done. A manifest from before this change verifies RLS only weakly."}
+audit_refs: []
+decision_refs: []
+next_task: "Row-count reconciliation for every authoritative table in the manifest (REC-03 remainder)."
+updated: 2026-11-13
+```
+
 #### L19-10 The deploy drift guard stops when a running app's spec cannot be read (external audit DEP-04)
 ```yaml
 id: L19-10
@@ -3491,11 +3876,90 @@ tests_run:
   - {cmd: "yaml.safe_load(.github/workflows/ci.yml) after the change", result: "valid; the guard skips only when `doctl apps get` also fails (no app yet), and exits 1 when the app exists but its spec cannot be read", date: 2026-11-13}
 authz_checked: n/a (CI)
 blockers:
-  - {type: operator, note: "Not pushed: the gh token has no `workflow` scope, so GitHub refuses changes to .github/workflows. Local branch work/19-drift-guard-20261113 (patch in oracle-worktrees/audit-2026-11-13/). Owner: `gh auth refresh -s workflow`, then push and open the PR."}
+  - {type: scope, note: "Only exercised on a real deploy: staging deploys are blocked by the expired DigitalOcean token (L18-05 note), and no production app exists."}
 audit_refs: []
 decision_refs: []
-next_task: "Owner pushes the branch; CI then runs the guard on the next deploy."
+next_task: "Confirm on the first staging deploy after the token is replaced that the guard runs (and passes)."
+updated: 2026-11-14
+```
+
+#### L19-11 The operator health card says when open alerts could not be read (external audit OBS-001)
+```yaml
+id: L19-11
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/admin_ops.py, backend/tests/test_operator_routes_refuse_tenant_roles.py, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.test.jsx]
+tests_run:
+  - {cmd: "read admin_ops.py:80-94 and OperatorOverview.jsx at 54740ef", result: "a failed ops_alerts query was swallowed and answered open_alerts: [] — the same as no open alerts — and the card then showed none", date: 2026-11-13}
+  - {cmd: "new tests against 54740ef's admin_ops.py and OperatorOverview.jsx", result: "red: backend 1 failed, frontend 1 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_operator_routes_refuse_tenant_roles.py; vitest OperatorOverview.test.jsx (after)", result: "64 passed; 12 passed: the response carries alerts_status ok|unavailable (logged on failure), open_alerts stays a list for compatibility, and the card says 'Open alerts could not be read' instead of nothing", date: 2026-11-13}
+authz_checked: "Unchanged: require_platform_admin."
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for OBS-001."
 updated: 2026-11-13
+```
+
+#### L19-12 A drifted migration ledger stops a direct run before anything is applied (external audit MIG-001)
+```yaml
+id: L19-12
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/run_migrations.py, backend/tests/test_run_migrations.py]
+tests_run:
+  - {cmd: "read run_migrations.py:825-917 at 54740ef", result: "direct mode noted a recorded file whose contents changed, then applied every newer migration on top of a schema the repository no longer describes and reset role passwords, returning 4 only at the end. Production is guarded (PRE_DEPLOY runs --precheck-then-migrate, which refuses first); dev-start.sh, livetest-local.sh, rehearse-migrations-nosuperuser.sh and manual runs use direct mode", date: 2026-11-14}
+  - {cmd: "pytest tests/test_run_migrations.py -k drifted_ledger (against 54740ef's run_migrations.py)", result: "red: 1 failed (0002 was applied)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_run_migrations.py tests/test_migration_ledger.py (after)", result: "27 passed: every recorded file is hashed before any apply; a changed one prints and returns 4 with nothing applied; the advisory lock is still released (finally)", date: 2026-11-14}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "Behaviour change for developers: editing an already-applied migration locally now stops dev-start's migrate step instead of warning; restore the file or write a new migration. The precheck still runs before the advisory lock (small check-then-act gap, noted by the audit)."}
+audit_refs: []
+decision_refs: []
+next_task: "Take the advisory lock before the precheck in --precheck-then-migrate."
+updated: 2026-11-14
+```
+
+#### L19-13 A rollback runs its smoke test and says when it is unverified (external audit DEP-06)
+```yaml
+id: L19-13
+status: tests_pass
+env: local
+evidence_shas: [e32cc2b]   # base; fix in the commit that adds this row
+files: [scripts/rollback.sh, backend/tests/test_release_immutability.py]
+tests_run:
+  - {cmd: "read scripts/rollback.sh Verify step at 54740ef", result: "after `doctl apps update` it only printed the smoke-test command and exited 0, so a rollback that came up broken or as the wrong release looked successful", date: 2026-11-14}
+  - {cmd: "pytest tests/test_release_immutability.py (new tests against e32cc2b's rollback.sh)", result: "red: 3 failed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_release_immutability.py (after; stand-in doctl and smoke script)", result: "69 passed: without APP_URL the rollback still applies and exits 4 ROLLED_BACK_BUT_UNVERIFIED; a failing smoke test exits 4; a passing one exits 0 having checked APP_URL against the target release sha. ORACLE_ROLLBACK_SMOKE overrides the smoke script (tests only; default infra/digitalocean/smoke-test.sh)", date: 2026-11-14}
+authz_checked: n/a (operator tooling)
+blockers:
+  - {type: scope, note: "No production app exists, so never run against DigitalOcean. DEP-05 (syntactic rollback classifier) and DEP-08 (storage smoke) still open."}
+audit_refs: []
+decision_refs: []
+next_task: "DEP-08: an in-app storage readiness check the smoke test asserts."
+updated: 2026-11-14
+```
+
+#### L19-14 The release smoke test checks storage with the app's own credentials (external audit DEP-08)
+```yaml
+id: L19-14
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/object_storage.py, backend/server.py, infra/digitalocean/smoke-test.sh, backend/tests/test_storage_readiness.py]
+tests_run:
+  - {cmd: "read smoke-test.sh:167-186 and ci.yml:609-615,884-888 at 54740ef", result: "the Spaces check ran `aws s3api head-bucket` with the CI runner's credentials, which CI never passes, so it could only warn ('NOT a release failure'); the last green staging run (38549337342) logged that warning. No in-app storage probe existed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_storage_readiness.py (against 075bd2c)", result: "red: 16 failed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_storage_readiness.py + object storage, smoke, honesty, security, operator, health, rate-limit suites (after)", result: "242 passed: object_storage.probe runs head_bucket with the app's own keys (3 s timeouts, one try) and maps an auth refusal (401 or 403) → auth_failed, a missing or unset bucket → misconfigured, a 5xx or timeout → degraded, a missing mount → unavailable; GET /health/storage is unauthenticated, returns backend + state only, caches 60 s, and answers 503 only for causes that are ours; the smoke test fails the release on auth_failed/misconfigured/unavailable and warns on degraded", date: 2026-11-14}
+authz_checked: "Public by design like /health/workers; exposes backend kind and a state, never a key, bucket or endpoint."
+blockers:
+  - {type: scope, note: "azure-blob reports not_probed (no cheap probe added). Never run against Spaces (no production app; staging token expired)."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch the first staging deploy after the DigitalOcean token is replaced: the smoke test must report storage healthy."
+updated: 2026-11-14
 ```
 
 ### L20
@@ -3570,3 +4034,50 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A08 | Heuristic valuation targets in model training | P1 | partly fixed in code, local, not on main (L11-05, L11-06): trainer, manifest, model card and CoT generator say the targets are heuristic, and a state underwriter is activated only with observed-transaction targets. Still open: the county $/sqft table and the 70% rule are still the only training targets (a second, different table in the CoT generator); the same heuristic adapter is served through the agent scope with no card check; the analyst agent serves an unrecorded valuation adapter and, without a market value, ARV = assessed x 1.38 with a fixed band, which reaches a contract's purchase price; no validation against real transactions | `backend/ml_forge/edge_forge/train_lora.py:211-213`, `backend/ml_forge/cot_synthesizer.py:29-33`; open: `backend/local_vllm_adapter.py:183`, `:220`, `backend/agents/agent_analyst.py:504`, `:545-551`, `backend/workflow_engine.py:341` | 11 | L11-05, L11-06 |
 | A09 | AI capability descriptions exceed executable tooling | P1 | partly fixed in code, local: one registry from the allowlist drives the persona, the capabilities API and the Personal AI page, and the executor refuses a tool not offered (L07-01, L07-02, L07-03). Still open (2026-10-18 re-check): the registry never reports setup required, so a brokerage with no channel set up is shown 'Needs your approval' while the model is told those tools are withheld; data-dependent tools (comps, ARV, market, disclosures) show Available without checking their data; the staged-claim reply guard does not run on the Foundry and Bedrock paths; two UI claims remain (ProductTour 'equity reviews', an onboarding toggle nothing reads); the AC07.02 Playwright check has not run | `backend/ai_chat_store.py:645`, `:704`, `:1906`; open: `backend/ai_capabilities.py:296-318`, `backend/ai_chat_agent.py:785`, `:1577`, `oracle-app/src/components/ProductTour.jsx:40`, `oracle-app/src/components/BrokerageOnboardingPanel.jsx:183-184` | 07 | L07-01, L07-02, L07-03 |
 | A10 | Local capacity test is not target-production evidence | P1 | open: nothing measured on DigitalOcean or any production-shaped target (`docs/capacity-plan.md:129` unchanged, figures from migration head 0116 with mocked providers); staging is reduced-size and in recovery mode; the T16.10 protocol is not written. The 0141 tenant wall, 0144 and JIT-off are on staging (0a76a72) but are query-plan fixes, not capacity evidence; L16-04 and L17-25 are local. Missing: SLOs and per-tier budgets (owner, T19.07); alert thresholds from targets (the job-queue alert fires at 600 s against a 60 s target); a request-latency or error-rate metric; the launch-gate load harness still calls MLS (404 under D-2026-10-12-01) | `docs/capacity-plan.md:22`, `:129`; `backend/component_health.py:189`; `performance/scenarios/read_load.js:71`, `performance/first10.sh:33-36` | 16 | L16-01, L16-03, L16-04, L17-25, L19-02 |
+
+## External audit 2026-11-13
+
+From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR #45 `5e71240`), re-verified at `54740ef` before entry (C1.5). Verdicts, evidence and suggested order: [docs/audits/2026-11-13](../audits/2026-11-13/README.md). Every row starts `open` unless noted; move a row when its owning category's ledger entry changes. Refuted findings are listed so nobody reopens them without new evidence.
+
+| ID | Finding | P | Status at `54740ef` (2026-11-13) | Owning category | Ledger |
+|---|---|---|---|---|---|
+| RUN-02 | Inbound call finalize failure has no retry, including spoken opt-outs | P0 | fixed on main (#48 (opt-out written when said; `inbound_calls` health) | 09 | L09-08 |
+| DEP-01 | Release pipeline blocked: `doctl auth` 401 since 2026-11-08 | P0 (pipeline) | open: owner must restore DigitalOcean access | 19 | L18-05 note |
+| DR-001 | Restore verifier passes without the master key | P1 (P0 pre-prod) | fixed on main (#49 (CI drill proves it); `docs/disaster-recovery-state-map.md` corrected | 19 | L19-07 |
+| REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | fixed on main (#49 | 19 | L19-07 |
+| REC-03 | `pg_restore` errors tolerated; log deleted | P1 | fixed on main (#58: unexplained errors stop the restore; log kept). Per-table row reconciliation open: needs counts taken inside the dump's own exported snapshot — the existing counts already race live writes | 19 | L19-09 |
+| REC-04 | RLS check passes if any one table has RLS | P1 | fixed on main (#58 (exact counts from the manifest) | 19 | L19-09 |
+| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | partly: master key escrowed on the local machine's other partition (2026-11-13, owner's instruction; not off-host). Scheduled dump not installed: disks full, dev DB stopped. Off-host copy: owner action | 19 | row 17, L17-18, A04 |
+| SEC-001 | Operator WebSockets skip the live session check | P1 | fixed on main (#45 (`da3394b`) | 17 | L17-29 |
+| SEC-002 | `?token=` webhook secret accepted by default | P2 | fixed on main (#47 (removed; checked on the local drive, consoles not checked) | 17 | L17-10 |
+| OBS-001 | Alert-query failure reads as zero open alerts | P2 | fixed on main (#59 | 19 | L19-11 |
+| AI-001 | Evidence bundle is not an end-to-end answer pipeline | P1 | open | 06 | L06-03 |
+| AI-002 | Mission `task` channel unsupported; stale docstrings | P2 | docs fixed on main (#61, L08-05); the task channel waits on L08-01 | 08 | L08-01/03/04/05 |
+| AI-003 | Standing autonomy releases a mission | — | refuted at `54740ef` (revisit when tasks become executable) | 08 | — |
+| AI-004 | Agent Twin is observational | P2 | AC07.09 guard on main (#66); twin stays advice only (T07.11) | 07 | L07-06 |
+| AI-005 | Failed tool-call row never retryable; `call_index` collides across tiers; Bedrock bypasses the ledger | P1 | fixed on main (#57 | 07 | L07-05 |
+| BILL-001 | No alert for a delivered command with no usage row; `ai_budget.settle` drops the hold on a failed insert | P1 | fixed: cost half on main (#56, L18-10); revenue half (#69, L18-12) re-meters unmetered delivered engagements in the sweep + `billing_meter` health | 18 | L18-10, L18-12, A05 |
+| BILL-002 | Meter id truncated below key length | P2 | refuted in practice; guard test only | 18 | L18-06 |
+| BILL-003 | Quantity parse can raise (NaN, Infinity, text) | P2 | fixed on main (#60 | 18 | L18-11 |
+| COMMS-001 / RUN-04 | Email stuck in `sending` is invisible to health and the sweep | P1 | fixed on main (#50 (sweep marks unknown, health counts; live tests in CI) | 10 | L10-13 |
+| COMMS-002 | Live jurisdiction/provider sign-off unverified | P1 gate | open | 10 / 20 | row 10, A04 |
+| JOB-001 | Reused idempotency key can return a job with different inputs | P2 | open: needs a per-caller review first — some callers (speed-to-lead) dedupe by key while the payload changes, so refusing a mismatch would break them | 08 | — |
+| JOB-01 | Job completion and attempt audit not atomic | P2 | fixed in code, PR #71 (one transaction) | 08 | L08-06 |
+| MIG-001 | Direct migration mode notices drift after applying | P2 | fixed on main (#67) | 19 | L19-12 |
+| DEP-02 | Rollback trusts local migration filenames | P1 | fixed on main (#53 (--apply needs --from) | 19 | L19-08, T19.11 |
+| DEP-03 | Rollback doesn't verify the target app | P1 | fixed on main (#53 | 19 | L19-08, AC19.04 |
+| DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed on main (#53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
+| DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed locally, NOT pushed: the gh token lacks `workflow` scope (branch work/19-drift-guard-20261113) | 19 | L19-10 |
+| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback | 19 | T19.06 |
+| DEP-06 | Post-rollback smoke is advisory | P2 | fixed on main (#68) | 19 | L19-13, T19.11 |
+| DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
+| DEP-08 | Storage smoke can pass with storage broken | P2 | fixed in code, PR #70 (/health/storage with the app's credentials; smoke asserts it) | 19 | L19-14 |
+| DEP-09 | Saved readiness runs aren't launch proof | P1 | open | 19 | A04 |
+| WEB-001 | IndexedDB handles never closed; captures survive sign-out | P2 | fixed on main (#64); not yet verified in a real browser | 17 / 16 | L17-31 |
+| WEB-002 | Storage exceptions break login, restore and sign-out cleanup | P2 | fixed on main (#63) | 02 | L02-09 |
+| WEB-003 | Dashboard JWT in the WebSocket subprotocol | P2 | open (design check before mounting) | 19 | — |
+| UX-001 | Status banner hides an initial failure | P2 | fixed on main (#65) | 02 | L02-10 |
+| RUN-01 | Accepted chat turn can have no durable job | P1 | fixed on main (#54 (sweep re-queues orphaned turns; 15-min cadence) | 07 | L07-04 |
+| RUN-03 | ElevenLabs says "saved" before the note is saved | P1 | open: needs an owner decision on mid-call note writes (update the one AI note vs one note per item) | 09 | — |
+| RUN-05 | Plivo callback acknowledged after a failed outcome write | P1 | fixed on main (#51 (503 + state kept; Plivo retry policy unverified) | 10 | L10-14, A05 |
+| RUN-06 | Losing media task cancelled without await (opt-out write can abort) | P1 | opt-out writes shielded from hang-up on main (#62 outbound, #48 inbound); bounded drain of the agent leg after hang-up open (changes live call teardown; needs a real-call test) | 09 | L09-08, L09-09 |

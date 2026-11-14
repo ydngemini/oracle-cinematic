@@ -117,3 +117,28 @@ def test_every_admin_path_is_gated_or_explicitly_a_broker_owner_route():
     assert not undecided, (
         "Put these behind admin_ops.require_platform_admin, or add them to "
         "BROKER_OWNER_ADMIN_ROUTES with the reason:\n  " + "\n  ".join(undecided))
+
+
+def test_an_unreadable_alert_table_is_not_reported_as_no_alerts(monkeypatch):
+    """OBS-001: the health response said open_alerts: [] whether there were
+    none or the query failed. It now says which."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import component_health
+    import db.connection
+    from tenancy import Role, TenantContext
+
+    async def snapshot(fresh=False):
+        return {"state": "healthy", "components": {}}
+
+    @asynccontextmanager
+    async def broken_tx(_ctx):
+        raise OSError("ops_alerts unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(component_health, "snapshot", snapshot)
+    monkeypatch.setattr(db.connection, "tenant_tx", broken_tx)
+    ctx = TenantContext(agent_id="ops@platform.test", tenant_id=TENANT, role=Role.PLATFORM_ADMIN)
+    out = asyncio.run(admin_ops.health_components(ctx=ctx))
+    assert out["alerts_status"] == "unavailable" and out["open_alerts"] == []

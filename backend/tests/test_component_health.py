@@ -284,3 +284,23 @@ def test_no_relay_settings_is_not_configured(monkeypatch):
     monkeypatch.delenv("ORACLE_SMTP_USERNAME", raising=False)
     assert ch._platform_email_relay([{"provider": "platform_smtp", "consecutive_failures": 3}])["state"] == "NOT_CONFIGURED"
     assert ch.ROLE["platform_email_relay"] == "optional" and "platform_email_relay" in ch._DB_KEYS
+
+
+def test_an_unfinalized_inbound_call_degrades_health():
+    """RUN-02: an inbound call still 'active' after it ended may carry an
+    unrecorded opt-out; it must show, not sit silently."""
+    assert ch._inbound_calls(0)["state"] == ch.HEALTHY
+    degraded = ch._inbound_calls(2)
+    assert degraded["state"] == ch.DEGRADED and degraded["detail"] == {"unfinalized": 2}
+    assert "opt-out" in degraded["summary"]
+    assert "inbound_calls" in ch._DB_KEYS, "unknown, never healthy, when the database is down"
+
+
+def test_an_unmetered_billable_engagement_degrades_health():
+    """BILL-001 (revenue): a delivered speed-to-lead engagement with no
+    lead_engaged row is an unbilled engagement; the sweep re-meters, and one
+    it could not fix shows here."""
+    assert ch._billing_meter(0)["state"] == ch.HEALTHY
+    degraded = ch._billing_meter(3)
+    assert degraded["state"] == ch.DEGRADED and degraded["detail"] == {"unmetered": 3}
+    assert "billing_meter" in ch._DB_KEYS

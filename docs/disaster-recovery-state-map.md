@@ -31,7 +31,7 @@ There is no error to notice.
 **The master key is therefore a backup artifact in its own right.** It must be
 escrowed separately, with the same seriousness as the dump, and a restore is not
 verified until a decrypt round trip has been demonstrated against it.
-`scripts/verify-restore.sh` refuses to claim verification without that.
+**Correction (2026-11-13, external audit DR-001/REC-02):** `scripts/verify-restore.sh` does not yet enforce this. Without the key it warns and still reports VERIFIED, and its round trip uses a fixed literal key rather than restored ciphertext. Until that is fixed, treat its VERIFIED as unproven for decryptability ([ledger](claude-prompts/LEDGER.md#external-audit-2026-11-13)).
 
 **2. 98% of the database is not worth protecting at the same RPO as the rest.**
 

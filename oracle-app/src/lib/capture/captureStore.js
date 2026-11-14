@@ -43,7 +43,13 @@ export function indexedDbAdapter(idb = globalThis.indexedDB) {
     if (!opened) {
       const req = idb.open(DB_NAME, 1);
       req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
-      opened = request(req);
+      // WEB-001: sign-out deletes this database while the studio may still be
+      // mounted; the cached connection yields to the delete and is reopened
+      // on next use instead of blocking it.
+      opened = request(req).then((conn) => {
+        conn.onversionchange = () => { conn.close(); opened = null; };
+        return conn;
+      });
     }
     return opened;
   };

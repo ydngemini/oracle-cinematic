@@ -226,9 +226,10 @@ async def _work_one(
 
     staged, error = await _stage(ctx, mission, action, verdict)
     if staged is None:
-        # 'blocked', not 'failed': the usual cause is a command this mission
-        # cannot yet complete (no message body, no state_code), which is a
-        # missing capability rather than a fault. The reason names which.
+        # 'blocked', not 'failed': the usual cause is a command the mission
+        # could not complete (the drafter returned no body, or the client has
+        # no lead with a state for SMS), which is missing data rather than a
+        # fault. The reason names which.
         await _set_state(
             ctx, action["id"], "blocked",
             blocked_reason=f"cannot stage: {error}" if error else "cannot stage",
@@ -272,19 +273,19 @@ async def _stage(
     because it is usually not a fault — it is the command layer saying the
     command is incomplete, and the agent needs to read which part.
 
-    **What a mission cannot yet produce.** `stage_command` validates a whole
-    command, and two of its requirements have no source in a mission today:
+    **Where a staged command's parts come from.** `stage_command` validates a
+    whole command; two parts a mission must supply:
 
-      * `draft.body` — the message itself. The planner sequences contacts and
-        writes a one-line INTENT for the agent; it does not write the text that
-        goes to the client. Drafting is a separate job from sequencing and is
-        not built here, so a staged mission command currently has no body.
-      * `target.state_code` — a two-letter state, required for SMS. The
-        `clients` table has no state column (see `_contact_for`), so there is
-        nothing to fill it from.
+      * `draft.body` — written by `drafter.draft_message` (below), signed as
+        the agent. A drafter that returns nothing leaves the command blocked.
+      * `target.state_code` — required for SMS. `clients` has no state column,
+        so `_candidate_context` takes it from the client's most recent lead
+        with a state (`leads.seller_client_id`) and `_target_for` sets it; a
+        client with no such lead cannot be texted by a mission.
 
-    Both are recorded on the action as blocked_reason rather than hidden, so a
-    mission that cannot act says which piece is missing.
+    Either gap is recorded on the action as blocked_reason rather than hidden,
+    so a mission that cannot act says which piece is missing. (These lines
+    said both parts had no source; corrected 2026-11-13, external audit AI-002.)
     """
     from agent_profile import load_agent_identity
     from commands_api import stage_command

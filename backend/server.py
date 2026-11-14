@@ -668,6 +668,33 @@ async def product_status(ctx: TenantContext = Depends(require_context)) -> JSONR
     return JSONResponse({"state": snap["state"], "messages": component_health.user_banner(snap)})
 
 
+_storage_probe_cache: dict = {"at": 0.0, "body": None}
+
+
+@app.get("/health/storage")
+async def health_storage() -> JSONResponse:
+    """Does the app's own storage answer with the app's own credentials?
+    (DEP-08.) The release smoke test asserts this instead of probing Spaces
+    with CI's credentials, which CI never had. Unauthenticated like /health:
+    it returns the backend kind and a state, never a key, bucket or endpoint.
+    Cached for 60 s so a burst of calls costs one probe. 503 when the cause is
+    ours to fix (bad keys, missing bucket, missing mount)."""
+    import object_storage
+
+    now = time.monotonic()
+    body = _storage_probe_cache["body"]
+    if body is None or now - _storage_probe_cache["at"] > 60:
+        try:
+            async with asyncio.timeout(8.0):
+                body = await asyncio.to_thread(object_storage.probe)
+        except TimeoutError:
+            body = {"backend": object_storage.BACKEND, "state": object_storage.STORAGE_DEGRADED}
+        _storage_probe_cache.update(at=now, body=body)
+    ours = body["state"] in {object_storage.STORAGE_AUTH_FAILED, object_storage.STORAGE_MISCONFIGURED,
+                             object_storage.STORAGE_UNAVAILABLE}
+    return JSONResponse(status_code=503 if ours else 200, content=body)
+
+
 @app.get("/health/workers")
 async def health_workers() -> JSONResponse:
     """Is a background worker alive, and which build is it running?

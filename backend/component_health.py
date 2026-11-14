@@ -49,6 +49,7 @@ ROLE = {
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
+    "inbound_calls", "billing_meter",
 )
 
 
@@ -154,9 +155,36 @@ async def _db_components() -> dict[str, dict]:
             "count(*) FILTER (WHERE state='failed' AND updated_at > now() - interval '15 minutes') AS failed_15m "
             "FROM command_executions WHERE state IN ('reconciliation_required','failed')")
         mail = await conn.fetchrow(
-            "SELECT count(*) FILTER (WHERE status='sending' AND error LIKE 'delivery_unknown%') AS unknown, "
+            # RUN-04: a 'sending' row with no outcome after 15 minutes counts too,
+            # even before (or without) the sweep marking it.
+            "SELECT count(*) FILTER (WHERE status='sending' AND (error LIKE 'delivery_unknown%' "
+            "OR updated_at < now() - interval '15 minutes')) AS unknown, "
             "count(*) FILTER (WHERE status='queued' AND updated_at < now() - interval '15 minutes') AS stuck "
             "FROM email_outbox WHERE status IN ('sending','queued')")
+        # RUN-02: an inbound call still 'active' after the carrier reported it
+        # over (or two hours on) was never finalized; a spoken opt-out on it may
+        # be unrecorded if the mid-call write also failed.
+        inbound = await conn.fetchrow(
+            "SELECT count(*) AS unfinalized FROM inbound_voice_calls "
+            "WHERE transcript_status='active' AND (ended_at < now() - interval '10 minutes' "
+            "OR started_at < now() - interval '2 hours')")
+        # BILL-001: delivered speed-to-lead engagements still unmetered an hour
+        # on — the sweep re-meters every 15 minutes, so these are ones it
+        # could not fix.
+        meter = await conn.fetchrow(
+            """
+            SELECT count(*) AS unmetered
+              FROM lead_response_events r
+              JOIN command_executions c ON c.id = r.command_id AND c.tenant_id = r.tenant_id
+             WHERE r.origin = 'speed_to_lead' AND r.disposition = 'delivered' AND c.state = 'succeeded'
+               AND COALESCE(r.intake_event_id, r.contact_id, r.client_id, r.lead_id) IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM billing_usage_events b
+                                WHERE b.tenant_id = r.tenant_id AND b.metric = 'lead_engaged'
+                                  AND b.idempotency_key = 'lead-engaged:'
+                                      || COALESCE(r.intake_event_id, r.contact_id, r.client_id, r.lead_id)::text)
+               AND r.delivered_at < now() - interval '1 hour'
+               AND r.delivered_at > now() - interval '30 days'
+            """)
         harvest = await conn.fetchrow(
             """
             SELECT count(*) FILTER (WHERE enabled) AS enabled,
@@ -205,11 +233,31 @@ async def _db_components() -> dict[str, dict]:
     unknown, stuck = int(mail["unknown"] or 0), int(mail["stuck"] or 0)
     out["email_outbox"] = (_c(DEGRADED, "emails waiting or with unknown delivery", unknown=unknown, stuck=stuck)
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
+    out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
+    out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
     out["valuation_providers"] = _valuation_providers(providers)
     out["platform_email_relay"] = _platform_email_relay(providers)
     return out
+
+
+def _inbound_calls(unfinalized: int) -> dict:
+    """RUN-02: a call still 'active' after it ended was never finalized. Its
+    opt-out is normally already recorded mid-call; if that write failed too it
+    is not, so a person has to look."""
+    if unfinalized:
+        return _c(DEGRADED, "inbound calls were never finalized: review them for an unrecorded opt-out",
+                  unfinalized=unfinalized)
+    return _c(HEALTHY, "inbound calls finalized")
+
+
+def _billing_meter(unmetered: int) -> dict:
+    """BILL-001: a delivered, billable engagement with no lead_engaged row."""
+    if unmetered:
+        return _c(DEGRADED, "billable engagements were delivered but not metered",
+                  unmetered=unmetered)
+    return _c(HEALTHY, "billable engagements metered")
 
 
 def _syncs_paused() -> bool:
