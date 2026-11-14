@@ -294,6 +294,21 @@ doctl apps update "$DIGITALOCEAN_APP_ID" --spec "$SPEC_OUT.deploy" --wait || \
 rm -f "$SPEC_OUT.deploy"
 
 head2 "Verify"
-say "run the smoke test against the rolled-back release:"
-say "    APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
+# DEP-06: the smoke test used to be a suggestion printed after the deploy, so
+# a rollback that came up broken (or as the wrong release) still exited 0.
+# It now runs here; without APP_URL, or when it fails, the exit is 4 —
+# rolled back, but not verified — so automation and people can tell.
+if [ -z "${APP_URL:-}" ]; then
+  say "ROLLED_BACK_BUT_UNVERIFIED: APP_URL is not set, so the release could not be checked."
+  say "    APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
+  echo
+  exit 4
+fi
+SMOKE="${ORACLE_ROLLBACK_SMOKE:-$REPO/infra/digitalocean/smoke-test.sh}"
+if ! APP_URL="$APP_URL" EXPECTED_GIT_SHA="$TARGET_SHA" bash "$SMOKE"; then
+  say "ROLLED_BACK_BUT_UNVERIFIED: the smoke test failed against $APP_URL (expected release $TARGET_SHA)."
+  echo
+  exit 4
+fi
+say "rolled back and verified: $APP_URL serves $TARGET_SHA"
 echo
