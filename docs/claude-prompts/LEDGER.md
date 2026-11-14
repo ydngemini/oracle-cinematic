@@ -3557,14 +3557,14 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | BILL-001 | No alert for a delivered command with no usage row; `ai_budget.settle` drops the hold on a failed insert | P1 | open | 18 | A05 (partly) |
 | BILL-002 | Meter id truncated below key length | P2 | refuted in practice; guard test only | 18 | L18-06 |
 | BILL-003 | Quantity parse can raise (NaN, Infinity, text) | P2 | open | 18 | — |
-| COMMS-001 / RUN-04 | Email stuck in `sending` is invisible to health and the sweep | P1 | open | 10 | — |
+| COMMS-001 / RUN-04 | Email stuck in `sending` is invisible to health and the sweep | P1 | fixed in code, local, PR #50 (sweep marks unknown, health counts; live tests in CI) | 10 | L10-13 |
 | COMMS-002 | Live jurisdiction/provider sign-off unverified | P1 gate | open | 10 / 20 | row 10, A04 |
 | JOB-001 | Reused idempotency key can return a job with different inputs | P2 | open | 08 | — |
 | JOB-01 | Job completion and attempt audit not atomic | P2 | open | 08 | — |
 | MIG-001 | Direct migration mode notices drift after applying | P2 | open | 19 | — |
-| DEP-02 | Rollback trusts local migration filenames | P1 | open | 19 | T19.11 |
-| DEP-03 | Rollback doesn't verify the target app | P1 | open | 19 | AC19.04 |
-| DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | open (found in verification) | 19 | — |
+| DEP-02 | Rollback trusts local migration filenames | P1 | fixed in code, local, PR #53 (--apply needs --from) | 19 | L19-08, T19.11 |
+| DEP-03 | Rollback doesn't verify the target app | P1 | fixed in code, local, PR #53 | 19 | L19-08, AC19.04 |
+| DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed in code, local, PR #53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
 | DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | open | 19 | — |
 | DEP-05 | Rollback compatibility classifier is syntactic | P2 | open | 19 | T19.06 |
 | DEP-06 | Post-rollback smoke is advisory | P2 | open | 19 | T19.11 |
@@ -3576,6 +3576,6 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | WEB-003 | Dashboard JWT in the WebSocket subprotocol | P2 | open (design check before mounting) | 19 | — |
 | UX-001 | Status banner hides an initial failure | P2 | open | 02 | — |
 | RUN-01 | Accepted chat turn can have no durable job | P1 | open | 07 | — |
-| RUN-03 | ElevenLabs says "saved" before the note is saved | P1 | open | 09 | — |
-| RUN-05 | Plivo callback acknowledged after a failed outcome write | P1 | open | 10 | A05 |
+| RUN-03 | ElevenLabs says "saved" before the note is saved | P1 | open: needs an owner decision on mid-call note writes (update the one AI note vs one note per item) | 09 | — |
+| RUN-05 | Plivo callback acknowledged after a failed outcome write | P1 | fixed in code, local, PR #51 (503 + state kept; Plivo retry policy unverified) | 10 | L10-14, A05 |
 | RUN-06 | Losing media task cancelled without await (opt-out write can abort) | P1 | open | 09 | — |
