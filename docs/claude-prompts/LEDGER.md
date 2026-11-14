@@ -3642,6 +3642,26 @@ next_task: "None for BILL-003."
 updated: 2026-11-13
 ```
 
+#### L18-12 A delivered speed-to-lead engagement whose meter never landed is re-metered by the sweep (external audit BILL-001, revenue half)
+```yaml
+id: L18-12
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/reconciliation.py, backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_engagement_lifecycle_live.py]
+tests_run:
+  - {cmd: "read billing_usage.record_lead_engagement and outreach_lifecycle.meter_delivered_engagement at 54740ef", result: "the only Stripe-reported metric (lead_engaged) is written once, at delivery; a failed insert is logged and swallowed, and nothing looked for a delivered, succeeded speed-to-lead response with no row (reconcile_lead_engagements has no caller and reads only existing rows): an unbilled engagement nobody saw. A redelivered receipt retries opportunistically only", date: 2026-11-14}
+  - {cmd: "pytest tests/test_component_health.py -k unmetered (against 075bd2c's component_health.py)", result: "red: 1 failed", date: 2026-11-14}
+  - {cmd: "pytest component_health, health_readiness, reconciliation/engagement/outreach/billing unit tests (after; no DB here)", result: "the unit suites pass; live assertions run in CI's database job: a delivered response two hours old with no usage row degrades billing_meter, the sweep meters it once (key lead-engaged:<intake>, stage delivered, source = the command), a second sweep meters none", date: 2026-11-14}
+authz_checked: n/a (platform sweep; metering re-reads tenant evidence)
+blockers:
+  - {type: scope, note: "Looks back 30 days. reconcile_lead_engagements (Stripe-reported vs local) still has no caller."}
+audit_refs: []
+decision_refs: []
+next_task: "Schedule reconcile_lead_engagements and alert on drift against Stripe."
+updated: 2026-11-14
+```
+
 ### L19
 Production operations.
 
