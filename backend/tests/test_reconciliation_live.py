@@ -30,7 +30,8 @@ async def _scenario(monkeypatch):
 
     T = str(uuid.uuid4())
     ids = {k: str(uuid.uuid4()) for k in ("client", "contact", "cmd_exec", "cmd_ref_ok", "cmd_ref_never",
-                                         "cmd_noref", "chat", "recon", "intent", "purchase", "outbox", "lead")}
+                                         "cmd_noref", "chat", "recon", "intent", "purchase", "outbox", "lead",
+                                         "sending_lost", "sending_fresh", "sending_known")}
     asked = []
 
     async def fake_ask(row):
@@ -78,6 +79,14 @@ async def _scenario(monkeypatch):
             await admin.execute(
                 f"INSERT INTO email_outbox (id, tenant_id, client_id, to_email, subject, body_text, status, updated_at) "
                 f"VALUES ($1,$2,$3,'c@client.test','s','b','queued',{old})", ids["outbox"], T, ids["client"])
+            # RUN-04: claimed then lost (no marker), claimed just now, and an
+            # unknown already recorded by deliver().
+            for key, error, age in (("sending_lost", None, old), ("sending_fresh", None, "now()"),
+                                    ("sending_known", "delivery_unknown: timeout", old)):
+                await admin.execute(
+                    f"INSERT INTO email_outbox (id, tenant_id, client_id, to_email, subject, body_text, status, "
+                    f"error, updated_at) VALUES ($1,$2,$3,'c@client.test','s','b','sending',$4,{age})",
+                    ids[key], T, ids["client"], error)
         before_other = await admin.fetchval(
             "SELECT count(*) FROM command_executions WHERE tenant_id <> $1 AND state='reconciliation_required'", T)
         other_jobs = await admin.fetchval(
@@ -108,6 +117,19 @@ async def _scenario(monkeypatch):
         assert await admin.fetchval(
             "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND job_type='email:outbox' "
             "AND payload->>'outbox_id'=$2", T, ids["outbox"]) == 1
+        # RUN-04: the lost 'sending' row is now visibly unknown, still 'sending'
+        # and never re-enqueued; the fresh one and the known one are untouched.
+        mail = {k: await admin.fetchrow("SELECT status, error FROM email_outbox WHERE id=$1", ids[k])
+                for k in ("sending_lost", "sending_fresh", "sending_known")}
+        assert out["emails_sending_to_unknown"] == 1, out
+        assert mail["sending_lost"]["status"] == "sending"
+        assert mail["sending_lost"]["error"].startswith("delivery_unknown: still sending")
+        assert mail["sending_fresh"]["error"] is None
+        assert mail["sending_known"]["error"] == "delivery_unknown: timeout"
+        assert await admin.fetchval(
+            "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND job_type='email:outbox' "
+            "AND payload->>'outbox_id' = ANY($2::text[])", T,
+            [ids["sending_lost"], ids["sending_fresh"], ids["sending_known"]]) == 0, "never resent"
         # bounded: a row is not re-asked within 10 minutes
         asked.clear()
         await reconciliation.run_sweep(only_tenant=T)
