@@ -20,6 +20,7 @@ never what was said.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Mapping, Optional
 
@@ -73,14 +74,36 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
         raise OptOutNotRecorded("outbound opt-out could not be written") from exc
 
 
-async def honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
-    """Record the opt-out for an outbound call; never raises. The caller (a
-    bridge) ends the call right after, whether or not this succeeded."""
+async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
     try:
         await record_outbound_opt_out(state or {})
         logger.info("Outbound callee opted out; number suppressed: call=%s", call_ref)
     except OptOutNotRecorded:
         logger.exception("Outbound callee opted out but the suppression was NOT recorded: call=%s", call_ref)
+
+
+async def honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
+    """Record the opt-out for an outbound call; never raises. The caller (a
+    bridge) ends the call right after, whether or not this succeeded.
+
+    Shielded (RUN-06): the bridges cancel the losing media task the moment
+    either side hangs up, and a caller who says "stop" and hangs up at once
+    used to cancel the suppression write mid-flight. The write now runs to its
+    end even when the call's task is cancelled; the cancellation still reaches
+    the bridge."""
+    await asyncio.shield(_background(_honour(state, call_ref)))
+
+
+#: Shielded writes in flight, kept referenced so a cancelled caller cannot let
+#: the event loop garbage-collect the task before it finishes.
+_IN_FLIGHT: set = set()
+
+
+def _background(coro) -> "asyncio.Task":
+    task = asyncio.ensure_future(coro)
+    _IN_FLIGHT.add(task)
+    task.add_done_callback(_IN_FLIGHT.discard)
+    return task
 
 
 def is_inbound(state: Optional[Mapping[str, Any]]) -> bool:
