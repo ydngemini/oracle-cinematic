@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import stripe
@@ -182,8 +182,14 @@ async def record_usage(
             metric,
         )
         return False
-    if quantity is None or Decimal(str(quantity)) < 0:
-        logger.warning("Refusing to record negative usage: metric=%s qty=%r", metric, quantity)
+    # BILL-003: Decimal("abc") and NaN < 0 raised out of a function documented
+    # never to raise, and Infinity passed and would be stored as infinite usage.
+    try:
+        qty = Decimal(str(quantity)) if quantity is not None else None
+    except (InvalidOperation, ValueError, TypeError):
+        qty = None
+    if qty is None or not qty.is_finite() or qty < 0:
+        logger.warning("Refusing to record invalid usage: metric=%s qty=%r", metric, quantity)
         return False
 
     sql = """
@@ -194,7 +200,7 @@ async def record_usage(
         RETURNING id
     """
     args = (
-        ctx.tenant_id, metric, Decimal(str(quantity)),
+        ctx.tenant_id, metric, qty,
         occurred_at or datetime.now(timezone.utc), idempotency_key[:240],
     )
     try:
