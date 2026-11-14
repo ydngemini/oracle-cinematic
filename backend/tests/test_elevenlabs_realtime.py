@@ -469,3 +469,32 @@ def test_the_record_stores_no_words():
 
     assert voice_opt_out.SOURCE_TEXT == "outbound AI call: callee asked not to be contacted"
     assert voice_opt_out.spoken_opt_out("") is False
+
+
+def test_a_hang_up_cannot_cancel_an_inbound_opt_out_write(monkeypatch):
+    """RUN-06 for inbound (RUN-02's mid-call write): cancelling the bridge's
+    task as the caller hangs up does not cancel the suppression write."""
+    import inbound_voice
+    import voice_opt_out
+
+    written = []
+
+    async def slow_record(call_sid, state):
+        await asyncio.sleep(0.05)
+        written.append(call_sid)
+        return True
+
+    monkeypatch.setattr(inbound_voice, "record_inbound_opt_out", slow_record)
+
+    async def scenario():
+        call = asyncio.ensure_future(voice_opt_out.honour_inbound(dict(INBOUND), "call-3"))
+        await asyncio.sleep(0.01)
+        call.cancel()
+        try:
+            await call
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.1)
+        return written
+
+    assert asyncio.run(scenario()) == ["call-3"]

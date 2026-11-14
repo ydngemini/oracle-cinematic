@@ -90,7 +90,23 @@ def is_inbound(state: Optional[Mapping[str, Any]]) -> bool:
 async def honour_inbound(state: Optional[Mapping[str, Any]], call_ref: str) -> bool:
     """Record an INBOUND caller's spoken opt-out as soon as it is said
     (external audit RUN-02). Never raises and does not end the call; returns
-    whether it was recorded. Finalize records it again at hang-up."""
+    whether it was recorded. Finalize records it again at hang-up.
+
+    Shielded (RUN-06): a hang-up that cancels the bridge's task does not
+    cancel the write already under way."""
+    import asyncio
+
+    task = asyncio.ensure_future(_honour_inbound(state, call_ref))
+    _INBOUND_IN_FLIGHT.add(task)
+    task.add_done_callback(_INBOUND_IN_FLIGHT.discard)
+    return await asyncio.shield(task)
+
+
+#: Kept referenced so a cancelled caller cannot let the task be collected.
+_INBOUND_IN_FLIGHT: set = set()
+
+
+async def _honour_inbound(state: Optional[Mapping[str, Any]], call_ref: str) -> bool:
     from inbound_voice import InboundOptOutNotRecorded, record_inbound_opt_out
 
     try:
