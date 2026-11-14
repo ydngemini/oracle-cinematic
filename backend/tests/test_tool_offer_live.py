@@ -154,6 +154,11 @@ async def _reclaim():
     ctx = TenantContext(agent_id=f"agent-{tenant.hex[:8]}@ledger.test", tenant_id=str(tenant), role=Role.AGENT)
     try:
         await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Ledger')", tenant, f"ledger-{tenant.hex[:8]}")
+        # The ledger row belongs to a real assistant turn (FK ai_tool_operations.assistant_id).
+        await admin.execute(
+            "INSERT INTO ai_chat_messages (id, tenant_id, user_id, role, content_ciphertext, request_id, status) "
+            "VALUES ($1,$2,$3,'assistant','\\x00',$4,'streaming')",
+            uuid.UUID(turn), tenant, ctx.agent_id, str(uuid.uuid4()))
         await admin.execute(
             "INSERT INTO ai_tool_operations (tenant_id, user_id, assistant_id, call_index, tool_name, arguments_hash, "
             "status, error_code, completed_at) VALUES ($1,$2,$3,0,'create_task','old','failed','TOOL_HANDLER_ERROR',now())",
@@ -173,6 +178,7 @@ async def _reclaim():
             pass
     finally:
         await admin.execute("DELETE FROM ai_tool_operations WHERE tenant_id=$1", tenant)
+        await admin.execute("DELETE FROM ai_chat_messages WHERE tenant_id=$1", tenant)
         await admin.execute("DELETE FROM tenants WHERE id=$1", tenant)
         await admin.close()
         await connection.close_pool()
