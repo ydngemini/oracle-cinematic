@@ -3883,6 +3883,26 @@ next_task: "DEP-08: an in-app storage readiness check the smoke test asserts."
 updated: 2026-11-14
 ```
 
+#### L19-14 The release smoke test checks storage with the app's own credentials (external audit DEP-08)
+```yaml
+id: L19-14
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/object_storage.py, backend/server.py, infra/digitalocean/smoke-test.sh, backend/tests/test_storage_readiness.py]
+tests_run:
+  - {cmd: "read smoke-test.sh:167-186 and ci.yml:609-615,884-888 at 54740ef", result: "the Spaces check ran `aws s3api head-bucket` with the CI runner's credentials, which CI never passes, so it could only warn ('NOT a release failure'); the last green staging run (38549337342) logged that warning. No in-app storage probe existed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_storage_readiness.py (against 075bd2c)", result: "red: 16 failed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_storage_readiness.py + object storage, smoke, honesty, security, operator, health, rate-limit suites (after)", result: "242 passed: object_storage.probe runs head_bucket with the app's own keys (3 s timeouts, one try) and maps an auth refusal (401 or 403) → auth_failed, a missing or unset bucket → misconfigured, a 5xx or timeout → degraded, a missing mount → unavailable; GET /health/storage is unauthenticated, returns backend + state only, caches 60 s, and answers 503 only for causes that are ours; the smoke test fails the release on auth_failed/misconfigured/unavailable and warns on degraded", date: 2026-11-14}
+authz_checked: "Public by design like /health/workers; exposes backend kind and a state, never a key, bucket or endpoint."
+blockers:
+  - {type: scope, note: "azure-blob reports not_probed (no cheap probe added). Never run against Spaces (no production app; staging token expired)."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch the first staging deploy after the DigitalOcean token is replaced: the smoke test must report storage healthy."
+updated: 2026-11-14
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
