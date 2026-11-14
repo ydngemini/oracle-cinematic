@@ -20,6 +20,7 @@ never what was said.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Mapping, Optional
 
@@ -73,11 +74,70 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
         raise OptOutNotRecorded("outbound opt-out could not be written") from exc
 
 
-async def honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
-    """Record the opt-out for an outbound call; never raises. The caller (a
-    bridge) ends the call right after, whether or not this succeeded."""
+async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
     try:
         await record_outbound_opt_out(state or {})
         logger.info("Outbound callee opted out; number suppressed: call=%s", call_ref)
     except OptOutNotRecorded:
         logger.exception("Outbound callee opted out but the suppression was NOT recorded: call=%s", call_ref)
+
+
+async def honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
+    """Record the opt-out for an outbound call; never raises. The caller (a
+    bridge) ends the call right after, whether or not this succeeded.
+
+    Shielded (RUN-06): the bridges cancel the losing media task the moment
+    either side hangs up, and a caller who says "stop" and hangs up at once
+    used to cancel the suppression write mid-flight. The write now runs to its
+    end even when the call's task is cancelled; the cancellation still reaches
+    the bridge."""
+    await asyncio.shield(_background(_honour(state, call_ref)))
+
+
+#: Shielded writes in flight, kept referenced so a cancelled caller cannot let
+#: the event loop garbage-collect the task before it finishes.
+_IN_FLIGHT: set = set()
+
+
+def _background(coro) -> "asyncio.Task":
+    task = asyncio.ensure_future(coro)
+    _IN_FLIGHT.add(task)
+    task.add_done_callback(_IN_FLIGHT.discard)
+    return task
+
+
+def is_inbound(state: Optional[Mapping[str, Any]]) -> bool:
+    return bool(state) and state.get("direction") == "inbound"
+
+
+async def honour_inbound(state: Optional[Mapping[str, Any]], call_ref: str) -> bool:
+    """Record an INBOUND caller's spoken opt-out as soon as it is said
+    (external audit RUN-02). Never raises and does not end the call; returns
+    whether it was recorded. Finalize records it again at hang-up.
+
+    Shielded (RUN-06): a hang-up that cancels the bridge's task does not
+    cancel the write already under way."""
+    import asyncio
+
+    task = asyncio.ensure_future(_honour_inbound(state, call_ref))
+    _INBOUND_IN_FLIGHT.add(task)
+    task.add_done_callback(_INBOUND_IN_FLIGHT.discard)
+    return await asyncio.shield(task)
+
+
+#: Kept referenced so a cancelled caller cannot let the task be collected.
+_INBOUND_IN_FLIGHT: set = set()
+
+
+async def _honour_inbound(state: Optional[Mapping[str, Any]], call_ref: str) -> bool:
+    from inbound_voice import InboundOptOutNotRecorded, record_inbound_opt_out
+
+    try:
+        recorded = await record_inbound_opt_out(call_ref, state)
+    except InboundOptOutNotRecorded:
+        logger.exception("Inbound caller opted out but the suppression was NOT recorded mid-call "
+                         "(finalize will retry it): call=%s", call_ref)
+        return False
+    if recorded:
+        logger.info("Inbound caller opted out; number suppressed mid-call: call=%s", call_ref)
+    return recorded

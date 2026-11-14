@@ -135,7 +135,7 @@ async def _run_sync_in_executor(
 
 async def _require_webhook_secret(request: Request, env_name: str) -> str:
     """Header, body signature or signed callback URL; the old `?token=` static
-    secret only for one release, with a deprecation log (HOOK-3, webhook_auth)."""
+    secret is refused (removed 2026-11-13; HOOK-3, webhook_auth)."""
     import webhook_auth
 
     return await webhook_auth.verify_webhook(request, env_name)

@@ -362,6 +362,7 @@ def test_duplicate_finalize_for_the_same_callsid_creates_only_one_crm_task(monke
             "callback_task_id": None,
             "contact_intake_session_id": None,
             "intake_handoff_task_id": None,
+            "opt_out_requested": False,  # selected since L09-08 (RUN-02)
         }
     )
 
