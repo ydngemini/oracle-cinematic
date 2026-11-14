@@ -3479,6 +3479,26 @@ next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO.
 updated: 2026-10-16
 ```
 
+#### L19-12 A drifted migration ledger stops a direct run before anything is applied (external audit MIG-001)
+```yaml
+id: L19-12
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/run_migrations.py, backend/tests/test_run_migrations.py]
+tests_run:
+  - {cmd: "read run_migrations.py:825-917 at 54740ef", result: "direct mode noted a recorded file whose contents changed, then applied every newer migration on top of a schema the repository no longer describes and reset role passwords, returning 4 only at the end. Production is guarded (PRE_DEPLOY runs --precheck-then-migrate, which refuses first); dev-start.sh, livetest-local.sh, rehearse-migrations-nosuperuser.sh and manual runs use direct mode", date: 2026-11-14}
+  - {cmd: "pytest tests/test_run_migrations.py -k drifted_ledger (against 54740ef's run_migrations.py)", result: "red: 1 failed (0002 was applied)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_run_migrations.py tests/test_migration_ledger.py (after)", result: "27 passed: every recorded file is hashed before any apply; a changed one prints and returns 4 with nothing applied; the advisory lock is still released (finally)", date: 2026-11-14}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "Behaviour change for developers: editing an already-applied migration locally now stops dev-start's migrate step instead of warning; restore the file or write a new migration. The precheck still runs before the advisory lock (small check-then-act gap, noted by the audit)."}
+audit_refs: []
+decision_refs: []
+next_task: "Take the advisory lock before the precheck in --precheck-then-migrate."
+updated: 2026-11-14
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
