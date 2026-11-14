@@ -1372,6 +1372,26 @@ next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / p
 updated: 2026-10-16
 ```
 
+#### L09-09 A hang-up cannot cancel an outbound opt-out write already under way (external audit RUN-06, opt-out part)
+```yaml
+id: L09-09
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/voice_opt_out.py, backend/tests/test_voice_opt_out.py]
+tests_run:
+  - {cmd: "read elevenlabs_realtime.py:249-251,285-286,418 and qwen_omni_realtime.py:316-321 at 54740ef", result: "the bridges cancel the losing media task as soon as either side hangs up; a callee who says 'stop' and hangs up at once could cancel the suppression write awaiting the database", date: 2026-11-13}
+  - {cmd: "pytest tests/test_voice_opt_out.py -k hang_up (against 54740ef's voice_opt_out.py)", result: "red: 1 failed (the write was cancelled)", date: 2026-11-13}
+  - {cmd: "pytest tests/test_voice_opt_out.py tests/test_elevenlabs_realtime.py (after)", result: "48 passed: honour() runs the write as a shielded, referenced task; cancelling the call's task still cancels the bridge but the suppression is written", date: 2026-11-13}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "The inbound counterpart (voice_opt_out.honour_inbound) arrives with L09-08 / PR #48 and gets the same shield there. RUN-06's other half — a final 'stop' spoken in the last second can be dropped because the agent leg is cut at hang-up — needs a bounded drain of the agent leg; not done."}
+audit_refs: []
+decision_refs: []
+next_task: "Bounded drain of the agent leg after hang-up (up to ~2 s) before cancelling it."
+updated: 2026-11-13
+```
+
 ### L10
 Communications and calendars.
 
