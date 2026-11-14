@@ -3765,6 +3765,26 @@ next_task: "None for OBS-001."
 updated: 2026-11-13
 ```
 
+#### L19-13 A rollback runs its smoke test and says when it is unverified (external audit DEP-06)
+```yaml
+id: L19-13
+status: tests_pass
+env: local
+evidence_shas: [e32cc2b]   # base; fix in the commit that adds this row
+files: [scripts/rollback.sh, backend/tests/test_release_immutability.py]
+tests_run:
+  - {cmd: "read scripts/rollback.sh Verify step at 54740ef", result: "after `doctl apps update` it only printed the smoke-test command and exited 0, so a rollback that came up broken or as the wrong release looked successful", date: 2026-11-14}
+  - {cmd: "pytest tests/test_release_immutability.py (new tests against e32cc2b's rollback.sh)", result: "red: 3 failed", date: 2026-11-14}
+  - {cmd: "pytest tests/test_release_immutability.py (after; stand-in doctl and smoke script)", result: "69 passed: without APP_URL the rollback still applies and exits 4 ROLLED_BACK_BUT_UNVERIFIED; a failing smoke test exits 4; a passing one exits 0 having checked APP_URL against the target release sha. ORACLE_ROLLBACK_SMOKE overrides the smoke script (tests only; default infra/digitalocean/smoke-test.sh)", date: 2026-11-14}
+authz_checked: n/a (operator tooling)
+blockers:
+  - {type: scope, note: "No production app exists, so never run against DigitalOcean. DEP-05 (syntactic rollback classifier) and DEP-08 (storage smoke) still open."}
+audit_refs: []
+decision_refs: []
+next_task: "DEP-08: an in-app storage readiness check the smoke test asserts."
+updated: 2026-11-14
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

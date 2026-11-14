@@ -396,7 +396,8 @@ def test_the_aws_runbook_says_it_is_legacy_before_anything_else():
 # path. This is its DigitalOcean equivalent: rollback.sh --apply for real, with
 # a fake doctl on PATH that records what it was asked to do.
 
-def _run_rollback(tmp_path, target_head: str, current_head: str):
+def _run_rollback(tmp_path, target_head: str, current_head: str, *,
+                  app_url: str | None = "https://app.neoh.example", smoke_exit: int = 0):
     import json
     import os
     import subprocess
@@ -440,9 +441,15 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     current = tmp_path / "current.json"
     current.write_text(json.dumps({"migration_head": current_head}))
 
+    smoke = tmp_path / "smoke.sh"   # stands in for infra/digitalocean/smoke-test.sh (DEP-06)
+    smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; exit {smoke_exit}\n')
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
            "DIGITALOCEAN_APP_ID": "app-123",
-           "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml")}
+           "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml"),
+           "ORACLE_ROLLBACK_SMOKE": str(smoke)}
+    env.pop("APP_URL", None)
+    if app_url:
+        env["APP_URL"] = app_url
     proc = subprocess.run(
         ["bash", str(REPO / "scripts" / "rollback.sh"),
          "--to", str(target), "--from", str(current), "--apply"],
@@ -469,6 +476,30 @@ def test_do_rollback_applies_the_previous_digests(tmp_path):
     # A blank SECRET in the applied spec would WIPE it on the app.
     assert "EV[1:running-api-ORACLE_SECRET_KEY]" in applied, "secrets were not carried"
     assert "apps list-deployments app-123" in calls
+
+
+def test_a_rollback_without_app_url_is_reported_unverified(tmp_path):
+    """DEP-06: the smoke test was a printed suggestion, so a rollback exited 0
+    whether or not the rolled-back release worked."""
+    proc, calls, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql", app_url=None)
+    assert "apps update app-123 --spec" in calls, "the rollback itself still ran"
+    assert proc.returncode == 4 and "ROLLED_BACK_BUT_UNVERIFIED" in proc.stdout, proc.stdout + proc.stderr
+    assert not (work / "smoked").exists()
+
+
+def test_a_failed_smoke_test_after_rollback_exits_4(tmp_path):
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql", smoke_exit=1)
+    assert proc.returncode == 4 and "smoke test failed" in proc.stdout, proc.stdout + proc.stderr
+    assert (work / "smoked").read_text().split() == ["https://app.neoh.example", "goodsha"]
+
+
+def test_a_verified_rollback_exits_0_and_checked_the_target_release(tmp_path):
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
+    assert proc.returncode == 0 and "rolled back and verified" in proc.stdout, proc.stdout + proc.stderr
+    assert (work / "smoked").read_text().split() == ["https://app.neoh.example", "goodsha"]
 
 
 def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):
