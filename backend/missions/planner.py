@@ -49,7 +49,8 @@ CHANNELS = ("email", "sms", "voice", "task")
 
 #: The registered tool each channel's step is carried out by (07's
 #: ToolCapability registry, tool_capabilities.py). `task` has none: the
-#: executor skips it ("no internal task surface", executor.py:178; PR #11).
+#: executor skips it ("no internal task surface", missions/executor.py, the
+#: `action["channel"] == "task"` branch; PR #11).
 #: A channel whose tool is missing or not offered is neither offered to the
 #: model nor kept in a plan (T08.04, AC08.02, ledger L08-03), so no plan looks
 #: feasible and is later `skipped`.
