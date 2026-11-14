@@ -1635,6 +1635,26 @@ next_task: "Watch CI's database job on this PR; then RUN-05 (Plivo outcome write
 updated: 2026-11-13
 ```
 
+#### L10-14 A Plivo call outcome that was not stored is not acknowledged (external audit RUN-05)
+```yaml
+id: L10-14
+status: tests_pass
+env: local
+evidence_shas: [54740ef]   # base; fix in the commit that adds this row
+files: [backend/telephony_api.py, backend/tests/test_plivo_outbound_webhooks.py]
+tests_run:
+  - {cmd: "read telephony_api.py:1770-1788 and commands_api.record_call_outcome at 54740ef", result: "a failed record_call_outcome was logged as a warning, then the call state was cleaned up and Plivo got 204: the outcome, including the only lead_engaged meter of a speed-to-lead call (A05: under-recorded), was lost and any retry found no state. record_call_outcome is idempotent (answered meter idempotent; session update; timeline NOT EXISTS), so a retry is safe", date: 2026-11-13}
+  - {cmd: "pytest tests/test_plivo_outbound_webhooks.py (new test against 54740ef's telephony_api.py)", result: "red: 1 failed", date: 2026-11-13}
+  - {cmd: "pytest tests/test_plivo_outbound_webhooks.py tests/test_killer_demo_paths.py tests/test_security_launch_review.py tests/test_plivo_voice_provider.py tests/test_rate_limit_buckets.py tests/test_plivo_inbound_routing.py (after)", result: "187 passed: a failed outcome write answers 503 and keeps the call state; the retry records it once and then cleans up (204). Two tests had passed only because the unpatched write failed silently against no database; the fixture now makes it succeed by default", date: 2026-11-13}
+authz_checked: n/a (signature check unchanged and still first)
+blockers:
+  - {type: scope, note: "Whether Plivo retries a status callback on a 5xx was not verified (no external access); if it does not, the state's TTL ends it as before and the error log is the signal. No sweep re-asks Plivo for a missing outcome."}
+audit_refs: []
+decision_refs: []
+next_task: "Confirm Plivo's callback retry policy (docs or a staging call, with owner approval); if none, add a sweep that asks Plivo for the call's final status."
+updated: 2026-11-13
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 
