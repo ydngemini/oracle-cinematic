@@ -131,3 +131,48 @@ async def _scenario(monkeypatch):
             await admin.execute("SET session_replication_role = origin")
             await admin.close()
             await connection.close_pool()
+
+
+def test_a_failed_tool_operation_is_reclaimed_and_a_completed_one_never_is():
+    """AI-005, as the app role under FORCE RLS: a 'failed' ledger row (written
+    after its mutation rolled back) is taken over by the retry's claim — even
+    for different work — and a 'completed' one is never overwritten."""
+    asyncio.run(_reclaim())
+
+
+async def _reclaim():
+    import asyncpg
+
+    import ai_chat_store
+    from db import connection
+    from db.connection import tenant_tx
+    from tenancy import Role, TenantContext
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=2)
+    tenant, turn = uuid.uuid4(), str(uuid.uuid4())
+    ctx = TenantContext(agent_id=f"agent-{tenant.hex[:8]}@ledger.test", tenant_id=str(tenant), role=Role.AGENT)
+    try:
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Ledger')", tenant, f"ledger-{tenant.hex[:8]}")
+        await admin.execute(
+            "INSERT INTO ai_tool_operations (tenant_id, user_id, assistant_id, call_index, tool_name, arguments_hash, "
+            "status, error_code, completed_at) VALUES ($1,$2,$3,0,'create_task','old','failed','TOOL_HANDLER_ERROR',now())",
+            tenant, ctx.agent_id, uuid.UUID(turn))
+        async with tenant_tx(ctx) as conn:
+            await ai_chat_store._ledger_claim(conn, ctx, ctx.agent_id, turn, 0, "update_client", "new")
+        row = await admin.fetchrow(
+            "SELECT tool_name, arguments_hash, status, error_code FROM ai_tool_operations "
+            "WHERE tenant_id=$1 AND assistant_id=$2 AND call_index=0", tenant, uuid.UUID(turn))
+        assert dict(row) == {"tool_name": "update_client", "arguments_hash": "new", "status": "completed",
+                             "error_code": None}, dict(row)
+        try:
+            async with tenant_tx(ctx) as conn:
+                await ai_chat_store._ledger_claim(conn, ctx, ctx.agent_id, turn, 0, "update_client", "new")
+            raise AssertionError("a completed operation was claimed again")
+        except ai_chat_store.ToolOperationClaimLost:
+            pass
+    finally:
+        await admin.execute("DELETE FROM ai_tool_operations WHERE tenant_id=$1", tenant)
+        await admin.execute("DELETE FROM tenants WHERE id=$1", tenant)
+        await admin.close()
+        await connection.close_pool()
