@@ -1177,6 +1177,26 @@ next_task: "Watch CI's database job; consider a transactional enqueue (enqueue_j
 updated: 2026-11-13
 ```
 
+#### L07-05 The tool-call ledger: a failed operation can be retried, one index per turn across provider tiers, the Bedrock tier is ledgered (external audit AI-005)
+```yaml
+id: L07-05
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_store.py, backend/ai_chat_agent.py, backend/tests/test_ai_tool_operations.py, backend/tests/test_tool_offer_live.py]
+tests_run:
+  - {cmd: "read ai_chat_store.py:1160-1240, ai_chat_agent.py:780,1178,1582 at 54740ef", result: "a 'failed' row was declared retryable but _ledger_claim was a plain INSERT on the unique (tenant, assistant, call_index) still held by it, so the retry failed as 'could not be persisted'; a failed row with different work raised a mismatch first. call_index restarted at 0 in each provider tier, so after a fall-through the next tier collided with the previous tier's rows; the Bedrock tier passed no call_index and was unledgered. All fail closed except Bedrock", date: 2026-11-13}
+  - {cmd: "pytest tests/test_ai_tool_operations.py (new tests against 54740ef's source)", result: "red: 4 failed", date: 2026-11-13}
+  - {cmd: "pytest tool-ledger, chat, gateway, provider and hosted-call tests (after)", result: "20 tool-ledger tests and the chat/gateway suites pass: one counter on the turn's bundle (0,1,2 then 3,4 in the next tier; a job retry restarts at 0 and replays as before); no tier resets it; the Bedrock call takes it; a failed row (any work) replays as None; the claim is INSERT … ON CONFLICT DO UPDATE … WHERE status='failed' RETURNING 1 and raises ToolOperationClaimLost when a completed row holds the index, as the old unique violation did", date: 2026-11-13}
+authz_checked: "Same tenant transaction and RLS as before; a completed operation is never overwritten."
+blockers:
+  - {type: scope, note: "The reclaim against real PostgreSQL (app role, FORCE RLS) is a new test in test_tool_offer_live.py and runs only in CI's database job. Whether two tiers could stage the same gated draft twice was not tested."}
+audit_refs: []
+decision_refs: []
+next_task: "Watch CI's database job; add a cross-tier staging test (tier 1 stages a draft then fails; tier 2 must not stage it again)."
+updated: 2026-11-13
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
