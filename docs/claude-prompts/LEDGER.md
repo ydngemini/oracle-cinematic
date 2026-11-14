@@ -4047,7 +4047,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | REC-02 | Restore round trip uses a fixed literal key, not restored ciphertext | P1 | fixed on main (#49 | 19 | L19-07 |
 | REC-03 | `pg_restore` errors tolerated; log deleted | P1 | fixed on main (#58: unexplained errors stop the restore; log kept). Per-table row reconciliation open: needs counts taken inside the dump's own exported snapshot — the existing counts already race live writes | 19 | L19-09 |
 | REC-04 | RLS check passes if any one table has RLS | P1 | fixed on main (#58 (exact counts from the manifest) | 19 | L19-09 |
-| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | partly: master key escrowed on the local machine's other partition (2026-11-13, owner's instruction; not off-host). Scheduled dump not installed: disks full, dev DB stopped. Off-host copy: owner action | 19 | row 17, L17-18, A04 |
+| OPS-001 | Backup schedule, off-host copy, key escrow | P1 (P0 pre-prod) | partly, local dev only: master key escrowed on the other partition; nightly authoritative dump (systemd timer, keeps 5) to the local root partition since 2026-11-14, first run checksums verified. Off-host copy, production schedule and a timed restore: owner action | 19 | row 17, L17-18, A04 |
 | SEC-001 | Operator WebSockets skip the live session check | P1 | fixed on main (#45 (`da3394b`) | 17 | L17-29 |
 | SEC-002 | `?token=` webhook secret accepted by default | P2 | fixed on main (#47 (removed; checked on the local drive, consoles not checked) | 17 | L17-10 |
 | OBS-001 | Alert-query failure reads as zero open alerts | P2 | fixed on main (#59 | 19 | L19-11 |
