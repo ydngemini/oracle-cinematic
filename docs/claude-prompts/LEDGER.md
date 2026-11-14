@@ -282,6 +282,25 @@ blockers: []
 audit_refs: []
 decision_refs: []
 next_task: "WEB-001: close IndexedDB handles so sign-out's cache deletion is not blocked."
+updated: 2026-11-13
+```
+
+#### L02-10 The service banner says when status cannot be checked (external audit UX-001)
+```yaml
+id: L02-10
+status: tests_pass
+env: local
+evidence_shas: [1b18053]   # base; fix in the commit that adds this row
+files: [oracle-app/src/components/ServiceStatusBanner.jsx, oracle-app/src/components/ServiceStatusBanner.test.jsx]
+tests_run:
+  - {cmd: "read ServiceStatusBanner.jsx:15-23 at 54740ef", result: "every failed /api/status poll was swallowed, so a status endpoint that stayed down showed no banner — read by the agent as all clear", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx (new case against 54740ef)", result: "red: 1 failed", date: 2026-11-14}
+  - {cmd: "vitest ServiceStatusBanner.test.jsx; eslint (after)", result: "5 passed, eslint clean: one failed check stays quiet (the existing test), three in a row show 'Service status can't be checked right now.', the next success clears it", date: 2026-11-14}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None for UX-001."
 updated: 2026-11-14
 ```
 
