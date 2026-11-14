@@ -12,6 +12,7 @@ waiting for a human:
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
+* delivered speed-to-lead responses with no lead_engaged row → re-metered (BILL-001)
 * email_outbox rows left `sending` with no outcome → marked delivery_unknown, never resent
 * chat turns `pending` 2+ minutes with no job → job enqueued (RUN-01)
 * AI chat turns stuck `pending`/`streaming` → failed (they locked users out)
@@ -140,6 +141,28 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
                            AND updated_at < now() - interval '15 minutes'
                            AND ($2::uuid IS NULL OR tenant_id = $2) LIMIT $1)
             """, _BATCH, only_tenant))
+        # BILL-001 (revenue): a delivered speed-to-lead first response whose
+        # lead_engaged meter never landed (record_lead_engagement swallows a
+        # failed insert) was an unbilled engagement nobody saw. Re-meter it:
+        # meter_delivered_engagement re-reads its own evidence and is
+        # idempotent, so a row that exists is never doubled.
+        unmetered = await conn.fetch(
+            """
+            SELECT r.tenant_id, r.command_id
+              FROM lead_response_events r
+              JOIN command_executions c ON c.id = r.command_id AND c.tenant_id = r.tenant_id
+             WHERE r.origin = 'speed_to_lead' AND r.disposition = 'delivered' AND c.state = 'succeeded'
+               AND COALESCE(r.intake_event_id, r.contact_id, r.client_id, r.lead_id) IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM billing_usage_events b
+                                WHERE b.tenant_id = r.tenant_id AND b.metric = 'lead_engaged'
+                                  AND b.idempotency_key = 'lead-engaged:'
+                                      || COALESCE(r.intake_event_id, r.contact_id, r.client_id, r.lead_id)::text)
+               AND r.delivered_at < now() - interval '10 minutes'
+               AND r.delivered_at > now() - interval '30 days'
+               AND ($2::uuid IS NULL OR r.tenant_id = $2)
+             ORDER BY r.delivered_at LIMIT $1
+            """, _BATCH, only_tenant)
+        out["engagements_metered"] = await _meter_engagements(conn, unmetered)
         stale_outbox = await conn.fetch(
             "SELECT id, tenant_id FROM email_outbox WHERE status='queued' "
             "AND updated_at < now() - interval '10 minutes' AND ($2::uuid IS NULL OR tenant_id = $2) "
@@ -172,6 +195,17 @@ async def _requeue_chat_turns(rows) -> int:
         except Exception:  # noqa: BLE001 — the 15-minute step still fails it visibly
             log.warning("orphaned chat turn not re-queued: %s", row["id"], exc_info=True)
     return queued
+
+
+async def _meter_engagements(conn, rows) -> int:
+    from outreach_lifecycle import meter_delivered_engagement
+
+    metered = 0
+    for row in rows:
+        if await meter_delivered_engagement(conn, tenant_id=str(row["tenant_id"]),
+                                            command_id=str(row["command_id"])):
+            metered += 1
+    return metered
 
 
 def _n(status: str) -> int:
