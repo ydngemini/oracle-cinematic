@@ -3864,6 +3864,25 @@ next_task: "Row-count reconciliation for every authoritative table in the manife
 updated: 2026-11-13
 ```
 
+#### L19-10 The deploy drift guard stops when a running app's spec cannot be read (external audit DEP-04)
+```yaml
+id: L19-10
+status: in_progress
+env: local
+evidence_shas: [1b18053]   # base; change in the commit that adds this row
+files: [.github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read ci.yml:591-595 (staging) and 863-867 (production) at 54740ef", result: "any failure of `doctl apps spec get` printed 'first deploy' and skipped spec-drift.py, so a transient doctl/API error deployed a spec that could delete UI-added env vars and domains", date: 2026-11-13}
+  - {cmd: "yaml.safe_load(.github/workflows/ci.yml) after the change", result: "valid; the guard skips only when `doctl apps get` also fails (no app yet), and exits 1 when the app exists but its spec cannot be read", date: 2026-11-13}
+authz_checked: n/a (CI)
+blockers:
+  - {type: scope, note: "Only exercised on a real deploy: staging deploys are blocked by the expired DigitalOcean token (L18-05 note), and no production app exists."}
+audit_refs: []
+decision_refs: []
+next_task: "Confirm on the first staging deploy after the token is replaced that the guard runs (and passes)."
+updated: 2026-11-14
+```
+
 #### L19-11 The operator health card says when open alerts could not be read (external audit OBS-001)
 ```yaml
 id: L19-11
