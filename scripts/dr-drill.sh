@@ -277,14 +277,15 @@ VERIFY_RC=$?
 # tenant key, so the validator must also REFUSE this restore without a key and
 # with the wrong one. A validator that passes either has stopped checking.
 for NEG in "" "not-the-drill-key"; do
+  NEG_LABEL="no"; [ -n "$NEG" ] && NEG_LABEL="a wrong"
   docker exec -i \
     -e PGPASSWORD="$PGPW" -e ORACLE_DB_HOST=127.0.0.1 -e ORACLE_DB_NAME=neoh_restore \
     -e ORACLE_DB_USER=postgres -e ORACLE_DB_SSLMODE=disable \
     -e ORACLE_ENCRYPTION_MASTER_KEY="$NEG" \
     "$DST" bash -s "/backups/$(basename "$MANIFEST")" < "$HERE/verify-restore.sh" \
     > "$WORK/verify-neg.log" 2>&1 \
-    && bad "validator PASSED with ${NEG:+a wrong}${NEG:-no} master key — it is not checking decryptability" \
-    || ok "validator refuses the restore with ${NEG:+a wrong}${NEG:-no} master key"
+    && bad "validator PASSED with $NEG_LABEL master key — it is not checking decryptability" \
+    || ok "validator refuses the restore with $NEG_LABEL master key"
 done
 VERIFY_PASSES="$(grep "  PASS  " "$WORK/verify.log" 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$VERIFY_RC" -eq 0 ]; then
