@@ -241,6 +241,24 @@ def test_a_recorded_migration_whose_file_changed_is_reported_and_not_re_applied(
     assert "migration" not in _event_names(conn), "the file was re-applied"
 
 
+def test_a_drifted_ledger_applies_nothing_newer(tmp_path):
+    """MIG-001: the changed file used to be reported while the run went on to
+    apply newer migrations on top of a schema the repository no longer
+    describes, returning 4 only at the end."""
+    changed = _write_migration(tmp_path, "CREATE TABLE example (id int);\n")
+    newer = tmp_path / "0002_newer.sql"
+    newer.write_text("CREATE TABLE newer (id int);\n", encoding="utf-8")
+    conn = _FakeConnection()
+    conn.lock_held = False
+    conn.applied.add("0001_example.sql")
+    conn.checksums["0001_example.sql"] = "0" * 64
+
+    code = asyncio.run(run_migrations._run_migrations(conn, [changed, str(newer)]))
+
+    assert code == 4
+    assert "migration" not in _event_names(conn), "0002 was applied on a drifted ledger"
+
+
 def test_a_recorded_migration_with_no_checksum_gets_one_without_re_applying(tmp_path):
     """Rows written before the sha256 column existed were genuine applications;
     backfilling the digest makes future drift detectable without pretending the

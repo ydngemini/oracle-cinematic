@@ -816,6 +816,26 @@ async def _run_migrations(conn, files: list[str]) -> int:
         print(f"{len(files)} files; {len(applied)} recorded", flush=True)
         processed = 0
         drifted: list[str] = []
+        # MIG-001: check EVERY recorded file before applying ANY new one. The
+        # loop below used to note a changed file, carry on applying newer
+        # migrations on top of a schema the repository no longer describes,
+        # and only return 4 at the end. A drifted ledger now stops the run
+        # with nothing applied, so the operator decides with the database as
+        # it was.
+        for migration_path in files:
+            name = os.path.basename(migration_path)
+            known = recorded.get(name)
+            if name in applied and known:
+                with open(migration_path, encoding="utf-8") as migration_file:
+                    digest = _sha256(migration_file.read())
+                if known != digest:
+                    print(f"!! {name} CHANGED since it was recorded ({known[:12]}… -> {digest[:12]}…)",
+                          flush=True)
+                    drifted.append(name)
+        if drifted:
+            print(f"!! {len(drifted)} recorded migration(s) changed; NOTHING applied. Restore the "
+                  "recorded file(s) or write a new migration for the change.", flush=True)
+            return 4
         for migration_path in files:
             name = os.path.basename(migration_path)
             with open(migration_path, encoding="utf-8") as migration_file:
