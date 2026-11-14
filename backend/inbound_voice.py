@@ -730,6 +730,84 @@ async def _record_voice_opt_out(conn: Any, tenant_id: str, caller_ciphertext: An
     )
 
 
+async def _apply_inbound_opt_out(conn: Any, tenant_id: str, row: Mapping[str, Any], key: str) -> None:
+    """The opt-out the outreach gate reads (outreach_compliance.gather_state),
+    plus the matched contact's own flag. The contact flag alone only reached
+    that one contact's nurture; every other send path — a colleague's record
+    with the same number, a lead, a mission — went on calling. All channels, as
+    a STOP text does. Idempotent."""
+    await _record_voice_opt_out(conn, tenant_id, row["caller_phone_ciphertext"], key)
+    if row["contact_id"]:
+        await conn.execute(
+            """
+            UPDATE agent_contacts
+               SET suppression = COALESCE(suppression,'{}'::jsonb)
+                   || jsonb_build_object(
+                       'voice',true,
+                       'dnc',true
+                   )
+             WHERE tenant_id=$1::uuid AND id=$2::uuid
+            """,
+            tenant_id,
+            row["contact_id"],
+        )
+
+
+class InboundOptOutNotRecorded(RuntimeError):
+    """The caller asked not to be contacted, but the suppression was not written."""
+
+
+async def record_inbound_opt_out(call_sid: str, state: Optional[Mapping[str, Any]]) -> bool:
+    """Record an inbound caller's spoken opt-out the moment it is said
+    (external audit RUN-02, P0). It used to be written only by
+    finalize_inbound_voice_call at hang-up, and every bridge logs and swallows
+    a finalize failure, so a database blip or a pod killed at hang-up lost a
+    TCPA opt-out and the outreach gate went on allowing calls to that number.
+
+    Returns False when the call is not a recordable inbound call. Raises
+    InboundOptOutNotRecorded when it is but the write failed. The call is not
+    ended: the caller rang the brokerage and may still want to leave a message.
+    Finalize records it again (idempotent) as the backstop, and a call left
+    unfinalized shows on component health ("inbound_calls")."""
+    if not _looks_like_call_id(call_sid):
+        return False
+    state = state or {}
+    if state.get("direction") != "inbound":
+        return False
+    tenant_id = str(state.get("tenant_id") or "")
+    agent_id = str(state.get("agent_id") or "")
+    try:
+        uuid.UUID(tenant_id)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not agent_id:
+        return False
+    try:
+        async with tenant_tx(_tenant_context(tenant_id, agent_id)) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id,contact_id,caller_phone_ciphertext
+                  FROM inbound_voice_calls
+                 WHERE tenant_id=$1::uuid AND provider_call_sid=$2
+                """,
+                tenant_id,
+                call_sid,
+            )
+            if row is None:
+                raise InboundOptOutNotRecorded("inbound opt-out: no call row for this call")
+            await _apply_inbound_opt_out(conn, tenant_id, row, _tenant_key(tenant_id))
+            await conn.execute(
+                "UPDATE inbound_voice_calls SET opt_out_requested=true WHERE tenant_id=$1::uuid AND id=$2::uuid",
+                tenant_id,
+                row["id"],
+            )
+    except InboundOptOutNotRecorded:
+        raise
+    except Exception as exc:  # noqa: BLE001 — re-raised as the one documented failure
+        raise InboundOptOutNotRecorded("inbound opt-out could not be written") from exc
+    return True
+
+
 async def finalize_inbound_voice_call(
     call_sid: str,
     transcript: Sequence[Mapping[str, Any]],
@@ -759,7 +837,7 @@ async def finalize_inbound_voice_call(
             """
             SELECT id,client_id,contact_id,intake_mode,callback_task_id,
                    contact_intake_session_id,intake_handoff_task_id,
-                   caller_phone_ciphertext
+                   caller_phone_ciphertext,opt_out_requested
               FROM inbound_voice_calls
              WHERE tenant_id=$1::uuid AND provider_call_sid=$2
              FOR UPDATE
@@ -769,6 +847,9 @@ async def finalize_inbound_voice_call(
         )
         if row is None:
             return
+        # Recorded mid-call by record_inbound_opt_out: never undone here, even
+        # if the cleaned transcript no longer shows the utterance.
+        opted_out = opted_out or bool(row["opt_out_requested"])
 
         resolved_mode, answers = _resolve_mode_and_answers(
             str(row["intake_mode"]), cleaned
@@ -907,26 +988,9 @@ async def finalize_inbound_voice_call(
             task_id = task["id"]
 
         if opted_out:
-            # The opt-out the outreach gate reads (outreach_compliance.
-            # gather_state). The contact flag below only reached that one
-            # contact's nurture; every other send path — a colleague's record
-            # with the same number, a lead, a mission — went on calling. All
-            # channels, as a STOP text does.
-            await _record_voice_opt_out(conn, tenant_id, row["caller_phone_ciphertext"], key)
-        if opted_out and row["contact_id"]:
-            await conn.execute(
-                """
-                UPDATE agent_contacts
-                   SET suppression = COALESCE(suppression,'{}'::jsonb)
-                       || jsonb_build_object(
-                           'voice',true,
-                           'dnc',true
-                       )
-                 WHERE tenant_id=$1::uuid AND id=$2::uuid
-                """,
-                tenant_id,
-                row["contact_id"],
-            )
+            # Usually already recorded the moment it was said
+            # (record_inbound_opt_out); idempotent, so this is the backstop.
+            await _apply_inbound_opt_out(conn, tenant_id, row, key)
 
         await conn.execute(
             """

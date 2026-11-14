@@ -32,10 +32,9 @@ def test_scale_request_caps_desired_capacity():
 def test_scale_operation_requires_admin_and_valid_group_name():
     request = obs.ScaleRequest(desired_capacity=1)
 
-    with pytest.raises(HTTPException) as forbidden:
-        asyncio.run(obs.api_scale_asg("valid-group", request, ctx=AGENT))
-    assert forbidden.value.status_code == 403
-
+    # The role gate is now the route's admin_ops.require_platform_admin
+    # dependency (L17-29), proven per route through the real application in
+    # test_inline_platform_admin_checks.py; a direct call bypasses it.
     with pytest.raises(HTTPException) as invalid:
         asyncio.run(obs.api_scale_asg("invalid/group", request, ctx=ADMIN))
     assert invalid.value.status_code == 422
