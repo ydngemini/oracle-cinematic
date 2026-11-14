@@ -1344,6 +1344,26 @@ next_task: "None for the docs; the task channel follows L08-01."
 updated: 2026-11-13
 ```
 
+#### L08-06 A job's terminal state and its attempt audit commit together (external audit JOB-01)
+```yaml
+id: L08-06
+status: tests_pass
+env: local
+evidence_shas: [075bd2c]   # base; fix in the commit that adds this row
+files: [backend/automation_jobs.py, backend/tests/test_job_attempt_atomic.py]
+tests_run:
+  - {cmd: "read automation_jobs.complete_job / fail_job / _finish_attempt at 54740ef", result: "the lease-checked job UPDATE committed in one transaction and finish_automation_job_attempt ran in a second, so a crash or connection loss between them left a succeeded/failed job with its attempt still open (or the attempt closed for a job whose update was lost)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_job_attempt_atomic.py (against 075bd2c's automation_jobs.py)", result: "red: 2 failed (completion and failure each used two transactions)", date: 2026-11-14}
+  - {cmd: "pytest tests/test_job_attempt_atomic.py + automation-job suites (after)", result: "17 passed: complete_job and fail_job run the lease-checked UPDATE and the attempt close in ONE transaction; a failed attempt close rolls the completion back (the lease lapses and the job is reclaimed); a lost lease closes no attempt", date: 2026-11-14}
+authz_checked: n/a (worker internals)
+blockers:
+  - {type: scope, note: "No sweep for attempts orphaned before this change. Not exercised against PostgreSQL here; the job live tests run in CI."}
+audit_refs: []
+decision_refs: []
+next_task: "A one-off check for attempts still open on terminal jobs."
+updated: 2026-11-14
+```
+
 ### L09
 Real-time voice.
 

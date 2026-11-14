@@ -350,7 +350,12 @@ async def _lease_update(
     worker_id: str,
     sql: str,
     *args: Any,
+    finish: Optional[tuple] = None,
 ) -> Any:
+    """Run a lease-checked UPDATE. With ``finish=(outcome, code, detail)`` the
+    attempt row is closed IN THE SAME TRANSACTION (JOB-01): the job's terminal
+    state and its attempt audit used to commit separately, so a crash between
+    them left a finished job with an open attempt, or the reverse."""
     ctx = _platform_context(worker_id)
     async with dbc.tenant_tx(ctx) as conn:
         result = await conn.fetchrow(
@@ -360,8 +365,10 @@ async def _lease_update(
             job["lease_token"],
             *args,
         )
-    if result is None:
-        raise JobLeaseLost(f"lease lost for job {job['id']}")
+        if result is None:
+            raise JobLeaseLost(f"lease lost for job {job['id']}")
+        if finish is not None:
+            await _finish_attempt_in(conn, job, *finish)
     return result
 
 
@@ -457,8 +464,8 @@ async def complete_job(
         state,
         canonical_json(result_body),
         status_message,
+        finish=("succeeded", None, None),
     )
-    await _finish_attempt(job, worker_id, "succeeded")
 
 
 async def fail_job(
@@ -495,8 +502,8 @@ async def fail_job(
         error_code[:120],
         error_detail[:2_000],
         str(retry_seconds),
+        finish=("failed", error_code, error_detail),
     )
-    await _finish_attempt(job, worker_id, "failed", error_code, error_detail)
     logger.error(
         "ORACLE_METRIC automation_job_failure job_type=%s state=%s error_code=%s attempt=%d",
         str(job.get("job_type") or "unknown")[:120],
@@ -515,16 +522,26 @@ async def _finish_attempt(
 ) -> None:
     ctx = _platform_context(worker_id)
     async with dbc.tenant_tx(ctx) as conn:
-        changed = await conn.fetchval(
-            """
-            SELECT finish_automation_job_attempt($1::uuid, $2, $3, $4, $5)
-            """,
-            job["id"],
-            int(job["attempt_count"]),
-            outcome,
-            error_code,
-            error_detail[:2_000] if error_detail else None,
-        )
+        await _finish_attempt_in(conn, job, outcome, error_code, error_detail)
+
+
+async def _finish_attempt_in(
+    conn: Any,
+    job: Mapping[str, Any],
+    outcome: str,
+    error_code: Optional[str] = None,
+    error_detail: Optional[str] = None,
+) -> None:
+    changed = await conn.fetchval(
+        """
+        SELECT finish_automation_job_attempt($1::uuid, $2, $3, $4, $5)
+        """,
+        job["id"],
+        int(job["attempt_count"]),
+        outcome,
+        error_code,
+        error_detail[:2_000] if error_detail else None,
+    )
     if not changed:
         logger.warning(
             "automation job attempt was already finalized or unavailable job=%s attempt=%d",
