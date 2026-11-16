@@ -2391,6 +2391,44 @@ async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
     return None
 
 
+#: Open realtime bridges per brokerage in this process (T09.10). Each holds a
+#: hosted realtime model session billed to the brokerage for the whole call.
+_REALTIME_ACTIVE: dict[str, int] = {}
+_REALTIME_CAP_DEFAULT = 20  # one brokerage = 20 agent seats
+_REALTIME_CAP_ENV = "ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE"
+
+
+def _realtime_call_cap() -> int:
+    """Concurrent realtime calls one brokerage may hold open; 0 = no cap. A
+    missing, malformed or negative setting falls back to the default."""
+    raw = os.getenv(_REALTIME_CAP_ENV, "").strip()
+    try:
+        value = int(raw) if raw else _REALTIME_CAP_DEFAULT
+    except ValueError:
+        return _REALTIME_CAP_DEFAULT
+    return value if value >= 0 else _REALTIME_CAP_DEFAULT
+
+
+def _acquire_realtime_slot(tenant_id: str) -> bool:
+    """Take a slot for the brokerage, or False when it is at its cap. No await
+    between the check and the increment, so concurrent sockets cannot both
+    pass the last slot. Per process, not cluster-wide."""
+    cap = _realtime_call_cap()
+    active = _REALTIME_ACTIVE.get(tenant_id, 0)
+    if cap and active >= cap:
+        return False
+    _REALTIME_ACTIVE[tenant_id] = active + 1
+    return True
+
+
+def _release_realtime_slot(tenant_id: str) -> None:
+    remaining = _REALTIME_ACTIVE.get(tenant_id, 0) - 1
+    if remaining > 0:
+        _REALTIME_ACTIVE[tenant_id] = remaining
+    else:
+        _REALTIME_ACTIVE.pop(tenant_id, None)
+
+
 async def _state_tenant(load: Any, call_id: str) -> Optional[str]:
     """The brokerage a provider call's state names, or None when there is no
     state, it names none, or it cannot be read (unknown, not a pass)."""
@@ -2406,6 +2444,11 @@ def _log_realtime_refused(provider_name: str, call_id: str, refused: SpendRefuse
     # The provider's call id and the code: never the caller's number.
     logger.info("Realtime bridge not opened: provider=%s call=%s code=%s",
                 provider_name, call_id, refused.code)
+
+
+def _log_realtime_at_cap(provider_name: str, call_id: str) -> None:
+    logger.warning("Realtime bridge not opened: provider=%s call=%s reason=brokerage_call_cap cap=%d",
+                   provider_name, call_id, _realtime_call_cap())
 
 
 async def _say_refused_and_end(provider_name: str, call_id: str) -> None:
@@ -3794,36 +3837,45 @@ async def twilio_qwen_media(websocket: WebSocket):
         return
 
     # Admitted for the call's brokerage before the model opens (T18.07).
-    refused = await _realtime_refusal(await _state_tenant(load_twilio_call_state, call_sid))
+    tenant_id = await _state_tenant(load_twilio_call_state, call_sid)
+    refused = await _realtime_refusal(tenant_id)
     if refused is not None:
         _log_realtime_refused("twilio", call_sid, refused)
         await _say_refused_and_end("twilio", call_sid)
         await websocket.close(code=1000)
         return
+    if not _acquire_realtime_slot(str(tenant_id)):
+        _log_realtime_at_cap("twilio", call_sid)
+        await _say_refused_and_end("twilio", call_sid)
+        await websocket.close(code=1000)
+        return
 
     try:
-        bridge = TwilioQwenRealtimeBridge(
-            websocket,
-            call_sid,
-            start_event,
-        )
-    except QwenRealtimeError:
-        await websocket.close(code=4400)
-        return
-    await mark_twilio_streaming(call_sid)
-    try:
-        await bridge.run()
-    except WebSocketDisconnect:
-        logger.info("Twilio media socket disconnected: sid=%s", call_sid)
-    except QwenCallLimitReached:
-        logger.info("Qwen realtime turn limit reached: sid=%s", call_sid)
-        await abort_twilio_call(call_sid)
-    except QwenRealtimeError:
-        logger.exception("Twilio/Qwen realtime bridge failed: sid=%s", call_sid)
-        await websocket.close(code=1011)
-    except Exception:
-        logger.exception("Unexpected Twilio/Qwen bridge failure: sid=%s", call_sid)
-        await websocket.close(code=1011)
+        try:
+            bridge = TwilioQwenRealtimeBridge(
+                websocket,
+                call_sid,
+                start_event,
+            )
+        except QwenRealtimeError:
+            await websocket.close(code=4400)
+            return
+        await mark_twilio_streaming(call_sid)
+        try:
+            await bridge.run()
+        except WebSocketDisconnect:
+            logger.info("Twilio media socket disconnected: sid=%s", call_sid)
+        except QwenCallLimitReached:
+            logger.info("Qwen realtime turn limit reached: sid=%s", call_sid)
+            await abort_twilio_call(call_sid)
+        except QwenRealtimeError:
+            logger.exception("Twilio/Qwen realtime bridge failed: sid=%s", call_sid)
+            await websocket.close(code=1011)
+        except Exception:
+            logger.exception("Unexpected Twilio/Qwen bridge failure: sid=%s", call_sid)
+            await websocket.close(code=1011)
+    finally:
+        _release_realtime_slot(str(tenant_id))
 
 
 @router.websocket("/media/plivo")
@@ -3886,9 +3938,15 @@ async def plivo_qwen_media(websocket: WebSocket):
         return
 
     # Admitted for the call's brokerage before either model opens (T18.07).
-    refused = await _realtime_refusal(await _state_tenant(load_plivo_call_state, call_uuid))
+    tenant_id = await _state_tenant(load_plivo_call_state, call_uuid)
+    refused = await _realtime_refusal(tenant_id)
     if refused is not None:
         _log_realtime_refused("plivo", call_uuid, refused)
+        await _say_refused_and_end("plivo", call_uuid)
+        await websocket.close(code=1000)
+        return
+    if not _acquire_realtime_slot(str(tenant_id)):
+        _log_realtime_at_cap("plivo", call_uuid)
         await _say_refused_and_end("plivo", call_uuid)
         await websocket.close(code=1000)
         return
@@ -3902,30 +3960,33 @@ async def plivo_qwen_media(websocket: WebSocket):
 
     use_elevenlabs = realtime_provider() == "elevenlabs"
     try:
-        bridge = (PlivoElevenLabsBridge(websocket, call_uuid, start_event) if use_elevenlabs
-                  else PlivoQwenRealtimeBridge(websocket, call_uuid, start_event))
-    except (QwenRealtimeError, ElevenLabsRealtimeError):
-        await websocket.close(code=4400)
-        return
-    await mark_plivo_streaming(call_uuid)
-    try:
-        await bridge.run()
-    except WebSocketDisconnect:
-        logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
-    except (QwenCallLimitReached, ElevenLabsCallLimitReached) as exc:
-        # A spoken opt-out (L09-05) is a limit subclass: same hang-up.
-        logger.info("Realtime call ended (%s): uuid=%s",
-                    "callee opted out" if "opt" in type(exc).__name__.lower() else "turn limit", call_uuid)
-        from voice_provider import get_voice_provider
+        try:
+            bridge = (PlivoElevenLabsBridge(websocket, call_uuid, start_event) if use_elevenlabs
+                      else PlivoQwenRealtimeBridge(websocket, call_uuid, start_event))
+        except (QwenRealtimeError, ElevenLabsRealtimeError):
+            await websocket.close(code=4400)
+            return
+        await mark_plivo_streaming(call_uuid)
+        try:
+            await bridge.run()
+        except WebSocketDisconnect:
+            logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
+        except (QwenCallLimitReached, ElevenLabsCallLimitReached) as exc:
+            # A spoken opt-out (L09-05) is a limit subclass: same hang-up.
+            logger.info("Realtime call ended (%s): uuid=%s",
+                        "callee opted out" if "opt" in type(exc).__name__.lower() else "turn limit", call_uuid)
+            from voice_provider import get_voice_provider
 
-        await get_voice_provider("plivo").abort_call(call_uuid)
-    except (QwenRealtimeError, ElevenLabsRealtimeError):
-        logger.exception("Plivo realtime bridge failed (%s): uuid=%s",
-                         "elevenlabs" if use_elevenlabs else "qwen", call_uuid)
-        await websocket.close(code=1011)
-    except Exception:
-        logger.exception("Unexpected Plivo/Qwen bridge failure: uuid=%s", call_uuid)
-        await websocket.close(code=1011)
+            await get_voice_provider("plivo").abort_call(call_uuid)
+        except (QwenRealtimeError, ElevenLabsRealtimeError):
+            logger.exception("Plivo realtime bridge failed (%s): uuid=%s",
+                             "elevenlabs" if use_elevenlabs else "qwen", call_uuid)
+            await websocket.close(code=1011)
+        except Exception:
+            logger.exception("Unexpected Plivo/Qwen bridge failure: uuid=%s", call_uuid)
+            await websocket.close(code=1011)
+    finally:
+        _release_realtime_slot(str(tenant_id))
 
 
 @router.post("/webhooks/twilio/speech", include_in_schema=False)

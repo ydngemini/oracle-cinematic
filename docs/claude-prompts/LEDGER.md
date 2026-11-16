@@ -1551,6 +1551,28 @@ next_task: "Bounded drain of the agent leg after hang-up (up to ~2 s) before can
 updated: 2026-11-13
 ```
 
+#### L09-10 Per-brokerage cap on concurrent realtime calls (T09.10, partial AC09.02)
+```yaml
+id: L09-10
+status: tests_pass
+env: local
+evidence_shas: [d27bac3]   # base; salvaged from Noah cycle 4ff352f (auto/neoh-09-20261112T094938Z-3804d8)
+files: [backend/commands_api.py, backend/tests/test_realtime_call_cap.py]
+tests_run:
+  - {cmd: "pytest tests/test_realtime_call_cap.py + plivo/twilio/elevenlabs/qwen realtime suites (fakes; no provider call)", result: "81 passed", date: 2026-11-16}
+  - {cmd: "mutation: _acquire_realtime_slot never refuses", result: "4 failed (killed)", date: 2026-11-16}
+authz_checked: "Unknown brokerage is refused before the cap (commands_api._realtime_refusal); the slot is per call's brokerage."
+blockers:
+  - "Per process, not cluster-wide: N replicas allow N x cap."
+  - "Concurrency only. Not a per-call reservation, settlement or wall-clock cap: audit 34.2/23.6 stay open."
+  - "Default cap 20 (ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE; 0 = none) is an engineering default, not an owner-set number."
+  - "Not deployed (C4.4)."
+audit_refs: [34.2, 23.6]
+decision_refs: []
+next_task: "Per-call reservation + wall-clock/idle cap (34.2/23.6); a cluster-wide counter before more than one replica serves calls."
+updated: 2026-11-16
+```
+
 ### L10
 Communications and calendars.
 
