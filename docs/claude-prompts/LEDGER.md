@@ -304,6 +304,27 @@ next_task: "None for UX-001."
 updated: 2026-11-14
 ```
 
+#### L02-11 Review queue for the per-page verdicts (AC02.09)
+```yaml
+id: L02-11
+status: tests_pass
+env: local
+evidence_shas: [a95fca2]   # base
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "vitest run src/allPagesMatrix.test.js (review run, branch review/noah-02-20261116)", result: "7 passed", date: 2026-11-16}
+  - {cmd: "eslint scripts/build-all-pages-matrix.mjs src/allPagesMatrix.test.js; node scripts/build-all-pages-matrix.mjs --check", result: "clean; matrix current (51 pages)", date: 2026-11-16}
+  - {cmd: "node scripts/build-all-pages-matrix.mjs --verdicts", result: "0 of 51 have a verdict; 50 ready_for_review, 1 needs_attention (profile:ops crawl not_offered). NOTE: readiness uses the last committed crawl, which is pinned to an older SHA; re-crawl before review.", date: 2026-11-16}
+authz_checked: n/a (docs tooling; no runtime or API change)
+blockers:
+  - {type: human, note: "No verdict was recorded. A verdict is a named reviewer's functional sign-off (L02-08); an agent cannot sign. all-pages-verdicts.json is unchanged."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "A reviewer runs `node scripts/build-all-pages-matrix.mjs --verdicts` in oracle-app/, reviews the ready_for_review pages, enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`. Needs-attention and not-crawled pages need a fresh crawl first."
+updated: 2026-11-16
+```
+New exported `verdictQueue(rows)` and a read-only `--verdicts` flag split the pages into recorded, ready for review (clean crawl, no writes on open, not legacy), needs attention, not crawled and legacy. It writes no file; the generated matrix is unchanged. The Playwright and crawl work for AC02.04, AC02.05 and AC02.08 is still owed.
+
 ### L03
 Brokerage tenancy and hybrid access.
 
@@ -1551,7 +1572,7 @@ next_task: "Bounded drain of the agent leg after hang-up (up to ~2 s) before can
 updated: 2026-11-13
 ```
 
-#### L09-10 Per-brokerage cap on concurrent realtime calls (T09.10, partial AC09.02)
+#### L09-10 Per-process, per-brokerage cap on concurrent realtime calls: 5 for the pilot (T09.10, partial AC09.02)
 ```yaml
 id: L09-10
 status: tests_pass
@@ -1564,9 +1585,10 @@ tests_run:
   - {cmd: "mutation: release moved out of finally (leaks on construction failure / CancelledError)", result: "2 failed (killed)", date: 2026-11-16}
 authz_checked: "Unknown brokerage is refused before the cap (commands_api._realtime_refusal); the slot is per call's brokerage. All three realtime media routes (ACS, Twilio, Plivo incl. ElevenLabs) take the slot immediately before the try/finally that releases it (independent review, PR #76)."
 blockers:
-  - "Per process, not cluster-wide: N replicas allow N x cap."
+  - "PER PROCESS ONLY, not a global cap: N replicas or workers allow N x cap. A cluster-wide counter is required before more than one process serves calls."
   - "Concurrency only. Not a per-call reservation, settlement or wall-clock cap: audit 34.2/23.6 stay open."
-  - "Default cap 20 (ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE; 0 = none) is an engineering default, not an owner-set number."
+  - "Default cap 5 per brokerage (owner decision 2026-11-16, five-agent pilot); 20 stays configurable via ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE pending real capacity testing. 0 (no cap) is honoured only when config.IS_DEV; elsewhere it falls back to 5."
+  - "Open (not closed by this row): per-call duration/idle limits (23.6), live usage metering, per-call reservation and settlement (34.2)."
   - "Not deployed (C4.4)."
 audit_refs: [34.2, 23.6]
 decision_refs: []
@@ -2234,6 +2256,29 @@ audit_refs: []
 decision_refs: []
 next_task: "Owner decisions in L11-14; then T11.04 freshness and permitted use per source (reaching comps, Neoh and Houses)."
 updated: 2026-10-18
+```
+
+#### L11-17 Client drawer: review-only property candidates read "Possible match: owner name, ignoring case, spaces, punctuation…", never the producer's "exact owner name" (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-17
+status: tests_pass
+env: local
+evidence_shas: [8341575]
+files: [oracle-app/src/lib/propertyLookupStatus.js, oracle-app/src/lib/propertyLookupStatus.test.js, oracle-app/src/components/ClientDetailDrawer.jsx]
+tests_run:
+  - {cmd: "source read at 8341575: client_ai_automation.py:716 stores match_basis 'exact owner name' for a comparison that lower-cases and strips everything outside a-z0-9 (:681); ClientDetailDrawer.jsx:829 printed it verbatim next to a 'Review-only' heading; neoh_render.py:598 keys its mapping on the stored words", result: "L11-08's open blocker confirmed still present; the stored string is left unchanged on purpose (Neoh's renderer and existing stored candidates depend on it), so the drawer maps it", date: 2026-11-16}
+  - {cmd: "cd oracle-app && npx vitest run src/lib/propertyLookupStatus.test.js (review run 2026-11-16, interactive reviewer, branch review/noah-11-20261116)", result: "11 passed"}
+  - {cmd: "npx eslint src/lib/propertyLookupStatus.js src/lib/propertyLookupStatus.test.js src/components/ClientDetailDrawer.jsx", result: "clean"}
+authz_checked: "Display wording only: no read, route or stored value changes."
+blockers:
+  - "No ClientDetailDrawer render test pins the call site; the helper's tests do. Bundle budget is checked by CI's frontend build."
+  - "The producer still stores 'exact owner name'; changing it needs the renderer's _MATCH_BASIS keys and old rows handled together."
+  - {type: owner, note: "L11-04 licences per source remain owner/legal: 68 of 82 sources have no verified licence in the repo. Not touched."}
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner/legal: licences per source (L11-04); then record the producer's basis truthfully at source with the renderer keys migrated together."
+updated: 2026-11-16
 ```
 
 ### L12
