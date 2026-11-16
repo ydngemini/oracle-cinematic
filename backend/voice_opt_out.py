@@ -81,13 +81,19 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
 
 
 #: Audit 23.5 / 34.5: a spoken STOP whose suppression write fails used to be
-#: logged and forgotten. Now: retried in place; if it still fails, spooled to
-#: a local file (tenant + normalised number only — never what was said),
-#: honoured by the outreach gate in this process while pending, replayed by
-#: reconciliation.run_sweep, and reported by component_health. LIMIT: the
-#: spool is on local disk; a replica restart before the replay (e.g. an
-#: App Platform redeploy wipes the container disk) would lose it — the health
-#: component pages first, and a shared durable store is an owner decision.
+#: logged and forgotten. Now: one attempt in the call; on failure the tenant +
+#: normalised number (never what was said) are spooled at once and held in
+#: memory; the outreach gate treats a pending STOP as suppressed; the owning
+#: process retries until the write succeeds (fast, then capped backoff) and
+#: resumes a leftover spool at startup; reconciliation.run_sweep replays it
+#: when it runs in the same container; component_health reports it.
+#: LIMITS (stated honestly; a shared durable store is an owner decision):
+#:   * the spool is per CONTAINER: in production the block covers sends made
+#:     from the same api container only — the other api replica and the worker
+#:     container (missions, automations) do not see a pending STOP until the
+#:     write lands; health is per replica too;
+#:   * an App Platform redeploy wipes the container disk, losing a STOP that
+#:     is still pending at that moment (the health component pages first).
 RETRY_DELAYS: tuple[float, ...] = (0.5, 2.0, 5.0)
 #: Absolute and OUTSIDE the source tree by default (never committed, never in
 #: the image); point ORACLE_OPT_OUT_SPOOL at a mounted volume where one exists.
@@ -140,7 +146,7 @@ def _spooled() -> set[tuple[str, str]]:
     global _SPOOL_SEEN
     try:
         info = SPOOL_PATH.stat()
-        signature = (info.st_mtime_ns, info.st_size)
+        signature = (info.st_ino, info.st_mtime_ns, info.st_size)
     except FileNotFoundError:
         return set()
     if _SPOOL_SEEN[0] != signature:
@@ -204,23 +210,59 @@ async def replay_spool() -> dict[str, int]:
         except OptOutNotRecorded:
             continue
         written.add((tenant_id, contact))
-    _remove(written)
+    try:
+        _remove(written)
+    except OSError:
+        logger.exception("Replayed spoken opt-outs but the spool could not be updated")
     return {"replayed": len(written), "still_pending": len(queued) - len(written)}
 
 
+#: After the fast retries, the OWNING process keeps trying with capped
+#: backoff. In production the media websockets (and so honour()) run in the
+#: api service while reconciliation runs in a separate worker container with
+#: its own disk, so the sweep cannot replay this process's spool; this loop
+#: is what gets a pending STOP written.
+SLOW_RETRY_FIRST, SLOW_RETRY_CAP = 60.0, 300.0
+
+
 async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
-    """After the call has ended: retry with backoff; success clears the spool
-    entry; persistent failure leaves it for reconciliation's replay."""
-    for delay in RETRY_DELAYS:
-        await asyncio.sleep(delay)
+    """After the call has ended: fast retries, then capped backoff until the
+    write succeeds (or this process exits; resume_pending() restarts it)."""
+    delays = list(RETRY_DELAYS)
+    slow = SLOW_RETRY_FIRST
+    while True:
+        if delays:
+            await asyncio.sleep(delays.pop(0))
+        else:
+            await asyncio.sleep(slow)
+            slow = min(slow * 2, SLOW_RETRY_CAP)
+        if key not in _PENDING and key not in _spooled():
+            return  # written meanwhile (replay or another retry)
         try:
             await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
         except OptOutNotRecorded:
+            if not delays and slow == SLOW_RETRY_CAP:
+                logger.error("Outbound opt-out still not recorded; retrying every %.0fs: call=%s",
+                             SLOW_RETRY_CAP, call_ref)
             continue
-        _remove({key})
+        try:
+            _remove({key})
+        except OSError:
+            logger.exception("Spoken opt-out recorded but the spool could not be updated: call=%s", call_ref)
         logger.info("Spooled outbound opt-out recorded on retry: call=%s", call_ref)
         return
-    logger.error("Outbound opt-out still not recorded after retries; left for reconciliation: call=%s", call_ref)
+
+
+def resume_pending() -> int:
+    """Called at api startup: restart the retry loop for any STOP left in this
+    container's spool by a previous process. Returns how many were resumed."""
+    keys = _spooled()
+    for key in keys:
+        _PENDING.add(key)
+        _background(_retry_later(key, "resumed-at-startup"))
+    if keys:
+        logger.error("Resumed %d spoken opt-out(s) still waiting to be recorded", len(keys))
+    return len(keys)
 
 
 async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:

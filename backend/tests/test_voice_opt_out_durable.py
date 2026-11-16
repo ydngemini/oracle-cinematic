@@ -24,6 +24,8 @@ NUMBER = outreach_compliance.normalize_contact(STATE["callee"], outreach_complia
 def isolated(monkeypatch):
     # conftest._private_opt_out_spool already gives every test its own spool.
     monkeypatch.setattr(voice_opt_out, "RETRY_DELAYS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(voice_opt_out, "SLOW_RETRY_FIRST", 0.0)
+    monkeypatch.setattr(voice_opt_out, "SLOW_RETRY_CAP", 0.0)
 
 
 def spool_line(tenant, contact):
@@ -47,6 +49,8 @@ def fake_writer(monkeypatch, outcomes):
     calls = []
 
     async def write(state):
+        if not outcomes:
+            raise asyncio.CancelledError  # the test's "process exit": ends the retry loop
         calls.append(dict(state))
         if outcomes.pop(0) == "fail":
             raise voice_opt_out.OptOutNotRecorded("db down")
@@ -238,3 +242,36 @@ def test_the_default_spool_path_is_absolute_and_outside_the_source_tree(monkeypa
         assert pathlib.Path(__file__).resolve().parents[2] not in path.resolve().parents
     finally:
         importlib.reload(voice_opt_out)
+
+
+def test_the_owner_keeps_retrying_past_the_fast_phase_until_it_lands(monkeypatch):
+    """Production: the sweep runs in another container, so the owning api
+    process must keep going (capped backoff) until the write succeeds."""
+    calls = fake_writer(monkeypatch, ["fail"] * 7 + ["ok"])
+    honour_and_drain(STATE, "call-slow")
+    assert len(calls) == 8                                      # 1 in-call + 3 fast + 4 slow
+    assert voice_opt_out.pending_count() == 0
+
+
+def test_startup_resumes_a_leftover_spool(monkeypatch):
+    voice_opt_out.SPOOL_PATH.write_text(spool_line(TENANT, NUMBER))
+    calls = fake_writer(monkeypatch, ["fail", "ok"])
+
+    async def go():
+        assert voice_opt_out.resume_pending() == 1
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if not voice_opt_out._IN_FLIGHT:
+                break
+            await asyncio.gather(*list(voice_opt_out._IN_FLIGHT), return_exceptions=True)
+
+    asyncio.run(go())
+    assert len(calls) == 2 and voice_opt_out.pending_count() == 0
+
+
+def test_the_api_lifespan_resumes_pending_stops():
+    import inspect
+
+    import server
+
+    assert "voice_opt_out.resume_pending()" in inspect.getsource(server.lifespan)

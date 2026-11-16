@@ -156,6 +156,9 @@ async def lifespan(app: FastAPI):
             raise RuntimeError("Production database initialization failed") from e
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
     if config.RUNS_BACKGROUND_WORK:
+        import voice_opt_out
+
+        voice_opt_out.resume_pending()  # spoken STOPs this container still owes (23.5)
         await start_voice_workers()
         await start_reconstruction_workers()
         await start_disposition_enforcer()
