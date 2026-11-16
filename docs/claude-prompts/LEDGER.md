@@ -2213,6 +2213,28 @@ next_task: "Owner decisions in L11-14; then T11.04 freshness and permitted use p
 updated: 2026-10-18
 ```
 
+#### L11-17 Client drawer: review-only property candidates read "Possible match: owner name, ignoring case, spaces, punctuation…", never the producer's "exact owner name" (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-17
+status: implemented_untested
+env: local
+evidence_shas: [8341575]
+files: [oracle-app/src/lib/propertyLookupStatus.js, oracle-app/src/lib/propertyLookupStatus.test.js, oracle-app/src/components/ClientDetailDrawer.jsx]
+tests_run:
+  - {cmd: "source read at 8341575: client_ai_automation.py:716 stores match_basis 'exact owner name' for a comparison that lower-cases and strips everything outside a-z0-9 (:681); ClientDetailDrawer.jsx:829 printed it verbatim next to a 'Review-only' heading; neoh_render.py:598 keys its mapping on the stored words", result: "L11-08's open blocker confirmed still present; the stored string is left unchanged on purpose (Neoh's renderer and existing stored candidates depend on it), so the drawer maps it", date: 2026-11-16}
+  - {cmd: "NOT RUN: cd oracle-app && npx vitest run src/lib/propertyLookupStatus.test.js; npx eslint src; npm run bundle:check", result: "NOT RUN (no shell in this session). 4 new tests written: owner basis is a possible match and never 'exact'; ZIP variant; unknown basis shown as recorded; missing/blank/non-string basis invents nothing", date: 2026-11-16}
+authz_checked: "Display wording only: no read, route or stored value changes."
+blockers:
+  - "Tests not run. No ClientDetailDrawer render test pins the call site; the helper's tests do. Bundle budget not re-checked (a few hundred bytes of JS)."
+  - "The producer still stores 'exact owner name'; changing it needs the renderer's _MATCH_BASIS keys and old rows handled together."
+  - {type: owner, note: "L11-04 licences per source remain owner/legal: 68 of 82 sources have no verified licence in the repo. Not touched."}
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner/legal: licences per source (L11-04); then record the producer's basis truthfully at source with the renderer keys migrated together."
+updated: 2026-11-16
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 
