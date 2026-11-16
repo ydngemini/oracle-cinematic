@@ -45,10 +45,10 @@ async def _scenario():
                                             "source_text": voice_opt_out.SOURCE_TEXT}]
         for channel in (Channel.VOICE, Channel.SMS, Channel.EMAIL):
             async with connection.tenant_tx(agent) as conn:
-                facts = await ConsentLedger.gather_state(conn, contact, channel)
+                facts = await ConsentLedger.gather_state(conn, contact, channel, tenant_id=str(tenant))
             assert facts["suppressed"] is True, channel
         async with connection.tenant_tx(stranger) as conn:
-            assert (await ConsentLedger.gather_state(conn, contact, Channel.VOICE))["suppressed"] is False
+            assert (await ConsentLedger.gather_state(conn, contact, Channel.VOICE, tenant_id=str(other)))["suppressed"] is False
         with pytest.raises(voice_opt_out.OptOutNotRecorded):
             await voice_opt_out.record_outbound_opt_out({"direction": "outbound", "tenant_id": str(tenant)})
     finally:
