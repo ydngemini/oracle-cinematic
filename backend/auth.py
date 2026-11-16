@@ -427,14 +427,16 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
                     "UPDATE operator_otp_challenges SET consumed_at = now() WHERE id = $1::uuid", row["id"])
                 accepted = True
             else:
-                attempts = row["attempts"] + 1
+                # Counted IN SQL (the row is FOR UPDATE-locked, but the count must
+                # not depend on that) with an explicit cast: PostgreSQL could not
+                # infer the old `$2 >= $3` between two untyped parameters
+                # (AmbiguousParameterError on every wrong code — found by the 28.1
+                # live test).
                 await conn.execute(
-                    # Explicit casts: PostgreSQL cannot infer `$2 >= $3` between two
-                    # untyped parameters (AmbiguousParameterError — every wrong code
-                    # errored here on a real database; found by the 28.1 live test).
-                    "UPDATE operator_otp_challenges SET attempts = $2::int, "
-                    "consumed_at = CASE WHEN $2::int >= $3::int THEN now() ELSE NULL END WHERE id = $1::uuid",
-                    row["id"], attempts, _EMAIL_OTP_MAX_ATTEMPTS,
+                    "UPDATE operator_otp_challenges SET attempts = attempts + 1, "
+                    "consumed_at = CASE WHEN attempts + 1 >= $2::int THEN now() ELSE NULL END "
+                    "WHERE id = $1::uuid",
+                    row["id"], _EMAIL_OTP_MAX_ATTEMPTS,
                 )
     if not accepted:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)

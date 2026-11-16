@@ -3633,8 +3633,9 @@ tests_run:
   - {cmd: "read auth._require_operator_email_otp at bcde487", result: "two defects: (1) the wrong-code UPDATE compared two untyped parameters ($2 >= $3) -> asyncpg AmbiguousParameterError on every wrong code; (2) the 401 was raised INSIDE tenant_tx, so even a working counter update was rolled back. The five-attempt lock never engaged; the unit test passed only because its fake transaction never rolled back", date: 2026-11-16}
   - {cmd: "live PostgreSQL: test_operator_otp_lockout_live against bcde487's auth.py; then with only the cast fixed", result: "red both times (AmbiguousParameterError; then attempts not persisted)", date: 2026-11-16}
   - {cmd: "after: live 1 passed (attempts=5 persisted, challenge consumed, the right code refused afterwards); unit fake now rolls back like PostgreSQL; test_security_launch_review 63 passed", result: "pass", date: 2026-11-16}
-authz_checked: "Decide inside the transaction, commit, raise 401 after it closes; explicit ::int casts. The TOTP path was checked: a replayed step writes nothing, so its in-transaction raise loses no state."
+authz_checked: "Decide inside the transaction, commit, raise 401 after it closes; the attempt is counted in SQL (attempts = attempts + 1) with an explicit ::int cast; an expired code is refused (live test pins expires_at). The TOTP path was checked: a replayed step writes nothing, so its in-transaction raise loses no state."
 blockers:
+  - {type: owner, note: "No account-level cool-down after a lockout (independent review of #86): a fresh code is issued at once, so a passphrase holder gets ~50 guesses/minute across new challenges. Decide: a cool-down (e.g. 15 min after a retired challenge) or alerting."}
   - "28.3 (environment-operator JWTs cannot be revoked) and 28.2 (MFA policy change does not end non-MFA sessions) remain open."
   - "Auth/security: independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."

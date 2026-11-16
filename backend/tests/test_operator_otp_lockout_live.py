@@ -64,3 +64,39 @@ def test_five_wrong_codes_lock_the_challenge_in_postgres(monkeypatch):
     assert row["attempts"] == 5, f"the attempt counter did not persist: {row['attempts']}"
     assert row["consumed_at"] is not None, "five wrong codes must retire the challenge"
     assert after == 401
+
+
+def test_an_expired_code_is_refused_in_postgres(monkeypatch):
+    """Review of #86: nothing pinned `expires_at > now()`; the right code after
+    expiry must be refused."""
+    from fastapi import HTTPException
+
+    import auth
+
+    account = f"ops-{uuid.uuid4().hex[:8]}@otp.test"
+    sent: list[str] = []
+    monkeypatch.setattr(auth, "_ADMIN_OTP_EMAIL", "owner@example.test")
+    monkeypatch.setattr(auth, "_ADMIN_TOTP_SECRET", "")
+    monkeypatch.setattr(auth, "_send_operator_code", lambda _to, code: sent.append(code))
+
+    async def go():
+        import asyncpg
+
+        from db import connection
+
+        admin = await asyncpg.connect(DSN)
+        await connection.init_pool(min_size=1, max_size=2)
+        try:
+            with pytest.raises(HTTPException):
+                await auth._require_operator_email_otp(account, None)
+            await admin.execute("UPDATE operator_otp_challenges SET expires_at = now() - interval '1 second' "
+                                "WHERE account = $1", account)
+            with pytest.raises(HTTPException) as refused:
+                await auth._require_operator_email_otp(account, sent[0])
+            return refused.value.status_code
+        finally:
+            await admin.execute("DELETE FROM operator_otp_challenges WHERE account = $1", account)
+            await admin.close()
+            await connection.close_pool()
+
+    assert asyncio.run(go()) == 401
