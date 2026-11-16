@@ -95,6 +95,28 @@ export function verdictProblems(verdicts, rows, crawlPages = {}) {
   return problems;
 }
 
+/**
+ * Where each page stands for the human sign-off (AC02.09). Reads matrix rows
+ * (verdict + crawl) and records nothing: a verdict is a named reviewer's call.
+ *   recorded         has a verdict already
+ *   ready_for_review no verdict, last crawl clean, no writes on open, not legacy
+ *   needs_attention  no verdict, crawl not clean or opening the page attempted writes
+ *   not_crawled      no verdict and no crawl entry
+ *   legacy           no verdict, out of scope (D-2026-10-12-01); never passable
+ */
+export function verdictQueue(rows) {
+  const queue = { total: rows.length, recorded: [], ready_for_review: [], needs_attention: [], not_crawled: [], legacy: [] };
+  for (const r of rows) {
+    if (r.verdict && r.verdict !== 'not_inspected') queue.recorded.push(r.id);
+    else if (r.legacy) queue.legacy.push(r.id);
+    else if (!r.crawl) queue.not_crawled.push(r.id);
+    else if (r.crawl.writes_attempted_on_open?.length) queue.needs_attention.push(`${r.id} (writes on open)`);
+    else if (r.crawl.status !== 'clean') queue.needs_attention.push(`${r.id} (crawl ${r.crawl.status})`);
+    else queue.ready_for_review.push(r.id);
+  }
+  return queue;
+}
+
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
 
 /** Entries of `const NAME = [ { id: 'x', label: 'Y', … }, … ]` (or path:). */
@@ -327,7 +349,16 @@ function markdown(rows) {
 
 async function main() {
   const rows = await buildMatrix();
-  const json = `${JSON.stringify({ generated_by: 'oracle-app/scripts/build-all-pages-matrix.mjs', pages: rows }, null, 2)}\n`;
+  if (process.argv.includes('--verdicts')) {
+    // Read-only: print the review queue; write nothing.
+    const q = verdictQueue(rows);
+    console.log(`${q.recorded.length} of ${q.total} pages have a verdict.`);
+    for (const key of ['ready_for_review', 'needs_attention', 'not_crawled', 'legacy']) {
+      console.log(`${key} (${q[key].length}): ${q[key].join(', ') || '—'}`);
+    }
+    return;
+  }
+  const json =`${JSON.stringify({ generated_by: 'oracle-app/scripts/build-all-pages-matrix.mjs', pages: rows }, null, 2)}\n`;
   const md = `${markdown(rows)}\n`;
   if (process.argv.includes('--check')) {
     const stale = (!existsSync(OUT_JSON) || readFileSync(OUT_JSON, 'utf8') !== json)
