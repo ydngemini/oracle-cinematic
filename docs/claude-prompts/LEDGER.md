@@ -3717,6 +3717,29 @@ next_task: "28.3: operator session epoch/jti revocation checked at admission and
 updated: 2026-11-16
 ```
 
+#### L17-34 A data-subject request reads or deletes one person, completely: mixed identifiers are refused, and access returns every table found or fails (external audit 29.3, 29.8)
+```yaml
+id: L17-34
+status: tests_pass
+env: local
+evidence_shas: [1569501]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, backend/tests/test_dsar_subject_truth_live.py, backend/tests/test_dsar_access_complete.py]
+tests_run:
+  - {cmd: "read privacy_requests at 1569501", result: "confirmed 29.3: _discover ORs email/phone/contact_id/client_id, so A's email + B's phone (or B's record id) returned or deleted both. Confirmed 29.8 (worse than claimed): each table capped at LIMIT 5000, a failed query became no rows, encrypted contacts/calls silently skipped without the key, and the dependent tables discovery counts (contact_intake_sessions, lead_intake_events, outreach_attempt_log, agent_call_intents, smart_plan_*, ...) were never returned", date: 2026-11-16}
+  - {cmd: "red: test_dsar_subject_truth_live against 1569501's privacy_requests.py (live PostgreSQL); test_dsar_access_complete against it", result: "live: DID NOT RAISE (mixed identifiers accepted); unit: 6 failed", date: 2026-11-16}
+  - {cmd: "after: live test_dsar_subject_truth_live + test_privacy_lifecycle_live + test_sealed_text_live; unit test_dsar_access_complete + test_privacy_api", result: "live 3 passed (mixed identifiers 409 ambiguous_subject on preview/access/delete, no operation started, both clients kept; same-person identifiers work; intake session returned with raw_answers decrypted and no ciphertext; attempt log returned; an unreadable table fails the op ('failed', not running); keyless leaves nothing running). unit 15 passed. test_sealed_text_two_live fails identically on origin/main (shared dev DB holds interaction_logs sealed under another key): not this change", date: 2026-11-16}
+authz_checked: "unchanged: broker owner (or platform admin) only, password for deletion; every query is tenant_id-filtered under FORCE RLS. Generic rows reuse privacy_export's column rules: sealed columns opened (DECRYPT), hashes/secrets/raw bytea omitted."
+blockers:
+  - {type: owner, note: "Behaviour change: two unlinked rows of the SAME person (same email typed on two clients, one with a phone) now refuse a combined request (409). The owner links them or asks by record id. Fail-closed by design."}
+  - "An identifier that reaches no CRM record does not count as a conflict: a phone that matches only texts (no client/contact) is still trusted as the person's."
+  - "29.4b (single-person deletion writes no restore directive, so a restore brings the person back) is not in this slice: it needs a subject-directive format reapply-erasures understands, kept apart from the tenant directives it would otherwise read as a whole-brokerage erasure."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.3, 29.8]
+decision_refs: []
+next_task: "29.4b subject restore directive + reapply; then 22.5 (departing agent's DID/messaging route parked when the successor has their own; inbound checks the agent is active)."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 

@@ -137,6 +137,42 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
     return {"ids": found, "retained": retained, "identifiers": identifiers}
 
 
+async def _assert_one_subject(conn, tenant_id: str, email: Optional[str], phone: Optional[str],
+                              contact_id: Optional[str], client_id: Optional[str]) -> None:
+    """Every identifier given must point at the same person (external audit
+    29.3). Discovery ORs them, so A's email with B's phone (or B's record id)
+    used to return, or delete, both people's records under one request.
+
+    Each identifier is resolved on its own to the CRM records it reaches
+    (clients and contacts, with their links). An identifier that reaches
+    nothing proves nothing either way; any two that reach different record
+    sets are refused before anything is read or deleted. Two rows of the same
+    person that are not linked to each other are refused too: the owner can
+    link them, or ask by record id."""
+    from privacy_lifecycle import LifecycleError
+
+    given = [(label, kw) for label, kw in (
+        ("email", {"email": email}), ("phone", {"phone": phone}),
+        ("contact_id", {"contact_id": contact_id}), ("client_id", {"client_id": client_id}))
+        if next(iter(kw.values()))]
+    if len(given) < 2:
+        return
+    reached: dict[str, frozenset[str]] = {}
+    for label, kw in given:
+        found = await _discover(conn, tenant_id, kw.get("email"), kw.get("phone"),
+                                kw.get("contact_id"), kw.get("client_id"))
+        records = frozenset([f"client:{i}" for i in found["ids"]["clients"]]
+                            + [f"contact:{i}" for i in found["ids"]["agent_contacts"]])
+        if records:
+            reached[label] = records
+    if len(set(reached.values())) > 1:
+        detail = ", ".join(f"the {label} reaches {len(records)} record(s)" for label, records in reached.items())
+        raise LifecycleError(
+            f"ambiguous_subject: these identifiers point to different records ({detail}). "
+            "Nothing was read or deleted. Send one request per person, or name the record by its id.",
+            status_code=409)
+
+
 def subject_ref(tenant_id: str, email: Optional[str], phone: Optional[str]) -> str:
     """Stable keyed reference to the person, stored instead of their address."""
     from privacy_lifecycle import contact_hmac
@@ -151,6 +187,7 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
 
     ref = subject_ref(ctx.tenant_id, email, phone or contact_id or client_id)
     async with tenant_tx(ctx) as conn:
+        await _assert_one_subject(conn, ctx.tenant_id, email, phone, contact_id, client_id)
         found = await _discover(conn, ctx.tenant_id, email, phone, contact_id, client_id)
     counts = {t: len(ids) for t, ids in found["ids"].items() if ids}
     caveat = ("Found by email/phone only. Names or details typed into free-text notes, chat "
@@ -165,10 +202,18 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     op_id = str(op["id"])
 
     if kind == "dsr_access":
-        async with tenant_tx(ctx) as conn:
-            data = await _access_bundle(conn, ctx.tenant_id, found["ids"])
-            await _finish_operation(conn, op_id, state="succeeded", result={"matches": counts},
-                                    receipt={"matches": counts, "caveat": caveat})
+        try:
+            async with tenant_tx(ctx) as conn:
+                data = await _access_bundle(conn, ctx.tenant_id, found["ids"])
+                await _finish_operation(conn, op_id, state="succeeded", result={"matches": counts},
+                                        receipt={"matches": counts, "caveat": caveat})
+        except Exception as exc:
+            # Fail closed (29.8): no partial answer is handed over as complete,
+            # and the operation does not stay 'running'.
+            async with tenant_tx(ctx) as conn:
+                await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
+                                        error=f"access bundle incomplete: {type(exc).__name__}")
+            raise
         await _audit(ctx, "privacy.subject.access", target=op_id, metadata={"matches": counts})
         return {"operation_id": op_id, "kind": kind, "matches": counts, "records": data, "caveat": caveat}
 
@@ -231,14 +276,26 @@ async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> dict[s
 
 
 async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str, Any]:
-    """The person's records, readable. Encrypted contact fields decrypted."""
+    """The person's records, readable. Encrypted contact fields decrypted.
+
+    Complete or nothing (external audit 29.8): every table discovery found
+    rows in is returned, in full. It used to cap each table at 5,000 rows,
+    answer a failed query with no rows, skip encrypted contacts and calls
+    when the key was missing, and count but never return the dependent tables
+    (intake sessions, lead events, call intents, ...). Each of those now
+    raises, and the request fails instead of handing over a partial answer."""
     import os
 
     from crypto import derive_tenant_key
+    from privacy_lifecycle import LifecycleError
 
     out: dict[str, Any] = {}
     key = derive_tenant_key(tenant_id, os.environ["ORACLE_ENCRYPTION_MASTER_KEY"]) \
         if os.getenv("ORACLE_ENCRYPTION_MASTER_KEY") else None
+    if not key and (ids.get("agent_contacts") or ids.get("inbound_voice_calls")
+                    or any(ids.get(t) for t in _sealed_generic_tables())):
+        raise LifecycleError("The encryption key is unavailable, so this person's encrypted records "
+                             "cannot be opened. Nothing was returned.", status_code=503)
     queries = {
         "clients": "SELECT id, full_name, email, phone, company, notes, preferences, created_at FROM clients",
         # 0152 (A01): a body is sealed at rest; opened below, never silently dropped.
@@ -253,11 +310,8 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
     }
     for table, sql in queries.items():
         if ids.get(table):
-            try:
-                rows = await conn.fetch(sql + " WHERE tenant_id=$1 AND id = ANY($2::uuid[]) LIMIT 5000",
-                                        tenant_id, ids[table])
-            except Exception:  # noqa: BLE001 - a column renamed must not hide the rest
-                rows = []
+            rows = await conn.fetch(sql + " WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                                    tenant_id, ids[table])
             if table in ("sms_messages", "email_outbox"):
                 import sealed_text
 
@@ -278,4 +332,46 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
             "pgp_sym_decrypt(summary_ciphertext, $3) END AS summary FROM inbound_voice_calls "
             "WHERE tenant_id=$1 AND id = ANY($2::uuid[])", tenant_id, ids["inbound_voice_calls"], key)
         out["inbound_voice_calls"] = [json.loads(json.dumps(dict(r), default=str)) for r in rows]
+    for table, table_ids in ids.items():
+        if table_ids and table not in out:
+            out[table] = await _generic_rows(conn, tenant_id, table, table_ids, key)
+    missing = sorted(t for t, table_ids in ids.items() if table_ids and t not in out)
+    if missing:  # defensive: never answer as complete without them
+        raise LifecycleError(f"Records were found in {', '.join(missing)} but could not be returned.",
+                             status_code=500)
     return out
+
+
+def _sealed_generic_tables() -> list[str]:
+    from privacy_export import DECRYPT
+
+    return [t for t in DECRYPT if t not in ("agent_contacts", "inbound_voice_calls", "sms_messages", "email_outbox")]
+
+
+async def _generic_rows(conn, tenant_id: str, table: str, table_ids: list, key: Optional[str]) -> list[dict]:
+    """Every column of the person's rows in a table discovery found, as the
+    brokerage export writes them: sealed columns opened (privacy_export.DECRYPT),
+    hashes, secrets and raw ciphertext left out (privacy_export._omit)."""
+    from privacy_export import DECRYPT, _default, _omit, _q
+
+    cols = await conn.fetch(
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
+        "WHERE a.attrelid = to_regclass('public.' || quote_ident($1)) AND a.attnum > 0 "
+        "AND NOT a.attisdropped ORDER BY a.attnum", table)
+    if not cols:
+        raise RuntimeError(f"no columns for {table}")
+    decrypt = DECRYPT.get(table, {})
+    select = []
+    for c in cols:
+        name, dtype = c["attname"], c["t"]
+        if name in decrypt:
+            select.append(f"CASE WHEN {_q(name)} IS NULL THEN NULL ELSE "
+                          f"pgp_sym_decrypt({_q(name)}, $3) END AS {_q(decrypt[name])}")
+        elif not _omit(name, dtype):
+            select.append(_q(name))
+    sql = f"SELECT {', '.join(select)} FROM public.{_q(table)} WHERE tenant_id=$1 AND id = ANY($2::uuid[])"
+    args: list[Any] = [tenant_id, table_ids]
+    if any(c["attname"] in decrypt for c in cols):
+        args.append(key)
+    rows = await conn.fetch(sql, *args)
+    return [json.loads(json.dumps(dict(r), default=_default)) for r in rows]
