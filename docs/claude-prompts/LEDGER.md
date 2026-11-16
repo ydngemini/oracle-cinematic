@@ -4419,13 +4419,14 @@ id: L19-15
 status: tests_pass
 env: local
 evidence_shas: [8894bbf]   # base; fix in the commit that adds this row
-files: [.github/workflows/ci.yml, backend/tests/test_ci_lists_every_live_test.py]
+files: [.github/workflows/ci.yml, backend/tests/test_ci_lists_every_live_test.py, backend/tests/test_audit_fallback_drain_live.py, backend/tests/test_subject_restore_directive_live.py]
 tests_run:
   - {cmd: "diff the live job's typed file list (ci.yml:263) against backend/tests/test_*_live.py at 8894bbf", result: "56 listed, 64 present: 8 never ran in CI (departing_agent_routes, dsar_subject_truth, operator_otp_lockout, outbox_sender_access, subject_restore_directive, suspended_agent_line, voice_frequency_claim, voice_pull_access) — all privacy/voice/auth regressions from L03-15..L17-37; they skip everywhere else because only that job sets ORACLE_LIVE_DB_ADMIN_DSN", date: 2026-11-16}
   - {cmd: "pytest tests/test_ci_lists_every_live_test.py against 8894bbf's ci.yml, then with the glob", result: "red (the 8 named) -> 2 passed", date: 2026-11-16}
 authz_checked: n/a (CI configuration)
 blockers:
-  - "First CI run of the glob: 135 passed incl. all 8; test_audit_fallback_drain_live failed only because the glob runs it early, on an empty audit chain (no predecessor row) -> the test now starts the verifier from the genesis anchor, as the verifier itself does."
+  - "CI run 43976510419 (4de1715): live step 136 passed, 0 skipped. First run of the glob: 135 passed incl. all 8; test_audit_fallback_drain_live failed only because the glob runs it early, on an empty audit chain (no predecessor row) -> the test now starts the verifier from the genesis anchor, as the verifier itself does."
+  - "test_subject_restore_directive_live picked its entry by listing order (random op ids), flaky once the glob runs it: now picks by directive key. Independent review: APPROVE."
   - "Not deployed (C4.4)."
 audit_refs: [35-07]
 decision_refs: []
