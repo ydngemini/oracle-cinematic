@@ -1,4 +1,5 @@
 import asyncio
+import re
 import json
 import logging
 import os
@@ -1288,6 +1289,47 @@ def _payload_coordinate(payload, names, minimum, maximum):
     return None
 
 
+#: The shared workflow engine is ambient: it has no caller, and its records
+#: come from the FIRST connecting user's own scope (real_leads.fetch_real_records),
+#: so they can include that user's private-client leads. Its record frames —
+#: DATA_PULLED (investor offer, as-is value), TRANSCRIPT_LINE (owner name),
+#: LEGAL_PACKAGE (contract price), PREDICTIVE_CACHE (property list) — must never
+#: reach every member (owner decision 2026-11-16: offer figures and owner
+#: content are never tenant-wide). An allowlist, so a new frame type is not
+#: broadcast until someone decides it carries no record content.
+ENGINE_TENANT_WIDE_FRAMES = frozenset({"STATUS_UPDATE", "STAGE_PROPERTY"})
+#: STATUS_UPDATE text is free-form (the regional scout's carries a parcel id and
+#: motivation score), so only the engine's fixed, content-free messages pass.
+_ENGINE_STATUS_ALLOWED = re.compile(
+    r"^(WORKFLOW ENGINE — (initializing pipeline|all agents online|pipeline shutdown complete"
+    r"|no real leads to seed \(graph empty\)|seeded \d+ real parcels into graph)"
+    r"|AGENT ANALYST — scoring novelty across graph)$")
+
+
+def engine_frame_is_tenant_wide(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("type")
+    if kind == "STAGE_PROPERTY":
+        return set(payload) == {"type"}
+    if kind == "STATUS_UPDATE":
+        return set(payload) == {"type", "agent"} and isinstance(payload["agent"], str) \
+            and bool(_ENGINE_STATUS_ALLOWED.match(payload["agent"]))
+    return False
+
+
+def make_engine_publisher(tenant_id: str):
+    """The shared workflow engine's ONLY tenant-wide publisher: record frames
+    (offers, owner names, contract prices, scout parcel ids) never pass."""
+    async def publish(payload: dict) -> None:
+        if engine_frame_is_tenant_wide(payload):
+            await ws_hub.deliver_local(tenant_id, payload)
+        else:
+            logger.debug("Workflow-engine frame %s not delivered tenant-wide (record content)",
+                         payload.get("type") if isinstance(payload, dict) else type(payload).__name__)
+    return publish
+
+
 @app.websocket("/ws/voice-telemetry/{session_id}")
 async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     """Private session stream; identity and session tenancy are checked pre-upgrade."""
@@ -1445,9 +1487,10 @@ async def websocket_endpoint(websocket: WebSocket):
     voice_agent = QwenVoiceAgent(websocket=websocket)
 
     # Shared across this tenant's sockets on this replica. The engine publishes
-    # through ws_hub, so it needs no socket of its own.
-    async def _publish_to_tenant(payload: dict) -> None:
-        await ws_hub.deliver_local(tenant_id, payload)
+    # through ws_hub, so it needs no socket of its own. Only frames with no
+    # record content reach every socket (audit 27.3; owner decision
+    # 2026-11-16): see make_engine_publisher.
+    _publish_to_tenant = make_engine_publisher(tenant_id)
 
     engine = await tenant_engines.acquire(
         tenant_id,
