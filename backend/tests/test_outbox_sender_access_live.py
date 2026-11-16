@@ -33,14 +33,21 @@ def test_the_outbox_sender_must_still_reach_the_client():
         "deactivated, own client (command-worker semantics)": True,
         "unknown sender (require_member)": False,
         "broker owner": True,
+        "sender stored in another case": True,
+        "sender stored as users.id": True,
+        "queue-time: member": True,
+        "queue-time: member, another case": True,
+        "queue-time: no users row (operator/demo)": False,
     }
 
 
 async def _scenario() -> dict[str, bool]:
     import asyncpg
 
+    import crm
     from commands_api import requester_may_contact_record
     from db import connection
+    from tenancy import Role, TenantContext
 
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=2)
@@ -67,6 +74,19 @@ async def _scenario() -> dict[str, bool]:
                 cid, tenant, f"Client {who}", agent[who], f"{who}-{tag}@client.test")
 
         out["own client"] = await may("a", client_a, require_member=True)
+        # find_member matches case-insensitively and by users.id (review of #87).
+        out["sender stored in another case"] = await requester_may_contact_record(
+            tenant, agent["a"].upper(), str(client_a), None, require_member=True)
+        out["sender stored as users.id"] = await requester_may_contact_record(
+            tenant, str(users["a"]), str(client_a), None, require_member=True)
+
+        def as_ctx(agent_id: str) -> TenantContext:
+            return TenantContext(agent_id=agent_id, tenant_id=tenant, role=Role.AGENT)
+
+        out["queue-time: member"] = await crm.sender_is_active_member(as_ctx(agent["b"]))
+        out["queue-time: member, another case"] = await crm.sender_is_active_member(as_ctx(agent["b"].upper()))
+        out["queue-time: no users row (operator/demo)"] = await crm.sender_is_active_member(
+            as_ctx(f"operator-{tag}@outbox.test"))
         out["colleague's private client"] = await may("a", client_b, require_member=True)
 
         await admin.execute("UPDATE clients SET assignee_id=$2 WHERE id=$1", client_a, agent["b"])

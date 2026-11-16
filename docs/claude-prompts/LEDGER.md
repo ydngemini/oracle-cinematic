@@ -1715,13 +1715,13 @@ id: L09-12
 status: tests_pass
 env: local
 evidence_shas: [8541081]   # base; fix in the commit that adds this row
-files: [backend/email_outbox.py, backend/commands_api.py, backend/tests/test_email_outbox.py, backend/tests/test_outbox_sender_access_live.py]
+files: [backend/email_outbox.py, backend/commands_api.py, backend/crm.py, backend/tests/test_crm_workflows.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_email_outbox.py, backend/tests/test_outbox_sender_access_live.py]
 tests_run:
   - {cmd: "read email_outbox.deliver at 8541081", result: "rechecks billing, suppression and footer, then sends as the stored created_by with no check that they may still contact client_id (the command worker makes that check: _requester_may_contact)", date: 2026-11-16}
   - {cmd: "new unit tests against 8541081's email_outbox.py", result: "3 failed (red)", date: 2026-11-16}
   - {cmd: "after: outbox/billing/commercial/crm/commands unit suites", result: "93 passed, 2 skipped", date: 2026-11-16}
   - {cmd: "live PostgreSQL: test_outbox_sender_access_live + outbox-touching live suites", result: "10/10 cases as expected (own true; colleague, reassigned, share revoked, view-only, deactivated, unknown false; owner true); 15 passed. test_sealed_text_two_live fails identically on unchanged main locally (dev-DB rows sealed under another key); CI live job green on main", date: 2026-11-16}
-authz_checked: "Before any send: commands_api.requester_may_contact_record(created_by, client_id, require_member=True) — checked as the sender in their CURRENT role via app_linked_access(need_edit); a sender who is no longer an active member is refused. Refusal is final ('failed', like an opt-out); an unreadable check re-queues and the job retries. The command worker keeps its semantics (system pipelines are non-members) through the same helper."
+authz_checked: "Before any send: commands_api.requester_may_contact_record(created_by, client_id, require_member=True) — checked as the sender in their CURRENT role via app_linked_access(need_edit); a sender who is no longer an active member is refused. Refusal is final ('failed', like an opt-out); an unreadable check re-queues and the job retries. The command worker keeps its semantics (system pipelines are non-members) through the same helper. Queue time (independent review of #87): crm.send_message refuses an outbound email from an identity with no active users row (environment operator, demo logins) with 409, instead of a \"queued\" email that can never go out. Live test pins case-insensitive and users.id sender matching (15 cases)."
 blockers:
   - {type: owner, note: "The command worker's check (_requester_may_contact) still treats a deactivated human requester as 'an agent with that id', so their own former clients pass (shown by the live test). System pipelines (speed-to-lead) are also non-members, so the two need a marker before require_member can apply there. Decide: mark pipeline requesters, then refuse non-members."}
   - "26.1/26.3/26.4/26.5 need one canonical contact-authorization service (chunk 26 prioritisation): owner design decision; 26.5 needs counsel-approved rules."
