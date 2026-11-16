@@ -664,25 +664,44 @@ async def read_voice_telemetry(
     limit: int = Query(default=100, ge=1, le=250),
     ctx: TenantContext = Depends(require_context),
 ):
-    """REST recovery feed for browsers whose voice socket is offline."""
+    """REST recovery feed for browsers whose voice socket is offline.
+
+    Call content (transcript, offer, MAO) is readable only by the call record's
+    audience — or, for a pool / erased-client / unlinked call, by the member
+    who created it (record_access.may_read_call_content; owner decision
+    2026-11-16). Anyone else gets 404, as if the session did not exist."""
+    async def allowed(candidate) -> bool:
+        return ctx.is_platform_admin or await record_access.may_read_call_content(
+            ctx.tenant_id, candidate, ctx.agent_id)
+
+    # Which sessions the caller can see (their row-level security) ...
     async with tenant_tx(ctx) as conn:
         if session_id is None:
-            session_id = await conn.fetchval(
+            visible = [row["id"] for row in await conn.fetch(
                 """
                 SELECT id FROM live_call_sessions
                  WHERE transcript_status IN ('pending','active')
                  ORDER BY created_at DESC
-                 LIMIT 1
+                 LIMIT 50
                 """
-            )
+            )]
+        else:
+            visible = [session_id] if await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)", session_id) else []
+    # ... and, outside that transaction (never two pool connections at once),
+    # whose content they may read.
+    chosen = None
+    for candidate in visible:
+        if await allowed(candidate):
+            chosen = candidate
+            break
+    if chosen is None:
         if session_id is None:
             return {"session_id": None, "events": [], "next_event_id": after_event_id}
-        session_exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)",
-            session_id,
-        )
-        if not session_exists:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+    session_id = chosen
+
+    async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
             SELECT id,event_type,transcript_excerpt,counter_offer,arv,rehab,mao,

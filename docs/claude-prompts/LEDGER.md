@@ -691,13 +691,34 @@ tests_run:
 authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose copy is unchanged (27.5 open)."
 blockers:
   - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
-  - {type: owner, note: "OPEN, pull paths (privacy review of PR #77): the per-session voice socket (server.py voice_telemetry_websocket) and GET /api/voice/telemetry admit anyone who can read the call under RLS. For a pool lead, or a lead whose client was erased (seller_client_id NULL, readable by every member under 0151), any member can read the transcript, counter offer, MAO and objection draft; with no session_id the REST feed returns the latest active session. Not a broadcast, but a tenant-wide transcript audience: needs the same caller-only rule for call content."}
+  - "Pull paths (voice-session socket, GET /api/voice/telemetry): addressed by L03-15."
   - "OPEN, 27.3 (pre-existing): the workflow engine sends DATA_PULLED (investorOffer, as-is value, owner name) and contract prices to every socket of the tenant on that replica via deliver_local (server.py, workflow_engine.py), seeded from the first connecting user's own record scope; tests/test_realtime_fanout_scope.py TENANT_WIDE mislabels it as public-record candidates."
   - "Resolved by owner decision 2026-11-16: an erased/deleted private client's lead (ON DELETE SET NULL -> pool) no longer exposes call content; sensitive frames fail closed to the caller."
   - "Not deployed (C4.4)."
 audit_refs: [27.1, 27.4]
 decision_refs: []
 next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice plus at_capacity and idle limits."
+updated: 2026-11-16
+```
+
+#### L03-15 Live-call content over the PULL paths follows the record too: voice socket and REST feed fail closed (privacy review of PR #77; owner decision 2026-11-16)
+```yaml
+id: L03-15
+status: tests_pass
+env: local
+evidence_shas: [49c07e9]   # base (PR #77 merged); fix in the commit that adds this row
+files: [backend/record_access.py, backend/voice_intel.py, backend/server.py, backend/tests/test_voice_pull_access_live.py, backend/tests/test_inline_platform_admin_checks.py]
+tests_run:
+  - {cmd: "read server.voice_telemetry_websocket and voice_intel.read_voice_telemetry at 49c07e9", result: "both admitted anyone who could read the call under RLS: for a pool lead, or a lead whose client was erased (readable by every member under 0151), any member read the transcript, counter offer, MAO and objection draft; with no session_id the REST feed returned the latest active call", date: 2026-11-16}
+  - {cmd: "live PG (FORCE RLS, app role): test_call_content_pull_paths_fail_closed_live + socket-ordering check, against 49c07e9's voice_intel/server", result: "red: 2 failed (broker owner read a pool call)", date: 2026-11-16}
+  - {cmd: "after: live 2 passed (private call -> owner + assignee, colleague 404; pool call -> creator only; erased-client call -> creator only; latest-active never hands out a pool call the caller did not make; missing session -> no one); 20 audience-related live tests passed; unit 89 passed", result: "pass", date: 2026-11-16}
+authz_checked: "record_access.may_read_call_content: the call record's audience (client/contact, else the lead's seller client); no specific audience -> the call's creator only; missing -> no one. Checked outside the caller's transaction (no nested pool connections) and before any snapshot; a refusal is indistinguishable from a missing session (404 / 4404). Platform admin keeps read (classified WIDER_VIEW)."
+blockers:
+  - "Not deployed (C4.4)."
+  - "27.3 (workflow engine DATA_PULLED tenant-wide) still open."
+audit_refs: [27.1, 27.4]
+decision_refs: []
+next_task: "27.3: scope the workflow engine's DATA_PULLED / contract frames by the lead's audience."
 updated: 2026-11-16
 ```
 
