@@ -3717,21 +3717,24 @@ next_task: "28.3: operator session epoch/jti revocation checked at admission and
 updated: 2026-11-16
 ```
 
-#### L17-35 An offboarded agent's number stops answering: parked when the successor has their own, and inbound calls and texts route only to active agents (external audit 22.5)
+#### L17-35 An offboarded agent's number stops answering: parked (inactive, verification cleared) when the successor has their own; offboarding only while the brokerage is active (external audit 22.5)
 ```yaml
 id: L17-35
 status: tests_pass
 env: local
 evidence_shas: [1569501]   # base; fix in the commit that adds this row
-files: [backend/privacy_lifecycle.py, backend/inbound_voice.py, backend/messaging_data.py, backend/tests/test_departing_agent_routes_live.py, oracle-app/src/components/OffboardMemberForm.jsx, oracle-app/src/components/OffboardMemberForm.test.jsx]
+files: [backend/privacy_lifecycle.py, backend/tests/test_departing_agent_routes_live.py, oracle-app/src/components/OffboardMemberForm.jsx, oracle-app/src/components/OffboardMemberForm.test.jsx]
 tests_run:
   - {cmd: "read privacy_lifecycle._hand_over_routes, inbound_voice.resolve_inbound_route, messaging_data.resolve_messaging_route_by_number at 1569501", result: "confirmed: when the successor already has a route, the departing route only lost its forwarding and stayed active under the deactivated agent (messaging route untouched); neither inbound resolver checks that the route's agent is active", date: 2026-11-16}
-  - {cmd: "live PostgreSQL: test_departing_agent_routes_live against 1569501's three modules", result: "red: an inactive agent's active route still resolved for calls", date: 2026-11-16}
-  - {cmd: "after: live test_departing_agent_routes_live + test_privacy_lifecycle_live; unit test_inbound_voice; vitest OffboardMemberForm; eslint", result: "live 2 passed (inactive agent: no call or text route; reactivated: answers again; offboarding A to B who has a number: preview says parked and changes nothing, then A's telephony and messaging routes inactive, agent_id kept, neither resolves; B untouched); unit 28 passed; vitest 5 passed; eslint clean", date: 2026-11-16}
-authz_checked: "unchanged roles: offboarding is owner-only with password; inbound resolution runs in the platform context and now also requires users.is_active for the route's agent (same tenant, case-insensitive agent_id)."
+  - {cmd: "first fix (fbaf254) also added a users.is_active check to both inbound resolvers; independent review: REQUEST CHANGES", result: "that check also silenced a SUSPENDED agent's line, which suspend_member deliberately keeps answering (calls hung up, texts 204 and never logged); the UI promised 'reassign or release', which no owner tool does; a parked row kept voice_caller_id_verified, and the verified-number index spans inactive rows, so the number could never be verified again; offboarding during a closure + withdraw_closure re-activated the parked route. -> inbound check removed (owner decision below), verification cleared on park, copy says it is not released, offboarding refused unless the brokerage is active", date: 2026-11-16}
+  - {cmd: "after: live test_departing_agent_routes_live + test_privacy_lifecycle_live; unit test_inbound_voice; vitest OffboardMemberForm; eslint", result: "live 2 passed (offboarding refused while the brokerage is suspended; preview says parked and changes nothing; then A's telephony + messaging routes inactive, verification cleared, agent_id kept, neither resolves for calls or texts; B untouched); vitest 5 passed; eslint clean. Red against 1569501 (first version of the test): an active route of an inactive agent still resolved", date: 2026-11-16}
+authz_checked: "unchanged roles: offboarding is owner-only with password; the new lifecycle guard reads the caller's own tenant row."
 blockers:
-  - {type: owner, note: "A parked number is not released at the carrier (still billed) and not given to anyone: the owner reassigns or releases it. Calls to it get the unknown-route answer; a STOP to it is still recorded (resolve_opt_out_owners_by_number)."}
-  - "A route whose agent has no users row (legacy/system data) no longer answers inbound. resolve_inbound_call_route (status callbacks of a call already in progress) is deliberately unchanged."
+  - {type: owner, note: "Inbound routing still does not check that the route's agent is active (the audit's second half). Suspension deliberately keeps the line answering (AI intake); a check would hang up on clients and drop their texts unlogged. Decide: should a suspended agent's line keep answering? If not, add the check with a visible notice."}
+  - {type: owner, note: "A parked number is not released at the carrier (still billed) and no owner tool moves another agent's route (only PUT /routes/me): it needs Neoh support today."}
+  - "A call in progress when the route is parked loses its status callbacks (resolve_inbound_call_route filters r.active), so its completion is not recorded."
+  - "Reinstating an offboarded agent (/reinstate) leaves their routes parked, with no UI to turn them back on."
+  - "withdraw_closure re-activating users who were deactivated before the closure is an existing, separate bug."
   - "Privacy/customer-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
 audit_refs: [22.5]
 decision_refs: []

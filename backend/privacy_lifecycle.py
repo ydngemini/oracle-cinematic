@@ -398,6 +398,11 @@ async def offboard_agent(ctx: TenantContext, *, departing_agent_id: str, success
 
     try:
         async with tenant_tx(ctx) as conn:
+            # Only an active brokerage: a closure's freeze list would otherwise
+            # bring a parked route back on withdrawal (review of 22.5).
+            state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", ctx.tenant_id)
+            if state != "active":
+                raise LifecycleError(f"The brokerage is {state}; offboard agents while it is active.")
             plan = await _offboard_in_tx(conn, ctx, departing, successor, reason)
             if preview:
                 raise _Preview(plan)
@@ -504,10 +509,12 @@ async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: s
 async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str) -> str:
     """Move the departing agent's number to the successor, or, when the
     successor already has their own (one route per agent), park it: inactive,
-    forwarding cleared, and the departing agent's messaging route inactive
-    too (external audit 22.5). It used to stay active under the deactivated
-    agent, still answering calls and texts. A parked number is not released:
-    the owner reassigns or releases it."""
+    forwarding cleared, its caller-ID verification cleared (the verified-number
+    index spans inactive rows, so a kept flag would block anyone verifying that
+    number again), and the departing agent's messaging route inactive too
+    (external audit 22.5). It used to stay active under the deactivated agent,
+    still answering calls and texts. A parked number is not released at the
+    carrier, and the product has no owner tool to move it yet."""
     mine = await conn.fetchrow(
         "SELECT id FROM telephony_routes WHERE tenant_id=$1 AND lower(agent_id)=lower($2)",
         tenant_id, departing)
@@ -527,7 +534,8 @@ async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str
         return "moved_to_successor"
     await conn.execute(
         "UPDATE telephony_routes SET active=false, agent_forward_e164=NULL, forward_on_request=false, "
-        "forward_when_ai_unavailable=false, updated_at=now() WHERE id=$1", mine["id"])
+        "forward_when_ai_unavailable=false, voice_caller_id_verified=false, "
+        "outbound_verification_status='unverified', updated_at=now() WHERE id=$1", mine["id"])
     await conn.execute(
         "UPDATE messaging_routes SET active=false, updated_at=now() "
         "WHERE tenant_id=$1 AND lower(agent_id)=lower($2)", tenant_id, departing)

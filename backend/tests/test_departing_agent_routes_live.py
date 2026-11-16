@@ -3,8 +3,7 @@ real PostgreSQL.
 
 When the successor already had their own route, offboarding only cleared the
 departing route's forwarding: the number stayed active under the deactivated
-agent, still taking calls and texts and filing leads. Inbound routing never
-checked that the route's agent was still active either.
+agent, still taking calls and texts and filing leads.
 
 Skipped unless ORACLE_LIVE_DB_ADMIN_DSN is set (see test_privacy_lifecycle_live).
 """
@@ -21,9 +20,18 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-def test_a_departing_agents_number_is_parked_and_inactive_agents_get_no_inbound(monkeypatch):
+def test_a_departing_agents_number_is_parked(monkeypatch):
     monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "d" * 64)
     asyncio.run(_scenario())
+
+
+async def _set_state(admin, tenant, state):
+    # The lifecycle trigger reserves transitions for the platform; bypassed for setup.
+    await admin.execute("SET session_replication_role = replica")
+    try:
+        await admin.execute("UPDATE tenants SET lifecycle_state=$2 WHERE id=$1", tenant, state)
+    finally:
+        await admin.execute("SET session_replication_role = origin")
 
 
 def _did() -> str:
@@ -76,14 +84,16 @@ async def _scenario():
         # Both agents active: both numbers answer.
         assert (await call_route(a))["agent_id"] == a and (await text_route(a))["agent_id"] == a
 
-        # An inactive agent's still-active route answers nothing.
-        await admin.execute("UPDATE users SET is_active=false WHERE tenant_id=$1 AND agent_id=$2", T, b)
-        assert await call_route(b) is None and await text_route(b) is None
-        await admin.execute("UPDATE users SET is_active=true WHERE tenant_id=$1 AND agent_id=$2", T, b)
-        assert (await call_route(b))["agent_id"] == b
+        # Offboarding is refused while the brokerage is not active (a closure's
+        # freeze list would bring a parked route back on withdrawal).
+        octx = TenantContext(agent_id=owner, tenant_id=T, role=Role.BROKER_OWNER)
+        await _set_state(admin, T, "suspended")
+        with pytest.raises(pl.LifecycleError, match="suspended"):
+            await pl.offboard_agent(octx, departing_agent_id=a, successor_agent_id=b,
+                                    reason="leaving", preview=True)
+        await _set_state(admin, T, "active")
 
         # Offboard A to B, who has their own number: A's is parked, not left live.
-        octx = TenantContext(agent_id=owner, tenant_id=T, role=Role.BROKER_OWNER)
         preview = await pl.offboard_agent(octx, departing_agent_id=a, successor_agent_id=b,
                                           reason="leaving", preview=True)
         assert preview["telephony"] == "parked_successor_has_own_route"
@@ -91,8 +101,11 @@ async def _scenario():
         done = await pl.offboard_agent(octx, departing_agent_id=a, successor_agent_id=b,
                                        reason="leaving", preview=False)
         assert done["telephony"] == "parked_successor_has_own_route"
-        row = await admin.fetchrow("SELECT active, agent_id FROM telephony_routes WHERE id=$1", routes[a]["id"])
+        row = await admin.fetchrow("SELECT active, agent_id, voice_caller_id_verified, outbound_verification_status "
+                                   "FROM telephony_routes WHERE id=$1", routes[a]["id"])
         assert row["active"] is False and row["agent_id"] == a
+        # verification cleared: the verified-number index spans inactive rows
+        assert row["voice_caller_id_verified"] is False and row["outbound_verification_status"] == "unverified"
         assert await admin.fetchval("SELECT active FROM messaging_routes WHERE tenant_id=$1 AND agent_id=$2",
                                     T, a) is False
         assert await call_route(a) is None and await text_route(a) is None

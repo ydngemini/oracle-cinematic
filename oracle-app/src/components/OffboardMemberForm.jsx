@@ -76,7 +76,7 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
               <p className={styles.text}>
                 Cancels unsent work: {summarise(plan.cancel_pending) || 'none'}.
                 {plan.telephony === 'moved_to_successor' && ' Their business number moves to the new owner.'}
-                {plan.telephony === 'parked_successor_has_own_route' && ' The new owner already has a number, so theirs stops taking calls and texts until you reassign or release it.'}
+                {plan.telephony === 'parked_successor_has_own_route' && ' The new owner already has a number, so theirs stops taking calls and texts. It is not released; ask Neoh support to move or release it.'}
               </p>
               <p className={styles.dim}>Notes, messages and history they wrote keep their name.</p>
               {(plan.warnings || []).map((w) => <p key={w} className={styles.dim}>{w}</p>)}

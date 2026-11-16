@@ -50,7 +50,7 @@ describe('OffboardMemberForm', () => {
     fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'left' } });
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
     const plan = await screen.findByTestId('offboard-plan');
-    expect(plan.textContent).toMatch('stops taking calls and texts until you reassign or release it');
+    expect(plan.textContent).toMatch('stops taking calls and texts. It is not released');
   });
 
   it('offers only active colleagues as successors, never the person leaving', () => {
