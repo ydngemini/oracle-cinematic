@@ -44,6 +44,15 @@ describe('OffboardMemberForm', () => {
       preview: false, password: 'pw-pw-pw-pw' });
   });
 
+  it('says the number is parked when the successor already has one (audit 22.5)', async () => {
+    api.crmPost.mockResolvedValueOnce({ ...PLAN, telephony: 'parked_successor_has_own_route' });
+    render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'left' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    const plan = await screen.findByTestId('offboard-plan');
+    expect(plan.textContent).toMatch('stops taking calls and texts. It is not released');
+  });
+
   it('offers only active colleagues as successors, never the person leaving', () => {
     render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={() => {}} onCancel={() => {}} />);
     const options = [...screen.getByLabelText(/Hand their open work/).options].map((o) => o.value);
