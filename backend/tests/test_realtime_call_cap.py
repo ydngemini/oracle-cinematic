@@ -39,11 +39,23 @@ def _state(tenant=TENANT):
 
 
 @pytest.mark.parametrize("value,expected", [
-    (None, 20), ("", 20), ("5", 5), ("0", 0), ("-3", 20), ("many", 20), (" 7 ", 7),
+    (None, 5), ("", 5), ("5", 5), ("20", 20), ("-3", 5), ("many", 5), (" 7 ", 7),
 ])
 def test_cap_setting_parses_and_falls_back(monkeypatch, value, expected):
+    """Pilot default 5 (owner 2026-11-16); 20 stays configurable."""
     if value is not None:
         monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", value)
+    assert commands_api._realtime_call_cap() == expected
+
+
+@pytest.mark.parametrize("is_dev, expected", [(True, 0), (False, 5)])
+def test_no_cap_is_refused_outside_dev(monkeypatch, is_dev, expected):
+    """0 means unlimited only in dev: production can never be made unlimited
+    by a typo or a copied dev setting."""
+    import config
+
+    monkeypatch.setattr(config, "IS_DEV", is_dev)
+    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "0")
     assert commands_api._realtime_call_cap() == expected
 
 
@@ -57,7 +69,10 @@ def test_slots_stop_at_the_cap_and_come_back_on_release(monkeypatch):
     assert commands_api._acquire_realtime_slot(TENANT)
 
 
-def test_zero_means_no_cap(monkeypatch):
+def test_zero_means_no_cap_in_dev(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "IS_DEV", True)
     monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "0")
     assert all(commands_api._acquire_realtime_slot(TENANT) for _ in range(100))
 

@@ -2391,22 +2391,40 @@ async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
     return None
 
 
-#: Open realtime bridges per brokerage in this process (T09.10). Each holds a
+#: Open realtime bridges per brokerage in THIS PROCESS (T09.10). Each holds a
 #: hosted realtime model session billed to the brokerage for the whole call.
+#: Per process only: N replicas or workers allow N x cap. This is NOT a global,
+#: cluster-wide limit and must not be described as one.
 _REALTIME_ACTIVE: dict[str, int] = {}
-_REALTIME_CAP_DEFAULT = 20  # one brokerage = 20 agent seats
+#: Owner decision 2026-11-16: the five-agent pilot gets 5 concurrent calls per
+#: brokerage; 20 (one per seat) stays a configurable future limit pending real
+#: capacity testing.
+_REALTIME_CAP_DEFAULT = 5
 _REALTIME_CAP_ENV = "ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE"
 
 
 def _realtime_call_cap() -> int:
-    """Concurrent realtime calls one brokerage may hold open; 0 = no cap. A
-    missing, malformed or negative setting falls back to the default."""
+    """Concurrent realtime calls one brokerage may hold open in this process.
+
+    A missing, malformed or negative setting falls back to the default. 0
+    ("no cap") is honoured only in a dev environment (config.IS_DEV): anywhere
+    else it falls back to the default, so a typo or a copied dev setting can
+    never make production unlimited."""
     raw = os.getenv(_REALTIME_CAP_ENV, "").strip()
     try:
         value = int(raw) if raw else _REALTIME_CAP_DEFAULT
     except ValueError:
         return _REALTIME_CAP_DEFAULT
-    return value if value >= 0 else _REALTIME_CAP_DEFAULT
+    if value < 0:
+        return _REALTIME_CAP_DEFAULT
+    if value == 0:
+        import config
+
+        if not config.IS_DEV:
+            logger.warning("%s=0 (no cap) is refused outside dev; using %d",
+                           _REALTIME_CAP_ENV, _REALTIME_CAP_DEFAULT)
+            return _REALTIME_CAP_DEFAULT
+    return value
 
 
 def _acquire_realtime_slot(tenant_id: str) -> bool:
