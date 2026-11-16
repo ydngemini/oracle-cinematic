@@ -303,6 +303,12 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
         "ids": {t: [str(i) for i in ids] for t, ids in found["ids"].items() if ids},
         "tombstones": sorted(contact_hmac(ctx.tenant_id, c) for c in found["identifiers"]),
     }
+    # Contract PDFs live in the vault, referenced only by these rows, which the
+    # deletion cascades away: collect their keys first (review of 29.8b).
+    async with tenant_tx(ctx) as conn:
+        vault_keys = [r[0] for r in await conn.fetch(
+            "SELECT s3_key FROM contract_synthesis_artifacts WHERE tenant_id=$1 AND id = ANY($2::uuid[]) "
+            "AND s3_key IS NOT NULL", ctx.tenant_id, found["ids"].get("contract_synthesis_artifacts") or [])]
     key = await asyncio.to_thread(_write_subject_directive, op_id, directive)
     if key is None:
         async with tenant_tx(ctx) as conn:
@@ -324,6 +330,7 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     # Only a committed directive is ever re-applied (review): a pending one
     # may belong to a deletion that never happened.
     committed = await asyncio.to_thread(_write_subject_directive, op_id, {**directive, "state": "committed"})
+    files_deleted, files_left = (await asyncio.to_thread(_delete_vault_objects, vault_keys)) if vault_keys else (0, 0)
     kept_unlinked = {t: len(found["ids"].get(t) or []) for t in _KEPT_UNLINKED if found["ids"].get(t)}
     removed_with_client = {t: len(found["ids"].get(t) or []) for t in _CLIENT_CHILDREN if found["ids"].get(t)}
     receipt = {"operation_id": op_id, "deleted": deleted, "opt_out_kept_as_keyed_hash": True,
@@ -331,6 +338,10 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
                # Said, not hidden: drafts and approvals that named the person
                # stay as the brokerage's action records, no longer linked.
                "kept_unlinked": kept_unlinked,
+               **({"contract_files": {"deleted": files_deleted, "not_deleted": files_left,
+                                      **({"note": "These encrypted contract files could not be removed from "
+                                                  "the contract vault; Neoh support must delete them."}
+                                         if files_left else {})}} if vault_keys else {}),
                "caveat": caveat, "restore_directive": key,
                "restore_directive_state": "committed" if committed else "pending_review",
                "backups": ("Copies remain in encrypted database backups for up to 7 days. If one is "
@@ -383,6 +394,28 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
             deleted[table] = int(await conn.fetchval(
                 "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
     return deleted
+
+
+def _delete_vault_objects(keys: list[str]) -> tuple[int, int]:
+    """(deleted, not deleted) for contract PDFs in the vault. Never raises:
+    the receipt reports what is left."""
+    import logging
+
+    try:
+        from contract_vault import SovereignVault as ContractVault
+
+        vault = ContractVault()
+    except Exception:  # noqa: BLE001 - vault not configured: everything is left, and said
+        logging.getLogger(__name__).warning("contract vault unavailable; %d file(s) left", len(keys))
+        return 0, len(keys)
+    deleted = left = 0
+    for k in keys:
+        try:
+            vault.s3_client.delete_object(Bucket=vault.bucket_name, Key=k)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            left += 1
+    return deleted, left
 
 
 SUBJECT_DIRECTIVES = "privacy/subject-erasure-directives/"
