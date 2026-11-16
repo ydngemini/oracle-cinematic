@@ -2221,7 +2221,7 @@ async def call_telemetry(
     # members who may read that record receive them (C3.6, 0145).
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
                                   contact_id=call["contact_id"], lead_id=call["lead_id"],
-                                  actor=ctx.agent_id)
+                                  actor=ctx.agent_id, sensitive=True)
     return frame
 
 
@@ -2278,7 +2278,7 @@ async def record_call_consent(
     }
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
                                   contact_id=call["contact_id"], lead_id=call["lead_id"],
-                                  actor=ctx.agent_id)
+                                  actor=ctx.agent_id, sensitive=True)
     return frame
 
 

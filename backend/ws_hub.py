@@ -538,6 +538,7 @@ async def broadcast_record(
     actor: Optional[str] = None,
     only: Optional[list[str]] = None,
     mirror: bool = True,
+    sensitive: bool = False,
 ) -> int:
     """Deliver a frame that carries a client's or contact's content (a call,
     a text, a note) only to the members who may read that record (CONTRACT
@@ -553,7 +554,13 @@ async def broadcast_record(
     may still read the client). If the audience cannot be computed, the frame
     goes only to `actor` — the user whose request produced it, who has just
     been authorized for the record — and otherwise to nobody (fail closed).
-    The platform firehose gets a full copy unless mirror=False."""
+    The platform firehose gets a full copy unless mirror=False.
+
+    `sensitive=True` (live-call transcript, counter offer, MAO): such a frame
+    is NEVER delivered to the whole brokerage. Where the audience is "every
+    member" (a pool client or lead — including a lead whose private client
+    was deleted or erased, ON DELETE SET NULL) it goes only to `actor`, the
+    member handling the call (owner decision 2026-11-16, audit 27.1/27.4)."""
     import record_access
 
     try:
@@ -566,9 +573,12 @@ async def broadcast_record(
                        type(exc).__name__, payload.get("type"))
         audience = [actor] if actor else []
     if audience is None:
-        if only is None and mirror:
+        if sensitive and only is None:
+            recipients = [actor] if actor else []
+        elif only is None and mirror:
             return await broadcast(tenant_id, payload)
-        recipients = list(only) if only is not None else None
+        else:
+            recipients = list(only) if only is not None else None
     elif only is None:
         recipients = audience
     else:

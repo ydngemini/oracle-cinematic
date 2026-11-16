@@ -257,7 +257,8 @@ async def _broadcast_voice(
     own stream, whose sockets were admitted under RLS for this session
     (server.voice_telemetry_websocket)."""
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=client_id,
-                                  contact_id=contact_id, lead_id=lead_id, actor=ctx.agent_id)
+                                  contact_id=contact_id, lead_id=lead_id, actor=ctx.agent_id,
+                                  sensitive=True)
     await ws_hub.broadcast_group(voice_session_group(ctx.tenant_id, session_id), frame)
 
 
@@ -927,8 +928,10 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 content_key,
             )
 
-        # The note's summary is the house's content: a client's house's goes
-        # only to whoever may read that client (0151), a prospect's to all.
+        # The note's summary and price adjustment are the house's content: a
+        # client's house's goes only to whoever may read that client (0151);
+        # a prospect's (pool) goes to the agent who recorded it, never to the
+        # whole brokerage (sensitive: owner decision 2026-11-16).
         reached = await ws_hub.broadcast_record(
             job.ctx.tenant_id,
             {
@@ -940,7 +943,7 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 # Why there is no extraction, when the AI budget stopped it.
                 "extraction_code": budget_code,
             },
-            lead_id=job.lead_id, actor=job.ctx.agent_id,
+            lead_id=job.lead_id, actor=job.ctx.agent_id, sensitive=True,
         )
         logger.info(
             "Voice note logged: lead=%s sentiment=%r broadcast→%d socket(s)",

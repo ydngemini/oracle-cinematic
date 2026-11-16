@@ -144,7 +144,7 @@ def test_call_telemetry_stores_no_card(monkeypatch):
     class _Conn:
         async def fetchrow(self, query, *args):
             if "FROM live_call_sessions" in query:
-                return {"consent_recorded": True, "client_id": None, "contact_id": None}
+                return {"consent_recorded": True, "client_id": None, "contact_id": None, "lead_id": None}
             assert "INSERT INTO negotiation_events" in query
             inserts.append(args)
             return {"id": 7, "created_at": NOW}

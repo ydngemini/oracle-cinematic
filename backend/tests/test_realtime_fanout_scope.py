@@ -172,8 +172,8 @@ CALL_CONTENT_FRAMES = ("VOICE_", "NEGOTIATION_TELEMETRY", "CALL_CONSENT", "CALL_
 def test_every_call_content_broadcast_names_its_lead():
     """By frame type, across the whole backend (review of PR #77): any
     function that builds a call-content frame and sends it with
-    broadcast_record must pass the lead, so a new site cannot fall back to the
-    whole brokerage for a lead-only call."""
+    broadcast_record must pass the lead AND sensitive=True, so no site can fall
+    back to the whole brokerage (owner decision 2026-11-16)."""
     offenders = []
     for path in sorted(BACKEND.rglob("*.py")):
         rel = path.relative_to(BACKEND).as_posix()
@@ -190,7 +190,10 @@ def test_every_call_content_broadcast_names_its_lead():
                 continue
             for node in ast.walk(fn):
                 if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "broadcast_record":
-                    if "lead_id" not in {k.arg for k in node.keywords}:
+                    keywords = {k.arg: k.value for k in node.keywords}
+                    sensitive = keywords.get("sensitive")
+                    if "lead_id" not in keywords or not (isinstance(sensitive, ast.Constant)
+                                                         and sensitive.value is True):
                         offenders.append(f"{rel}:{node.lineno} {fn.name} ({frames[0]})")
     assert not offenders, offenders
 
@@ -217,6 +220,40 @@ def test_a_lead_only_voice_frame_never_reaches_the_whole_brokerage(hub, monkeypa
     assert asked == [(None, None, "lead-private")]
     assert socks["agent-a"].frames == [frame]
     assert socks["agent-b"].frames == [] and socks["anon"].frames == [] and socks["owner"].frames == []
+
+
+@pytest.mark.parametrize("audience, actor, expected", [
+    (None, "agent-a@x.test", {"agent-a"}),          # pool / erased client's lead: the caller only
+    (None, None, set()),                            # pool and no actor: nobody, never everyone
+    ([], "agent-a@x.test", set()),                  # missing or foreign lead: nobody
+    (["agent-b@x.test"], "agent-a@x.test", {"agent-b"}),  # a private record: exactly its audience
+])
+def test_a_sensitive_call_frame_never_reaches_the_whole_brokerage(hub, monkeypatch, audience, actor, expected):
+    """Owner decision 2026-11-16: transcript / offer frames are never
+    broadcast tenant-wide, whatever the record's pool status."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return audience
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, lead_id="lead-1", actor=actor, sensitive=True))
+    got = {name for name in ("owner", "agent-a", "agent-b", "anon") if socks[name].frames}
+    assert got == expected
+
+
+def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
+    """Not a regression for ordinary pool frames (assignment notices etc.)."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return None
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, {"type": "DOSSIER_MOVED"}, lead_id="pool", actor="agent-a@x.test"))
+    assert all(socks[n].frames for n in ("owner", "agent-a", "agent-b", "anon"))
 
 # ── the hub ────────────────────────────────────────────────────────────────
 
