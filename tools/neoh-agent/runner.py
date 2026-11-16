@@ -11,7 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+# The cycle's worktree. The supervisor runs THIS file from its own read-only
+# checkout and names the worktree in NEOH_WORKTREE, so nothing an agent edits
+# in the worktree can change the guard that confines it.
+ROOT = Path(os.environ.get("NEOH_WORKTREE") or Path(__file__).resolve().parents[2]).resolve()
 PROMPTS = ROOT / "docs" / "claude-prompts"
 READ = ["Read", "Glob", "Grep"]
 BLOCKED = ["Bash", "WebFetch", "WebSearch", "NotebookEdit", "mcp__*"]
@@ -82,8 +85,23 @@ def write_path_allowed(raw: str) -> bool:
         "docs/claude-prompts/README.md",
     }:
         return False
-    if relative.parts[0] in {".claude", "tools"}:
+    if relative.parts[0] in {".claude", "tools", "infra", ".github"}:
         return False
+    if relative.as_posix().startswith(("backend/db/migrations/", "docs/noah/", "owner-context/")):
+        return False
+    # Queue mode: the supervisor narrows writes to the phase's allowed paths
+    # (TESTING: the regression test only; IMPLEMENTING: the item's scope).
+    allowed = os.environ.get("NEOH_ALLOWED_PATHS")
+    if allowed is not None:
+        try:
+            scope = json.loads(allowed)
+        except ValueError:
+            return False
+        posix = relative.as_posix()
+        if not isinstance(scope, list) or not any(
+                isinstance(entry, str) and (posix == entry or (entry.endswith("/") and posix.startswith(entry)))
+                for entry in scope):
+            return False
     return True
 
 

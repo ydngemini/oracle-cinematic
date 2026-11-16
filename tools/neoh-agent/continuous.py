@@ -373,6 +373,10 @@ def main() -> None:
     parser.add_argument("--max-cycles", type=int, default=0, help="0 means run indefinitely")
     parser.add_argument("--min-free-gib", type=float, default=0.5)
     parser.add_argument("--push", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--canary", action="store_true",
+                        help="Run exactly one queue cycle, then exit (owner-approved canary only)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Select from the queue and print the decision; no claim, spend or model")
     args = parser.parse_args()
     if args.category == "auto" and args.task:
         parser.error("To supply --task, also specify --category.")
@@ -390,7 +394,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_shutdown)
     signal.signal(signal.SIGTERM, on_shutdown)
     try:
-        raise SystemExit(supervise(args))
+        # Queue-only (owner decision 3, 2026-11-16). The legacy ledger loop
+        # `supervise` above is kept for reference and is not reachable here.
+        import queue_supervisor
+
+        if args.dry_run:
+            raise SystemExit(queue_supervisor.dry_run(args))
+        raise SystemExit(queue_supervisor.supervise_queue(args))
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         print(f"[continuous] stopped safely: {error}", file=sys.stderr)
         raise SystemExit(2) from error
