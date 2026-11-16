@@ -323,6 +323,26 @@ decision_refs: [D-2026-10-12-01]
 next_task: "A reviewer runs `node scripts/build-all-pages-matrix.mjs --verdicts` in oracle-app/, reviews the ready_for_review pages, enters verdicts in all-pages-verdicts.json and runs `npm run pages:matrix`. Needs-attention and not-crawled pages need a fresh crawl first."
 updated: 2026-11-16
 ```
+
+#### L02-12 The sales work queue never shows an older search's results over a newer one (external audit 33.4; Noah NQ-01, corrected)
+```yaml
+id: L02-12
+status: tests_pass
+env: local
+evidence_shas: [5723117]   # base; Noah canary cycle-1794808375-2 + interactive correction
+files: [oracle-app/src/components/SalesAgentPage.jsx, oracle-app/src/components/SalesAgentPage.test.jsx]
+tests_run:
+  - {cmd: "Noah canary (queue item NQ-01, $0.2971): regression test red on 5723117, then green; full frontend tests, lint, build green in the verify sandbox", result: "REVIEW_REQUIRED; review: changes requested (heading markup changed only to satisfy the test)", date: 2026-11-16}
+  - {cmd: "correction: heading markup reverted, test queries scoped by role; vitest SalesAgentPage.test.jsx", result: "1 passed; red (1 failed) against 5723117's component", date: 2026-11-16}
+  - {cmd: "npm test; npm run lint; npm run build", result: "104 files / 1082 tests passed; lint clean; build ok", date: 2026-11-16}
+authz_checked: n/a (client-side ordering of one read; no API change)
+blockers:
+  - "Independent review of the corrected diff, then merge and validation on main, before NQ-01 is CLOSED."
+audit_refs: [33.4]
+decision_refs: []
+next_task: "33.2 CommsTab thread race (NQ-02) after its owner privacy review."
+updated: 2026-11-16
+```
 New exported `verdictQueue(rows)` and a read-only `--verdicts` flag split the pages into recorded, ready for review (clean crawl, no writes on open, not legacy), needs attention, not crawled and legacy. It writes no file; the generated matrix is unchanged. The Playwright and crawl work for AC02.04, AC02.05 and AC02.08 is still owed.
 
 ### L03
