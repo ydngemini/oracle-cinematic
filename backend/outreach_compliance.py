@@ -555,9 +555,14 @@ async def guard_outreach(
     async with _conn_or_tx(ctx, conn) as c:
         row = await ConsentLedger.gather_state(c, norm, channel, _tombstone_hash(ctx.tenant_id, norm))
 
+    import voice_opt_out  # a spoken STOP still being written counts as suppressed (23.5)
+
+    suppressed = bool(row["suppressed"]) or (
+        channel in (Channel.SMS, Channel.VOICE)
+        and voice_opt_out.pending_opt_out(ctx.tenant_id, normalize_contact(contact, Channel.VOICE)))
     decision = evaluate(
         channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
-        suppressed=bool(row["suppressed"]), has_consent=bool(row["has_consent"]),
+        suppressed=suppressed, has_consent=bool(row["has_consent"]),
         has_written_consent=bool(row["has_written_consent"]),
         has_voiceprint_consent=bool(row["vp_consent"]) if is_voice else False,
         recent_voice_attempts=int(row["recent_voice"]) if is_voice else 0,

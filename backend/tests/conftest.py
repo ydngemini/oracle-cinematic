@@ -65,6 +65,18 @@ class _NoNetworkSMTP:
 
 
 @pytest.fixture(autouse=True)
+def _private_opt_out_spool(monkeypatch, tmp_path):
+    """Every test gets its own spoken-STOP spool (audit 23.5): a test that
+    calls voice_opt_out.honour() must never write the real default path
+    (independent review of PR #84 found test numbers committed there)."""
+    import voice_opt_out
+
+    monkeypatch.setattr(voice_opt_out, "SPOOL_PATH", tmp_path / "outbound.opt-out-spool.jsonl")
+    monkeypatch.setattr(voice_opt_out, "_PENDING", set())
+    monkeypatch.setattr(voice_opt_out, "_SPOOL_SEEN", (None, None))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_email(monkeypatch):
     import smtplib
 

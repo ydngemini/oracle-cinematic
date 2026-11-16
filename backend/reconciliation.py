@@ -179,6 +179,13 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
         return out
     out["commands"] = await _reconcile_commands(only_tenant)
     out["purchases"] = await _reconcile_purchases(only_tenant)
+    import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)
+
+    try:
+        # Only reaches STOPs spooled in THIS container (per-container spool).
+        out["outbound_opt_outs"] = await voice_opt_out.replay_spool()
+    except OSError as exc:
+        out["outbound_opt_outs"] = f"spool unavailable: {type(exc).__name__}"
     return out
 
 

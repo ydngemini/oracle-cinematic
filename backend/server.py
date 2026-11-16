@@ -155,6 +155,13 @@ async def lifespan(app: FastAPI):
             await close_pool()
             raise RuntimeError("Production database initialization failed") from e
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
+    # Spoken STOPs this container still owes (23.5 / 34.5). In EVERY process
+    # role: the media websockets — and so the spool — live in the web/api
+    # role, which does not run background work. Needs no database; never
+    # raises.
+    import voice_opt_out
+
+    voice_opt_out.resume_pending()
     if config.RUNS_BACKGROUND_WORK:
         await start_voice_workers()
         await start_reconstruction_workers()
