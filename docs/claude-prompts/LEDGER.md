@@ -3811,7 +3811,7 @@ tests_run:
   - {cmd: "after: live test_departing_agent_routes_live + test_privacy_lifecycle_live; unit test_inbound_voice; vitest OffboardMemberForm; eslint", result: "live 2 passed (offboarding refused while the brokerage is suspended; preview says parked and changes nothing; then A's telephony + messaging routes inactive, verification cleared, agent_id kept, neither resolves for calls or texts; B untouched); vitest 5 passed; eslint clean. Red against 1569501 (first version of the test): an active route of an inactive agent still resolved", date: 2026-11-16}
 authz_checked: "unchanged roles: offboarding is owner-only with password; the new lifecycle guard reads the caller's own tenant row."
 blockers:
-  - {type: owner, note: "Inbound routing still does not check that the route's agent is active (the audit's second half). Suspension deliberately keeps the line answering (AI intake); a check would hang up on clients and drop their texts unlogged. Decide: should a suspended agent's line keep answering? If not, add the check with a visible notice."}
+  - "DECIDED (D-2026-11-16-01): suspension silences the line; inbound routing now checks the agent is active (L17-37)."
   - {type: owner, note: "A parked number is not released at the carrier (still billed) and no owner tool moves another agent's route (only PUT /routes/me): it needs Neoh support today."}
   - "A call in progress when the route is parked loses its status callbacks (resolve_inbound_call_route filters r.active), so its completion is not recorded."
   - "Reinstating an offboarded agent (/reinstate) leaves their routes parked, with no UI to turn them back on."
@@ -3863,7 +3863,8 @@ tests_run:
 authz_checked: "inbound resolution runs in the platform context, whose users RLS policy admits platform admins; the check matches the route's tenant and agent_id case-insensitively on users.is_active."
 blockers:
   - "What a caller and texter get: a call hears the existing 'cannot be connected' message and ends; a text is acknowledged to the carrier (204) and not logged, so it is not recoverable later. Revisit if clients of suspended agents need an answering message (D-2026-11-16-01 'Revisit when')."
-  - "Seat-limit deactivation and closure also set users.is_active=false, so those lines go silent too (closure already deactivated routes)."
+  - "users.is_active is set false only by suspend, offboard and closure sign-out (the seat limit removes no one, 0161); reinstate and closure withdrawal set it back. A reinstate refused by the seat trigger shows the owner an error."
+  - "A call already in progress when the agent is suspended can still be handed to their cell (resolve_forward_target and resolve_inbound_call_route are unchanged)."
   - "A route whose agent has no users row (legacy/system data) no longer answers. resolve_inbound_call_route (callbacks of a call already in progress) is unchanged."
   - "Customer-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
 audit_refs: [22.5]
