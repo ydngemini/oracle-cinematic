@@ -48,15 +48,21 @@ def test_cap_setting_parses_and_falls_back(monkeypatch, value, expected):
     assert commands_api._realtime_call_cap() == expected
 
 
-@pytest.mark.parametrize("is_dev, expected", [(True, 0), (False, 5)])
-def test_no_cap_is_refused_outside_dev(monkeypatch, is_dev, expected):
-    """0 means unlimited only in dev: production can never be made unlimited
-    by a typo or a copied dev setting."""
+@pytest.mark.parametrize("raw, is_dev, expected, warns", [
+    ("0", True, 0, False), ("0", False, 5, True),
+    ("1000000000", False, 20, True), ("5_000", False, 20, True), ("21", False, 20, True),
+    ("20", False, 20, False), ("1000000000", True, 1000000000, False),
+])
+def test_production_can_never_be_unlimited(monkeypatch, caplog, raw, is_dev, expected, warns):
+    """Outside dev: 0 falls back to 5 and anything above 20 is clamped to 20,
+    with a warning each time (independent review of PR #76)."""
     import config
 
     monkeypatch.setattr(config, "IS_DEV", is_dev)
-    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "0")
+    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", raw)
+    caplog.set_level("WARNING")
     assert commands_api._realtime_call_cap() == expected
+    assert ("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE" in caplog.text) is warns
 
 
 def test_slots_stop_at_the_cap_and_come_back_on_release(monkeypatch):

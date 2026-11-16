@@ -1577,7 +1577,7 @@ updated: 2026-11-13
 id: L09-10
 status: tests_pass
 env: local
-evidence_shas: [d27bac3]   # base; salvaged from Noah cycle 4ff352f (auto/neoh-09-20261112T094938Z-3804d8)
+evidence_shas: [d27bac3, fe57522, 0c2f986, 9325e61]   # base; salvage of Noah cycle 4ff352f; ACS + leak fix; pilot cap; the ceiling commit adds this note
 files: [backend/commands_api.py, backend/tests/test_realtime_call_cap.py]
 tests_run:
   - {cmd: "pytest tests/test_realtime_call_cap.py tests/test_ai_budget_hosted_calls.py + plivo/twilio/elevenlabs/qwen realtime suites (fakes; no provider call)", result: "204 passed", date: 2026-11-16}
@@ -1587,7 +1587,7 @@ authz_checked: "Unknown brokerage is refused before the cap (commands_api._realt
 blockers:
   - "PER PROCESS ONLY, not a global cap: N replicas or workers allow N x cap. A cluster-wide counter is required before more than one process serves calls."
   - "Concurrency only. Not a per-call reservation, settlement or wall-clock cap: audit 34.2/23.6 stay open."
-  - "Default cap 5 per brokerage (owner decision 2026-11-16, five-agent pilot); 20 stays configurable via ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE pending real capacity testing. 0 (no cap) is honoured only when config.IS_DEV; elsewhere it falls back to 5."
+  - "Default cap 5 per brokerage (owner decision 2026-11-16, five-agent pilot); 20 stays configurable via ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE pending real capacity testing. 0 (no cap) is honoured only when config.IS_DEV; elsewhere it falls back to 5, and any value above 20 is clamped to 20 (with a warning), so production cannot be made unlimited."
   - "Open (not closed by this row): per-call duration/idle limits (23.6), live usage metering, per-call reservation and settlement (34.2)."
   - "Not deployed (C4.4)."
 audit_refs: [34.2, 23.6]

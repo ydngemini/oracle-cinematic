@@ -2400,16 +2400,21 @@ _REALTIME_ACTIVE: dict[str, int] = {}
 #: brokerage; 20 (one per seat) stays a configurable future limit pending real
 #: capacity testing.
 _REALTIME_CAP_DEFAULT = 5
+#: Outside dev the cap is clamped to this ceiling (one call per seat of a
+#: 20-seat brokerage), so no setting can make production effectively
+#: unlimited; raising it needs a code change backed by capacity testing.
+_REALTIME_CAP_CEILING = 20
 _REALTIME_CAP_ENV = "ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE"
 
 
 def _realtime_call_cap() -> int:
     """Concurrent realtime calls one brokerage may hold open in this process.
 
-    A missing, malformed or negative setting falls back to the default. 0
-    ("no cap") is honoured only in a dev environment (config.IS_DEV): anywhere
-    else it falls back to the default, so a typo or a copied dev setting can
-    never make production unlimited."""
+    A missing, malformed or negative setting falls back to the default (5).
+    Outside a dev environment (config.IS_DEV) 0 ("no cap") falls back to the
+    default and anything above the ceiling (20) is clamped to it, each with a
+    warning: neither a typo, a copied dev setting nor a huge number makes
+    production unlimited. In dev, 0 means no cap and no ceiling applies."""
     raw = os.getenv(_REALTIME_CAP_ENV, "").strip()
     try:
         value = int(raw) if raw else _REALTIME_CAP_DEFAULT
@@ -2417,13 +2422,18 @@ def _realtime_call_cap() -> int:
         return _REALTIME_CAP_DEFAULT
     if value < 0:
         return _REALTIME_CAP_DEFAULT
-    if value == 0:
-        import config
+    import config
 
-        if not config.IS_DEV:
-            logger.warning("%s=0 (no cap) is refused outside dev; using %d",
-                           _REALTIME_CAP_ENV, _REALTIME_CAP_DEFAULT)
-            return _REALTIME_CAP_DEFAULT
+    if config.IS_DEV:
+        return value
+    if value == 0:
+        logger.warning("%s=0 (no cap) is refused outside dev; using %d",
+                       _REALTIME_CAP_ENV, _REALTIME_CAP_DEFAULT)
+        return _REALTIME_CAP_DEFAULT
+    if value > _REALTIME_CAP_CEILING:
+        logger.warning("%s=%d exceeds the %d ceiling outside dev; using %d",
+                       _REALTIME_CAP_ENV, value, _REALTIME_CAP_CEILING, _REALTIME_CAP_CEILING)
+        return _REALTIME_CAP_CEILING
     return value
 
 
