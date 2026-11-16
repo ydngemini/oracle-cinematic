@@ -278,3 +278,132 @@ def test_spoken_opt_out_rule_is_unchanged(speech, expected):
     import inbound_voice
 
     assert inbound_voice._requested_opt_out([{"role": "caller", "text": speech}]) is expected
+
+
+# ── 26.7: a logged voice attempt is one atomic claim ─────────────────────────
+class _ClaimConn:
+    recent_voice = 2
+
+    def __init__(self, log):
+        self.log = log
+        self.args = {}
+
+    async def execute(self, sql, *args):
+        kind = ("lock" if "pg_advisory_xact_lock" in sql else
+                "insert" if "INSERT INTO outreach_attempt_log" in sql else sql)
+        self.log.append(kind)
+        self.args[kind] = args
+
+    async def fetchrow(self, sql, *args):
+        self.log.append("count")
+        self.args["count"] = args
+        return {"suppressed": False, "has_consent": True, "has_written_consent": True,
+                "vp_consent": False, "recent_voice": self.recent_voice}
+
+
+def _claim_env(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import outreach_compliance
+    from tenancy import Role, TenantContext
+
+    events: list = []
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        events.append("begin")
+        conn = _ClaimConn(events)
+        events.append(conn)
+        yield conn
+        events.append("commit")
+
+    monkeypatch.setattr(outreach_compliance, "tenant_tx", tx)
+    ctx = TenantContext(agent_id="a@x.test", tenant_id="00000000-0000-0000-0000-0000000000aa",
+                        role=Role.AGENT)
+    return asyncio, outreach_compliance, ctx, events
+
+
+def _steps(events):
+    return [e for e in events if isinstance(e, str)]
+
+
+def _conn(events):
+    return next(e for e in events if isinstance(e, _ClaimConn))
+
+
+def test_a_logged_voice_attempt_counts_and_claims_under_one_lock(monkeypatch):
+    """Count, decide and record in ONE transaction behind the per-contact lock,
+    so two callers cannot both read 2/3 and both dial (external audit 26.7)."""
+    asyncio, oc, ctx, events = _claim_env(monkeypatch)
+
+    class CallerConn:  # a caller's open transaction must not host the claim
+        async def fetchrow(self, *a):
+            raise AssertionError("the claim must not run on the caller's connection")
+
+    decision = asyncio.run(oc.guard_outreach(
+        ctx, channel=Channel.VOICE, contact="+13025550142", state_code="DE",
+        now_utc=NOON_ISH_UTC, voice_mode=VoiceMode.AGENT, recording_enabled=False,
+        conn=CallerConn()))
+    assert decision.allowed
+    assert _steps(events) == ["begin", "lock", "count", "insert", "commit"]
+
+
+def test_the_claim_locks_on_the_normalised_number_and_reads_this_brokerage(monkeypatch):
+    """Two formats of one number must contend for ONE lock, and the gate read is
+    filtered to the caller's brokerage (review of the 26.7/26.8 fix)."""
+    asyncio, oc, ctx, events = _claim_env(monkeypatch)
+    asyncio.run(oc.guard_outreach(
+        ctx, channel=Channel.VOICE, contact="(302) 555-0142", state_code="DE",
+        now_utc=NOON_ISH_UTC, voice_mode=VoiceMode.AGENT, recording_enabled=False))
+    conn = _conn(events)
+    assert conn.args["lock"] == (f"outreach-voice:{ctx.tenant_id}:+13025550142",)
+    assert conn.args["count"][-1] == ctx.tenant_id
+
+
+@pytest.mark.parametrize("pending_stop", [False, True])
+def test_a_denied_voice_claim_is_recorded_with_its_reason(monkeypatch, pending_stop):
+    """A full cap, or a spoken STOP still being written (23.5), denies on the
+    claim path and the denial row is written in the same transaction."""
+    asyncio, oc, ctx, events = _claim_env(monkeypatch)
+    import voice_opt_out
+
+    monkeypatch.setattr(_ClaimConn, "recent_voice", 2 if pending_stop else 3)
+    monkeypatch.setattr(voice_opt_out, "pending_opt_out", lambda *_a: pending_stop)
+    decision = asyncio.run(oc.guard_outreach(
+        ctx, channel=Channel.VOICE, contact="+13025550142", state_code="DE",
+        now_utc=NOON_ISH_UTC, voice_mode=VoiceMode.AGENT, recording_enabled=False))
+    assert not decision.allowed
+    assert _steps(events) == ["begin", "lock", "count", "insert", "commit"]
+    *_, allowed, reason = _conn(events).args["insert"]
+    assert allowed is False
+    assert reason == decision.blockers[0]
+    assert ("frequency cap" in reason) is not pending_stop
+
+
+def test_an_unlogged_voice_check_takes_no_lock(monkeypatch):
+    asyncio, oc, ctx, events = _claim_env(monkeypatch)
+    asyncio.run(oc.guard_outreach(
+        ctx, channel=Channel.VOICE, contact="+13025550142", state_code="DE",
+        now_utc=NOON_ISH_UTC, voice_mode=VoiceMode.AGENT, recording_enabled=False, log=False))
+    assert _steps(events) == ["begin", "count", "commit"]
+
+
+# ── 26.8: a voiceprint release is a voice-channel record ─────────────────────
+@pytest.mark.parametrize("channel, contact", [
+    (Channel.SMS, "+13025550142"), (Channel.EMAIL, "a@b.test"), (Channel.VOICE, "a@b.test")])
+def test_a_voiceprint_release_is_refused_off_the_voice_channel(monkeypatch, channel, contact):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import outreach_compliance
+
+    async def never(*a, **k):
+        raise AssertionError("nothing may be stored")
+
+    monkeypatch.setattr(outreach_compliance.ConsentLedger, "record_consent", never)
+    body = ConsentRecord(contact=contact, channel=channel, consent_type="biometric_voiceprint")
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(outreach_compliance.record_consent(body, ctx=None))
+    assert err.value.status_code == 422

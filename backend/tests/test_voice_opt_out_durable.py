@@ -86,7 +86,7 @@ def test_the_outreach_gate_treats_a_pending_stop_as_suppressed(monkeypatch):
     async def no_db(ctx, conn):
         yield None
 
-    async def state(_conn, _norm, _channel, _tomb):
+    async def state(_conn, _norm, _channel, _tomb, **_kw):
         return {"suppressed": False, "has_consent": True, "has_written_consent": True,
                 "vp_consent": True, "recent_voice": 0}
 
@@ -216,7 +216,7 @@ def test_email_through_the_gate_is_unaffected_by_a_pending_phone_stop(monkeypatc
     async def no_db(ctx, conn):
         yield None
 
-    async def state(_conn, _norm, _channel, _tomb):
+    async def state(_conn, _norm, _channel, _tomb, **_kw):
         return {"suppressed": False, "has_consent": True, "has_written_consent": True,
                 "vp_consent": False, "recent_voice": 0}
 
