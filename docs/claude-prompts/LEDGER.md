@@ -675,6 +675,32 @@ next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 
 updated: 2026-10-16
 ```
 
+#### L03-14 Live-call transcript, offer and MAO frames never reach the whole brokerage: lead-scoped, fail-closed (external audit 27.1, 27.4; owner decision 2026-11-16)
+```yaml
+id: L03-14
+status: tests_pass
+env: local
+evidence_shas: [5723117]   # base; fix in the commit that adds this row
+files: [backend/ws_hub.py, backend/voice_intel.py, backend/commands_api.py, backend/record_access.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py]
+tests_run:
+  - {cmd: "read voice_intel._broadcast_voice + its two callers, commands_api.call_telemetry and record_call_consent at 5723117", result: "none passed lead_id: a session opened on a lead (no client/contact) made record_access.linked_audience return None, so ws_hub.broadcast_record fell back to broadcast() — every socket in the brokerage got VOICE_SESSION / VOICE_TELEMETRY (transcript excerpt, counter offer, MAO, objection draft), NEGOTIATION_TELEMETRY and CALL_CONSENT", date: 2026-11-16}
+  - {cmd: "pytest tests/test_realtime_fanout_scope.py -k 'lead_only or pass_the_calls_lead' against 5723117's voice_intel/commands_api", result: "red: 2 failed", date: 2026-11-16}
+  - {cmd: "live PostgreSQL (FORCE RLS, app role): test_a_missing_or_foreign_lead_has_an_empty_audience_not_everyone against 5723117's record_access", result: "red: audience None (everyone) for a lead that does not exist", date: 2026-11-16}
+  - {cmd: "owner decision 2026-11-16: ws_hub.broadcast_record(sensitive=True) — a pool/unresolvable audience goes to the actor only; applied to all six call-content sites (incl. VOICE_NOTE_LOGGED); frame-type scan requires lead_id + sensitive=True", result: "unit 97 passed", date: 2026-11-16}
+  - {cmd: "live PG + real hub: test_sensitive_lead_frames_fail_closed_live (private lead -> owner+assignee; pool lead -> caller only; erased client (ON DELETE SET NULL) -> caller only; deleted lead -> nobody; foreign lead -> nobody; non-sensitive pool frame -> everyone) and the end-to-end scenario (pool client's call -> the member on the call only)", result: "2 passed; red without the sensitive branch (pool content reached owner, a and b)", date: 2026-11-16}
+authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose copy is unchanged (27.5 open)."
+blockers:
+  - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
+  - {type: owner, note: "OPEN, pull paths (privacy review of PR #77): the per-session voice socket (server.py voice_telemetry_websocket) and GET /api/voice/telemetry admit anyone who can read the call under RLS. For a pool lead, or a lead whose client was erased (seller_client_id NULL, readable by every member under 0151), any member can read the transcript, counter offer, MAO and objection draft; with no session_id the REST feed returns the latest active session. Not a broadcast, but a tenant-wide transcript audience: needs the same caller-only rule for call content."}
+  - "OPEN, 27.3 (pre-existing): the workflow engine sends DATA_PULLED (investorOffer, as-is value, owner name) and contract prices to every socket of the tenant on that replica via deliver_local (server.py, workflow_engine.py), seeded from the first connecting user's own record scope; tests/test_realtime_fanout_scope.py TENANT_WIDE mislabels it as public-record candidates."
+  - "Resolved by owner decision 2026-11-16: an erased/deleted private client's lead (ON DELETE SET NULL -> pool) no longer exposes call content; sensitive frames fail closed to the caller."
+  - "Not deployed (C4.4)."
+audit_refs: [27.1, 27.4]
+decision_refs: []
+next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice plus at_capacity and idle limits."
+updated: 2026-11-16
+```
+
 ### L04
 CRM, contacts, leads and relationships.
 

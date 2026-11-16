@@ -136,6 +136,141 @@ def test_a_lead_frame_goes_to_the_lead_audience(hub, monkeypatch):
     assert asked == [(None, None, "private"), (None, None, "prospect")]
 
 
+
+def test_call_and_voice_frames_pass_the_calls_lead():
+    """Audit 27.1: a call opened on a lead with no client/contact sent its
+    transcript, offer and MAO to the WHOLE brokerage because these callers
+    never passed the lead. Every record broadcast in them names lead_id."""
+    import inspect
+    import textwrap
+
+    import commands_api
+    import voice_intel
+
+    for fn, callee in ((commands_api.call_telemetry, "broadcast_record"),
+                       (commands_api.record_call_consent, "broadcast_record"),
+                       (voice_intel._broadcast_voice, "broadcast_record"),
+                       (voice_intel.create_voice_session, "_broadcast_voice"),
+                       (voice_intel.ingest_voice_telemetry, "_broadcast_voice")):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and getattr(node.func, "attr", getattr(node.func, "id", None)) == callee]
+        assert calls, (fn.__name__, callee)
+        for call in calls:
+            value = {k.arg: k.value for k in call.keywords}.get("lead_id")
+            assert value is not None, f"{fn.__name__} drops the call's lead"
+            # The call's OWN lead: `lead_id` or `call["lead_id"]`, never a constant
+            # (a `lead_id=None` regression would silently widen to everyone).
+            source = ast.unparse(value)
+            assert source in {"lead_id", "call['lead_id']", 'call["lead_id"]'}, \
+                f"{fn.__name__} passes lead_id={source}"
+
+
+CALL_CONTENT_FRAMES = ("VOICE_", "NEGOTIATION_TELEMETRY", "CALL_CONSENT", "CALL_TRANSCRIPT")
+
+
+def test_every_call_content_broadcast_names_its_lead():
+    """By frame type, across the whole backend (review of PR #77): any
+    function that builds a call-content frame and sends it with
+    broadcast_record must pass the lead AND sensitive=True, so no site can fall
+    back to the whole brokerage (owner decision 2026-11-16)."""
+    offenders = []
+    for path in sorted(BACKEND.rglob("*.py")):
+        rel = path.relative_to(BACKEND).as_posix()
+        if rel.startswith(("tests/", "scripts/")) or rel == "ws_hub.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            frames = [n.value for n in ast.walk(fn) if isinstance(n, ast.Constant)
+                      and isinstance(n.value, str) and n.value.startswith(CALL_CONTENT_FRAMES)
+                      and n.value.isupper()]
+            if not frames:
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "broadcast_record":
+                    keywords = {k.arg: k.value for k in node.keywords}
+                    sensitive = keywords.get("sensitive")
+                    if "lead_id" not in keywords or not (isinstance(sensitive, ast.Constant)
+                                                         and sensitive.value is True):
+                        offenders.append(f"{rel}:{node.lineno} {fn.name} ({frames[0]})")
+    assert not offenders, offenders
+
+
+def test_a_lead_only_voice_frame_never_reaches_the_whole_brokerage(hub, monkeypatch):
+    """Behaviour of 27.1: a voice frame for a call with neither client nor
+    contact goes to the lead's audience, not to every member."""
+    import record_access
+    import voice_intel
+    from tenancy import Role, TenantContext
+
+    asked = []
+
+    async def audience(tenant_id, client_id, contact_id, lead_id=None):
+        asked.append((client_id, contact_id, lead_id))
+        return ["agent-a@x.test"]
+
+    monkeypatch.setattr(record_access, "linked_audience", audience)
+    tenant, socks = hub
+    ctx = TenantContext(agent_id="agent-a@x.test", tenant_id=tenant, role=Role.AGENT)
+    frame = {"type": "VOICE_TELEMETRY", "transcript_excerpt": "my lowest is 240", "mao": 231000}
+    asyncio.run(voice_intel._broadcast_voice(ctx, "session-1", frame, client_id=None,
+                                             contact_id=None, lead_id="lead-private"))
+    assert asked == [(None, None, "lead-private")]
+    assert socks["agent-a"].frames == [frame]
+    assert socks["agent-b"].frames == [] and socks["anon"].frames == [] and socks["owner"].frames == []
+
+
+@pytest.mark.parametrize("audience, actor, expected", [
+    (None, "agent-a@x.test", {"agent-a"}),          # pool / erased client's lead: the caller only
+    (None, None, set()),                            # pool and no actor: nobody, never everyone
+    ([], "agent-a@x.test", set()),                  # missing or foreign lead: nobody
+    (["agent-b@x.test"], "agent-a@x.test", {"agent-b"}),  # a private record: exactly its audience
+])
+def test_a_sensitive_call_frame_never_reaches_the_whole_brokerage(hub, monkeypatch, audience, actor, expected):
+    """Owner decision 2026-11-16: transcript / offer frames are never
+    broadcast tenant-wide, whatever the record's pool status."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return audience
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, lead_id="lead-1", actor=actor, sensitive=True))
+    got = {name for name in ("owner", "agent-a", "agent-b", "anon") if socks[name].frames}
+    assert got == expected
+
+
+@pytest.mark.parametrize("only, expected", [(["agent-b@x.test", "owner@x.test"], set()),
+                                            (["agent-a@x.test", "agent-b@x.test"], {"agent-a"})])
+def test_a_sensitive_pool_frame_with_only_still_reaches_the_caller_only(hub, monkeypatch, only, expected):
+    """Privacy review of #77: `only` must not widen a sensitive pool frame."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return None
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, lead_id="pool", actor="agent-a@x.test",
+                                        only=only, sensitive=True))
+    assert {n for n in ("owner", "agent-a", "agent-b", "anon") if socks[n].frames} == expected
+
+
+def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
+    """Not a regression for ordinary pool frames (assignment notices etc.)."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return None
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, {"type": "DOSSIER_MOVED"}, lead_id="pool", actor="agent-a@x.test"))
+    assert all(socks[n].frames for n in ("owner", "agent-a", "agent-b", "anon"))
+
 # ── the hub ────────────────────────────────────────────────────────────────
 
 

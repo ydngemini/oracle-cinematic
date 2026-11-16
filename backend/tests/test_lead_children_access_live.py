@@ -338,7 +338,9 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         assert {x.lower() for x in audience} == {agent["owner"], agent["b"], agent["c"]}, audience
         for k in ("pool", "harvest"):
             assert await record_access.linked_audience(tenant, None, None, lead_id=lead[k]) is None, k
-        assert await record_access.linked_audience(tenant, None, None, lead_id=uuid.uuid4()) is None
+        # A lead that does not exist reaches NO ONE, never everyone (audit 27.4,
+        # owner decision 2026-11-16).
+        assert await record_access.linked_audience(tenant, None, None, lead_id=uuid.uuid4()) == []
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

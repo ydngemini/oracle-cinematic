@@ -2216,10 +2216,12 @@ async def call_telemetry(
         "event_id": event["id"],
         **guidance,
     }
-    # The counter offer, ARV and MAO belong to the call's client/contact: only
+    # The counter offer, ARV and MAO belong to the call's client/contact — or
+    # its lead's seller client when it names neither (audit 27.1): only
     # members who may read that record receive them (C3.6, 0145).
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
-                                  contact_id=call["contact_id"], actor=ctx.agent_id)
+                                  contact_id=call["contact_id"], lead_id=call["lead_id"],
+                                  actor=ctx.agent_id, sensitive=True)
     return frame
 
 
@@ -2241,7 +2243,7 @@ async def record_call_consent(
                    transcript_status=CASE WHEN $2 THEN 'active' ELSE 'complete' END,
                    ended_at=CASE WHEN $2 THEN ended_at ELSE COALESCE(ended_at,now()) END
              WHERE id=$1::uuid
-            RETURNING id, client_id, contact_id
+            RETURNING id, client_id, contact_id, lead_id
             """,
             call_session_id,
             body.consent_recorded,
@@ -2275,7 +2277,8 @@ async def record_call_consent(
         "consent_recorded": body.consent_recorded,
     }
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
-                                  contact_id=call["contact_id"], actor=ctx.agent_id)
+                                  contact_id=call["contact_id"], lead_id=call["lead_id"],
+                                  actor=ctx.agent_id, sensitive=True)
     return frame
 
 

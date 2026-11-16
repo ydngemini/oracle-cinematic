@@ -12,7 +12,8 @@ Two halves:
    no provider, no network): agent B's socket does not receive agent A's
    private-client NEGOTIATION_TELEMETRY / CALL_CONSENT / VOICE_TELEMETRY while
    the broker owner's and the view-share holder's do; the same frames about a
-   pool client still reach everyone; the platform-admin firehose gets one
+   pool client reach only the member on the call (owner 2026-11-16); the
+   platform-admin firehose gets one
    full copy of each (owner 2026-10-14), the voice-session stream none.
 """
 
@@ -167,8 +168,11 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
                 assert negotiation["counter_offer"] == 250000 and negotiation["call_session_id"] == calls["a"]
                 assert socks["c"].frames[2]["transcript"]["text"] == "Call me after five."
             else:
-                for who in ("owner", "a", "b", "c"):
-                    assert socks[who].types() == expected, (who, socks[who].types())
+                # A pool client's call: sensitive content goes to the member on
+                # the call only — never the whole brokerage (owner 2026-11-16).
+                assert socks["a"].types() == expected, socks["a"].types()
+                for who in ("owner", "b", "c"):
+                    assert socks[who].frames == [], (who, "received a pool client's call content")
                 assert [f["type"] for f in socks["firehose"].frames] == expected
             assert socks["x"].frames == [], "another brokerage's socket"
 
@@ -215,3 +219,102 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
             await admin.execute("SET session_replication_role = origin")
             await admin.close()
             await connection.close_pool()
+
+
+
+
+
+def test_sensitive_lead_frames_fail_closed_live():
+    """Owner decision 2026-11-16 / audit 27.1, 27.4, against real PostgreSQL
+    (FORCE RLS, app role) and the real hub: a transcript/offer frame about a
+    lead reaches exactly the lead's audience, and NEVER the whole brokerage —
+    pool lead, erased client (ON DELETE SET NULL turns its lead into a pool
+    lead), deleted lead or another brokerage's lead. A non-sensitive frame
+    about a pool lead keeps its pool audience."""
+
+    class Sock:
+        def __init__(self):
+            self.frames = []
+
+        async def send_text(self, text):
+            self.frames.append(json.loads(text))
+
+    async def go():
+        import asyncpg
+
+        import record_access  # noqa: F401  (the hub calls it)
+        import ws_hub
+        from db import connection
+
+        admin = await asyncpg.connect(DSN)
+        await connection.init_pool(min_size=1, max_size=2)
+        tenant, other = str(uuid.uuid4()), str(uuid.uuid4())
+        tag = uuid.uuid4().hex[:8]
+        who = {k: f"{k}-{tag}@lead.test" for k in ("owner", "a", "b", "x")}
+        clients = {k: uuid.uuid4() for k in ("a", "erased")}
+        lead = {k: uuid.uuid4() for k in ("private", "pool", "erased", "deleted", "foreign")}
+        saved = (ws_hub._sockets, ws_hub._user_sockets)
+        ws_hub._sockets, ws_hub._user_sockets = ws_hub.defaultdict(set), ws_hub.defaultdict(set)
+        socks = {k: Sock() for k in who}
+        results = {}
+        try:
+            for t, slug in ((tenant, "ld"), (other, "ld-other")):
+                await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Lead audience test')",
+                                    t, f"{slug}-{t[:8]}")
+            for k, role in (("owner", "broker_owner"), ("a", "agent"), ("b", "agent"), ("x", "agent")):
+                await admin.execute(
+                    "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+                    "VALUES ($1,$2,$3,$4,$3,'scrypt$x$y')", uuid.uuid4(), other if k == "x" else tenant, who[k], role)
+            for k in ("a", "erased"):
+                await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,$3,$4)",
+                                    clients[k], tenant, f"Client {k}", who["a"])
+            insert = ("INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, seller_client_id, "
+                      "address) VALUES ($1,$2,$3,'DE',50,$4,'1 Test Rd')")
+            await admin.execute(insert, lead["private"], tenant, f"LA-{tag}", clients["a"])
+            await admin.execute(insert, lead["pool"], tenant, f"LP-{tag}", None)
+            await admin.execute(insert, lead["erased"], tenant, f"LE-{tag}", clients["erased"])
+            await admin.execute(insert, lead["deleted"], tenant, f"LD-{tag}", clients["a"])
+            await admin.execute(insert, lead["foreign"], other, f"LF-{tag}", None)
+            # The private client is erased (its lead becomes a pool lead) and a lead is deleted.
+            await admin.execute("DELETE FROM clients WHERE id = $1", clients["erased"])
+            assert await admin.fetchval("SELECT seller_client_id FROM leads WHERE id=$1", lead["erased"]) is None
+            await admin.execute("DELETE FROM leads WHERE id = $1", lead["deleted"])
+            for k in ("owner", "a", "b"):
+                ws_hub.register(tenant, socks[k], who[k])
+            ws_hub.register(other, socks["x"], who["x"])
+
+            async def deliver(lead_key, actor, sensitive=True):
+                for s in socks.values():
+                    s.frames.clear()
+                await ws_hub.broadcast_record(tenant, {"type": "NEGOTIATION_TELEMETRY", "mao": 231000},
+                                              lead_id=str(lead[lead_key]), actor=who[actor],
+                                              sensitive=sensitive, mirror=False)
+                return {k for k, s in socks.items() if s.frames}
+
+            results["private"] = await deliver("private", "a")
+            results["pool"] = await deliver("pool", "b")
+            results["erased"] = await deliver("erased", "b")   # not the former assignee
+            results["deleted"] = await deliver("deleted", "a")
+            results["foreign"] = await deliver("foreign", "a")
+            results["pool_non_sensitive"] = await deliver("pool", "b", sensitive=False)
+            return results
+        finally:
+            ws_hub._sockets, ws_hub._user_sockets = saved
+            await admin.execute("SET session_replication_role = replica")
+            try:
+                for t in (tenant, other):
+                    for table in ("leads", "clients", "users"):
+                        await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", t)
+                    await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", t)
+            finally:
+                await admin.execute("SET session_replication_role = origin")
+                await admin.close()
+                await connection.close_pool()
+
+    got = asyncio.run(go())
+    assert got["private"] == {"owner", "a"}, got["private"]          # authorized recipients only
+    assert got["pool"] == {"b"}, got["pool"]                         # the member on the call
+    assert got["erased"] == {"b"}, got["erased"]                     # erased client: the caller only
+    assert got["deleted"] == set(), got["deleted"]                   # deleted lead: nobody
+    assert got["foreign"] == set(), got["foreign"]                   # another brokerage's lead: nobody
+    assert got["pool_non_sensitive"] == {"owner", "a", "b"}          # ordinary pool frames unchanged

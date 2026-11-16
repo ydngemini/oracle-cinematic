@@ -246,14 +246,19 @@ def voice_session_group(tenant_id: str, session_id: str) -> str:
 
 
 async def _broadcast_voice(
-    ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any
+    ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any,
+    lead_id: Any,
 ) -> None:
     """A call's live frames carry what the customer said and the offer math:
     the dashboards of members who may read the call's client/contact (C3.6,
-    0145), and the session's own stream, whose sockets were admitted under
-    RLS for this session (server.voice_telemetry_websocket)."""
+    0145) — or, for a call opened on a lead with neither, of members who may
+    read that lead's seller client (0143/0151); never the whole brokerage
+    just because the call names no client (audit 27.1) — and the session's
+    own stream, whose sockets were admitted under RLS for this session
+    (server.voice_telemetry_websocket)."""
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=client_id,
-                                  contact_id=contact_id, actor=ctx.agent_id)
+                                  contact_id=contact_id, lead_id=lead_id, actor=ctx.agent_id,
+                                  sensitive=True)
     await ws_hub.broadcast_group(voice_session_group(ctx.tenant_id, session_id), frame)
 
 
@@ -484,7 +489,8 @@ async def create_voice_session(
         "started_at": session["started_at"].isoformat(),
         "event_id": consent_event["id"],
     }
-    await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None)
+    await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None,
+                           lead_id=lead_id)
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action="voice_session_created",
@@ -626,7 +632,8 @@ async def ingest_voice_telemetry(
         "requires_agent_approval": True,
     }
     await _broadcast_voice(ctx, str(body.session_id), frame,
-                           client_id=call["client_id"], contact_id=call["contact_id"])
+                           client_id=call["client_id"], contact_id=call["contact_id"],
+                           lead_id=call["lead_id"])
     return frame
 
 
@@ -921,8 +928,10 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 content_key,
             )
 
-        # The note's summary is the house's content: a client's house's goes
-        # only to whoever may read that client (0151), a prospect's to all.
+        # The note's summary and price adjustment are the house's content: a
+        # client's house's goes only to whoever may read that client (0151);
+        # a prospect's (pool) goes to the agent who recorded it, never to the
+        # whole brokerage (sensitive: owner decision 2026-11-16).
         reached = await ws_hub.broadcast_record(
             job.ctx.tenant_id,
             {
@@ -934,7 +943,7 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 # Why there is no extraction, when the AI budget stopped it.
                 "extraction_code": budget_code,
             },
-            lead_id=job.lead_id, actor=job.ctx.agent_id,
+            lead_id=job.lead_id, actor=job.ctx.agent_id, sensitive=True,
         )
         logger.info(
             "Voice note logged: lead=%s sentiment=%r broadcast→%d socket(s)",
