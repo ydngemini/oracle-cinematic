@@ -136,6 +136,53 @@ def test_a_lead_frame_goes_to_the_lead_audience(hub, monkeypatch):
     assert asked == [(None, None, "private"), (None, None, "prospect")]
 
 
+
+def test_call_and_voice_frames_pass_the_calls_lead():
+    """Audit 27.1: a call opened on a lead with no client/contact sent its
+    transcript, offer and MAO to the WHOLE brokerage because these callers
+    never passed the lead. Every record broadcast in them names lead_id."""
+    import inspect
+    import textwrap
+
+    import commands_api
+    import voice_intel
+
+    for fn, callee in ((commands_api.call_telemetry, "broadcast_record"),
+                       (commands_api.record_call_consent, "broadcast_record"),
+                       (voice_intel._broadcast_voice, "broadcast_record"),
+                       (voice_intel.create_voice_session, "_broadcast_voice"),
+                       (voice_intel.ingest_voice_telemetry, "_broadcast_voice")):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and getattr(node.func, "attr", getattr(node.func, "id", None)) == callee]
+        assert calls, (fn.__name__, callee)
+        for call in calls:
+            assert "lead_id" in {k.arg for k in call.keywords}, f"{fn.__name__} drops the call's lead"
+
+
+def test_a_lead_only_voice_frame_never_reaches_the_whole_brokerage(hub, monkeypatch):
+    """Behaviour of 27.1: a voice frame for a call with neither client nor
+    contact goes to the lead's audience, not to every member."""
+    import record_access
+    import voice_intel
+    from tenancy import Role, TenantContext
+
+    asked = []
+
+    async def audience(tenant_id, client_id, contact_id, lead_id=None):
+        asked.append((client_id, contact_id, lead_id))
+        return ["agent-a@x.test"]
+
+    monkeypatch.setattr(record_access, "linked_audience", audience)
+    tenant, socks = hub
+    ctx = TenantContext(agent_id="agent-a@x.test", tenant_id=tenant, role=Role.AGENT)
+    frame = {"type": "VOICE_TELEMETRY", "transcript_excerpt": "my lowest is 240", "mao": 231000}
+    asyncio.run(voice_intel._broadcast_voice(ctx, "session-1", frame, client_id=None,
+                                             contact_id=None, lead_id="lead-private"))
+    assert asked == [(None, None, "lead-private")]
+    assert socks["agent-a"].frames == [frame]
+    assert socks["agent-b"].frames == [] and socks["anon"].frames == [] and socks["owner"].frames == []
+
 # ── the hub ────────────────────────────────────────────────────────────────
 
 

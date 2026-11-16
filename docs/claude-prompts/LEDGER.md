@@ -655,6 +655,28 @@ next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 
 updated: 2026-10-16
 ```
 
+#### L03-14 A call opened on a lead never sends its transcript, offer or MAO to the whole brokerage (external audit 27.1, 27.4)
+```yaml
+id: L03-14
+status: tests_pass
+env: local
+evidence_shas: [5723117]   # base; fix in the commit that adds this row
+files: [backend/voice_intel.py, backend/commands_api.py, backend/record_access.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py]
+tests_run:
+  - {cmd: "read voice_intel._broadcast_voice + its two callers, commands_api.call_telemetry and record_call_consent at 5723117", result: "none passed lead_id: a session opened on a lead (no client/contact) made record_access.linked_audience return None, so ws_hub.broadcast_record fell back to broadcast() — every socket in the brokerage got VOICE_SESSION / VOICE_TELEMETRY (transcript excerpt, counter offer, MAO, objection draft), NEGOTIATION_TELEMETRY and CALL_CONSENT", date: 2026-11-16}
+  - {cmd: "pytest tests/test_realtime_fanout_scope.py -k 'lead_only or pass_the_calls_lead' against 5723117's voice_intel/commands_api", result: "red: 2 failed", date: 2026-11-16}
+  - {cmd: "live PostgreSQL (FORCE RLS, app role): test_a_missing_or_foreign_lead_has_an_empty_audience_not_everyone against 5723117's record_access", result: "red: audience None (everyone) for a lead that does not exist", date: 2026-11-16}
+  - {cmd: "after: test_realtime_fanout_scope.py + voice/ws/record-access unit suites; test_realtime_record_scope_live.py (live PG)", result: "91 passed; live 2 passed", date: 2026-11-16}
+authz_checked: "Lead frames follow the lead's seller client (0143/0151); a real pool lead still reaches every member; a missing or other-brokerage lead reaches no one (empty audience, fail closed)."
+blockers:
+  - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
+  - "Not deployed (C4.4)."
+audit_refs: [27.1, 27.4]
+decision_refs: []
+next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice plus at_capacity and idle limits."
+updated: 2026-11-16
+```
+
 ### L04
 CRM, contacts, leads and relationships.
 

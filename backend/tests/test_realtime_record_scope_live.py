@@ -215,3 +215,61 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
             await admin.execute("SET session_replication_role = origin")
             await admin.close()
             await connection.close_pool()
+
+
+
+
+def test_a_missing_or_foreign_lead_has_an_empty_audience_not_everyone():
+    """Audit 27.4: a frame naming a lead that does not exist (deleted, or
+    another brokerage's) resolved to NULL — every member. It now reaches no
+    one. A real lead with no seller client (the pool) still reaches everyone;
+    a private client's lead reaches that client's audience only."""
+
+    async def go():
+        import asyncpg
+
+        import record_access
+        from db import connection
+
+        admin = await asyncpg.connect(DSN)
+        await connection.init_pool(min_size=1, max_size=2)
+        tenant, other = str(uuid.uuid4()), str(uuid.uuid4())
+        tag = uuid.uuid4().hex[:8]
+        owner, agent_a, agent_b = (f"{k}-{tag}@lead.test" for k in ("owner", "a", "b"))
+        client = uuid.uuid4()
+        pool_lead, private_lead, foreign_lead = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        try:
+            for t, slug in ((tenant, "ld"), (other, "ld-other")):
+                await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Lead audience test')",
+                                    t, f"{slug}-{t[:8]}")
+            for who, role in ((owner, "broker_owner"), (agent_a, "agent"), (agent_b, "agent")):
+                await admin.execute(
+                    "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+                    "VALUES ($1,$2,$3,$4,$3,'scrypt$x$y')", uuid.uuid4(), tenant, who, role)
+            await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,'A',$3)",
+                                client, tenant, agent_a)
+            insert = ("INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, seller_client_id, "
+                      "address) VALUES ($1,$2,$3,'DE',50,$4,'1 Test Rd')")
+            await admin.execute(insert, pool_lead, tenant, f"LP-{tag}", None)
+            await admin.execute(insert, private_lead, tenant, f"LA-{tag}", client)
+            await admin.execute(insert, foreign_lead, other, f"LF-{tag}", None)
+            audience = lambda lead: record_access.linked_audience(tenant, None, None, lead_id=str(lead))  # noqa: E731
+            return (await audience(uuid.uuid4()), await audience(foreign_lead),
+                    await audience(pool_lead), await audience(private_lead), (owner, agent_a, agent_b))
+        finally:
+            await admin.execute("SET session_replication_role = replica")
+            try:
+                for t in (tenant, other):
+                    for table in ("leads", "clients", "users"):
+                        await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", t)
+                    await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", t)
+            finally:
+                await admin.execute("SET session_replication_role = origin")
+                await admin.close()
+                await connection.close_pool()
+
+    missing, foreign, pool, private, (owner, agent_a, agent_b) = asyncio.run(go())
+    assert missing == [], "a lead that does not exist must reach nobody"
+    assert foreign == [], "another brokerage's lead must reach nobody here"
+    assert pool is None, "a real pool lead still reaches the whole brokerage"
+    assert private is not None and agent_a in private and owner in private and agent_b not in private

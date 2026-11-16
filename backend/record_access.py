@@ -183,10 +183,13 @@ async def require_linked_edit(conn, table: str, record_id: str, not_found: str) 
 
 
 _AUDIENCE_SQL = "SELECT app_record_audience($1::uuid, $2::uuid)"
-# A frame about a lead: the audience of the client whose house it is (0143) —
-# NULL (every member) for a harvested prospect or a lead that no longer exists.
-_LEAD_AUDIENCE_SQL = ("SELECT app_record_audience("
-                      "(SELECT l.seller_client_id FROM leads l WHERE l.id = $1::uuid), NULL::uuid)")
+# A frame about a lead: the audience of the client whose house it is (0143);
+# NULL (every member) for a harvested prospect, which is in the brokerage pool.
+# A lead that does not exist — deleted, or not this brokerage's — reaches NO
+# ONE (an empty audience), never everyone (audit 27.4).
+_LEAD_AUDIENCE_SQL = ("SELECT CASE WHEN l.id IS NULL THEN ARRAY[]::text[] "
+                      "ELSE app_record_audience(l.seller_client_id, NULL::uuid) END "
+                      "FROM (SELECT $1::uuid AS wanted) w LEFT JOIN leads l ON l.id = w.wanted")
 
 
 async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any,
