@@ -3891,6 +3891,8 @@ authz_checked: "unchanged: owner-only, tenant_id-filtered under FORCE RLS; gener
 blockers:
   - {type: owner, note: "Drafts and approvals that named the person (command_executions.draft, action_approvals.draft_payload) survive a deletion, unlinked. Deleting or redacting them needs privacy_erase_subject_rows' allow-list extended (a migration) and a decision on keeping outbound-action records. Decide."}
   - "Contract PDFs under contract_documents (clients/{client}/contracts/…) are not linked to clients by foreign key and are not covered here."
+  - "A crash between the deletion commit and the vault deletion orphans that person's contract PDFs (their keys are not stored durably); an artifact created between key collection and the delete is cascaded without its file. Re-review: APPROVE with these as low."
+  - "Legacy S3 backend only: brokerage erasure deletes contract_documents keys from the default bucket even if a row named another s3_bucket."
   - "Access may include third-party details the person's records carry (a calendar draft's other attendees, a co-owner named in a note); the free-text caveat applies."
   - "client_contact_index (keyed hashes only) is not returned; it goes with the client."
   - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
