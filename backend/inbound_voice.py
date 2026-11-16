@@ -247,6 +247,9 @@ async def resolve_inbound_route(
         return None
     if provider not in _SUPPORTED_PROVIDERS:
         return None
+    # A route only answers for an agent who is still active (external audit
+    # 22.5): an offboarded agent's number must not keep taking calls and
+    # filing leads under a deactivated account.
     if provider == "twilio":
         if not provider_account_id or not _ACCOUNT_SID_RE.fullmatch(provider_account_id):
             return None
@@ -262,6 +265,10 @@ async def resolve_inbound_route(
                    AND provider_account_id=$3
                    AND provider=$4
                    AND active
+                   AND EXISTS (SELECT 1 FROM users u
+                                WHERE u.tenant_id = telephony_routes.tenant_id
+                                  AND lower(u.agent_id) = lower(telephony_routes.agent_id)
+                                  AND u.is_active)
                  LIMIT 1
                 """,
                 endpoint_uuid,
@@ -278,6 +285,10 @@ async def resolve_inbound_route(
                    AND inbound_did=$2
                    AND provider=$3
                    AND active
+                   AND EXISTS (SELECT 1 FROM users u
+                                WHERE u.tenant_id = telephony_routes.tenant_id
+                                  AND lower(u.agent_id) = lower(telephony_routes.agent_id)
+                                  AND u.is_active)
                  LIMIT 1
                 """,
                 endpoint_uuid,

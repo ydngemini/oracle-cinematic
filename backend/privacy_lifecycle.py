@@ -502,6 +502,12 @@ async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: s
 
 
 async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str) -> str:
+    """Move the departing agent's number to the successor, or, when the
+    successor already has their own (one route per agent), park it: inactive,
+    forwarding cleared, and the departing agent's messaging route inactive
+    too (external audit 22.5). It used to stay active under the deactivated
+    agent, still answering calls and texts. A parked number is not released:
+    the owner reassigns or releases it."""
     mine = await conn.fetchrow(
         "SELECT id FROM telephony_routes WHERE tenant_id=$1 AND lower(agent_id)=lower($2)",
         tenant_id, departing)
@@ -520,9 +526,12 @@ async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str
             "WHERE tenant_id=$1 AND lower(agent_id)=lower($2)", tenant_id, departing, successor)
         return "moved_to_successor"
     await conn.execute(
-        "UPDATE telephony_routes SET agent_forward_e164=NULL, forward_on_request=false, "
+        "UPDATE telephony_routes SET active=false, agent_forward_e164=NULL, forward_on_request=false, "
         "forward_when_ai_unavailable=false, updated_at=now() WHERE id=$1", mine["id"])
-    return "kept_forwarding_cleared"
+    await conn.execute(
+        "UPDATE messaging_routes SET active=false, updated_at=now() "
+        "WHERE tenant_id=$1 AND lower(agent_id)=lower($2)", tenant_id, departing)
+    return "parked_successor_has_own_route"
 
 
 async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
