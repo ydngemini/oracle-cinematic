@@ -269,9 +269,31 @@ def test_startup_resumes_a_leftover_spool(monkeypatch):
     assert len(calls) == 2 and voice_opt_out.pending_count() == 0
 
 
-def test_the_api_lifespan_resumes_pending_stops():
+def test_the_api_lifespan_resumes_pending_stops_in_every_process_role():
+    """Third review of PR #84: the call sat under `if config.RUNS_BACKGROUND_WORK`,
+    which is False for the web/api role that owns the spool."""
+    import ast
     import inspect
+    import textwrap
 
     import server
 
-    assert "voice_opt_out.resume_pending()" in inspect.getsource(server.lifespan)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(server.lifespan)))
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child.parent = parent
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("resume_pending")]
+    assert len(calls) == 1
+    node = calls[0]
+    while node is not None:
+        if isinstance(node, (ast.If, ast.While)):
+            assert "RUNS_BACKGROUND_WORK" not in ast.unparse(node.test), "resume is gated off for the api role"
+        node = getattr(node, "parent", None)
+
+
+def test_resume_never_raises_on_an_unreadable_spool(monkeypatch):
+    def broken():
+        raise PermissionError("no access")
+
+    monkeypatch.setattr(voice_opt_out, "_spooled", broken)
+    assert voice_opt_out.resume_pending() == 0

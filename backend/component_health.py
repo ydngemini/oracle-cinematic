@@ -256,16 +256,17 @@ def _inbound_calls(unfinalized: int) -> dict:
 
 def _outbound_opt_outs() -> dict:
     """23.5 / 34.5: a callee said "stop" and the suppression write failed. The
-    number is spooled and blocked in this process, but until the replay writes
-    it, a restart could lose it: a person must look now."""
+    number is spooled in THIS container and retried by the process that owns
+    it; until it is written, the other replicas and the worker do not see it
+    and a redeploy could lose it: a person must look now."""
     import voice_opt_out
 
     try:
         pending = voice_opt_out.pending_count()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return _c(UNKNOWN, "spoken opt-out spool unreadable", reason=type(exc).__name__)
     if pending:
-        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled; replayed by reconciliation)",
+        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled in this container; retrying)",
                   pending=pending)
     return _c(HEALTHY, "spoken opt-outs recorded")
 

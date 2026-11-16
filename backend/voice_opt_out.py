@@ -85,7 +85,7 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
 #: normalised number (never what was said) are spooled at once and held in
 #: memory; the outreach gate treats a pending STOP as suppressed; the owning
 #: process retries until the write succeeds (fast, then capped backoff) and
-#: resumes a leftover spool at startup; reconciliation.run_sweep replays it
+#: resumes a leftover spool at startup in every process role; reconciliation.run_sweep replays it
 #: when it runs in the same container; component_health reports it.
 #: LIMITS (stated honestly; a shared durable store is an owner decision):
 #:   * the spool is per CONTAINER: in production the block covers sends made
@@ -101,7 +101,7 @@ SPOOL_PATH = Path(os.environ.get(
     "ORACLE_OPT_OUT_SPOOL", str(Path(tempfile.gettempdir()) / "neoh-outbound.opt-out-spool.jsonl")))
 _PENDING: set[tuple[str, str]] = set()
 #: (stat signature, keys) of the spool as last read; re-read when it changes,
-#: so every worker process sees every other worker's pending STOPs.
+#: so every worker process IN THE SAME CONTAINER sees a pending STOP.
 _SPOOL_SEEN: tuple = (None, None)
 
 
@@ -129,7 +129,7 @@ def _spool_lock():
 
 def _read_spool() -> list[tuple[str, str]]:
     try:
-        lines = SPOOL_PATH.read_text(encoding="utf-8").splitlines()
+        lines = SPOOL_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return []
     out = []
@@ -188,7 +188,8 @@ def _remove(keys: set[tuple[str, str]]) -> None:
 
 
 def pending_opt_out(tenant_id: str, contact: str) -> bool:
-    """True while this number's spoken STOP is spooled (by any worker) and not
+    """True while this number's spoken STOP is spooled (by any process in this
+    container) and not
     yet written: the outreach gate treats it as suppressed (fail closed)."""
     key = (str(tenant_id), contact)
     return key in _PENDING or key in _spooled()
@@ -254,9 +255,16 @@ async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
 
 
 def resume_pending() -> int:
-    """Called at api startup: restart the retry loop for any STOP left in this
-    container's spool by a previous process. Returns how many were resumed."""
-    keys = _spooled()
+    """Called at startup in every process role: restart the retry loop for any
+    STOP left in this container's spool by a previous process. Returns how
+    many were resumed. Never raises: an unreadable spool must not stop boot
+    (the health component reports it)."""
+    try:
+        keys = _spooled()
+    except (OSError, ValueError) as exc:
+        logger.error("Spoken opt-out spool unreadable at startup (%s); health will report it",
+                     type(exc).__name__)
+        return 0
     for key in keys:
         _PENDING.add(key)
         _background(_retry_later(key, "resumed-at-startup"))
