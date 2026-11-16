@@ -117,9 +117,67 @@ BIOMETRIC_VOICE_DISCLOSURE = (
 )
 
 # Keywords that, inbound, constitute a TCPA opt-out via "any reasonable method".
+# inbound_voice applies this set to SPEECH with its own narrower clause rule (a
+# voice opt-out is permanent and discards the caller's answers): unchanged here.
 STOP_KEYWORDS: frozenset[str] = frozenset(
     {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out", "remove"}
 )
+
+# SMS keywords: the above plus REVOKE (named per-se valid by the FCC's 2024
+# revocation rule), UNSUB, and the Spanish ALTO/BAJA/PARAR/CANCELAR that CTIA
+# asks Spanish-language programs to honour (audit 25.3).
+SMS_STOP_KEYWORDS: frozenset[str] = STOP_KEYWORDS | {"revoke", "unsub", "alto", "baja", "parar", "cancelar"}
+
+# SMS only. Plain-language opt-outs, matched on WORD BOUNDARIES anywhere in a
+# reply. Known safe-direction over-matches (accepted, audit 25.3 review):
+# "unsubscribe from Zillow?", "remove me from the deed", "don't call before 9".
+SMS_OPT_OUT_PHRASES: tuple[str, ...] = (
+    "do not contact", "don't contact", "dont contact", "do not call", "don't call", "dont call",
+    "never call", "never contact", "never text", "never message", "stop calling", "stop contacting",
+    "stop texting", "stop txting", "stop texing", "stop messaging", "stop msging", "stop sending",
+    "stop receiving", "quit calling", "quit contacting", "quit texting", "do not text", "don't text",
+    "dont text", "don't ever text", "don't ever call", "don't ever contact", "no more texts",
+    "no more messages", "no more calls", "remove me", "take me off", "take my name off",
+    "take my number off", "delete my number", "lose my number", "lose this number",
+    "remove my number", "remove this number", "leave me alone", "wrong number", "stop txt",
+    "opt-out",
+    "unsubscribe", "opt out", "opt me out", "revoke consent", "revoke my consent",
+    "withdraw my consent", "withdraw consent",
+)
+_SMS_PHRASE_RE = re.compile(
+    r"(?<![a-z'])(?:" + "|".join(re.escape(p) for p in SMS_OPT_OUT_PHRASES) + r")(?![a-z])")
+
+# Words that can sit alongside a bare stop keyword in a text without changing
+# that it is the whole instruction: "STOP please", "stop it now", "lol stop".
+_SMS_FILLER: frozenset[str] = frozenset(
+    {
+        "i", "im", "id", "ive", "me", "my", "you", "your", "it", "all", "this", "lol",
+        "please", "pls", "plz", "just", "now", "really", "actually", "seriously", "already",
+        "ok", "okay", "no", "nope", "yes", "yeah", "yep", "well", "so", "and",
+        "but", "um", "uh", "look", "listen", "hey", "sir", "maam",
+        "said", "say", "saying", "sorry", "thanks", "thank", "thx",
+    }
+)
+
+# Clause boundaries for texts: punctuation, line breaks, a spaced dash ("Stop - not
+# selling") and conjunctions. A hyphen INSIDE a word is not a boundary
+# ("opt-out" stays one token).
+_SMS_CLAUSE_RE = re.compile(r"[.,;:!?—–\n]+|\s-+\s|\b(?:and|but|so|then|because)\b")
+
+
+def requests_opt_out(text: str) -> bool:
+    """SMS: True when a reply asks not to be contacted — an opt-out phrase
+    (word-bounded) anywhere, or a clause that is only stop keywords plus
+    filler ("STOP", "STOP STOP", "stop it now", "REVOKE.")."""
+    lowered = (text or "").lower().replace("\u2019", "'").replace("\u2018", "'")
+    if _SMS_PHRASE_RE.search(lowered):
+        return True
+    normalized_stop = {keyword.replace(" ", "") for keyword in SMS_STOP_KEYWORDS}
+    for clause in _SMS_CLAUSE_RE.split(lowered):
+        tokens = [t for t in re.findall(r"[a-z]+(?:-[a-z]+)?", clause or "") if t not in _SMS_FILLER]
+        if tokens and set(tokens) <= normalized_stop:
+            return True
+    return False
 
 # Representative IANA tz per state for the calling-hours check. Multi-zone states
 # map to their most-populous zone; this is an approximation — when a contact's
@@ -201,9 +259,16 @@ def _infer_channel(contact: str) -> Channel:
 
 
 def is_stop_keyword(body: str) -> bool:
-    """True when an inbound message body is a TCPA opt-out request."""
+    """True when an inbound message body is a TCPA opt-out request.
+
+    Was: the WHOLE body, letters only, had to be one keyword, so "REVOKE",
+    "STOP please", "Stop texting me" and "please take me off your list"
+    recorded no suppression and later messages could still be approved
+    (audit 25.3). Now: SMS keywords, word-bounded SMS phrases, or a clause of
+    only stop keywords plus filler (requests_opt_out). Spoken opt-out keeps its
+    own, narrower rule in inbound_voice; the two deliberately differ."""
     token = re.sub(r"[^a-z]", "", (body or "").strip().lower())
-    return token in STOP_KEYWORDS
+    return token in SMS_STOP_KEYWORDS or requests_opt_out(body)
 
 
 # ── Pure evaluation (no DB) ──────────────────────────────────────────────────

@@ -1925,6 +1925,28 @@ next_task: "Confirm Plivo's callback retry policy (docs or a staging call, with 
 updated: 2026-11-13
 ```
 
+#### L10-15 "REVOKE", "STOP please" and "stop texting me" are opt-outs; SMS and voice share one vocabulary (external audit 25.3)
+```yaml
+id: L10-15
+status: tests_pass
+env: local
+evidence_shas: [5723117]   # base; fix in the commit that adds this row
+files: [backend/outreach_compliance.py, backend/compliance_engine/tests/test_outreach_compliance.py]
+tests_run:
+  - {cmd: "read outreach_compliance.is_stop_keyword at 5723117", result: "the WHOLE body, letters only, had to equal one keyword; REVOKE was not a keyword. messaging_api (Telnyx inbound), POST /api/outreach/inbound and the orphan opt-out path all use it, so plain-language replies recorded no suppression", date: 2026-11-16}
+  - {cmd: "pytest test_outreach_compliance.py -k plain_language against 5723117", result: "red: 16 of 17 real opt-out replies not recognised", date: 2026-11-16}
+  - {cmd: "after: test_outreach_compliance.py + telnyx dispatch + inbound_voice/opt-out suites", result: "144 passed; ordinary replies using the words (stop by, end of the day, cancel my listing) stay non-opt-outs", date: 2026-11-16}
+authz_checked: "No authorization change; the suppression write path (ConsentLedger.suppress, channel '*') is unchanged."
+blockers:
+  - "OPEN follow-up (owner decision 2026-11-16: merge now, queue later): a reply whose revocation intent is uncertain (e.g. 'not interested', 'not for sale stop') is not queued for human review; ambiguous text is treated as not an opt-out unless it matches a word-bounded phrase or a keyword-only clause. Persistence IS conservative: a failed suppression write returns 503 so Telnyx redelivers. The broader consent and failure-recovery workstreams (26.x, 23.5/34.5) stay open."
+  - "Consent/STOP enforcement: needs independent review and owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [25.3]
+decision_refs: []
+next_task: "26.1/26.9: CRM do-not-contact and destination changes must reach the outreach suppression store."
+updated: 2026-11-16
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 
