@@ -2523,9 +2523,14 @@ async def acs_qwen_media(websocket: WebSocket):
         await websocket.close(code=4403)
         return
 
-    refused = await _realtime_refusal(await call_tenant(call_connection_id))
-    if refused is not None:
-        _log_realtime_refused("acs", call_connection_id, refused)
+    tenant_id = await call_tenant(call_connection_id)
+    refused = await _realtime_refusal(tenant_id)
+    at_cap = refused is None and not _acquire_realtime_slot(str(tenant_id))
+    if refused is not None or at_cap:
+        if at_cap:
+            _log_realtime_at_cap("acs", call_connection_id)
+        else:
+            _log_realtime_refused("acs", call_connection_id, refused)
         try:
             await refuse_qwen_media(call_connection_id)
         except Exception as exc:  # noqa: BLE001 — the bridge stays closed either way
@@ -2534,6 +2539,17 @@ async def acs_qwen_media(websocket: WebSocket):
         await websocket.close(code=1000)
         return
 
+    try:
+        await _acs_qwen_media_bridge(websocket, call_connection_id, QwenOmniRealtimeBridge,
+                                     QwenCallLimitReached, QwenRealtimeError)
+    finally:
+        _release_realtime_slot(str(tenant_id))
+
+
+async def _acs_qwen_media_bridge(websocket: WebSocket, call_connection_id: str,
+                                 QwenOmniRealtimeBridge, QwenCallLimitReached,
+                                 QwenRealtimeError) -> None:
+    """The admitted ACS call's bridge; the caller holds its realtime slot."""
     await websocket.accept()
     bridge = QwenOmniRealtimeBridge(websocket, call_connection_id)
     try:
@@ -3945,12 +3961,6 @@ async def plivo_qwen_media(websocket: WebSocket):
         await _say_refused_and_end("plivo", call_uuid)
         await websocket.close(code=1000)
         return
-    if not _acquire_realtime_slot(str(tenant_id)):
-        _log_realtime_at_cap("plivo", call_uuid)
-        await _say_refused_and_end("plivo", call_uuid)
-        await websocket.close(code=1000)
-        return
-
     from elevenlabs_realtime import (
         ElevenLabsCallLimitReached,
         ElevenLabsRealtimeError,
@@ -3959,6 +3969,13 @@ async def plivo_qwen_media(websocket: WebSocket):
     )
 
     use_elevenlabs = realtime_provider() == "elevenlabs"
+    # Taken last, immediately before the try/finally that releases it: nothing
+    # between acquire and release can raise outside that block.
+    if not _acquire_realtime_slot(str(tenant_id)):
+        _log_realtime_at_cap("plivo", call_uuid)
+        await _say_refused_and_end("plivo", call_uuid)
+        await websocket.close(code=1000)
+        return
     try:
         try:
             bridge = (PlivoElevenLabsBridge(websocket, call_uuid, start_event) if use_elevenlabs

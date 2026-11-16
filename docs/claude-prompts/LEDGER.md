@@ -1559,9 +1559,10 @@ env: local
 evidence_shas: [d27bac3]   # base; salvaged from Noah cycle 4ff352f (auto/neoh-09-20261112T094938Z-3804d8)
 files: [backend/commands_api.py, backend/tests/test_realtime_call_cap.py]
 tests_run:
-  - {cmd: "pytest tests/test_realtime_call_cap.py + plivo/twilio/elevenlabs/qwen realtime suites (fakes; no provider call)", result: "81 passed", date: 2026-11-16}
-  - {cmd: "mutation: _acquire_realtime_slot never refuses", result: "4 failed (killed)", date: 2026-11-16}
-authz_checked: "Unknown brokerage is refused before the cap (commands_api._realtime_refusal); the slot is per call's brokerage."
+  - {cmd: "pytest tests/test_realtime_call_cap.py tests/test_ai_budget_hosted_calls.py + plivo/twilio/elevenlabs/qwen realtime suites (fakes; no provider call)", result: "204 passed", date: 2026-11-16}
+  - {cmd: "mutation: _acquire_realtime_slot never refuses", result: "killed", date: 2026-11-16}
+  - {cmd: "mutation: release moved out of finally (leaks on construction failure / CancelledError)", result: "2 failed (killed)", date: 2026-11-16}
+authz_checked: "Unknown brokerage is refused before the cap (commands_api._realtime_refusal); the slot is per call's brokerage. All three realtime media routes (ACS, Twilio, Plivo incl. ElevenLabs) take the slot immediately before the try/finally that releases it (independent review, PR #76)."
 blockers:
   - "Per process, not cluster-wide: N replicas allow N x cap."
   - "Concurrency only. Not a per-call reservation, settlement or wall-clock cap: audit 34.2/23.6 stay open."

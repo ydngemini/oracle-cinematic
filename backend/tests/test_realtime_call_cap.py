@@ -25,7 +25,7 @@ from tests.test_ai_budget_hosted_calls import (  # noqa: F401  (controls is a fi
     controls,
 )
 
-ROUTES = ["twilio", "plivo", "plivo-elevenlabs"]
+ROUTES = ["acs", "twilio", "plivo", "plivo-elevenlabs"]
 
 
 @pytest.fixture(autouse=True)
@@ -109,3 +109,70 @@ def test_the_slot_is_released_when_the_bridge_fails(monkeypatch, controls, route
     assert socket.closed_code == 1011
     assert commands_api._REALTIME_ACTIVE == {}
     assert commands_api._acquire_realtime_slot(TENANT), "the failed call left its slot taken"
+
+
+_BRIDGE_NAMES = {"twilio": "TwilioQwenRealtimeBridge", "plivo": "PlivoQwenRealtimeBridge",
+                 "acs": "QwenOmniRealtimeBridge"}
+
+
+@pytest.mark.parametrize("route", ["acs", "plivo", "twilio"])
+def test_the_slot_is_released_when_the_bridge_cannot_be_built(monkeypatch, controls, route):
+    """Construction failure (Twilio/Plivo close 4400; ACS falls back) must
+    give the slot back, or each failed call shrinks the brokerage's cap."""
+    import qwen_omni_realtime
+
+    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "1")
+    opened: list = []
+    run, _socket, _said = _MEDIA_ROUTES[route](monkeypatch, _state(), opened)
+
+    class _Unbuildable:
+        def __init__(self, *_a, **_k):
+            raise qwen_omni_realtime.QwenRealtimeError("no session")
+
+    monkeypatch.setattr(qwen_omni_realtime, _BRIDGE_NAMES[route], _Unbuildable)
+    if route == "acs":
+        # ACS builds its bridge outside its error handling (unchanged here):
+        # the error still propagates, but the slot must come back regardless.
+        with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
+            asyncio.run(run)
+    else:
+        asyncio.run(run)
+    assert commands_api._REALTIME_ACTIVE == {}, "a call whose bridge never opened kept its slot"
+
+
+@pytest.mark.parametrize("route", ["acs", "plivo", "twilio"])
+def test_the_slot_is_released_when_the_call_task_is_cancelled(monkeypatch, controls, route):
+    """A cancelled handler (server shutdown, client gone mid-await) raises
+    CancelledError, which no `except Exception` catches: only finally helps."""
+    import qwen_omni_realtime
+
+    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "1")
+    opened: list = []
+    run, _socket, _said = _MEDIA_ROUTES[route](monkeypatch, _state(), opened)
+
+    class _Cancelled(_bridge_recorder(opened)):
+        async def run(self):
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(qwen_omni_realtime, _BRIDGE_NAMES[route], _Cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run)
+    assert commands_api._REALTIME_ACTIVE == {}, "a cancelled call kept its slot"
+
+
+def test_plivo_takes_no_slot_when_the_engine_cannot_be_chosen(monkeypatch, controls):
+    """Choosing the realtime engine happens before the slot is taken, so a
+    failure there cannot strand a slot outside the releasing try/finally."""
+    import elevenlabs_realtime
+
+    monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "1")
+    opened: list = []
+    run, _socket, _said = _MEDIA_ROUTES["plivo"](monkeypatch, _state(), opened)
+
+    def _broken():
+        raise RuntimeError("engine setting unreadable")
+
+    monkeypatch.setattr(elevenlabs_realtime, "realtime_provider", _broken)
+    with pytest.raises(RuntimeError):
+        asyncio.run(run)
+    assert commands_api._REALTIME_ACTIVE == {}
