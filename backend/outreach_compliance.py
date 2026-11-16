@@ -116,10 +116,61 @@ BIOMETRIC_VOICE_DISCLOSURE = (
     "any voice model. Is it okay to record? Please say yes or no."
 )
 
-# Keywords that, inbound, constitute a TCPA opt-out via "any reasonable method".
+# Keywords that, inbound, constitute a TCPA opt-out via "any reasonable method"
+# (CTIA's STOP/STOPALL/UNSUBSCRIBE/CANCEL/END/QUIT, plus REVOKE and OPT OUT,
+# which the FCC's 2024 revocation rule names as per-se valid; audit 25.3).
 STOP_KEYWORDS: frozenset[str] = frozenset(
-    {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out", "remove"}
+    {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out", "remove",
+     "revoke"}
 )
+
+# Plain-language opt-outs, anywhere in a message or a caller's speech. Shared
+# by SMS (is_stop_keyword) and voice (inbound_voice._requested_opt_out) so the
+# two channels can never disagree about what "stop" means (audit 25.3).
+OPT_OUT_PHRASES: tuple[str, ...] = (
+    "do not contact", "don't contact", "do not call", "don't call", "never call",
+    "never contact", "stop calling", "stop contacting", "stop texting", "stop messaging",
+    "stop sending", "stop txting", "quit calling", "quit contacting", "quit texting",
+    "do not text", "don't text", "dont text", "never text", "no more texts",
+    "no more messages", "no more calls", "remove me", "take me off", "take my name off",
+    "take my number off", "lose my number", "unsubscribe", "opt out", "opt me out",
+    "revoke consent", "revoke my consent", "withdraw my consent", "withdraw consent",
+)
+
+# Words that can sit alongside a bare stop keyword without changing that it is
+# the whole instruction: "I said stop", "STOP please", "no — stop" are all
+# "stop"; "stop by the house on Tuesday" is not.
+OPT_OUT_FILLER: frozenset[str] = frozenset(
+    {
+        "i", "im", "id", "ive", "me", "my", "you", "your",
+        "please", "pls", "plz", "just", "now", "really", "actually", "seriously",
+        "ok", "okay", "no", "nope", "yes", "yeah", "yep", "well", "so", "and",
+        "but", "um", "uh", "look", "listen", "hey", "sir", "maam",
+        "said", "say", "saying", "sorry", "thanks", "thank", "thx",
+    }
+)
+
+# Clause boundaries: a stop keyword is an opt-out when it is the entirety of a
+# clause. The plain hyphen is absent on purpose ("opt-out" stays one token).
+CLAUSE_SPLIT_RE = re.compile(r"[.,;:!?—–\n]+|\b(?:and|but|so|then|because)\b")
+
+
+def requests_opt_out(text: str) -> bool:
+    """True when free text asks not to be contacted: an explicit phrase
+    anywhere, or a clause that is nothing but a stop keyword (plus filler)."""
+    lowered = (text or "").lower().replace("\u2019", "'").replace("\u2018", "'")
+    if any(phrase in lowered for phrase in OPT_OUT_PHRASES):
+        return True
+    normalized_stop = {keyword.replace(" ", "") for keyword in STOP_KEYWORDS}
+    for clause in CLAUSE_SPLIT_RE.split(lowered):
+        if not clause:
+            continue
+        tokens = [t for t in re.findall(r"[a-z]+(?:-[a-z]+)?", clause) if t not in OPT_OUT_FILLER]
+        if len(tokens) == 1 and tokens[0] in normalized_stop:
+            return True
+        if tokens == ["opt", "out"]:
+            return True
+    return False
 
 # Representative IANA tz per state for the calling-hours check. Multi-zone states
 # map to their most-populous zone; this is an approximation — when a contact's
@@ -201,9 +252,14 @@ def _infer_channel(contact: str) -> Channel:
 
 
 def is_stop_keyword(body: str) -> bool:
-    """True when an inbound message body is a TCPA opt-out request."""
+    """True when an inbound message body is a TCPA opt-out request.
+
+    Was: the WHOLE body, letters only, had to be one keyword, so "REVOKE",
+    "STOP please", "Stop texting me" and "please take me off your list"
+    recorded no suppression and later messages could still be approved
+    (audit 25.3). Now the same rule as spoken opt-outs."""
     token = re.sub(r"[^a-z]", "", (body or "").strip().lower())
-    return token in STOP_KEYWORDS
+    return token in STOP_KEYWORDS or requests_opt_out(body)
 
 
 # ── Pure evaluation (no DB) ──────────────────────────────────────────────────

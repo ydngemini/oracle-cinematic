@@ -27,7 +27,13 @@ from contact_truth import (
     seal_json,
 )
 from db.connection import tenant_tx
-from outreach_compliance import AI_VOICE_DISCLOSURE, STOP_KEYWORDS
+from outreach_compliance import (
+    AI_VOICE_DISCLOSURE,
+    CLAUSE_SPLIT_RE,
+    OPT_OUT_FILLER,
+    OPT_OUT_PHRASES,
+    STOP_KEYWORDS,
+)
 from pan_redaction import PAYMENT_CARD_RULE, redact as _redact_pan, report as _report_pan
 from tenancy import Role, TenantContext, brokerage_scope
 
@@ -469,46 +475,10 @@ def _clean_transcript(
     return cleaned
 
 
-_OPT_OUT_PHRASES = (
-    "do not contact",
-    "don't contact",
-    "do not call",
-    "don't call",
-    "never call",
-    "never contact",
-    "stop calling",
-    "stop contacting",
-    "stop texting",
-    "stop messaging",
-    "quit calling",
-    "quit contacting",
-    "remove me",
-    "take me off",
-    "take my name off",
-    "lose my number",
-    "unsubscribe",
-    "opt out",
-    "opt me out",
-)
-
-# Words that can sit alongside a bare stop keyword without changing that it is
-# the whole instruction. "I said stop", "please, stop", "no — stop" are all the
-# caller saying stop; "stop by the house on Tuesday" is not.
-_OPT_OUT_FILLER = frozenset(
-    {
-        "i", "im", "id", "ive", "me", "my", "you", "your",
-        "please", "just", "now", "really", "actually", "seriously",
-        "ok", "okay", "no", "nope", "yes", "yeah", "yep", "well", "so", "and",
-        "but", "um", "uh", "look", "listen", "hey", "sir", "maam",
-        "said", "say", "saying", "sorry", "thanks", "thank",
-    }
-)
-
-# Clause boundaries. A stop keyword is an opt-out when it is the entirety of
-# some clause the caller uttered, not merely present somewhere in the turn.
-# Note the plain hyphen is absent on purpose: splitting on it would break
-# "opt-out" into two clauses and lose the keyword entirely.
-_CLAUSE_SPLIT_RE = re.compile(r"[.,;:!?—–]+|\b(?:and|but|so|then|because)\b")
+# One opt-out vocabulary for every channel (outreach_compliance, audit 25.3).
+_OPT_OUT_PHRASES = OPT_OUT_PHRASES
+_OPT_OUT_FILLER = OPT_OUT_FILLER
+_CLAUSE_SPLIT_RE = CLAUSE_SPLIT_RE
 
 
 def _requested_opt_out(transcript: Sequence[Mapping[str, str]]) -> bool:

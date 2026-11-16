@@ -222,3 +222,36 @@ if __name__ == "__main__":
             print(f"  FAIL {fn.__name__}: {exc}")
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+# Audit 25.3: real-world opt-out replies that the whole-body keyword match
+# missed, so no suppression was recorded and later texts could be approved.
+OPT_OUTS = [
+    "REVOKE", "Revoke.", "STOP please", "stop pls", "Stop texting me", "stop sending me these",
+    "Please take me off your list", "remove me from your list", "Unsubscribe me", "opt out",
+    "Opt me out", "Don’t text me again", "do not contact me", "No more texts", "I said STOP!",
+    "revoke my consent", "not interested. stop",
+]
+NOT_OPT_OUTS = [
+    "Please stop by the house on Tuesday", "Stop by at 5", "End of the day works",
+    "I want to cancel my listing with my agent", "yes please call me", "Can you send the comps?",
+    "We could end up selling in the spring", "Remove the old fridge before showing?",
+]
+
+
+@pytest.mark.parametrize("text", OPT_OUTS)
+def test_plain_language_and_revoke_replies_are_opt_outs(text):
+    assert is_stop_keyword(text), text
+
+
+@pytest.mark.parametrize("text", NOT_OPT_OUTS)
+def test_ordinary_replies_using_keyword_words_are_not_opt_outs(text):
+    assert not is_stop_keyword(text), text
+
+
+def test_sms_and_voice_share_one_opt_out_vocabulary():
+    import inbound_voice
+    import outreach_compliance
+
+    assert inbound_voice._OPT_OUT_PHRASES is outreach_compliance.OPT_OUT_PHRASES
+    assert inbound_voice._OPT_OUT_FILLER is outreach_compliance.OPT_OUT_FILLER
