@@ -68,11 +68,11 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 @pytest.mark.parametrize(
     "env, expected",
     [
-        # azure-files with the default /mnt/neoh, which is not a real mount in
-        # a test environment. "Configured" means a write would actually land,
-        # so an unmounted default must answer False — see the writable-root case
-        # below for the positive path.
-        ({}, False),
+        # The azure-files "unusable root" case is
+        # test_azure_files_with_an_unusable_root_is_not_configured below: the
+        # default /mnt/neoh can be CREATED on any host whose / is writable (a
+        # sandbox tmpfs, a container layer), so asserting on the real default
+        # path made this suite's result depend on the machine running it.
         ({"ORACLE_STORAGE_BACKEND": "s3"}, False),                   # no bucket
         ({"ORACLE_STORAGE_BACKEND": "s3", "RECON_S3_BUCKET": "b"}, True),
         ({"ORACLE_STORAGE_BACKEND": "azure-blob"}, False),           # no account
@@ -87,6 +87,19 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 )
 def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, expected):
     assert _reload(monkeypatch, **env).is_configured() is expected
+
+
+def test_azure_files_with_an_unusable_root_is_not_configured(monkeypatch, tmp_path):
+    """azure-files (the default backend) whose root can never be created or
+    written answers False. "Configured" means a write would actually land.
+
+    The root sits beneath a regular FILE, so mkdir fails with
+    NotADirectoryError on every host — root or not, tmpfs or not."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x")
+    mod = _reload(monkeypatch, ORACLE_MEDIA_ROOT=blocker / "media")
+    assert mod.BACKEND == "azure-files"
+    assert mod.is_configured() is False
 
 
 def test_a_real_writable_mount_is_configured(monkeypatch, tmp_path):
