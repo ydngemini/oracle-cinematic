@@ -157,7 +157,42 @@ def test_call_and_voice_frames_pass_the_calls_lead():
                  and getattr(node.func, "attr", getattr(node.func, "id", None)) == callee]
         assert calls, (fn.__name__, callee)
         for call in calls:
-            assert "lead_id" in {k.arg for k in call.keywords}, f"{fn.__name__} drops the call's lead"
+            value = {k.arg: k.value for k in call.keywords}.get("lead_id")
+            assert value is not None, f"{fn.__name__} drops the call's lead"
+            # The call's OWN lead: `lead_id` or `call["lead_id"]`, never a constant
+            # (a `lead_id=None` regression would silently widen to everyone).
+            source = ast.unparse(value)
+            assert source in {"lead_id", "call['lead_id']", 'call["lead_id"]'}, \
+                f"{fn.__name__} passes lead_id={source}"
+
+
+CALL_CONTENT_FRAMES = ("VOICE_", "NEGOTIATION_TELEMETRY", "CALL_CONSENT", "CALL_TRANSCRIPT")
+
+
+def test_every_call_content_broadcast_names_its_lead():
+    """By frame type, across the whole backend (review of PR #77): any
+    function that builds a call-content frame and sends it with
+    broadcast_record must pass the lead, so a new site cannot fall back to the
+    whole brokerage for a lead-only call."""
+    offenders = []
+    for path in sorted(BACKEND.rglob("*.py")):
+        rel = path.relative_to(BACKEND).as_posix()
+        if rel.startswith(("tests/", "scripts/")) or rel == "ws_hub.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            frames = [n.value for n in ast.walk(fn) if isinstance(n, ast.Constant)
+                      and isinstance(n.value, str) and n.value.startswith(CALL_CONTENT_FRAMES)
+                      and n.value.isupper()]
+            if not frames:
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "broadcast_record":
+                    if "lead_id" not in {k.arg for k in node.keywords}:
+                        offenders.append(f"{rel}:{node.lineno} {fn.name} ({frames[0]})")
+    assert not offenders, offenders
 
 
 def test_a_lead_only_voice_frame_never_reaches_the_whole_brokerage(hub, monkeypatch):

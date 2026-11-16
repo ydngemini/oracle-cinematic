@@ -670,6 +670,7 @@ tests_run:
 authz_checked: "Lead frames follow the lead's seller client (0143/0151); a real pool lead still reaches every member; a missing or other-brokerage lead reaches no one (empty audience, fail closed)."
 blockers:
   - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
+  - {type: owner, note: "leads.seller_client_id is ON DELETE SET NULL (0012:51): deleting or erasing a private client turns its lead into a pool lead, so later frames from that house's calls reach the whole brokerage. Decide: keep pool semantics, or treat an orphaned lead as private to its last audience (independent review of PR #77)."}
   - "Not deployed (C4.4)."
 audit_refs: [27.1, 27.4]
 decision_refs: []
