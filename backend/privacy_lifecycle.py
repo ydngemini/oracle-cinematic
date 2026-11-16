@@ -400,7 +400,9 @@ async def offboard_agent(ctx: TenantContext, *, departing_agent_id: str, success
         async with tenant_tx(ctx) as conn:
             # Only an active brokerage: a closure's freeze list would otherwise
             # bring a parked route back on withdrawal (review of 22.5).
-            state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", ctx.tenant_id)
+            # FOR SHARE: serializes with request_closure's FOR UPDATE on this row.
+            state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1 FOR SHARE",
+                                        ctx.tenant_id)
             if state != "active":
                 raise LifecycleError(f"The brokerage is {state}; offboard agents while it is active.")
             plan = await _offboard_in_tx(conn, ctx, departing, successor, reason)
