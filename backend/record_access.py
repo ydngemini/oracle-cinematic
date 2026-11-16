@@ -221,6 +221,58 @@ async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any,
     return None if audience is None else [str(a) for a in audience]
 
 
+_CALL_CONTENT_SQL = """
+SELECT s.id, s.created_at, s.created_by,
+       CASE
+         WHEN s.client_id IS NOT NULL OR s.contact_id IS NOT NULL
+           THEN app_record_audience(s.client_id, s.contact_id)
+         WHEN s.lead_id IS NOT NULL THEN (
+           SELECT CASE WHEN l.id IS NULL THEN ARRAY[]::text[]
+                       ELSE app_record_audience(l.seller_client_id, NULL::uuid) END
+             FROM (SELECT s.lead_id AS wanted) w LEFT JOIN leads l ON l.id = w.wanted)
+         ELSE NULL
+       END AS audience
+  FROM live_call_sessions s
+ WHERE s.id = ANY($1::uuid[])
+"""
+
+
+async def may_read_call_content(tenant_id: str, session_id: Any, agent_id: str) -> bool:
+    """Whether `agent_id` may read a live call's CONTENT (transcript, counter
+    offer, MAO, objection draft) over the pull paths: the voice-session socket
+    and GET /api/voice/telemetry.
+
+    Same rule as the push path (ws_hub.broadcast_record sensitive=True, owner
+    decision 2026-11-16): a member of the call record's audience; where the
+    record has no specific audience (a pool client or lead, a lead whose client
+    was erased, an unlinked call) only the member who created the call; a call
+    that does not exist, no one. Computed as a brokerage-scope pipeline, so the
+    answer does not depend on what the caller's own row-level security shows."""
+    return bool(await may_read_call_content_many(tenant_id, [session_id], agent_id))
+
+
+async def may_read_call_content_many(tenant_id: str, session_ids: list, agent_id: str) -> list[str]:
+    """The ids among `session_ids` whose content `agent_id` may read, newest
+    first — ONE brokerage-scope query however many candidates (the REST feed's
+    "latest active" lookup used to cost one transaction per candidate)."""
+    if not session_ids or not agent_id:
+        return []
+    pipeline = brokerage_scope(TenantContext(agent_id="system:call-content", tenant_id=str(tenant_id),
+                                             role=Role.AGENT))
+    async with tenant_tx(pipeline) as conn:
+        rows = await conn.fetch(_CALL_CONTENT_SQL, [str(s) for s in session_ids])
+    who = agent_id.lower()
+    allowed = []
+    for row in sorted(rows, key=lambda r: r["created_at"], reverse=True):
+        if row["audience"] is None:
+            ok = (row["created_by"] or "").lower() == who
+        else:
+            ok = who in {str(a).lower() for a in row["audience"]}
+        if ok:
+            allowed.append(str(row["id"]))
+    return allowed
+
+
 async def pipeline_count(tenant_id: str, sql: str, *args: Any) -> Any:
     """A cost-guard count over a whole brokerage (a queue backlog, a daily
     quota) that must not shrink to the rows the caller may read (0151): run as

@@ -1304,7 +1304,16 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
 
     try:
         from db.connection import tenant_tx
+        import record_access
 
+        # Call content follows the record, and a pool / erased-client call only
+        # its creator (owner decision 2026-11-16). Checked BEFORE the caller's
+        # transaction (no nested pool connections); a refusal looks exactly
+        # like a missing session, and no snapshot is ever sent.
+        if not ctx.is_platform_admin and not await record_access.may_read_call_content(
+                ctx.tenant_id, session_uuid, ctx.agent_id):
+            await websocket.close(code=4404)
+            return
         async with tenant_tx(ctx) as conn:
             session = await conn.fetchrow(
                 """
