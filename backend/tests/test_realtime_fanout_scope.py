@@ -37,7 +37,8 @@ TENANT_WIDE = {
     ("automation_jobs.py", "JobReporter.progress", "broadcast"):
         "JOB_PROGRESS: job id, type, percent and a fixed stage message; no record content",
     ("server.py", "websocket_endpoint._publish_to_tenant", "deliver_local"):
-        "workflow-engine ambient frames: public-record review candidates, simulated demo transcript",
+        "workflow-engine frames, filtered by engine_frame_is_tenant_wide to STATUS_UPDATE / STAGE_PROPERTY "
+        "(no record content); DATA_PULLED, TRANSCRIPT_LINE, LEGAL_PACKAGE, PREDICTIVE_CACHE are dropped (27.3)",
 }
 FANOUT = {"broadcast", "deliver_local"}
 
@@ -270,6 +271,39 @@ def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
     tenant, socks = hub
     asyncio.run(ws_hub.broadcast_record(tenant, {"type": "DOSSIER_MOVED"}, lead_id="pool", actor="agent-a@x.test"))
     assert all(socks[n].frames for n in ("owner", "agent-a", "agent-b", "anon"))
+
+
+@pytest.mark.parametrize("frame, tenant_wide", [
+    ({"type": "STATUS_UPDATE", "data": {"message": "AGENT ANALYST — scoring novelty across graph"}}, True),
+    ({"type": "STAGE_PROPERTY"}, True),
+    ({"type": "DATA_PULLED", "data": {"address": "1 Main St", "investorOffer": 180000}}, False),
+    ({"type": "TRANSCRIPT_LINE", "data": {"text": "Initiating contact with Pat Owner..."}}, False),
+    ({"type": "LEGAL_PACKAGE", "data": {"price": 180000}}, False),
+    ({"type": "PREDICTIVE_CACHE", "properties": [{"propertyId": "p1"}]}, False),
+    ({"type": "SOMETHING_NEW"}, False),        # allowlist: unknown types are not broadcast
+    ({}, False), ("not a dict", False),
+])
+def test_workflow_engine_record_frames_never_reach_the_whole_brokerage(frame, tenant_wide):
+    """Audit 27.3: the shared engine's offers, owner names and contract
+    prices (seeded from the first user's own scope) went to every socket."""
+    import server
+
+    assert server.engine_frame_is_tenant_wide(frame) is tenant_wide
+
+
+def test_the_engine_publisher_filters_before_fanning_out():
+    """The only tenant-wide path for engine frames checks the allowlist first."""
+    import inspect
+    import textwrap
+
+    import server
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(server.websocket_endpoint)))
+    publishers = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_publish_to_tenant"]
+    assert len(publishers) == 1
+    guard = publishers[0].body[0]
+    assert isinstance(guard, ast.If) and "engine_frame_is_tenant_wide" in ast.unparse(guard.test)
+    assert "deliver_local" in ast.unparse(guard.body[0])
 
 # ── the hub ────────────────────────────────────────────────────────────────
 

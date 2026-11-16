@@ -701,6 +701,28 @@ next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice
 updated: 2026-11-16
 ```
 
+#### L03-15 The shared workflow engine's offers, owner names and contract prices never reach the whole brokerage (external audit 27.3; owner decision 2026-11-16)
+```yaml
+id: L03-15
+status: tests_pass
+env: local
+evidence_shas: [ccc1d74]   # base; fix in the commit that adds this row
+files: [backend/server.py, backend/tests/test_realtime_fanout_scope.py]
+tests_run:
+  - {cmd: "read server.websocket_endpoint._publish_to_tenant + workflow_engine._send at ccc1d74", result: "every engine frame went to ws_hub.deliver_local(tenant_id) — every socket of the brokerage on the replica; the engine's records come from the FIRST connecting user's own scope (real_leads.fetch_real_records), so DATA_PULLED (investorOffer, as-is value), TRANSCRIPT_LINE (owner name), LEGAL_PACKAGE (contract price) and PREDICTIVE_CACHE could expose a private client's lead to colleagues; the fan-out inventory mislabelled it 'public-record review candidates'", date: 2026-11-16}
+  - {cmd: "tests (allowlist per frame type; the publisher checks it before deliver_local) against ccc1d74's server.py", result: "red: 10 failed", date: 2026-11-16}
+  - {cmd: "after: fan-out scope + workflow-engine + websocket suites", result: "61 passed", date: 2026-11-16}
+authz_checked: "engine_frame_is_tenant_wide: only STATUS_UPDATE (fixed text) and STAGE_PROPERTY (no data) go tenant-wide; record frames and any unknown type are dropped (allowlist)."
+blockers:
+  - "Product effect: the ambient engine feed (DATA_PULLED property cards, PREDICTIVE_CACHE, LEGAL_PACKAGE, demo TRANSCRIPT_LINE) no longer reaches dashboards. Delivering them per lead audience needs the lead id threaded through the engine's graph (hits are keyed by address): follow-up if the feature is wanted."
+  - "Privacy: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [27.3]
+decision_refs: []
+next_task: "If the ambient feed is wanted: thread lead_id through the graph and deliver per lead audience (sensitive=True)."
+updated: 2026-11-16
+```
+
 ### L04
 CRM, contacts, leads and relationships.
 

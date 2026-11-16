@@ -1281,6 +1281,21 @@ def _payload_coordinate(payload, names, minimum, maximum):
     return None
 
 
+#: The shared workflow engine is ambient: it has no caller, and its records
+#: come from the FIRST connecting user's own scope (real_leads.fetch_real_records),
+#: so they can include that user's private-client leads. Its record frames —
+#: DATA_PULLED (investor offer, as-is value), TRANSCRIPT_LINE (owner name),
+#: LEGAL_PACKAGE (contract price), PREDICTIVE_CACHE (property list) — must never
+#: reach every member (owner decision 2026-11-16: offer figures and owner
+#: content are never tenant-wide). An allowlist, so a new frame type is not
+#: broadcast until someone decides it carries no record content.
+ENGINE_TENANT_WIDE_FRAMES = frozenset({"STATUS_UPDATE", "STAGE_PROPERTY"})
+
+
+def engine_frame_is_tenant_wide(payload: dict) -> bool:
+    return isinstance(payload, dict) and payload.get("type") in ENGINE_TENANT_WIDE_FRAMES
+
+
 @app.websocket("/ws/voice-telemetry/{session_id}")
 async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     """Private session stream; identity and session tenancy are checked pre-upgrade."""
@@ -1429,9 +1444,15 @@ async def websocket_endpoint(websocket: WebSocket):
     voice_agent = QwenVoiceAgent(websocket=websocket)
 
     # Shared across this tenant's sockets on this replica. The engine publishes
-    # through ws_hub, so it needs no socket of its own.
+    # through ws_hub, so it needs no socket of its own. Only frames with no
+    # record content reach every socket (audit 27.3; owner decision
+    # 2026-11-16): see engine_frame_is_tenant_wide.
     async def _publish_to_tenant(payload: dict) -> None:
-        await ws_hub.deliver_local(tenant_id, payload)
+        if engine_frame_is_tenant_wide(payload):
+            await ws_hub.deliver_local(tenant_id, payload)
+        else:
+            logger.debug("Workflow-engine frame %s not delivered tenant-wide (record content)",
+                         payload.get("type"))
 
     engine = await tenant_engines.acquire(
         tenant_id,
