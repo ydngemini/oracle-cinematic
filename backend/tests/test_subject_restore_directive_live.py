@@ -85,6 +85,7 @@ async def _scenario(monkeypatch, media_root):
         assert key.startswith("privacy/subject-erasure-directives/")
         directive = json.loads((media_root / key).read_bytes())
         assert directive["ids"]["clients"] == [x] and directive["ids"]["sms_messages"] == [sms]
+        assert directive["state"] == "committed" and done["restore_directive_state"] == "committed"
         assert f"x-{s}" not in json.dumps(directive) and "5550171" not in json.dumps(directive)  # no PII
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE id=$1", x) == 0
 
@@ -103,6 +104,29 @@ async def _scenario(monkeypatch, media_root):
         await admin.execute("DELETE FROM suppression_tombstones WHERE tenant_id=$1", T)
         await admin.execute("SET session_replication_role = origin")
 
+        # A PENDING directive (a deletion that may never have committed) and an
+        # expired one, both naming Y, who was never deleted, are never applied.
+        from datetime import datetime, timedelta, timezone
+
+        for name, extra in (("pending", {"state": "pending"}),
+                            ("expired", {"state": "committed",
+                                         "created_at": (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()})):
+            fake = {**directive, **extra, "operation_id": str(uuid.uuid4()), "ids": {"clients": [y]},
+                    "tombstones": []}
+            object_storage.put_bytes(f"{privacy_requests.SUBJECT_DIRECTIVES}{name}-{s}.json",
+                                     json.dumps(fake).encode(), "application/json")
+
+        # A legal hold on X blocks the re-deletion until it is released.
+        await admin.execute("INSERT INTO legal_holds (tenant_id, scope, subject_ref, reason, placed_by) "
+                            "VALUES ($1,'contact',$2,'litigation','counsel')", T, directive["subject_ref"])
+        by = {e["directive"].rsplit("/", 1)[1]: e for e in
+              await privacy_requests.reapply_subject_erasures(apply=True) if e.get("tenant_id") == T}
+        assert by[f"pending-{s}.json"]["status"] == "needs_review"
+        assert by[f"expired-{s}.json"]["status"] == "expired"
+        assert by[key.rsplit("/", 1)[1]]["status"] == "skipped_legal_hold"
+        assert await admin.fetchval("SELECT count(*) FROM clients WHERE id = ANY($1::uuid[])", [x, y]) == 2
+        await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE tenant_id=$1", T)
+
         # ...the brokerage-level pass does not touch it (it is not a brokerage erasure)...
         assert not [e for e in await pl.reapply_erasures(apply=False) if e.get("tenant_id") == T]
         # ...and the subject pass finds and deletes it again.
@@ -117,6 +141,11 @@ async def _scenario(monkeypatch, media_root):
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE id=$1", y) == 1   # Y untouched
         assert await admin.fetchval(
             "SELECT state FROM privacy_operations WHERE id=$1::uuid", mine[0]["reapply_operation_id"]) == "succeeded"
+
+        # Directives older than any usable backup are deleted; fresh ones kept.
+        assert await privacy_requests.expire_subject_directives() >= 1
+        left = object_storage.list_prefix(privacy_requests.SUBJECT_DIRECTIVES)
+        assert f"{privacy_requests.SUBJECT_DIRECTIVES}expired-{s}.json" not in left and key in left
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

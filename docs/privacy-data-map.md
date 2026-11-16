@@ -117,6 +117,7 @@ Counts are from the dev database. They show shape, not production volume.
 | `recon-inputs/{uuid}/…`, `recon-outputs/{uuid}/…` | **no** | **nothing** | not reachable per tenant — `scripts/privacy-orphan-audit.py` finds them |
 | `privacy/exports/{tenant}/{op}.zip` | yes | `privacy_operations.artifact_key` | 7-day expiry; prefix at erasure |
 | `privacy/erasure-directives/{op}.json` | tenant id only | — | kept: the restore re-application record |
+| `privacy/subject-erasure-directives/{op}.json` | tenant id, row ids, keyed hashes (no names, emails or phones) | — | one per person deleted by request; deleted after BACKUP_DAYS + 23 days (`expire_subject_directives`) |
 
 ## 4. Caches and browser
 

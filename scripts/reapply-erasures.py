@@ -40,13 +40,17 @@ async def main(apply: bool) -> int:
     try:
         # Brokerages first, then people deleted by request (audit 29.4).
         report = await reapply_erasures(apply=apply)
-        report += await reapply_subject_erasures(apply=apply)
+        try:
+            report += await reapply_subject_erasures(apply=apply)
+        except Exception as exc:  # noqa: BLE001 - still print the brokerage pass
+            report.append({"kind": "subject", "status": "reapply_failed", "detail": type(exc).__name__})
     finally:
         await connection.close_pool()
     for entry in report:
         print(json.dumps(entry, default=str))
     todo = [e for e in report if e["status"] == "resurrected"]
-    bad = [e for e in report if e["status"] in ("reapply_failed", "skipped_legal_hold", "unreadable")]
+    bad = [e for e in report if e["status"] in ("reapply_failed", "skipped_legal_hold", "unreadable",
+                                                 "needs_review", "tenant_erased_rows_back")]
     if not apply:
         print(f"\n{len(todo)} erasure(s) to re-apply. Re-run with --apply.")
         return 1 if todo else 0

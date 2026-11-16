@@ -20,9 +20,11 @@ or address is still blocked.
 from __future__ import annotations
 
 import json
+import uuid as uuid_mod
 from typing import Any, Optional
 
 from db.connection import tenant_tx
+from retention_policy import BACKUP_DAYS as _BACKUP_DAYS
 from tenancy import TenantContext
 
 # Children that would block (RESTRICT) deleting a client or contact; removed
@@ -275,8 +277,11 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
 
     from privacy_lifecycle import contact_hmac
 
+    from datetime import datetime, timezone
+
     directive = {
-        "kind": "subject", "tenant_id": ctx.tenant_id, "operation_id": op_id, "subject_ref": ref,
+        "kind": "subject", "state": "pending", "created_at": datetime.now(timezone.utc).isoformat(),
+        "tenant_id": ctx.tenant_id, "operation_id": op_id, "subject_ref": ref,
         "ids": {t: [str(i) for i in ids] for t, ids in found["ids"].items() if ids},
         "tombstones": sorted(contact_hmac(ctx.tenant_id, c) for c in found["identifiers"]),
     }
@@ -298,13 +303,20 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
             await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
                                     error="deletion failed; nothing was deleted")
         raise
+    # Only a committed directive is ever re-applied (review): a pending one
+    # may belong to a deletion that never happened.
+    committed = await asyncio.to_thread(_write_subject_directive, op_id, {**directive, "state": "committed"})
     receipt = {"operation_id": op_id, "deleted": deleted, "opt_out_kept_as_keyed_hash": True,
                "caveat": caveat, "restore_directive": key,
+               "restore_directive_state": "committed" if committed else "pending_review",
                "backups": ("Copies remain in encrypted database backups for up to 7 days. If one is "
                            "restored, this deletion is re-applied before the service reopens "
                            "(scripts/reapply-erasures.py).")}
     async with tenant_tx(ctx) as conn:
-        await _finish_operation(conn, op_id, state="succeeded", result={"deleted": deleted}, receipt=receipt)
+        await _finish_operation(conn, op_id, state="succeeded",
+                                result={"deleted": deleted,
+                                        "restore_directive_state": receipt["restore_directive_state"]},
+                                receipt=receipt)
     await _audit(ctx, "privacy.subject.deleted", target=op_id, metadata={"deleted": deleted})
     return {"operation_id": op_id, "kind": kind, **receipt}
 
@@ -350,6 +362,8 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
 
 
 SUBJECT_DIRECTIVES = "privacy/subject-erasure-directives/"
+# Kept past the longest backup a restore could bring back, then deleted.
+SUBJECT_DIRECTIVE_DAYS = _BACKUP_DAYS + 23
 # Never under privacy/erasure-directives/: reapply_erasures reads every
 # directive there as a WHOLE-BROKERAGE erasure.
 
@@ -401,60 +415,134 @@ async def reapply_subject_erasures(*, apply: bool) -> list[dict]:
     report: list[dict] = []
     for key in keys:
         try:
-            d = json.loads(await asyncio.to_thread(object_storage.get_bytes, key))
-            tenant = str(d["tenant_id"])
-            ids = {str(t): [str(i) for i in v] for t, v in d["ids"].items()}
-            tombstones = [str(h) for h in d.get("tombstones") or []]
-        except Exception as exc:  # noqa: BLE001 - reported, never skipped silently
-            report.append({"directive": key, "status": "unreadable", "detail": type(exc).__name__})
-            continue
-        entry: dict[str, Any] = {"kind": "subject", "directive": key, "tenant_id": tenant,
-                                 "operation_id": d.get("operation_id")}
-        async with tenant_tx(ctx) as conn:
-            state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant)
-            back = {}
-            for table, table_ids in ids.items():
-                if table not in _SUBJECT_TABLES:
-                    continue
-                n = int(await conn.fetchval(
-                    f"SELECT count(*) FROM public.{table} WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
-                    tenant, table_ids) or 0)
-                if n:
-                    back[table] = n
-            have = set(await conn.fetchval(
-                "SELECT coalesce(array_agg(contact_hmac), '{}') FROM suppression_tombstones "
-                "WHERE tenant_id=$1 AND contact_hmac = ANY($2::text[])", tenant, tombstones))
-        missing_tombstones = len(set(tombstones) - have)
-        entry.update(rows_back=back, tombstones_missing=missing_tombstones)
-        if state is None or state == "erased":
-            entry["status"] = "still_erased" if not back else "tenant_erased_rows_back"
-        else:
-            entry["status"] = "resurrected" if back or missing_tombstones else "still_erased"
-        if apply and entry["status"] == "resurrected":
-            op_id = None
-            try:
-                async with tenant_tx(ctx) as conn:
-                    op = await _create_operation(
-                        conn, tenant_id=tenant, kind="dsr_delete", requested_by="reapply-erasures",
-                        subject_kind="contact", subject_ref=d.get("subject_ref"), state="running",
-                        reason="re-applied after database restore",
-                        params={"reapply_of": d.get("operation_id")})
-                op_id = str(op["id"])
-                async with tenant_tx(ctx) as conn:
-                    deleted = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
-                    await _finish_operation(conn, str(op["id"]), state="succeeded",
-                                            result={"deleted": deleted, "reapply_of": d.get("operation_id")})
-                entry.update(status="reapplied", reapply_operation_id=str(op["id"]), deleted=deleted)
-            except Exception as exc:  # noqa: BLE001 - legal hold or a DB error: needs a person
-                hold = "legal hold" in str(exc).lower()
-                entry.update(status="skipped_legal_hold" if hold else "reapply_failed", detail=type(exc).__name__)
-                if op_id:
-                    async with tenant_tx(ctx) as conn:
-                        await _finish_operation(conn, op_id, state="blocked_legal_hold" if hold else "failed",
-                                                result={"reapply_of": d.get("operation_id")},
-                                                error=type(exc).__name__)
-        report.append(entry)
+            report.append(await _reapply_one(ctx, key, apply))
+        except Exception as exc:  # noqa: BLE001 - one bad directive never stops the run
+            report.append({"kind": "subject", "directive": key, "status": "reapply_failed",
+                           "detail": type(exc).__name__})
     return report
+
+
+def _directive_expired(d: dict) -> bool:
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        made = datetime.fromisoformat(str(d["created_at"]))
+    except (KeyError, ValueError):
+        return False  # undated: kept, and re-applied if committed
+    return datetime.now(timezone.utc) - made > timedelta(days=SUBJECT_DIRECTIVE_DAYS)
+
+
+async def _reapply_one(ctx, key: str, apply: bool) -> dict:
+    import asyncio
+
+    import object_storage
+    from privacy_lifecycle import _create_operation, _finish_operation, active_legal_hold
+
+    try:
+        d = json.loads(await asyncio.to_thread(object_storage.get_bytes, key))
+        tenant = str(d["tenant_id"])
+        ids = {str(t): [str(uuid_mod.UUID(str(i))) for i in v]
+               for t, v in d["ids"].items() if str(t) in _SUBJECT_TABLES}
+        tombstones = [str(h) for h in d.get("tombstones") or []]
+    except Exception as exc:  # noqa: BLE001 - reported, never skipped silently
+        return {"kind": "subject", "directive": key, "status": "unreadable", "detail": type(exc).__name__}
+    entry: dict[str, Any] = {"kind": "subject", "directive": key, "tenant_id": tenant,
+                             "operation_id": d.get("operation_id")}
+    if _directive_expired(d):
+        # Older than any backup a restore could use; expire_subject_directives removes it.
+        entry["status"] = "expired"
+        return entry
+    async with tenant_tx(ctx) as conn:
+        state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant)
+        # Rows the restore brought back that are linked to the person but were
+        # not in the directive (e.g. removed between the backup and the
+        # request) would block the delete (RESTRICT): find them again.
+        for client_id in ids.get("clients", []):
+            more = await _discover(conn, tenant, None, None, None, client_id)
+            for t, v in more["ids"].items():
+                if t in _SUBJECT_TABLES:
+                    ids[t] = sorted(set(ids.get(t, [])) | {str(i) for i in v})
+        for contact_id in list(ids.get("agent_contacts", [])):
+            more = await _discover(conn, tenant, None, None, contact_id, None)
+            for t, v in more["ids"].items():
+                if t in _SUBJECT_TABLES:
+                    ids[t] = sorted(set(ids.get(t, [])) | {str(i) for i in v})
+        back = {}
+        for table, table_ids in ids.items():
+            n = int(await conn.fetchval(
+                f"SELECT count(*) FROM public.{table} WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                tenant, table_ids) or 0)
+            if n:
+                back[table] = n
+        have = set(await conn.fetchval(
+            "SELECT coalesce(array_agg(contact_hmac), '{}') FROM suppression_tombstones "
+            "WHERE tenant_id=$1 AND contact_hmac = ANY($2::text[])", tenant, tombstones))
+        hold = (await active_legal_hold(conn, tenant)
+                or await active_legal_hold(conn, tenant, scope="contact", subject_ref=d.get("subject_ref")))
+    entry.update(rows_back=back, tombstones_missing=len(set(tombstones) - have))
+    if state is None or state == "erased":
+        entry["status"] = "still_erased" if not back else "tenant_erased_rows_back"
+        return entry
+    if not (back or entry["tombstones_missing"]):
+        entry["status"] = "still_erased"
+        return entry
+    if d.get("state") != "committed":
+        # The deletion may never have committed (a crash, or a failure whose
+        # cleanup also failed): the brokerage was told nothing was deleted.
+        entry["status"] = "needs_review"
+        return entry
+    entry["status"] = "resurrected"
+    if not apply:
+        return entry
+    if hold:
+        entry["status"] = "skipped_legal_hold"
+        return entry
+    op_id = None
+    try:
+        async with tenant_tx(ctx) as conn:
+            op = await _create_operation(
+                conn, tenant_id=tenant, kind="dsr_delete", requested_by="reapply-erasures",
+                subject_kind="contact", subject_ref=d.get("subject_ref"), state="running",
+                reason="re-applied after database restore",
+                params={"reapply_of": d.get("operation_id")})
+        op_id = str(op["id"])
+        async with tenant_tx(ctx) as conn:
+            deleted = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
+            await _finish_operation(conn, op_id, state="succeeded",
+                                    result={"deleted": deleted, "reapply_of": d.get("operation_id")})
+        entry.update(status="reapplied", reapply_operation_id=op_id, deleted=deleted)
+    except Exception as exc:  # noqa: BLE001 - legal hold or a DB error: needs a person
+        held = getattr(exc, "sqlstate", None) == "P0001"
+        entry.update(status="skipped_legal_hold" if held else "reapply_failed", detail=type(exc).__name__)
+        if op_id:
+            async with tenant_tx(ctx) as conn:
+                await _finish_operation(conn, op_id, state="blocked_legal_hold" if held else "failed",
+                                        result={"reapply_of": d.get("operation_id")},
+                                        error=type(exc).__name__)
+    return entry
+
+
+async def expire_subject_directives() -> int:
+    """Delete subject directives older than any backup a restore could use
+    (BACKUP_DAYS plus margin): they hold row ids and keyed hashes, and
+    re-applying an old one would restart an expired opt-out's clock (review).
+    Run by the periodic privacy task."""
+    import asyncio
+
+    import object_storage
+
+    if not object_storage.is_configured():
+        return 0
+    removed = 0
+    for key in await asyncio.to_thread(object_storage.list_prefix, SUBJECT_DIRECTIVES):
+        try:
+            d = json.loads(await asyncio.to_thread(object_storage.get_bytes, key))
+        except Exception:  # noqa: BLE001 - unreadable: left for reapply to report
+            continue
+        if _directive_expired(d):
+            await asyncio.to_thread(object_storage.delete_object, key)
+            removed += 1
+    return removed
 
 
 async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str, Any]:
