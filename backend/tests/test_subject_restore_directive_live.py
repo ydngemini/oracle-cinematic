@@ -141,10 +141,12 @@ async def _scenario(monkeypatch, media_root):
         # ...the brokerage-level pass does not touch it (it is not a brokerage erasure)...
         assert not [e for e in await pl.reapply_erasures(apply=False) if e.get("tenant_id") == T]
         # ...and the subject pass finds and deletes it again.
-        mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=False) if e.get("tenant_id") == T]
+        # X's own directive by key: the listing order depends on random ids.
+        mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=False) if e.get("directive") == key]
         assert mine[0]["status"] == "resurrected" and mine[0]["rows_back"] == {"clients": 1, "sms_messages": 2}
         assert mine[0]["tombstones_missing"] >= 1
-        mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=True) if e.get("tenant_id") == T]
+        # X's own directive by key: the listing order depends on random ids.
+        mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=True) if e.get("directive") == key]
         assert mine[0]["status"] == "reapplied"
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE id=$1", x) == 0
         assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE id=$1", sms) == 0
