@@ -38,6 +38,15 @@ def test_the_socket_checks_call_content_before_its_transaction():
     tx = min(line for line, name in calls if name == "tenant_tx")
     send = min(line for line, name in calls if name.endswith("send_json"))
     assert check < tx < send
+    # ... and the refusal is on a NEGATED check that closes the socket: an
+    # inverted check (admit the refused, refuse the admitted) fails here.
+    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+              and "may_read_call_content" in ast.unparse(node.test)]
+    assert len(guards) == 1
+    test, body = guards[0].test, ast.unparse(guards[0].body[0])
+    assert isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And), ast.unparse(test)
+    assert all(isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not) for v in test.values), ast.unparse(test)
+    assert "close(code=4404)" in body, body
 
 
 @live
@@ -54,13 +63,18 @@ def test_call_content_pull_paths_fail_closed_live():
 
         admin = await asyncpg.connect(DSN)
         await connection.init_pool(min_size=1, max_size=2)
-        tenant = str(uuid.uuid4())
+        tenant, other = str(uuid.uuid4()), str(uuid.uuid4())
         tag = uuid.uuid4().hex[:8]
         who = {k: f"{k}-{tag}@pull.test" for k in ("owner", "a", "b")}
         client = {k: uuid.uuid4() for k in ("a", "erased")}
-        lead = {k: uuid.uuid4() for k in ("pool", "erased")}
+        lead = {k: uuid.uuid4() for k in ("pool", "erased", "foreign")}
+        contact_a = uuid.uuid4()
 
         def ctx(k):
+            if k == "ops":
+                return TenantContext(agent_id=f"ops-{tag}@platform.test", tenant_id=tenant, role=Role.PLATFORM_ADMIN)
+            if k == "B-upper":
+                return TenantContext(agent_id=who["b"].upper(), tenant_id=tenant, role=Role.AGENT)
             role = Role.BROKER_OWNER if k == "owner" else Role.AGENT
             return TenantContext(agent_id=who[k], tenant_id=tenant, role=role)
 
@@ -73,8 +87,9 @@ def test_call_content_pull_paths_fail_closed_live():
                 return error.status_code
 
         try:
-            await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Voice pull test')",
-                                tenant, f"vp-{tenant[:8]}")
+            for t, slug in ((tenant, "vp"), (other, "vp-other")):
+                await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Voice pull test')",
+                                    t, f"{slug}-{t[:8]}")
             for k, role in (("owner", "broker_owner"), ("a", "agent"), ("b", "agent")):
                 await admin.execute(
                     "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
@@ -86,12 +101,21 @@ def test_call_content_pull_paths_fail_closed_live():
                            "address) VALUES ($1,$2,$3,'DE',50,$4,'2 Test Rd')")
             await admin.execute(insert_lead, lead["pool"], tenant, f"VP-{tag}", None)
             await admin.execute(insert_lead, lead["erased"], tenant, f"VE-{tag}", client["erased"])
+            await admin.execute(insert_lead, lead["foreign"], other, f"VF-{tag}", None)
+            await admin.execute(
+                "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state) "
+                "VALUES ($1,$2,$3,'voice-pull','pending_encryption')", contact_a, tenant, who["a"])
             insert_call = ("INSERT INTO live_call_sessions (tenant_id, client_id, lead_id, consent_recorded, "
                            "consent_basis, transcript_status, started_at, created_by) "
                            "VALUES ($1,$2,$3,true,'verbal','active',now(),$4) RETURNING id")
             private = await admin.fetchval(insert_call, tenant, client["a"], None, who["a"])
             pool = await admin.fetchval(insert_call, tenant, None, lead["pool"], who["b"])
             erased = await admin.fetchval(insert_call, tenant, None, lead["erased"], who["a"])
+            foreign = await admin.fetchval(insert_call, tenant, None, lead["foreign"], who["a"])
+            contact_only = await admin.fetchval(
+                "INSERT INTO live_call_sessions (tenant_id, contact_id, consent_recorded, consent_basis, "
+                "transcript_status, started_at, created_by) VALUES ($1,$2,true,'verbal','active',now(),$3) "
+                "RETURNING id", tenant, contact_a, who["b"])
             await admin.execute("DELETE FROM clients WHERE id = $1", client["erased"])  # erasure: lead -> pool
 
             got = {
@@ -99,15 +123,21 @@ def test_call_content_pull_paths_fail_closed_live():
                 "pool": {k: await read(k, pool) for k in who},
                 "erased": {k: await read(k, erased) for k in who},
                 "latest_for_owner": await read("owner", None),
+                "contact_only": {k: await read(k, contact_only) for k in who},
+                "foreign": {k: await read(k, foreign) for k in who},
+                "pool_upper_case_creator": await read("B-upper", pool),
+                "pool_platform_admin": await read("ops", pool),
                 "missing": await record_access.may_read_call_content(tenant, uuid.uuid4(), who["a"]),
             }
-            return got, {"private": str(private), "pool": str(pool), "erased": str(erased)}
+            return got, {"private": str(private), "pool": str(pool), "erased": str(erased),
+                         "contact_only": str(contact_only)}
         finally:
             await admin.execute("SET session_replication_role = replica")
             try:
-                for table in ("live_call_sessions", "leads", "clients", "users"):
-                    await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", tenant)
-                await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", tenant)
+                for t in (tenant, other):
+                    for table in ("live_call_sessions", "agent_contacts", "leads", "clients", "users"):
+                        await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", t)
+                    await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", t)
             finally:
                 await admin.execute("SET session_replication_role = origin")
                 await admin.close()
@@ -120,6 +150,17 @@ def test_call_content_pull_paths_fail_closed_live():
     assert got["pool"] == {"owner": 404, "a": 404, "b": ids["pool"]}, got["pool"]
     # An erased client's lead (now a pool lead): only the call's creator.
     assert got["erased"] == {"owner": 404, "a": ids["erased"], "b": 404}, got["erased"]
-    # "Latest active" never hands the owner a pool call they did not make.
-    assert got["latest_for_owner"] == ids["private"], got["latest_for_owner"]
+    # "Latest active" is the NEWEST call the owner may read (the contact-only
+    # call, created last) — never the newer-than-private pool or erased calls.
+    assert got["latest_for_owner"] == ids["contact_only"], got["latest_for_owner"]
+    assert got["latest_for_owner"] not in (ids["pool"], ids["erased"])
     assert got["missing"] is False
+    # A contact-only call follows the contact (its agent + the broker owner). B
+    # created the call, but the record HAS a specific audience, so B is refused.
+    assert got["contact_only"] == {"owner": ids["contact_only"], "a": ids["contact_only"], "b": 404}, \
+        got["contact_only"]
+    # A call naming another brokerage's lead: no one here may read it, not even its creator.
+    assert set(got["foreign"].values()) == {404}, got["foreign"]
+    # Agent ids compare case-insensitively; the platform admin keeps read.
+    assert got["pool_upper_case_creator"] == ids["pool"]
+    assert got["pool_platform_admin"] == ids["pool"]

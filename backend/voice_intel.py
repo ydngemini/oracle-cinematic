@@ -670,10 +670,6 @@ async def read_voice_telemetry(
     audience — or, for a pool / erased-client / unlinked call, by the member
     who created it (record_access.may_read_call_content; owner decision
     2026-11-16). Anyone else gets 404, as if the session did not exist."""
-    async def allowed(candidate) -> bool:
-        return ctx.is_platform_admin or await record_access.may_read_call_content(
-            ctx.tenant_id, candidate, ctx.agent_id)
-
     # Which sessions the caller can see (their row-level security) ...
     async with tenant_tx(ctx) as conn:
         if session_id is None:
@@ -682,24 +678,23 @@ async def read_voice_telemetry(
                 SELECT id FROM live_call_sessions
                  WHERE transcript_status IN ('pending','active')
                  ORDER BY created_at DESC
-                 LIMIT 50
+                 LIMIT 200
                 """
             )]
         else:
             visible = [session_id] if await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)", session_id) else []
-    # ... and, outside that transaction (never two pool connections at once),
-    # whose content they may read.
-    chosen = None
-    for candidate in visible:
-        if await allowed(candidate):
-            chosen = candidate
-            break
-    if chosen is None:
+    # ... and, in ONE query outside that transaction (never two pool
+    # connections at once), whose content they may read, newest first.
+    if ctx.is_platform_admin:
+        readable = [str(v) for v in visible]
+    else:
+        readable = await record_access.may_read_call_content_many(ctx.tenant_id, visible, ctx.agent_id)
+    if not readable:
         if session_id is None:
             return {"session_id": None, "events": [], "next_event_id": after_event_id}
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
-    session_id = chosen
+    session_id = uuid.UUID(readable[0])
 
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(

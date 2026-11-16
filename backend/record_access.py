@@ -222,7 +222,7 @@ async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any,
 
 
 _CALL_CONTENT_SQL = """
-SELECT s.created_by,
+SELECT s.id, s.created_at, s.created_by,
        CASE
          WHEN s.client_id IS NOT NULL OR s.contact_id IS NOT NULL
            THEN app_record_audience(s.client_id, s.contact_id)
@@ -233,7 +233,7 @@ SELECT s.created_by,
          ELSE NULL
        END AS audience
   FROM live_call_sessions s
- WHERE s.id = $1::uuid
+ WHERE s.id = ANY($1::uuid[])
 """
 
 
@@ -248,16 +248,29 @@ async def may_read_call_content(tenant_id: str, session_id: Any, agent_id: str) 
     was erased, an unlinked call) only the member who created the call; a call
     that does not exist, no one. Computed as a brokerage-scope pipeline, so the
     answer does not depend on what the caller's own row-level security shows."""
+    return bool(await may_read_call_content_many(tenant_id, [session_id], agent_id))
+
+
+async def may_read_call_content_many(tenant_id: str, session_ids: list, agent_id: str) -> list[str]:
+    """The ids among `session_ids` whose content `agent_id` may read, newest
+    first — ONE brokerage-scope query however many candidates (the REST feed's
+    "latest active" lookup used to cost one transaction per candidate)."""
+    if not session_ids or not agent_id:
+        return []
     pipeline = brokerage_scope(TenantContext(agent_id="system:call-content", tenant_id=str(tenant_id),
                                              role=Role.AGENT))
     async with tenant_tx(pipeline) as conn:
-        row = await conn.fetchrow(_CALL_CONTENT_SQL, str(session_id))
-    if row is None or not agent_id:
-        return False
+        rows = await conn.fetch(_CALL_CONTENT_SQL, [str(s) for s in session_ids])
     who = agent_id.lower()
-    if row["audience"] is None:
-        return (row["created_by"] or "").lower() == who
-    return who in {str(a).lower() for a in row["audience"]}
+    allowed = []
+    for row in sorted(rows, key=lambda r: r["created_at"], reverse=True):
+        if row["audience"] is None:
+            ok = (row["created_by"] or "").lower() == who
+        else:
+            ok = who in {str(a).lower() for a in row["audience"]}
+        if ok:
+            allowed.append(str(row["id"]))
+    return allowed
 
 
 async def pipeline_count(tenant_id: str, sql: str, *args: Any) -> Any:
