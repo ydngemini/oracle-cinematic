@@ -35,7 +35,10 @@ def load_acceptances(path: Path) -> list[dict]:
 
 
 def acceptance_for(item: dict, exec_id: str, acceptances: list[dict]) -> tuple[dict | None, str]:
-    for record in acceptances:
+    """The LATEST review record for this item and execution decides: an
+    earlier "changes_requested" must not hide a later acceptance, and a later
+    rejection must override an earlier acceptance."""
+    for record in reversed(acceptances):
         if record.get("item") != item["id"] or record.get("exec_id") != exec_id:
             continue
         missing = [k for k in REQUIRED if not record.get(k)]

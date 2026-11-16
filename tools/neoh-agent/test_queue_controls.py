@@ -507,3 +507,11 @@ def test_10_root_floor_probes_the_host_root_not_the_sandbox_tmpfs():
 
     resources.check_floors(policy()["disk_floors"], "/core2", statvfs=statvfs, meminfo=MEM_OK)
     assert seen == ["/core2", resources.ROOT_PROBE] and "/" not in seen
+
+
+def test_15_the_latest_review_record_decides():
+    """Found by the first real completion check: an earlier changes_requested
+    record (no PR yet) hid the later acceptance."""
+    requested = accept(decision="changes_requested", pr=None)
+    assert completion.acceptance_for(item(), "e1", [requested, accept()])[0]
+    assert completion.acceptance_for(item(), "e1", [accept(), accept(decision="rejected")])[0] is None
