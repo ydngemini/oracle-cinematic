@@ -339,7 +339,7 @@ export function BrokerageSetupPanel() {
                     <button
                       type="button" className={styles.link} disabled={busy}
                       onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/suspend`,
-                        { reason: 'Suspended by an owner from Settings' }), 'Suspended. Their sign-in and unsent work are stopped.')}
+                        { reason: 'Suspended by an owner from Settings' }), 'Suspended. Their sign-in and unsent work are stopped, and their business number stops answering calls and texts until you reinstate them.')}
                     >
                       Suspend
                     </button>

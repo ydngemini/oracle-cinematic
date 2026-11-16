@@ -3823,6 +3823,29 @@ next_task: "29.4b subject restore directive; DSAR access for client-keyed childr
 updated: 2026-11-16
 ```
 
+#### L17-37 A suspended or departed agent's business line is silent: inbound calls and texts route only to active agents (owner decision D-2026-11-16-01; external audit 22.5)
+```yaml
+id: L17-37
+status: tests_pass
+env: local
+evidence_shas: [0bd5881]   # base; fix in the commit that adds this row
+files: [backend/inbound_voice.py, backend/messaging_data.py, backend/tests/test_suspended_agent_line_live.py, oracle-app/src/components/BrokerageSetupPanel.jsx, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read inbound_voice.resolve_inbound_route, messaging_data.resolve_messaging_route_by_number at 0bd5881", result: "neither checks that the route's agent is active; suspend_member deliberately kept the line answering (owner now decided otherwise: D-2026-11-16-01)", date: 2026-11-16}
+  - {cmd: "red: test_suspended_agent_line_live against 0bd5881's two resolvers (live PostgreSQL)", result: "a suspended agent's number still resolved for calls and texts ((True, True) != (False, False))", date: 2026-11-16}
+  - {cmd: "after: live test_suspended_agent_line_live + test_departing_agent_routes_live; unit test_inbound_voice; vitest BrokerageSetupPanel; eslint", result: "live 2 passed (suspend via the real suspend_member -> neither calls nor texts resolve, a STOP to the number is still owned; reinstate_member -> both answer again); unit 28 passed; vitest and eslint clean", date: 2026-11-16}
+authz_checked: "inbound resolution runs in the platform context, whose users RLS policy admits platform admins; the check matches the route's tenant and agent_id case-insensitively on users.is_active."
+blockers:
+  - "What a caller and texter get: a call hears the existing 'cannot be connected' message and ends; a text is acknowledged to the carrier (204) and not logged, so it is not recoverable later. Revisit if clients of suspended agents need an answering message (D-2026-11-16-01 'Revisit when')."
+  - "Seat-limit deactivation and closure also set users.is_active=false, so those lines go silent too (closure already deactivated routes)."
+  - "A route whose agent has no users row (legacy/system data) no longer answers. resolve_inbound_call_route (callbacks of a call already in progress) is unchanged."
+  - "Customer-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [22.5]
+decision_refs: [D-2026-11-16-01]
+next_task: "DSAR access + deletion for client-cascade and SET NULL children; then 24.x commands/callbacks."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 
@@ -4417,6 +4440,7 @@ Decisions are binding ([CONTRACT C2.4](CONTRACT.md#c2-scope-and-owner-decisions)
 | D-2026-10-12-03 | 2026-10-12 | **AI call notes support both modes, chosen per agent:** `review` (default) saves the note proposed for the agent to approve, edit or discard (the AI ignores it until approved); `direct` saves it approved. | Owner, in session 2026-10-12 ("both") | 09, 17 | `client_notes.review_state` (0130), `call_note_settings.py`, approve route, Personal AI toggle | Owner request |
 | D-2026-10-13-01 | 2026-10-13 | **Agents see their own clients, the brokerage pool and what is shared with them.** A client with no assignee is the brokerage pool, visible to every agent; an agent-created client is NOT auto-assigned; a share is per record and grants view or edit, chosen per share. | Owner, in session 2026-10-13 (three answers) | 03, 04, 17 | `0131_agent_record_scope.sql` (restrictive policies, `record_shares`, `assignee_user_id`), `record_access.py`, `ClientAccess.jsx`; contacts the same way in `0134_agent_contact_scope.sql` (L03-04) | Team leads (T03.02) or a different default for imports |
 | D-2026-10-12-02 | 2026-10-12 | Pricing is a hypothesis, not decided. Code: one Stripe price at quantity 1 (`backend/billing.py:44`, `:266`), no seats. Idea: ~$1,999/month per 20-agent brokerage, ~$1,499 pilot. | Shared notes 2026-10-11 | 18 | No price change without owner approval | Owner sets pricing |
+| D-2026-11-16-01 | 2026-11-16 | **Suspending an agent silences their business line.** Inbound calls and texts to a suspended (or departed) agent's number are not answered; reinstating them restores it. A STOP to that number is still recorded. | Owner, in the 2026-11-16 Claude session ("3. Yes") | 03, 09, 10, 17 | `inbound_voice.resolve_inbound_route` and `messaging_data.resolve_messaging_route_by_number` require `users.is_active` for the route's agent (L17-37) | If suspended agents' clients need an answering message instead of silence |
 | D-2026-11-05-01 | 2026-11-05 | **Seat terms: 20 agents plus the owner; suspending an agent frees their seat.** A second owner takes a seat. Price stays undecided (D-2026-10-12-02). | Owner, in the 2026-11-05 Claude session (approved again 2026-11-08 with the PR #33 merge) | 18 | 0161 counts every active non-platform-admin user, owner included, so the plan is `tenants.seat_limit = 21`; suspension already frees a seat (trigger checks only rows that gain one) | The plan contract changes |
 
 ## Audit cross-reference

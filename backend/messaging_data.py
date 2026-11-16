@@ -952,7 +952,9 @@ async def resolve_messaging_route_by_number(to_e164: str) -> Optional[dict[str, 
     public business number against telephony_routes, then require an active
     messaging_routes row for that same tenant+agent. A number with a voice
     route but no completed messaging connection resolves to None — the
-    webhook fails closed rather than guessing."""
+    webhook fails closed rather than guessing. So does a number whose agent
+    is suspended or gone (D-2026-11-16-01, audit 22.5); a STOP to it is still
+    recorded through resolve_opt_out_owners_by_number."""
     try:
         to_normalized = str(to_e164 or "").strip()
     except (TypeError, ValueError):
@@ -971,6 +973,10 @@ async def resolve_messaging_route_by_number(to_e164: str) -> Optional[dict[str, 
                AND t.active=true
                AND m.active=true
                AND m.hosted_order_status='active'
+               AND EXISTS (SELECT 1 FROM users u
+                            WHERE u.tenant_id = t.tenant_id
+                              AND lower(u.agent_id) = lower(t.agent_id)
+                              AND u.is_active)
              LIMIT 1
             """,
             to_normalized,

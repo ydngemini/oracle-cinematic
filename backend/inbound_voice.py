@@ -262,6 +262,12 @@ async def resolve_inbound_route(
                    AND provider_account_id=$3
                    AND provider=$4
                    AND active
+                   -- Only for an agent who is still active (D-2026-11-16-01,
+                   -- audit 22.5): a suspended or departed agent's line is silent.
+                   AND EXISTS (SELECT 1 FROM users u
+                                WHERE u.tenant_id = telephony_routes.tenant_id
+                                  AND lower(u.agent_id) = lower(telephony_routes.agent_id)
+                                  AND u.is_active)
                  LIMIT 1
                 """,
                 endpoint_uuid,
@@ -278,6 +284,12 @@ async def resolve_inbound_route(
                    AND inbound_did=$2
                    AND provider=$3
                    AND active
+                   -- Only for an agent who is still active (D-2026-11-16-01,
+                   -- audit 22.5): a suspended or departed agent's line is silent.
+                   AND EXISTS (SELECT 1 FROM users u
+                                WHERE u.tenant_id = telephony_routes.tenant_id
+                                  AND lower(u.agent_id) = lower(telephony_routes.agent_id)
+                                  AND u.is_active)
                  LIMIT 1
                 """,
                 endpoint_uuid,
