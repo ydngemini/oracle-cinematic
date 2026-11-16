@@ -152,6 +152,10 @@ WIDER_VIEW = {
     ("PUT", "/api/sites/{site_id}/collaborators/{agent_id}"): "site owner, broker owner or operator",
     ("DELETE", "/api/sites/{site_id}/collaborators/{agent_id}"): "site owner, broker owner or operator",
     ("GET", "/api/brokerage/team"): "owner/operator see every member's detail",
+    ("GET", "/api/voice/telemetry"):
+        "call content is the record's audience or the call's creator; the operator may read any call RLS shows",
+    ("WS", "/ws/voice-telemetry/{session_id}"):
+        "call content is the record's audience or the call's creator; the operator may read any call RLS shows",
 }
 
 # The role is named about the target data, not the caller.
