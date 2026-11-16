@@ -102,6 +102,16 @@ async def _scenario(monkeypatch, media_root):
             "from_e164, to_e164, body, client_id) VALUES ($1,$2,$3,'telnyx',$4,'inbound','+13025550171','+13025550199',$5,$6)",
             sms, T, owner, f"msg-{s}", f"x-text {s}", x)
         await admin.execute("DELETE FROM suppression_tombstones WHERE tenant_id=$1", T)
+        # At backup time X's record carried Z's number, and Z had opted out;
+        # X also had a second text that was gone before the request.
+        await admin.execute("UPDATE clients SET phone='302-555-0179' WHERE id=$1", x)
+        await admin.execute("INSERT INTO outreach_suppression (tenant_id, contact, channel, reason) "
+                            "VALUES ($1,'+13025550179','*','stop_keyword')", T)
+        old_text = str(uuid.uuid4())
+        await admin.execute(
+            "INSERT INTO sms_messages (id, tenant_id, agent_id, provider, provider_message_id, direction, "
+            "from_e164, to_e164, body, client_id) VALUES ($1,$2,$3,'telnyx',$4,'inbound','+13025550171',"
+            "'+13025550199',$5,$6)", old_text, T, owner, f"old-{s}", f"old x-text {s}", x)
         await admin.execute("SET session_replication_role = origin")
 
         # A PENDING directive (a deletion that may never have committed) and an
@@ -122,7 +132,8 @@ async def _scenario(monkeypatch, media_root):
         by = {e["directive"].rsplit("/", 1)[1]: e for e in
               await privacy_requests.reapply_subject_erasures(apply=True) if e.get("tenant_id") == T}
         assert by[f"pending-{s}.json"]["status"] == "needs_review"
-        assert by[f"expired-{s}.json"]["status"] == "expired"
+        # never applied; Y's row exists, so it is flagged for a person
+        assert by[f"expired-{s}.json"]["status"] == "expired_rows_back"
         assert by[key.rsplit("/", 1)[1]]["status"] == "skipped_legal_hold"
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE id = ANY($1::uuid[])", [x, y]) == 2
         await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE tenant_id=$1", T)
@@ -131,7 +142,7 @@ async def _scenario(monkeypatch, media_root):
         assert not [e for e in await pl.reapply_erasures(apply=False) if e.get("tenant_id") == T]
         # ...and the subject pass finds and deletes it again.
         mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=False) if e.get("tenant_id") == T]
-        assert mine[0]["status"] == "resurrected" and mine[0]["rows_back"] == {"clients": 1, "sms_messages": 1}
+        assert mine[0]["status"] == "resurrected" and mine[0]["rows_back"] == {"clients": 1, "sms_messages": 2}
         assert mine[0]["tombstones_missing"] >= 1
         mine = [e for e in await privacy_requests.reapply_subject_erasures(apply=True) if e.get("tenant_id") == T]
         assert mine[0]["status"] == "reapplied"
@@ -139,6 +150,10 @@ async def _scenario(monkeypatch, media_root):
         assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE id=$1", sms) == 0
         assert await admin.fetchval("SELECT count(*) FROM suppression_tombstones WHERE tenant_id=$1", T) >= 1
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE id=$1", y) == 1   # Y untouched
+        assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE id=$1", old_text) == 0  # linked child
+        # Z's opt-out (matched only by the number X's old record carried) survives.
+        assert await admin.fetchval("SELECT count(*) FROM outreach_suppression WHERE tenant_id=$1 "
+                                    "AND contact='+13025550179'", T) == 1
         assert await admin.fetchval(
             "SELECT state FROM privacy_operations WHERE id=$1::uuid", mine[0]["reapply_operation_id"]) == "succeeded"
 

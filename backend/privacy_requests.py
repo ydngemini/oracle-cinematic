@@ -428,7 +428,7 @@ def _directive_expired(d: dict) -> bool:
     try:
         made = datetime.fromisoformat(str(d["created_at"]))
     except (KeyError, ValueError):
-        return False  # undated: kept, and re-applied if committed
+        return True  # undated (pre-release format, never committed): expire it
     return datetime.now(timezone.utc) - made > timedelta(days=SUBJECT_DIRECTIVE_DAYS)
 
 
@@ -448,25 +448,16 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
         return {"kind": "subject", "directive": key, "status": "unreadable", "detail": type(exc).__name__}
     entry: dict[str, Any] = {"kind": "subject", "directive": key, "tenant_id": tenant,
                              "operation_id": d.get("operation_id")}
-    if _directive_expired(d):
-        # Older than any backup a restore could use; expire_subject_directives removes it.
-        entry["status"] = "expired"
-        return entry
     async with tenant_tx(ctx) as conn:
         state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant)
-        # Rows the restore brought back that are linked to the person but were
-        # not in the directive (e.g. removed between the backup and the
-        # request) would block the delete (RESTRICT): find them again.
-        for client_id in ids.get("clients", []):
-            more = await _discover(conn, tenant, None, None, None, client_id)
-            for t, v in more["ids"].items():
-                if t in _SUBJECT_TABLES:
-                    ids[t] = sorted(set(ids.get(t, [])) | {str(i) for i in v})
-        for contact_id in list(ids.get("agent_contacts", [])):
-            more = await _discover(conn, tenant, None, None, contact_id, None)
-            for t, v in more["ids"].items():
-                if t in _SUBJECT_TABLES:
-                    ids[t] = sorted(set(ids.get(t, [])) | {str(i) for i in v})
+        # Child rows the restore brought back that point at the directive's
+        # OWN client/contact ids but are not listed (e.g. removed between the
+        # backup and the request) would block the delete (RESTRICT). Only those
+        # are added: never another client or contact, never a match by address
+        # (review: the restored data may still carry another person's number).
+        for table, rows in (await _linked_children(conn, tenant, ids.get("clients", []),
+                                                   ids.get("agent_contacts", []))).items():
+            ids[table] = sorted(set(ids.get(table, [])) | set(rows))
         back = {}
         for table, table_ids in ids.items():
             n = int(await conn.fetchval(
@@ -480,6 +471,12 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
         hold = (await active_legal_hold(conn, tenant)
                 or await active_legal_hold(conn, tenant, scope="contact", subject_ref=d.get("subject_ref")))
     entry.update(rows_back=back, tombstones_missing=len(set(tombstones) - have))
+    if _directive_expired(d):
+        # Older than any backup a restore could use: never applied, and
+        # expire_subject_directives removes it. Rows back means an older
+        # restore than policy allows: a person must look.
+        entry["status"] = "expired_rows_back" if back else "expired"
+        return entry
     if state is None or state == "erased":
         entry["status"] = "still_erased" if not back else "tenant_erased_rows_back"
         return entry
@@ -512,7 +509,7 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
                                     result={"deleted": deleted, "reapply_of": d.get("operation_id")})
         entry.update(status="reapplied", reapply_operation_id=op_id, deleted=deleted)
     except Exception as exc:  # noqa: BLE001 - legal hold or a DB error: needs a person
-        held = getattr(exc, "sqlstate", None) == "P0001"
+        held = getattr(exc, "hint", None) == "legal_hold"
         entry.update(status="skipped_legal_hold" if held else "reapply_failed", detail=type(exc).__name__)
         if op_id:
             async with tenant_tx(ctx) as conn:
@@ -520,6 +517,27 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
                                         result={"reapply_of": d.get("operation_id")},
                                         error=type(exc).__name__)
     return entry
+
+
+async def _linked_children(conn, tenant_id: str, clients: list, contacts: list) -> dict[str, list[str]]:
+    """Ids of rows that reference these exact clients/contacts by foreign key."""
+    from privacy_lifecycle import _bind_used
+
+    out: dict[str, list[str]] = {}
+    if not clients and not contacts:
+        return out
+    queries = [(t, f"SELECT id FROM {t} WHERE tenant_id=$1 AND ({w})") for t, w in _DEPENDENTS] + [
+        ("sms_messages", "SELECT id FROM sms_messages WHERE tenant_id=$1 "
+                         "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))"),
+        ("inbound_voice_calls", "SELECT id FROM inbound_voice_calls WHERE tenant_id=$1 "
+                                "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))"),
+        ("email_outbox", "SELECT id FROM email_outbox WHERE tenant_id=$1 AND client_id = ANY($2::uuid[])"),
+    ]
+    for table, sql in queries:
+        rows = await conn.fetch(*_bind_used(sql, (tenant_id, clients, contacts)))
+        if rows:
+            out[table] = [str(r[0]) for r in rows]
+    return out
 
 
 async def expire_subject_directives() -> int:

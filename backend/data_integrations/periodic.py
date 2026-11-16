@@ -789,7 +789,11 @@ async def _privacy_lifecycle_task() -> dict:
     expired = await expire_exports()
     from privacy_requests import expire_subject_directives
 
-    directives_expired = await expire_subject_directives()
+    try:
+        directives_expired = await expire_subject_directives()
+    except Exception:  # noqa: BLE001 - storage trouble must not skip the retention sweep
+        logger.warning("subject directive expiry failed", exc_info=True)
+        directives_expired = 0
     days = {c: policy_for(c).retention_days for c in (
         R.CAPABILITY_TOKEN, R.OPERATIONAL, R.CONSENT_SUPPRESSION, R.PRIVACY_RECORD, R.AUDIT_SECURITY)}
     async with tenant_tx(_platform_ctx("retention-sweep")) as conn:

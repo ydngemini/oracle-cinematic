@@ -50,7 +50,8 @@ async def main(apply: bool) -> int:
         print(json.dumps(entry, default=str))
     todo = [e for e in report if e["status"] == "resurrected"]
     bad = [e for e in report if e["status"] in ("reapply_failed", "skipped_legal_hold", "unreadable",
-                                                 "needs_review", "tenant_erased_rows_back")]
+                                                 "needs_review", "tenant_erased_rows_back",
+                                                 "expired_rows_back")]
     if not apply:
         print(f"\n{len(todo)} erasure(s) to re-apply. Re-run with --apply.")
         return 1 if todo else 0
