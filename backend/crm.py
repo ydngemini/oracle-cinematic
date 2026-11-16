@@ -1385,6 +1385,17 @@ async def client_interactions(
 
 
 @router.post("/clients/{client_id}/messages", status_code=status.HTTP_201_CREATED)
+async def sender_is_active_member(ctx: TenantContext) -> bool:
+    """Is the caller an ACTIVE member of their brokerage (a users row)? The
+    email worker sends only as one (audit 26.2)."""
+    import record_access
+    from tenancy import Role
+
+    platform = TenantContext(agent_id="crm-send", tenant_id=ctx.tenant_id, role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        return await record_access.find_member(conn, ctx.tenant_id, ctx.agent_id) is not None
+
+
 async def send_message(
     client_id: str,
     body: MessageCreate,
@@ -1430,6 +1441,13 @@ async def send_message(
             await commercial_email.require_postal_address(ctx.tenant_id)
         except commercial_email.PostalAddressRequired as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        # email_outbox.deliver sends only as an ACTIVE member of the brokerage
+        # (audit 26.2). An identity with no users row (the environment
+        # operator, a demo login) would get a "queued" email that can never go
+        # out — refuse here, where the person can see why.
+        if not await sender_is_active_member(ctx):
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "Only a member of this brokerage can send email to its clients.")
 
     try:
         async with tenant_tx(ctx) as conn:

@@ -46,8 +46,26 @@ def env(monkeypatch):
 
     monkeypatch.setattr(commands_api, "_load_provider_credential", no_cred)
     monkeypatch.setattr(commands_api, "load_agent_identity", identity)
+    _access(monkeypatch, True)
     _gate(monkeypatch, allowed=True)
     return conn
+
+
+def _access(monkeypatch, outcome):
+    """The sender's live access to the client (audit 26.2): True, False, or an
+    exception instance to raise. Records each check."""
+    import commands_api
+
+    checks = []
+
+    async def check(tenant_id, requested_by, client_id, contact_id, *, require_member=False):
+        checks.append((requested_by, client_id, contact_id, require_member))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(commands_api, "requester_may_contact_record", check)
+    return checks
 
 
 def _gate(monkeypatch, *, allowed):
@@ -210,3 +228,38 @@ def test_an_entitled_brokerage_still_sends(env, monkeypatch):
     _entitlement(monkeypatch, None)
     assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "sent"}
     assert len(calls) == 1
+
+
+# ── the sender's live access (external audit 26.2) ─────────────────────────
+
+def test_a_sender_who_lost_access_to_the_client_never_sends(env, monkeypatch):
+    """Queued, then the client was reassigned / the share revoked / the agent
+    left: final 'failed', nothing reaches the provider, no billing read."""
+    sent = _sender(monkeypatch, "ok")
+    checks = _access(monkeypatch, False)
+    reads = _entitlement(monkeypatch, None)
+    assert asyncio.run(email_outbox.deliver("t1", "o1")) == {"status": "blocked"}
+    assert sent == []
+    assert _statuses(env) == ["failed"]
+    errors = [args[3] for sql, args in env.executed if "SET status=$3" in sql]
+    assert "no longer has access" in errors[-1]
+    assert checks and checks[0][3] is True      # departed/deactivated senders are refused
+    assert reads == []
+
+
+def test_the_access_check_runs_as_the_stored_sender_for_the_stored_client(env, monkeypatch):
+    _sender(monkeypatch, "ok")
+    checks = _access(monkeypatch, True)
+    asyncio.run(email_outbox.deliver("t1", "o1"))
+    (requested_by, client_id, contact_id, require_member), = checks
+    assert (requested_by, client_id, contact_id, require_member) == (
+        ROW["created_by"], ROW["client_id"], None, True)
+
+
+def test_an_unreadable_access_check_holds_the_email(env, monkeypatch):
+    sent = _sender(monkeypatch, "ok")
+    _access(monkeypatch, RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        asyncio.run(email_outbox.deliver("t1", "o1"))
+    assert sent == []
+    assert _statuses(env) == ["queued"]

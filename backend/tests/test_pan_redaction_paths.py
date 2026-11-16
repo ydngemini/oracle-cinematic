@@ -286,6 +286,11 @@ def test_a_logged_email_and_its_outbox_row_hold_no_card(monkeypatch):
 
     monkeypatch.setattr(crm, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(crm, "enforce_outreach", allow)
+
+    async def member(_ctx):
+        return True
+
+    monkeypatch.setattr(crm, "sender_is_active_member", member)
     monkeypatch.setattr(email_outbox, "enqueue_delivery", enqueue)
     asyncio.run(crm.send_message(
         CLIENT_ID, crm.MessageCreate(channel="email", subject=f"Card {PAN}", body=SAID), CTX))
