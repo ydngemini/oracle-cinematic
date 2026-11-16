@@ -37,6 +37,8 @@ ROLE = {
     "database": "core", "realtime_fanout": "core", "workers": "core", "scheduler": "core",
     "job_queue": "core", "valkey": "important", "mls": "important", "ai": "important",
     "outbound_side_effects": "important", "email_outbox": "important",
+    # Spoken STOPs spooled because their suppression write failed (23.5 / 34.5).
+    "outbound_opt_outs": "important",
     # Property data (L19-04, T19.07 / AC19.07): what the brokerage's property
     # and market answers are built from now that MLS is off (D-2026-10-12-01).
     "property_harvesters": "optional", "market_data": "optional", "valuation_providers": "optional",
@@ -252,6 +254,22 @@ def _inbound_calls(unfinalized: int) -> dict:
     return _c(HEALTHY, "inbound calls finalized")
 
 
+def _outbound_opt_outs() -> dict:
+    """23.5 / 34.5: a callee said "stop" and the suppression write failed. The
+    number is spooled and blocked in this process, but until the replay writes
+    it, a restart could lose it: a person must look now."""
+    import voice_opt_out
+
+    try:
+        pending = voice_opt_out.pending_count()
+    except OSError as exc:
+        return _c(UNKNOWN, "spoken opt-out spool unreadable", reason=type(exc).__name__)
+    if pending:
+        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled; replayed by reconciliation)",
+                  pending=pending)
+    return _c(HEALTHY, "spoken opt-outs recorded")
+
+
 def _billing_meter(unmetered: int) -> dict:
     """BILL-001: a delivered, billable engagement with no lead_engaged row."""
     if unmetered:
@@ -388,7 +406,8 @@ async def _snapshot() -> dict:
                     for k in _DB_KEYS}
     else:
         rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
-    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest}
+    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
+                  "outbound_opt_outs": _outbound_opt_outs()}
     for name, comp in components.items():
         comp["role"] = ROLE.get(name, "optional")
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]

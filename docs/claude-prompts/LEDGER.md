@@ -1642,6 +1642,28 @@ next_task: "Per-call reservation + wall-clock/idle cap (34.2/23.6); a cluster-wi
 updated: 2026-11-16
 ```
 
+#### L09-11 A spoken STOP on an outbound call survives a failed suppression write (external audit 23.5, 34.5)
+```yaml
+id: L09-11
+status: tests_pass
+env: local
+evidence_shas: [2c9d940]   # base; fix in the commit that adds this row
+files: [backend/voice_opt_out.py, backend/outreach_compliance.py, backend/reconciliation.py, backend/component_health.py, backend/tests/test_voice_opt_out_durable.py]
+tests_run:
+  - {cmd: "read voice_opt_out._honour at 2c9d940", result: "a failed outbound suppression write was logged and forgotten: no retry, no spool, no health signal; a later outreach check could find the number eligible", date: 2026-11-16}
+  - {cmd: "pytest tests/test_voice_opt_out_durable.py against 2c9d940's modules", result: "red: 6 errors (no retry/spool/replay exists)", date: 2026-11-16}
+  - {cmd: "after: durable-STOP tests + outreach, reconciliation, voice opt-out, inbound voice, Telnyx, Plivo/Qwen, ElevenLabs and health suites", result: "314 passed", date: 2026-11-16}
+authz_checked: "One attempt in the call (the bridge still hangs up at once); on failure the tenant + normalised number (never what was said) are spooled at once to a 0600 file and held in memory; guard_outreach treats a pending STOP as suppressed for SMS and voice; retries run after the call; reconciliation.run_sweep replays the spool; component_health 'outbound_opt_outs' is DEGRADED while any is pending."
+blockers:
+  - {type: owner, note: "The spool is on LOCAL disk. On App Platform a redeploy or replica restart before the replay wipes the container disk and loses a pending STOP (the health component pages first). A shared durable store (e.g. Valkey/Spaces with its own retention and privacy terms) is an owner decision."}
+  - "Consent/STOP enforcement: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [23.5, 34.5]
+decision_refs: []
+next_task: "26.1/26.9: CRM do-not-contact and destination changes reach the outreach suppression store."
+updated: 2026-11-16
+```
+
 ### L10
 Communications and calendars.
 

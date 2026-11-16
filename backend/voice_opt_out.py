@@ -21,7 +21,10 @@ never what was said.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 logger = logging.getLogger("oracle.voice_opt_out")
@@ -74,12 +77,151 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
         raise OptOutNotRecorded("outbound opt-out could not be written") from exc
 
 
-async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
+#: Audit 23.5 / 34.5: a spoken STOP whose suppression write fails used to be
+#: logged and forgotten. Now: retried in place; if it still fails, spooled to
+#: a local file (tenant + normalised number only — never what was said),
+#: honoured by the outreach gate in this process while pending, replayed by
+#: reconciliation.run_sweep, and reported by component_health. LIMIT: the
+#: spool is on local disk; a replica restart before the replay (e.g. an
+#: App Platform redeploy wipes the container disk) would lose it — the health
+#: component pages first, and a shared durable store is an owner decision.
+RETRY_DELAYS: tuple[float, ...] = (0.5, 2.0, 5.0)
+SPOOL_PATH = Path(os.environ.get("ORACLE_OPT_OUT_SPOOL", "var/outbound-opt-out-spool.jsonl"))
+_PENDING: set[tuple[str, str]] = set()
+_SPOOL_LOADED = False
+
+
+def _key(state: Mapping[str, Any]) -> Optional[tuple[str, str]]:
+    from outreach_compliance import Channel, normalize_contact
+
+    tenant_id = str(state.get("tenant_id") or "")
+    contact = normalize_contact(str(state.get("callee") or ""), Channel.VOICE)
+    return (tenant_id, contact) if tenant_id and contact else None
+
+
+def _read_spool() -> list[tuple[str, str]]:
     try:
-        await record_outbound_opt_out(state or {})
+        lines = SPOOL_PATH.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+            out.append((str(item["tenant_id"]), str(item["contact"])))
+        except (ValueError, KeyError, TypeError):
+            continue  # a torn line from a crash
+    return out
+
+
+def _load_spool_once() -> None:
+    global _SPOOL_LOADED
+    if not _SPOOL_LOADED:
+        _PENDING.update(_read_spool())
+        _SPOOL_LOADED = True
+
+
+def _spool(key: tuple[str, str]) -> None:
+    """Append, fsynced, mode 0600. Called only after every retry failed."""
+    SPOOL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(SPOOL_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (json.dumps({"tenant_id": key[0], "contact": key[1]}) + "\n").encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _PENDING.add(key)
+
+
+def pending_opt_out(tenant_id: str, contact: str) -> bool:
+    """True while this number's spoken STOP is spooled and not yet written:
+    the outreach gate treats it as suppressed (fail closed)."""
+    _load_spool_once()
+    return (str(tenant_id), contact) in _PENDING
+
+
+def pending_count() -> int:
+    _load_spool_once()
+    return len(set(_read_spool()) | _PENDING)
+
+
+def _rewrite_spool(remaining: list[tuple[str, str]]) -> None:
+    SPOOL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SPOOL_PATH.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, "".join(json.dumps({"tenant_id": t, "contact": c}) + "\n" for t, c in remaining).encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, SPOOL_PATH)
+
+
+def _forget(key: tuple[str, str]) -> None:
+    """A spooled STOP was written after all: drop it from the spool and memory."""
+    _PENDING.discard(key)
+    if SPOOL_PATH.exists():
+        _rewrite_spool([k for k in _read_spool() if k != key])
+
+
+async def replay_spool() -> dict[str, int]:
+    """Write every spooled opt-out; keep only the ones that still fail.
+    Called by reconciliation.run_sweep. Idempotent (ON CONFLICT DO NOTHING)."""
+    _load_spool_once()
+    queued = list(dict.fromkeys(_read_spool() + sorted(_PENDING)))
+    remaining = []
+    for tenant_id, contact in queued:
+        try:
+            await record_outbound_opt_out({"tenant_id": tenant_id, "callee": contact})
+        except OptOutNotRecorded:
+            remaining.append((tenant_id, contact))
+    if queued:
+        _rewrite_spool(remaining)
+    _PENDING.clear()
+    _PENDING.update(remaining)
+    return {"replayed": len(queued) - len(remaining), "still_pending": len(remaining)}
+
+
+async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
+    """After the call has ended: retry with backoff; success clears the spool
+    entry; persistent failure leaves it for reconciliation's replay."""
+    for delay in RETRY_DELAYS:
+        await asyncio.sleep(delay)
+        try:
+            await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
+        except OptOutNotRecorded:
+            continue
+        _forget(key)
+        logger.info("Spooled outbound opt-out recorded on retry: call=%s", call_ref)
+        return
+    logger.error("Outbound opt-out still not recorded after retries; left for reconciliation: call=%s", call_ref)
+
+
+async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
+    """ONE attempt inside the call (the bridge hangs up right after, so a
+    caller who said "stop" is never kept on the line by retries). On failure:
+    spool at once (safe even if this process dies), block in memory, and
+    retry in the background after the call has ended."""
+    state = state or {}
+    try:
+        await record_outbound_opt_out(state)
         logger.info("Outbound callee opted out; number suppressed: call=%s", call_ref)
+        return
     except OptOutNotRecorded:
-        logger.exception("Outbound callee opted out but the suppression was NOT recorded: call=%s", call_ref)
+        logger.warning("Outbound opt-out write failed at call time: call=%s", call_ref)
+    key = _key(state)
+    if key is None:
+        logger.error("Outbound callee opted out but the call has no tenant or number to spool: call=%s", call_ref)
+        return
+    try:
+        _spool(key)
+        logger.error("Outbound callee opted out; suppression NOT yet recorded — spooled, blocked by the "
+                     "outreach gate meanwhile, retrying after the call: call=%s", call_ref)
+    except OSError:
+        _PENDING.add(key)  # at least this process keeps honouring it
+        logger.exception("Outbound opt-out could not be written OR spooled (kept in memory only): call=%s",
+                         call_ref)
+    _background(_retry_later(key, call_ref))
 
 
 async def honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
