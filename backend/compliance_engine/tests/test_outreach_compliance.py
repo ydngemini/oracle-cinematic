@@ -235,6 +235,9 @@ OPT_OUTS = [
     "STOP STOP", "stop it now", "lol stop", "cancel all", "leave me alone", "dont contact me",
     "never message me again", "Delete my number", "Wrong number", "unsub", "ALTO", "BAJA",
     "STOP\nwho is this", "UNSUBSCRIBE ME NOW",
+    # re-review of PR #78
+    "Remove my number", "please remove my number", "I want to opt-out", "opt-out my number",
+    "Stop - not selling", "Lose this number", "stop txt", "not selling so stop",
 ]
 NOT_OPT_OUTS = [
     "Please stop by the house on Tuesday", "Stop by at 5", "End of the day works",

@@ -138,7 +138,9 @@ SMS_OPT_OUT_PHRASES: tuple[str, ...] = (
     "stop receiving", "quit calling", "quit contacting", "quit texting", "do not text", "don't text",
     "dont text", "don't ever text", "don't ever call", "don't ever contact", "no more texts",
     "no more messages", "no more calls", "remove me", "take me off", "take my name off",
-    "take my number off", "delete my number", "lose my number", "leave me alone", "wrong number",
+    "take my number off", "delete my number", "lose my number", "lose this number",
+    "remove my number", "remove this number", "leave me alone", "wrong number", "stop txt",
+    "opt-out",
     "unsubscribe", "opt out", "opt me out", "revoke consent", "revoke my consent",
     "withdraw my consent", "withdraw consent",
 )
@@ -157,9 +159,10 @@ _SMS_FILLER: frozenset[str] = frozenset(
     }
 )
 
-# Clause boundaries for texts: punctuation, line breaks and conjunctions. The
-# plain hyphen is absent on purpose ("opt-out" stays one token).
-_SMS_CLAUSE_RE = re.compile(r"[.,;:!?—–\n]+|\b(?:and|but|so|then|because)\b")
+# Clause boundaries for texts: punctuation, line breaks, a spaced dash ("Stop - not
+# selling") and conjunctions. A hyphen INSIDE a word is not a boundary
+# ("opt-out" stays one token).
+_SMS_CLAUSE_RE = re.compile(r"[.,;:!?—–\n]+|\s-+\s|\b(?:and|but|so|then|because)\b")
 
 
 def requests_opt_out(text: str) -> bool:
@@ -261,7 +264,9 @@ def is_stop_keyword(body: str) -> bool:
     Was: the WHOLE body, letters only, had to be one keyword, so "REVOKE",
     "STOP please", "Stop texting me" and "please take me off your list"
     recorded no suppression and later messages could still be approved
-    (audit 25.3). Now the same rule as spoken opt-outs."""
+    (audit 25.3). Now: SMS keywords, word-bounded SMS phrases, or a clause of
+    only stop keywords plus filler (requests_opt_out). Spoken opt-out keeps its
+    own, narrower rule in inbound_voice; the two deliberately differ."""
     token = re.sub(r"[^a-z]", "", (body or "").strip().lower())
     return token in SMS_STOP_KEYWORDS or requests_opt_out(body)
 
