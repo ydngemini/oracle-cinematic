@@ -422,11 +422,18 @@ class ConsentLedger:
     queries run through tenant_tx so RLS scopes rows to the caller's tenant."""
 
     @staticmethod
-    async def gather_state(conn, contact: str, channel: Channel, tombstone: Optional[str] = None):
+    async def gather_state(conn, contact: str, channel: Channel, tombstone: Optional[str] = None,
+                           *, tenant_id: str):
         """One round-trip on a caller-supplied connection returning every fact
         guard_outreach needs: suppression, channel consent, BIPA voiceprint
         consent, and the 24h voice-attempt count. Replaces what used to be four
-        separate tenant_tx acquisitions. RLS scopes rows to the conn's tenant."""
+        separate tenant_tx acquisitions.
+
+        Consent and the attempt count are filtered to ``tenant_id`` explicitly:
+        a PLATFORM_ADMIN context (the command worker that places AI calls) reads
+        EVERY brokerage's rows under RLS, so another brokerage's release must not
+        authorise this one's call (review of the 26.7/26.8 fix). Suppression is
+        deliberately not narrowed: there a wider read only blocks more."""
         return await conn.fetchrow(
             """
             SELECT
@@ -438,27 +445,28 @@ class ConsentLedger:
                  OR ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM suppression_tombstones
                         WHERE contact_hmac = $3 AND channel IN ($2, '*')))) AS suppressed,
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND channel = $2
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
                           AND consent_type IN ('express_written', 'express_oral', 'prior_business')
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_consent,
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND channel = $2
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
                           AND consent_type = 'express_written'
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_written_consent,
                 -- A BIPA release counts only on the voice channel and only
                 -- until it expires (external audit 26.8).
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND channel = 'voice'
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = 'voice'
                           AND consent_type = 'biometric_voiceprint'
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now())) AS vp_consent,
                 (SELECT count(*) FROM outreach_attempt_log
-                        WHERE contact = $1 AND channel = 'voice' AND allowed = true
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = 'voice'
+                          AND allowed = true
                           AND attempted_at > now() - interval '24 hours') AS recent_voice
             """,
-            contact, channel.value, tombstone,
+            contact, channel.value, tombstone, tenant_id,
         )
 
     @staticmethod
@@ -600,7 +608,8 @@ async def guard_outreach(
     if is_voice and log:
         async with tenant_tx(ctx) as c:
             await ConsentLedger.lock_voice_attempts(c, ctx.tenant_id, norm)
-            decision = decide(await ConsentLedger.gather_state(c, norm, channel, tombstone))
+            decision = decide(await ConsentLedger.gather_state(
+                c, norm, channel, tombstone, tenant_id=ctx.tenant_id))
             await ConsentLedger.insert_attempt(
                 c, ctx, contact=norm, channel=channel, state_code=decision.state_code,
                 allowed=decision.allowed,
@@ -609,7 +618,7 @@ async def guard_outreach(
         return decision
 
     async with _conn_or_tx(ctx, conn) as c:
-        row = await ConsentLedger.gather_state(c, norm, channel, tombstone)
+        row = await ConsentLedger.gather_state(c, norm, channel, tombstone, tenant_id=ctx.tenant_id)
     decision = decide(row)
 
     if log:
@@ -691,10 +700,13 @@ async def record_consent(body: ConsentRecord, ctx: TenantContext = Depends(requi
         "express_written", "express_oral", "prior_business", "biometric_voiceprint"
     ):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid consent_type")
-    if body.consent_type == "biometric_voiceprint" and body.channel is not Channel.VOICE:
-        # The gate reads a voiceprint release on the voice channel only (26.8).
+    if body.consent_type == "biometric_voiceprint" and (
+            body.channel is not Channel.VOICE or _infer_channel(body.contact) is Channel.EMAIL):
+        # The gate reads a voiceprint release on the voice channel only, for a
+        # phone number (26.8).
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "a biometric voiceprint release is recorded on the voice channel")
+                            "a biometric voiceprint release is recorded on the voice channel "
+                            "for a phone number")
     norm = normalize_contact(body.contact, body.channel)
     consent_id = await ConsentLedger.record_consent(
         ctx, contact=norm, channel=body.channel, consent_type=body.consent_type,
