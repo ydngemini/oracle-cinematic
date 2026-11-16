@@ -134,6 +134,8 @@ SYSTEM_LOOKUP = {
     ("GET", "/api/commands/providers/google/oauth/callback"): "consumes an HMAC-verified OAuth state",
     ("POST", "/api/marketplace/publications/{publication_id}/bidding-message"):
         "counts recorded offers on a publication the caller's RLS already returned",
+    ("POST", "/api/crm/clients/{client_id}/messages"):
+        "checks only that the caller is an active member of their own brokerage before queuing email (audit 26.2)",
 }
 
 # The check widens what the caller sees or may change inside their own

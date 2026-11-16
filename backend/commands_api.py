@@ -818,8 +818,24 @@ async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
             requested_by = await conn.fetchval(
                 "SELECT requested_by FROM action_approvals WHERE id=$1::uuid", command["approval_id"]
             )
-        requested_by = str(requested_by or command.get("created_by") or "")
+    return await requester_may_contact_record(
+        tenant_id, str(requested_by or command.get("created_by") or ""), client_id, contact_id)
+
+
+async def requester_may_contact_record(tenant_id: str, requested_by: str, client_id: Any,
+                                       contact_id: Any, *, require_member: bool = False) -> bool:
+    """May `requested_by`, in their CURRENT role, still reach this client or
+    contact? Checked as them, not as the platform-admin worker. With
+    require_member, someone who is no longer an active member (departed,
+    deactivated) is refused outright — checked merely as "an agent with that
+    id" they would still reach the clients they used to own."""
+    if client_id is None and contact_id is None:
+        return True
+    platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
         member = await record_access.find_member(conn, tenant_id, requested_by)
+    if member is None and require_member:
+        return False
     role = Role.AGENT
     if member is not None:
         try:

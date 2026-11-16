@@ -310,6 +310,11 @@ def test_email_still_uses_compliance_gate_and_durable_outbox(monkeypatch):
 
     monkeypatch.setattr(crm, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(crm, "enforce_outreach", allow_email)
+
+    async def member(_ctx):
+        return True
+
+    monkeypatch.setattr(crm, "sender_is_active_member", member)
     import email_outbox
 
     enqueued = []
@@ -335,6 +340,42 @@ def test_email_still_uses_compliance_gate_and_durable_outbox(monkeypatch):
     # mail server accepts it (email_outbox.deliver), and delivery is enqueued.
     assert not any("UPDATE clients SET last_contacted_at" in query for query, _args in conn.execute_calls)
     assert enqueued == [OUTBOX_ID]
+
+
+def test_a_sender_with_no_membership_is_refused_before_anything_is_queued(monkeypatch):
+    """Audit 26.2 (review of #87): the email worker sends only as an active
+    member, so an identity with no users row (the environment operator, a demo
+    login) is refused HERE with a reason, not shown a "queued" email that can
+    never go out."""
+    import commercial_email
+    import email_outbox
+
+    async def _has_address(_tenant_id):
+        return None
+
+    async def not_member(_ctx):
+        return False
+
+    async def allow_email(*args, **kwargs):
+        return None
+
+    enqueued = []
+
+    async def fake_enqueue(ctx, outbox_id):
+        enqueued.append(outbox_id)
+
+    conn = _MessageConn()
+    monkeypatch.setattr(commercial_email, "require_postal_address", _has_address)
+    monkeypatch.setattr(crm, "tenant_tx", _fake_tenant_tx(conn))
+    monkeypatch.setattr(crm, "enforce_outreach", allow_email)
+    monkeypatch.setattr(crm, "sender_is_active_member", not_member)
+    monkeypatch.setattr(email_outbox, "enqueue_delivery", fake_enqueue)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(crm.send_message(
+            CLIENT_ID, crm.MessageCreate(channel="email", subject="Hello", body="Email body"), CTX))
+    assert refused.value.status_code == 409
+    assert not any("INSERT INTO email_outbox" in q for q, _a in conn.fetchrow_calls)
+    assert enqueued == []
 
 
 def test_thread_rollup_includes_tenant_scoped_clients_without_history(monkeypatch):
