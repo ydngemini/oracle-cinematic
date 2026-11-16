@@ -37,17 +37,36 @@ _OFFLOADERS = ("to_thread", "run_in_threadpool", "run_in_executor")
 _SKIP_DIRS = {"venv", "tests", "node_modules", "ml_forge", "__pycache__"}
 
 
+def _is_offloader_call(call) -> bool:
+    return any(word in ast.unparse(call.func) for word in _OFFLOADERS)
+
+
+def _offloaded_names(async_def) -> set[str]:
+    """Names referenced inside the arguments of any offloader call."""
+    names: set[str] = set()
+    for call in ast.walk(async_def):
+        if isinstance(call, ast.Call) and _is_offloader_call(call):
+            for arg in [*call.args, *(kw.value for kw in call.keywords)]:
+                names.update(n.id for n in ast.walk(arg) if isinstance(n, ast.Name))
+    return names
+
+
 def _shielded(node, async_def) -> bool:
     """True when the call is offloaded rather than run on the loop.
 
-    Either it sits inside a nested sync def / lambda — the standard offload
-    target, which some other line hands to a thread — or inside a to_thread
-    call directly.
+    Either it sits inside a nested sync def that is, by name, handed to an
+    offloader within the same async function, or inside an offloader call
+    directly. A nested helper the async function calls itself still runs on
+    the event loop.
     """
+    offloaded = None
     current = getattr(node, "parent", None)
     while current is not None and current is not async_def:
-        if isinstance(current, (ast.FunctionDef, ast.Lambda)):
-            return True
+        if isinstance(current, ast.FunctionDef):
+            if offloaded is None:
+                offloaded = _offloaded_names(async_def)
+            if current.name in offloaded:
+                return True
         if isinstance(current, ast.Call):
             if any(word in ast.unparse(current.func) for word in _OFFLOADERS):
                 return True

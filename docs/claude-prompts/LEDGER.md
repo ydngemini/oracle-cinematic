@@ -2831,6 +2831,26 @@ next_task: "AC16.04 Playwright: a viewer who loses access (reassignment, revocat
 updated: 2026-10-16
 ```
 
+#### L16-06 The blocking-I/O guard no longer counts any nested helper as offloaded (external audit 35-04; Noah NQ-07 canary)
+```yaml
+id: L16-06
+status: tests_pass
+env: local
+evidence_shas: [2c9d940]   # base; Noah canary cycle-1794815209-2 ($0.1243, 2 sessions)
+files: [backend/tests/test_no_blocking_io_in_async.py, backend/tests/test_blocking_io_guard_self.py]
+tests_run:
+  - {cmd: "probe at 6506fed: _shielded() for requests.get inside a nested def called directly on the loop", result: "True (false negative): the guard treated ANY enclosing nested def/lambda as offloaded", date: 2026-11-16}
+  - {cmd: "read-only prototype of the stricter rule over main's backend", result: "0 existing call sites newly flagged: a test-tooling change only", date: 2026-11-16}
+  - {cmd: "Noah queue cycle: baseline green in the verify sandbox; test_blocking_io_guard_self.py red on the unchanged guard, green after; item verify commands", result: "REVIEW_REQUIRED, no repairs", date: 2026-11-16}
+authz_checked: n/a (test tooling)
+blockers:
+  - "Merge, then CLOSED only after re-verification on main through the supervisor's completion check."
+audit_refs: [35-04]
+decision_refs: []
+next_task: "None for 35-04."
+updated: 2026-11-16
+```
+
 ### L17
 Security, privacy and data lifecycle.
 
