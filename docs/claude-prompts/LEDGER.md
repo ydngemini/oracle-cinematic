@@ -3798,6 +3798,29 @@ next_task: "29.4b subject restore directive + reapply; then 22.5 (departing agen
 updated: 2026-11-16
 ```
 
+#### L17-36 A person deleted by request stays deleted after a backup restore: a write-ahead directive, and reapply-erasures deletes them again (external audit 29.4, second half)
+```yaml
+id: L17-36
+status: tests_pass
+env: local
+evidence_shas: [7d07f23]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, scripts/reapply-erasures.py, docs/privacy-request-runbook.md, backend/tests/test_subject_restore_directive_live.py]
+tests_run:
+  - {cmd: "read privacy_requests.handle_subject_request (dsr_delete) at 7d07f23", result: "confirmed: a single-person deletion wrote no directive; reapply-erasures only knew whole-brokerage directives, so a restore from an older backup silently brought the person and their texts back", date: 2026-11-16}
+  - {cmd: "red: test_subject_restore_directive_live against 7d07f23's privacy_requests.py (live PostgreSQL)", result: "DID NOT RAISE: with object storage down the person was deleted anyway, with nothing kept to re-apply it", date: 2026-11-16}
+  - {cmd: "after: live test_subject_restore_directive_live + test_privacy_lifecycle_live + test_dsar_subject_truth_live", result: "3 passed: storage down -> 503 'Nothing was deleted', the client still there, op failed (restore_directive_unwritten); storage up -> directive saved first under privacy/subject-erasure-directives/ (row ids + keyed hashes, no name/email/phone), then deleted; before a restore: still_erased; after a simulated restore (client + text back, tombstone gone): the brokerage pass ignores it, the subject pass reports resurrected {clients:1, sms_messages:1}, --apply deletes both again under a new succeeded dsr_delete op and restores the tombstone; the other client untouched", date: 2026-11-16}
+authz_checked: "reapply runs in the platform context (operator script), deletes only through privacy_erase_subject_rows under a new running dsr_delete op for that tenant (legal hold still enforced in SQL), and only the ids the directive names; the directive prefix is separate from the brokerage one, which reapply_erasures reads as a whole-brokerage erasure."
+blockers:
+  - {type: owner, note: "Behaviour change: a deletion request now needs working object storage. Without it the request deletes nothing and answers 503."}
+  - "A directive left behind when the deletion transaction fails is removed best-effort; if that removal also fails, a later restore + reapply would delete rows the person had already asked to have deleted."
+  - "Rows created for the same person AFTER the backup with new ids are not in the directive (they postdate the restore point, so a restore cannot bring them back anyway)."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.4]
+decision_refs: []
+next_task: "DSAR access for client-keyed children (client_notes, client_tasks, client_activities, buyer_profiles) and retained broker records; then 24.x commands/callbacks."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 

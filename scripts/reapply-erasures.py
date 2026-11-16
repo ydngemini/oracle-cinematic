@@ -5,7 +5,9 @@ A managed-database backup is a point-in-time copy. Restoring one taken before
 a brokerage was erased brings that brokerage's data back — silently, unless
 something remembers the erasure outside the database. privacy_lifecycle
 writes a directive (tenant id, operation id, time; no customer data) to
-object storage under privacy/erasure-directives/ when an erasure completes.
+object storage under privacy/erasure-directives/ when an erasure completes,
+and privacy_requests writes one per person deleted by request (row ids and
+keyed hashes) under privacy/subject-erasure-directives/ before deleting.
 This script reads those directives and erases again whatever the restore
 resurrected. Run it after every restore, BEFORE the service takes traffic
 (docs/disaster-recovery.md, docs/privacy-request-runbook.md §Restore).
@@ -32,10 +34,13 @@ sys.path.insert(0, os.path.abspath(BACKEND))
 async def main(apply: bool) -> int:
     from db import connection
     from privacy_lifecycle import reapply_erasures
+    from privacy_requests import reapply_subject_erasures
 
     await connection.init_pool(min_size=1, max_size=2)
     try:
+        # Brokerages first, then people deleted by request (audit 29.4).
         report = await reapply_erasures(apply=apply)
+        report += await reapply_subject_erasures(apply=apply)
     finally:
         await connection.close_pool()
     for entry in report:
