@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { degradedLabel, propertyLookupView } from './propertyLookupStatus';
+import { candidateBasisView, degradedLabel, propertyLookupView } from './propertyLookupStatus';
+
+describe('candidateBasisView (T11.03, F11.04)', () => {
+  it('an owner-name basis is a possible match and is never called exact', () => {
+    const text = candidateBasisView('exact owner name');
+    expect(text).toMatch(/^Possible match: owner name, ignoring case, spaces, punctuation/);
+    expect(text).not.toMatch(/exact/i);
+  });
+
+  it('the ZIP variant also says the record is in the target ZIP', () => {
+    const text = candidateBasisView('exact owner name and target ZIP');
+    expect(text).toMatch(/^Possible match: owner name/);
+    expect(text).toMatch(/in the target ZIP$/);
+    expect(text).not.toMatch(/exact/i);
+  });
+
+  it('an unknown basis is shown as recorded, still as a possible match', () => {
+    expect(candidateBasisView('parcel number')).toBe('Possible match: parcel number');
+  });
+
+  it('a missing or blank basis invents nothing', () => {
+    for (const basis of [undefined, null, '', '   ', 7]) {
+      expect(candidateBasisView(basis)).toBe('Possible match');
+    }
+  });
+});
 
 const withStatus = (entry, extra = {}) => ({
   property_candidates: [],
