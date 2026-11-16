@@ -690,14 +690,14 @@ tests_run:
   - {cmd: "live PG + real hub: test_sensitive_lead_frames_fail_closed_live (private lead -> owner+assignee; pool lead -> caller only; erased client (ON DELETE SET NULL) -> caller only; deleted lead -> nobody; foreign lead -> nobody; non-sensitive pool frame -> everyone) and the end-to-end scenario (pool client's call -> the member on the call only)", result: "2 passed; red without the sensitive branch (pool content reached owner, a and b)", date: 2026-11-16}
 authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose copy is unchanged (27.5 open)."
 blockers:
-  - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
+  - "27.2/27.8 (voice-session socket re-checks, capacity, idle): addressed by L03-17. 27.3 (workflow engine fan-out): addressed by L03-16."
   - "Pull paths (voice-session socket, GET /api/voice/telemetry): addressed by L03-15."
   - "OPEN, 27.3 (pre-existing): the workflow engine sends DATA_PULLED (investorOffer, as-is value, owner name) and contract prices to every socket of the tenant on that replica via deliver_local (server.py, workflow_engine.py), seeded from the first connecting user's own record scope; tests/test_realtime_fanout_scope.py TENANT_WIDE mislabels it as public-record candidates."
   - "Resolved by owner decision 2026-11-16: an erased/deleted private client's lead (ON DELETE SET NULL -> pool) no longer exposes call content; sensitive frames fail closed to the caller."
   - "Not deployed (C4.4)."
 audit_refs: [27.1, 27.4]
 decision_refs: []
-next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice plus at_capacity and idle limits."
+next_task: "27.2/27.8 done in L03-17; 27.5 platform firehose copy remains."
 updated: 2026-11-16
 ```
 
@@ -745,6 +745,29 @@ next_task: "If the ambient feed is wanted: thread lead_id through the graph and 
 updated: 2026-11-16
 ```
 
+
+#### L03-17 A voice-session stream is admitted like /ws and re-checked while open: expiry, revocation, lost call access, capacity, idle (external audit 27.2, 27.8)
+```yaml
+id: L03-17
+status: tests_pass
+env: local
+evidence_shas: [e31c3b7]   # base; fix in the commit that adds this row
+files: [backend/server.py, backend/tests/test_voice_socket_lifecycle.py]
+tests_run:
+  - {cmd: "read server.voice_telemetry_websocket vs websocket_endpoint at e31c3b7", result: "identity and may_read_call_content checked once at the handshake, then the call's events streamed until the client left: no expiry/session/visibility re-check, no at_capacity() refusal though voice sockets count toward total_connections, no idle limit. A revoked session at the handshake was already refused (tenant_tx -> app_begin_session -> 1011), as the audit noted", date: 2026-11-16}
+  - {cmd: "pytest tests/test_voice_socket_lifecycle.py against e31c3b7's server.py", result: "red: 8 failed", date: 2026-11-16}
+  - {cmd: "same with the fix", result: "8 passed: revoked session 4401 and full replica 1013 before the upgrade; after joining, lost call access 4404, ended session 4401, expired token 4401, re-check error 1011, silent client 1001 while a pinging one stays open; a platform admin is not gated on record visibility; full suite 6612 passed", date: 2026-11-16}
+  - {cmd: "independent review (APPROVE; should-fix: 300 s re-check too slow for call content; nits: a DB error at the handshake escaped as a 500, a hung re-check stalled the expiry/idle checks, RuntimeError after a failed send surfaced as an ASGI error, lockstep re-checks, unregister/may_read-error/stall untested)", result: "re-check every tenancy.SESSION_RECHECK_SECONDS (60 s, as operator streams) with a jittered first check; admission via tenancy.admit_operator_stream (4401 / 1011); re-check bounded by 10 s (1011); closes ignore an already-closed socket and a RuntimeError in receive is a disconnect. 12 tests pass (3 repeat runs); mutant without the re-check timeout red", date: 2026-11-16}
+authz_checked: "Before accepting: tenancy.admit_operator_stream (session ended 4401, database unreachable 1011) and ws_hub.at_capacity() (1013), then the existing may_read_call_content + session lookup. While open, _watch_voice_socket checks token expiry (4401) every tick; every tenancy.SESSION_RECHECK_SECONDS (60 s, first check jittered) verify_session_current (4401: demotion, deactivation, sign-out everywhere) and, for non-admins, may_read_call_content for THIS session (4404: share revoked, client reassigned, erasure); a re-check that fails or exceeds 10 s closes 1011 (fail closed on call content, unlike /ws which keeps sockets through a DB blip); no client message for _WS_IDLE_TIMEOUT (300 s) closes 1001; unregister from the call group always runs. A client keeps the stream by sending \"PING\" (answered \"PONG\"); no in-repo client uses this socket yet."
+blockers:
+  - {type: owner, note: "Access lost after joining is noticed within 60 s, not instantly: voice_intel broadcasts to the whole call group (ws_hub.broadcast_group, no per-recipient filter), so transcript/offer/MAO frames still reach a just-revoked member in that window. A push-time filter (register voice sockets with their user and deliver only to the record audience broadcast_record already computes; reconcile its 'actor' vs may_read's 'created_by' rule for pool calls) would close it: owner/privacy call whether the 60 s window is acceptable."}
+  - "Privacy (call content): independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [27.2, 27.8]
+decision_refs: []
+next_task: "22.x erasure and DSAR items."
+updated: 2026-11-16
+```
 ### L04
 CRM, contacts, leads and relationships.
 
@@ -3714,6 +3737,64 @@ blockers:
 audit_refs: [28.1]
 decision_refs: []
 next_task: "28.3: operator session epoch/jti revocation checked at admission and on logout."
+updated: 2026-11-16
+```
+
+#### L17-33 A brokerage erasure says "succeeded" only when it did: unverifiable storage and an unwritten restore directive keep it running and retried; what a retry cannot redo fails it (external audit 22.2, 22.3, 22.4, 29.4)
+```yaml
+id: L17-33
+status: tests_pass
+env: local
+evidence_shas: [1569501]   # base; fix in the commit that adds this row
+files: [backend/privacy_lifecycle.py, backend/tests/test_erasure_completion_truth.py, backend/tests/test_job_handler_contract.py]
+tests_run:
+  - {cmd: "read privacy_lifecycle at 1569501", result: "confirmed: _phase_verify counted unconfigured storage and an unlistable prefix as 0 objects (clean); _phase_receipt marked succeeded with directive_written=false; run_erasure returned 'succeeded' whatever the receipt stored, and the job completed (no retry); a failed op could never be resumed", date: 2026-11-16}
+  - {cmd: "pytest tests/test_erasure_completion_truth.py against 1569501's privacy_lifecycle.py", result: "8 failed, 2 passed (the 2 are controls: a reachable empty store is clean; a finished op answers its stored state)", date: 2026-11-16}
+  - {cmd: "after: test_erasure_completion_truth + test_job_handler_contract + test_privacy_provider_failure + test_privacy_periodic", result: "17 passed", date: 2026-11-16}
+  - {cmd: "live PostgreSQL (local backend under tmp_path): pytest tests/test_privacy_lifecycle_live.py", result: "1 passed: storage made unreachable -> ErasureIncomplete, op 'running' with cleanup_pending [objects, directive], media file still there; retry -> succeeded, carried key deleted, directive present; verify past RLS; resume no-op; restore + reapply (final_attempt)", date: 2026-11-16}
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; pytest tests/test_erasure_completion_truth.py", result: "14 passed. Review: a rows retry would crash in privacy_assert_erasure (tenant already 'erased') and leave the op 'running' forever -> rows leftovers are now terminal; a phase raising on the final attempt, or a stored retry seen on it, now fails the op (guarded: never overwrites a finished one). Mutant (rows retryable again) -> 1 red", date: 2026-11-16}
+authz_checked: "unchanged: erasure runs in the platform context; nothing new is read or exposed. Progress now carries the storage KEYS a failed attempt could not delete (paths, never content) so a retry deletes them after their rows are gone."
+blockers:
+  - {type: owner, note: "Behaviour change: an environment without object storage can no longer finish an erasure (verification cannot see the store, so it fails after the retries instead of claiming clean)."}
+  - {type: owner, note: "A provider failure (number release, hosted SMS, credential revoke, Stripe) is terminal 'failed' with cleanup_pending=[providers]: the route rows are deleted by the rows phase, so a retry cannot redo it. A person finishes it from the deletion.external_cleanup_pending event. Keeping provider handles until release is confirmed is a larger redesign."}
+  - {type: owner, note: "Leftover ROWS after verification are terminal too (failed, cleanup_pending=[rows]): the tenant is already 'erased' and the erase functions refuse anything but 'erasing'. Only objects and the directive are retried."}
+  - "A failed erasure still cannot be resumed (22.4's 'could never resume' holds once it is 'failed'); finishing one is a person's job from the error and cleanup_pending."
+  - "If the worker dies or its lease is reaped on the FINAL attempt, the reaper dead-letters the job without running the handler and the op stays 'running' (tenant already 'erased'). Visible in list_operations; not handled here."
+  - "reapply-erasures runs as a single final attempt: one transient storage error reports reapply_failed; run it again."
+  - "privacy_operations.progress (a retained record) keeps the storage keys a failed attempt could not delete: tenant id + generated object paths, never content."
+  - "Adjacent, not changed: _set_cancel_at_period_end's stripe_not_configured with a live subscription is not counted as a provider failure (renewal may continue after erasure)."
+  - "No new operation state (no migration): 'running' + result.cleanup_pending stands in for cleanup_pending; the final job attempt fails the operation."
+  - "29.4's second half (single-person deletion writes no directive, privacy_requests.py) is in the DSAR slice with 29.3/29.8."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [22.2, 22.3, 22.4, 29.4]
+decision_refs: []
+next_task: "29.3/29.8/29.4b: DSAR subject resolution, complete export, and a directive for single-person deletion; then 22.5 departing agent's routes."
+updated: 2026-11-16
+```
+
+#### L17-34 A data-subject request reads or deletes one person: identifiers that do not tie to the same records are refused, and access returns every table discovery finds or fails (external audit 29.3, 29.8)
+```yaml
+id: L17-34
+status: tests_pass
+env: local
+evidence_shas: [1569501]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, backend/tests/test_dsar_subject_truth_live.py, backend/tests/test_dsar_access_complete.py]
+tests_run:
+  - {cmd: "read privacy_requests at 1569501", result: "confirmed 29.3: _discover ORs email/phone/contact_id/client_id, so A's email + B's phone (or B's record id) returned or deleted both. Confirmed 29.8 (worse than claimed): each table capped at LIMIT 5000, a failed query became no rows, encrypted contacts/calls silently skipped without the key, and the dependent tables discovery counts (contact_intake_sessions, lead_intake_events, outreach_attempt_log, agent_call_intents, smart_plan_*, ...) were never returned", date: 2026-11-16}
+  - {cmd: "red: test_dsar_subject_truth_live against 1569501's privacy_requests.py (live PostgreSQL); test_dsar_access_complete against it", result: "live: DID NOT RAISE (mixed identifiers accepted); unit: 6 failed", date: 2026-11-16}
+  - {cmd: "after: live test_dsar_subject_truth_live + test_privacy_lifecycle_live + test_sealed_text_live; unit test_dsar_access_complete + test_privacy_api", result: "live 3 passed (mixed identifiers 409 ambiguous_subject on preview/access/delete, no operation started, both clients kept; same-person identifiers work; intake session returned with raw_answers decrypted and no ciphertext; attempt log returned; an unreadable table fails the op ('failed', not running); without the key subject_ref refuses before any op exists, so _access_bundle's own 503 is covered by the unit test only). unit 15 passed. test_sealed_text_two_live fails identically on origin/main (shared dev DB holds interaction_logs sealed under another key): not this change", date: 2026-11-16}
+authz_checked: "unchanged: broker owner (or platform admin) only, password for deletion; every query is tenant_id-filtered under FORCE RLS. Generic rows reuse privacy_export's column rules: sealed columns opened (DECRYPT), hashes/secrets/raw bytea omitted."
+blockers:
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; live test_dsar_subject_truth_live + test_privacy_lifecycle_live", result: "2 passed. HIGH: an email/phone reaching NO CRM record was ignored by the check yet still matched texts/calls/emails/consent by raw value (A's email + a non-client's phone handed over or deleted their texts and opted them out) -> such an identifier must now be one of the addresses on the records the others reach, and several identifiers that reach no record are refused. Red against the first fix: DID NOT RAISE. The failure path no longer masks the original error if marking the op failed also fails", date: 2026-11-16}
+  - {type: owner, note: "Behaviour change: two unlinked rows of the SAME person (same email typed on two clients, one with a phone) now refuse a combined request (409). The owner links them or asks by record id. Fail-closed by design."}
+  - "Access is complete for the tables discovery finds, not for everything about the person: rows in transactions/transaction_parties/live_call_sessions are counted (and block deletion) but not returned, and client-keyed children (client_notes, client_tasks, client_activities, buyer_profiles, ...) are neither discovered nor returned, though dsr_delete erases them by cascade. Next slice."
+  - "Link expansion is one-sided (from a contact only clients.contact_id is followed): a contact whose legacy_client_id points at a client that does not point back gets a false 409. Current writers set both directions."
+  - "A single identifier is trusted as given (the owner verifies the requester); a phone given alone still returns that number's texts."
+  - "29.4b (single-person deletion writes no restore directive, so a restore brings the person back) is not in this slice: it needs a subject-directive format reapply-erasures understands, kept apart from the tenant directives it would otherwise read as a whole-brokerage erasure."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.3, 29.8]
+decision_refs: []
+next_task: "29.4b subject restore directive + reapply; then 22.5 (departing agent's DID/messaging route parked when the successor has their own; inbound checks the agent is active)."
 updated: 2026-11-16
 ```
 
