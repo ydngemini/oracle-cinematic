@@ -72,6 +72,11 @@ async def _scenario(monkeypatch):
                 T, kx, x, json.dumps({"budget": f"answer-{s}"}), key)
             await admin.execute("INSERT INTO outreach_attempt_log (tenant_id, contact, channel, allowed) "
                                 "VALUES ($1,'+13025550161','sms',true)", T)
+            # Z texted the brokerage but is no client or contact (review of 29.3).
+            await admin.execute(
+                "INSERT INTO sms_messages (tenant_id, agent_id, provider, provider_message_id, direction, "
+                "from_e164, to_e164, body) VALUES ($1,$2,'telnyx',$3,'inbound','+13025550163','+13025550199',$4)",
+                T, owner, f"msg-{s}", f"z-text {s}")
 
         octx = TenantContext(agent_id=owner, tenant_id=T, role=Role.BROKER_OWNER)
 
@@ -85,7 +90,11 @@ async def _scenario(monkeypatch):
 
         # ── 29.3: X's email with Y's phone (or Y's record id) is refused ───
         for mixed in ({"email": f"x-{s}@client.test", "phone": "(302) 555-0162"},
-                      {"email": f"x-{s}@client.test", "client_id": y}):
+                      {"email": f"x-{s}@client.test", "client_id": y},
+                      # Z's number reaches no CRM record but matches Z's texts
+                      {"email": f"x-{s}@client.test", "phone": "(302) 555-0163"},
+                      # nothing ties two unknown identifiers to one person
+                      {"email": f"nobody-{s}@client.test", "phone": "(302) 555-0163"}):
             for kind, preview in (("dsr_access", True), ("dsr_access", False), ("dsr_delete", False)):
                 with pytest.raises(pl.LifecycleError, match="ambiguous_subject") as err:
                     await ask(kind, preview, **mixed)
@@ -96,7 +105,8 @@ async def _scenario(monkeypatch):
         # identifiers of the same person still work together
         found = await ask(email=f"x-{s}@client.test", phone="302.555.0161", contact_id=kx)
         blob = json.dumps(found["records"])
-        assert f"y-{s}" not in blob and f"Y {s}" not in blob
+        assert f"y-{s}" not in blob and f"Y {s}" not in blob and f"z-text {s}" not in blob
+        assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE tenant_id=$1", T) == 1
         # ── 29.8: every table found is returned, sealed fields opened ─────
         assert set(found["matches"]) <= set(found["records"])
         session = found["records"]["contact_intake_sessions"][0]
@@ -117,7 +127,8 @@ async def _scenario(monkeypatch):
             "SELECT state FROM privacy_operations WHERE tenant_id=$1 AND kind='dsr_access' "
             "ORDER BY requested_at DESC LIMIT 1", T) == "failed"
 
-        # without the key nothing is read and nothing is left running
+        # without the key the request is refused before any operation exists
+        # (subject_ref needs the key); _access_bundle's own 503 is unit-tested
         monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY")
         with pytest.raises(Exception):
             await ask(email=f"x-{s}@client.test")

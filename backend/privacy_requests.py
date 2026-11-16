@@ -144,12 +144,21 @@ async def _assert_one_subject(conn, tenant_id: str, email: Optional[str], phone:
     used to return, or delete, both people's records under one request.
 
     Each identifier is resolved on its own to the CRM records it reaches
-    (clients and contacts, with their links). An identifier that reaches
-    nothing proves nothing either way; any two that reach different record
-    sets are refused before anything is read or deleted. Two rows of the same
-    person that are not linked to each other are refused too: the owner can
-    link them, or ask by record id."""
+    (clients and contacts, with their links). Any two that reach different
+    record sets are refused before anything is read or deleted. An email or
+    phone that reaches no CRM record still matches texts, calls, emails and
+    consent rows by its raw value, so it must be one of the addresses on the
+    records the other identifiers reach; and when none of several identifiers
+    reaches a record, nothing ties them to one person (review of 29.3). Two
+    rows of the same person that are not linked to each other are refused
+    too: the owner can link them, or ask by record id."""
+    from contact_truth import normalize_email, normalize_phone
     from privacy_lifecycle import LifecycleError
+
+    def refuse(detail: str) -> None:
+        raise LifecycleError(
+            f"ambiguous_subject: {detail}. Nothing was read or deleted. "
+            "Send one request per person, or name the record by its id.", status_code=409)
 
     given = [(label, kw) for label, kw in (
         ("email", {"email": email}), ("phone", {"phone": phone}),
@@ -158,6 +167,8 @@ async def _assert_one_subject(conn, tenant_id: str, email: Optional[str], phone:
     if len(given) < 2:
         return
     reached: dict[str, frozenset[str]] = {}
+    known_addresses: set[str] = set()
+    unreached: list[tuple[str, dict]] = []
     for label, kw in given:
         found = await _discover(conn, tenant_id, kw.get("email"), kw.get("phone"),
                                 kw.get("contact_id"), kw.get("client_id"))
@@ -165,12 +176,24 @@ async def _assert_one_subject(conn, tenant_id: str, email: Optional[str], phone:
                             + [f"contact:{i}" for i in found["ids"]["agent_contacts"]])
         if records:
             reached[label] = records
+            known_addresses.update(found["identifiers"])
+        else:
+            unreached.append((label, kw))
     if len(set(reached.values())) > 1:
-        detail = ", ".join(f"the {label} reaches {len(records)} record(s)" for label, records in reached.items())
-        raise LifecycleError(
-            f"ambiguous_subject: these identifiers point to different records ({detail}). "
-            "Nothing was read or deleted. Send one request per person, or name the record by its id.",
-            status_code=409)
+        refuse("these identifiers point to different records ("
+               + ", ".join(f"the {label} reaches {len(r)} record(s)" for label, r in reached.items()) + ")")
+    if not reached:
+        refuse("none of these identifiers reaches a client or contact, so nothing shows they are one person")
+    for label, kw in unreached:
+        value = kw.get("email") or kw.get("phone")
+        if value is None:
+            continue  # a record id that names nothing reads and deletes nothing
+        try:
+            norm = normalize_email(value) if label == "email" else normalize_phone(value)
+        except ValueError:
+            norm = None
+        if norm not in known_addresses:
+            refuse(f"the {label} is not on the records the other identifiers reach")
 
 
 def subject_ref(tenant_id: str, email: Optional[str], phone: Optional[str]) -> str:
@@ -210,9 +233,14 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
         except Exception as exc:
             # Fail closed (29.8): no partial answer is handed over as complete,
             # and the operation does not stay 'running'.
-            async with tenant_tx(ctx) as conn:
-                await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
-                                        error=f"access bundle incomplete: {type(exc).__name__}")
+            try:
+                async with tenant_tx(ctx) as conn:
+                    await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
+                                            error=f"access bundle incomplete: {type(exc).__name__}")
+            except Exception:  # noqa: BLE001 - never mask the original failure
+                import logging
+
+                logging.getLogger(__name__).exception("could not mark access request %s failed", op_id)
             raise
         await _audit(ctx, "privacy.subject.access", target=op_id, metadata={"matches": counts})
         return {"operation_id": op_id, "kind": kind, "matches": counts, "records": data, "caveat": caveat}
