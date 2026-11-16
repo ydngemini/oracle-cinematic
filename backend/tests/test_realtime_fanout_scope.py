@@ -36,7 +36,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 TENANT_WIDE = {
     ("automation_jobs.py", "JobReporter.progress", "broadcast"):
         "JOB_PROGRESS: job id, type, percent and a fixed stage message; no record content",
-    ("server.py", "websocket_endpoint._publish_to_tenant", "deliver_local"):
+    ("server.py", "make_engine_publisher.publish", "deliver_local"):
         "workflow-engine frames, filtered by engine_frame_is_tenant_wide to STATUS_UPDATE / STAGE_PROPERTY "
         "(no record content); DATA_PULLED, TRANSCRIPT_LINE, LEGAL_PACKAGE, PREDICTIVE_CACHE are dropped (27.3)",
 }
@@ -274,8 +274,13 @@ def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
 
 
 @pytest.mark.parametrize("frame, tenant_wide", [
-    ({"type": "STATUS_UPDATE", "data": {"message": "AGENT ANALYST — scoring novelty across graph"}}, True),
+    ({"type": "STATUS_UPDATE", "agent": "AGENT ANALYST — scoring novelty across graph"}, True),
+    ({"type": "STATUS_UPDATE", "agent": "WORKFLOW ENGINE — seeded 12 real parcels into graph"}, True),
     ({"type": "STAGE_PROPERTY"}, True),
+    ({"type": "STATUS_UPDATE", "agent": "SCOUT → UNDERWRITER (DE) — parcel 1-23-45 score 91"}, False),
+    ({"type": "STATUS_UPDATE", "agent": "AGENT LEGAL — generating contract package"}, False),
+    ({"type": "STATUS_UPDATE", "agent": "AGENT ANALYST — scoring novelty across graph", "data": {"x": 1}}, False),
+    ({"type": "STAGE_PROPERTY", "data": {"address": "1 Main St"}}, False),
     ({"type": "DATA_PULLED", "data": {"address": "1 Main St", "investorOffer": 180000}}, False),
     ({"type": "TRANSCRIPT_LINE", "data": {"text": "Initiating contact with Pat Owner..."}}, False),
     ({"type": "LEGAL_PACKAGE", "data": {"price": 180000}}, False),
@@ -284,26 +289,48 @@ def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
     ({}, False), ("not a dict", False),
 ])
 def test_workflow_engine_record_frames_never_reach_the_whole_brokerage(frame, tenant_wide):
-    """Audit 27.3: the shared engine's offers, owner names and contract
-    prices (seeded from the first user's own scope) went to every socket."""
+    """Audit 27.3: the shared engine's offers, owner names, contract prices and
+    scout parcel ids (seeded from the first user's own scope) went to every socket."""
     import server
 
     assert server.engine_frame_is_tenant_wide(frame) is tenant_wide
 
 
-def test_the_engine_publisher_filters_before_fanning_out():
-    """The only tenant-wide path for engine frames checks the allowlist first."""
+def test_the_engine_publisher_delivers_only_content_free_frames(monkeypatch):
+    """Behaviour, not shape (review of #85): the real publisher sends a status
+    frame and drops a DATA_PULLED frame — an inverted guard fails here."""
+    import server
+
+    sent = []
+
+    async def deliver(tenant_id, payload):
+        sent.append((tenant_id, payload["type"]))
+        return 1
+
+    monkeypatch.setattr(server.ws_hub, "deliver_local", deliver)
+    publish = server.make_engine_publisher("t-1")
+    asyncio.run(publish({"type": "DATA_PULLED", "data": {"investorOffer": 180000}}))
+    asyncio.run(publish({"type": "LEGAL_PACKAGE", "data": {"price": 180000}}))
+    asyncio.run(publish({"type": "STATUS_UPDATE", "agent": "WORKFLOW ENGINE — all agents online"}))
+    assert sent == [("t-1", "STATUS_UPDATE")]
+
+
+def test_the_shared_engine_is_built_with_the_filtering_publisher():
+    """A factory passing deliver_local (or anything else) straight in would
+    bypass the filter: the engine must get make_engine_publisher's publisher."""
     import inspect
     import textwrap
 
     import server
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(server.websocket_endpoint)))
-    publishers = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_publish_to_tenant"]
-    assert len(publishers) == 1
-    guard = publishers[0].body[0]
-    assert isinstance(guard, ast.If) and "engine_frame_is_tenant_wide" in ast.unparse(guard.test)
-    assert "deliver_local" in ast.unparse(guard.body[0])
+    engines = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == "WorkflowEngine"]
+    assert len(engines) == 1
+    publish = {k.arg: k.value for k in engines[0].keywords}["publish"]
+    assert ast.unparse(publish) == "_publish_to_tenant"
+    assigned = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "_publish_to_tenant" for t in n.targets)]
+    assert len(assigned) == 1 and ast.unparse(assigned[0].value) == "make_engine_publisher(tenant_id)"
 
 # ── the hub ────────────────────────────────────────────────────────────────
 

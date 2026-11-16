@@ -712,9 +712,10 @@ tests_run:
   - {cmd: "read server.websocket_endpoint._publish_to_tenant + workflow_engine._send at ccc1d74", result: "every engine frame went to ws_hub.deliver_local(tenant_id) — every socket of the brokerage on the replica; the engine's records come from the FIRST connecting user's own scope (real_leads.fetch_real_records), so DATA_PULLED (investorOffer, as-is value), TRANSCRIPT_LINE (owner name), LEGAL_PACKAGE (contract price) and PREDICTIVE_CACHE could expose a private client's lead to colleagues; the fan-out inventory mislabelled it 'public-record review candidates'", date: 2026-11-16}
   - {cmd: "tests (allowlist per frame type; the publisher checks it before deliver_local) against ccc1d74's server.py", result: "red: 10 failed", date: 2026-11-16}
   - {cmd: "after: fan-out scope + workflow-engine + websocket suites", result: "61 passed", date: 2026-11-16}
-authz_checked: "engine_frame_is_tenant_wide: only STATUS_UPDATE (fixed text) and STAGE_PROPERTY (no data) go tenant-wide; record frames and any unknown type are dropped (allowlist)."
+authz_checked: "make_engine_publisher is the engine's only tenant-wide publisher: STAGE_PROPERTY with no fields, and STATUS_UPDATE only with the engine's fixed content-free messages (the regional scout's parcel-id/score status and the now-misleading legal status are dropped); every other frame and any new type is dropped. Behavioural test + factory check (independent review of #85: inverted-guard and bypass mutants now fail)."
 blockers:
   - "Product effect: the ambient engine feed (DATA_PULLED property cards, PREDICTIVE_CACHE, LEGAL_PACKAGE, demo TRANSCRIPT_LINE) no longer reaches dashboards. Delivering them per lead audience needs the lead id threaded through the engine's graph (hits are keyed by address): follow-up if the feature is wanted."
+  - {type: owner, note: "Cost with no audience (review of #85): the engine still runs analyst.analyze_property each cycle (paid AVM via avm_client) and builds legal packages whose frames are now dropped. Decide: switch the ambient engine's analysis off, or deliver it per lead audience."}
   - "Privacy: independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [27.3]
