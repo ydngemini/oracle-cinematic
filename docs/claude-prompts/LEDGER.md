@@ -1888,7 +1888,7 @@ tests_run:
   - {cmd: "after: test_outreach_compliance.py + telnyx dispatch + inbound_voice/opt-out suites", result: "144 passed; ordinary replies using the words (stop by, end of the day, cancel my listing) stay non-opt-outs", date: 2026-11-16}
 authz_checked: "No authorization change; the suppression write path (ConsentLedger.suppress, channel '*') is unchanged."
 blockers:
-  - "A reply whose intent is uncertain is not queued for human review yet (audit suggestion); ambiguous text is treated as not an opt-out unless it matches a phrase or a keyword-only clause."
+  - "OPEN follow-up (owner decision 2026-11-16: merge now, queue later): a reply whose revocation intent is uncertain (e.g. 'not interested', 'not for sale stop') is not queued for human review; ambiguous text is treated as not an opt-out unless it matches a word-bounded phrase or a keyword-only clause. Persistence IS conservative: a failed suppression write returns 503 so Telnyx redelivers. The broader consent and failure-recovery workstreams (26.x, 23.5/34.5) stay open."
   - "Consent/STOP enforcement: needs independent review and owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [25.3]
