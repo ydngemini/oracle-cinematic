@@ -75,7 +75,8 @@ export default function OutreachConsentPanel() {
   const recordConsent = () => act('consent', async () => {
     const payload = {
       contact: contact.trim(),
-      channel,
+      // A voiceprint release only counts on the voice channel.
+      channel: consentType === 'biometric_voiceprint' ? 'voice' : channel,
       consent_type: consentType,
     };
     if (stateCode.trim()) payload.state_code = stateCode.trim().toUpperCase();

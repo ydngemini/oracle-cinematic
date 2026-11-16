@@ -1709,6 +1709,30 @@ next_task: "26.1/26.9: CRM do-not-contact and destination changes reach the outr
 updated: 2026-11-16
 ```
 
+
+#### L09-13 The voice frequency cap holds under concurrent callers; a voiceprint release counts only on voice and until it expires (external audit 26.7, 26.8)
+```yaml
+id: L09-13
+status: tests_pass
+env: local
+evidence_shas: [8541081]   # base; fix in the commit that adds this row
+files: [backend/outreach_compliance.py, oracle-app/src/components/OutreachConsentPanel.jsx, backend/compliance_engine/tests/test_outreach_compliance.py, backend/tests/test_voice_frequency_claim_live.py]
+tests_run:
+  - {cmd: "read guard_outreach + ConsentLedger.gather_state at 8541081", result: "26.7: the 24 h voice count was read on one connection and the attempt row written on another, so callers racing for the last slot all read the same count. 26.8: vp_consent had no channel or expiry predicate, unlike has_consent", date: 2026-11-16}
+  - {cmd: "pytest tests/test_voice_frequency_claim_live.py (real PostgreSQL, FORCE RLS, app role) against 8541081's outreach_compliance.py", result: "red: 6 concurrent callers with one slot left under the cap → 2 allowed; an expired voice release and one recorded on sms both counted", date: 2026-11-16}
+  - {cmd: "same live test with the fix (run twice)", result: "2 passed both runs: exactly 1 allowed, log = 3 allowed + 5 denied; voiceprint: no-expiry/future voice true, expired/sms/revoked false", date: 2026-11-16}
+  - {cmd: "pytest compliance_engine/tests/test_outreach_compliance.py against 8541081's module", result: "red: 3 failed (no single-transaction claim; voiceprint accepted on sms/email); green with the fix, 82 passed; 220 related outreach/voice/email tests passed", date: 2026-11-16}
+authz_checked: "A LOGGED voice attempt (log=True: telephony agent dial, commands_api voice, speed_to_lead) now runs count → decide → attempt-row INSERT in ONE tenant_tx of its own, behind pg_advisory_xact_lock(hashtextextended('outreach-voice:<tenant>:<E.164>')), so the attempt row is the claim; it never reuses a caller's connection (the claim must commit on its own, and no voice caller passes one). Denials are still recorded in that same independent transaction. Unlogged checks (log=False preflights) take no lock and claim nothing. vp_consent now requires channel = 'voice' and (expires_at IS NULL OR expires_at > now()), the same expiry reading has_consent already used; POST /api/compliance/outreach/consent refuses biometric_voiceprint off the voice channel (422) and the consent panel sends it as voice."
+blockers:
+  - {type: owner, note: "Existing data: a voiceprint release already recorded under channel 'sms' (the consent panel's default channel was sms) no longer counts, so an AI or recorded call to an Illinois contact that relied on it is now blocked until the release is re-recorded as voice. Fail-closed; whether to re-label such rows is a counsel/owner call, not done here."}
+  - {type: owner, note: "Migration 0015 describes outreach_consent.expires_at as a retention floor (CA ARL), while the gate reads it as consent validity (has_consent already did). If it is only a retention date, a set expires_at would now end a voiceprint release too: the schema meaning needs an owner decision."}
+  - "Consent enforcement: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [26.7, 26.8]
+decision_refs: []
+next_task: "27.2/27.8: voice socket lifecycle."
+updated: 2026-11-16
+```
 ### L10
 Communications and calendars.
 
