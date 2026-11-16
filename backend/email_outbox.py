@@ -92,8 +92,20 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
     # built here too, both before the send so a failure is a definite "not sent".
     # Entitlement likewise (F18.07): a row queued while the brokerage paid must
     # not go out after its subscription lapsed or it began closing.
+    # The sender must still be allowed to contact this client NOW (external
+    # audit 26.2; CONTRACT C3.4). An email queued just before a reassignment,
+    # a revoked share or the agent's departure must not leave on their old
+    # authority. Checked as the sender in their current role; a sender who is
+    # no longer an active member is refused. Final, like an opt-out.
+    from commands_api import requester_may_contact_record
+
     try:
-        refusal = await billing.entitlement_refusal(worker_ctx)
+        refusal = None
+        if not await requester_may_contact_record(tenant_id, str(row["created_by"] or ""),
+                                                  row["client_id"], None, require_member=True):
+            refusal = (403, "the sender no longer has access to this client")
+        if refusal is None:
+            refusal = await billing.entitlement_refusal(worker_ctx)
         decision = commercial = None
         if refusal is None:
             decision = await outreach_compliance.guard_outreach(
