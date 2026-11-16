@@ -813,9 +813,21 @@ async def begin_erasure(tenant_id: str, *, requested_by: str) -> Optional[str]:
     return op_id
 
 
-async def run_erasure(operation_id: str) -> dict:
+class ErasureIncomplete(LifecycleError):
+    """Cleanup that can still finish is pending: the job retries (22.4)."""
+
+
+async def run_erasure(operation_id: str, *, final_attempt: bool = False) -> dict:
     """Run (or resume) an erasure. Each phase checkpoints into
-    privacy_operations.progress, so a crash resumes at the phase it was in."""
+    privacy_operations.progress, so a crash resumes at the phase it was in.
+
+    Returns the operation's STORED state (external audit 22.4): it used to
+    answer "succeeded" whatever the receipt phase had recorded. When cleanup
+    that a retry can still finish is pending (rows or objects left, storage
+    unreachable, the restore directive unwritten), the phases that redo it are
+    reopened, the operation stays 'running' with result.cleanup_pending, and
+    ErasureIncomplete is raised so the job retries. On the final attempt the
+    operation fails instead of retrying forever."""
     ctx = _platform_ctx("privacy-erasure")
     async with tenant_tx(ctx) as conn:
         op = await conn.fetchrow("SELECT * FROM privacy_operations WHERE id=$1", operation_id)
@@ -830,14 +842,28 @@ async def run_erasure(operation_id: str) -> dict:
         if progress.get(phase, {}).get("done"):
             continue
         handler = _PHASE_HANDLERS[phase]
-        outcome = await handler(ctx, operation_id, tenant_id, progress)
+        extra = {"final_attempt": final_attempt} if phase == "receipt" else {}
+        outcome = await handler(ctx, operation_id, tenant_id, progress, **extra)
         progress[phase] = {**outcome, "done": True,
                            "at": datetime.now(timezone.utc).isoformat()}
         async with tenant_tx(ctx) as conn:
             await conn.execute(
                 "UPDATE privacy_operations SET progress=$2::jsonb, updated_at=now() WHERE id=$1",
                 operation_id, json.dumps(progress, default=str))
-    return {"operation_id": operation_id, "state": "succeeded", "progress": progress}
+    retry = progress.get("receipt", {}).get("retry") or []
+    if retry:
+        for phase in retry:
+            progress.setdefault(phase, {})["done"] = False
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE privacy_operations SET progress=$2::jsonb, updated_at=now() WHERE id=$1",
+                operation_id, json.dumps(progress, default=str))
+        raise ErasureIncomplete(
+            "erasure cleanup pending: " + ", ".join(progress["receipt"].get("cleanup_pending") or []),
+            status_code=503)
+    async with tenant_tx(ctx) as conn:
+        state = await conn.fetchval("SELECT state FROM privacy_operations WHERE id=$1", operation_id)
+    return {"operation_id": operation_id, "state": state, "progress": progress}
 
 
 async def _phase_freeze(ctx, op_id, tenant_id, progress) -> dict:
@@ -943,9 +969,19 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
 
     async with tenant_tx(ctx) as conn:
         media_keys, vault_keys = await _object_keys(conn, tenant_id)
+    # A retry runs after the rows phase deleted the rows that recorded these
+    # keys, so the keys a previous attempt failed on are carried in progress
+    # (storage paths, never content) and tried again (22.4).
+    earlier = progress.get("objects", {})
+    media_keys = sorted(set(media_keys) | set(earlier.get("failed_media_keys") or []))
+    vault_keys = sorted(set(vault_keys) | set(earlier.get("failed_vault_keys") or []))
+    failed_media: list[str] = []
+    failed_vault: list[str] = []
+
     def _delete_media() -> tuple[int, int, int]:
         deleted = missing = failed = 0
         if not object_storage.is_configured():
+            failed_media.extend(media_keys)
             return 0, 0, len(media_keys)
         for key in media_keys:
             try:
@@ -955,6 +991,7 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
                     missing += 1
             except Exception:  # noqa: BLE001
                 failed += 1
+                failed_media.append(key)
         for prefix in tenant_prefixes(tenant_id):
             try:
                 deleted += object_storage.delete_prefix(prefix)
@@ -965,8 +1002,7 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
     import asyncio
 
     deleted, missing, failed = await asyncio.to_thread(_delete_media)
-    if not media_keys and failed and not object_storage.is_configured():
-        failed = 0
+
     def _delete_vault() -> tuple[int, int]:
         ok = bad = 0
         try:
@@ -974,6 +1010,7 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
 
             vault = ContractVault()
         except Exception:  # noqa: BLE001
+            failed_vault.extend(vault_keys)
             return 0, len(vault_keys)
         for key in vault_keys:
             try:
@@ -981,6 +1018,7 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
                 ok += 1
             except Exception:  # noqa: BLE001
                 bad += 1
+                failed_vault.append(key)
         return ok, bad
 
     vault_deleted, vault_failed = (await asyncio.to_thread(_delete_vault)) if vault_keys else (0, 0)
@@ -992,7 +1030,8 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
             json.dumps({"already_absent": missing, "failed": failed + vault_failed,
                         "prefixes": tenant_prefixes(tenant_id)}))
     return {"deleted": deleted, "vault_deleted": vault_deleted, "already_absent": missing,
-            "failed": failed + vault_failed}
+            "failed": failed + vault_failed,
+            "failed_media_keys": failed_media, "failed_vault_keys": failed_vault}
 
 
 def contact_hmac(tenant_id: str, contact: str) -> str:
@@ -1175,47 +1214,100 @@ async def _phase_verify(ctx, op_id, tenant_id, progress) -> dict:
             n = int(await conn.fetchval("SELECT privacy_count_tenant_rows($1,$2)", op_id, table) or 0)
             if n:
                 leftovers[table] = n
-    def _count_objects() -> int:
+    def _count_objects() -> tuple[int, list[str]]:
+        """(objects found, prefixes that could not be listed). Storage that is
+        not configured, or a prefix whose listing fails, proves nothing: the
+        tenant's objects may still be there (external audit 22.2). They used to
+        count as zero objects, i.e. clean. Any object left fails the
+        operation, so the count stops at _VERIFY_LIST_LIMIT per prefix."""
+        prefixes = tenant_prefixes(tenant_id)
         if not object_storage.is_configured():
-            return 0
-        left = 0
-        for prefix in tenant_prefixes(tenant_id):
+            return 0, prefixes
+        left, unverified = 0, []
+        for prefix in prefixes:
             try:
-                left += len(object_storage.list_prefix(prefix, limit=1000))
-            except Exception:  # noqa: BLE001 - an unlistable prefix is reported as unverified below
-                left += 0
-        return left
+                left += len(object_storage.list_prefix(prefix, limit=_VERIFY_LIST_LIMIT))
+            except Exception:  # noqa: BLE001 - reported as unverified, never as clean
+                log.warning("erasure verify could not list %s", prefix, exc_info=True)
+                unverified.append(prefix)
+        return left, unverified
 
     import asyncio
 
-    objects_left = await asyncio.to_thread(_count_objects)
+    objects_left, unverified = await asyncio.to_thread(_count_objects)
     provider_failures = int(progress.get("providers", {}).get("failed", 0))
     object_failures = int(progress.get("objects", {}).get("failed", 0))
     return {"rows_left": leftovers, "objects_left": objects_left,
+            "objects_unverified": unverified,
             "provider_failures": provider_failures, "object_failures": object_failures,
-            "clean": not leftovers and not objects_left and not provider_failures and not object_failures}
+            "clean": (not leftovers and not objects_left and not unverified
+                      and not provider_failures and not object_failures)}
 
 
-async def _phase_receipt(ctx, op_id, tenant_id, progress) -> dict:
+# Per-prefix listing cap for verification; any object left already fails it.
+_VERIFY_LIST_LIMIT = 1000
+
+
+def cleanup_pending(verify: dict, directive_written: bool) -> list[str]:
+    """What still stands between this erasure and 'succeeded'."""
+    pending = []
+    if verify.get("rows_left"):
+        pending.append("rows")
+    if verify.get("objects_left") or verify.get("objects_unverified") or verify.get("object_failures"):
+        pending.append("objects")
+    if verify.get("provider_failures"):
+        pending.append("providers")
+    if not directive_written:
+        pending.append("directive")
+    return pending
+
+
+def _retry_phases(pending: list[str]) -> list[str]:
+    """The phases a retry re-runs. None when a retry cannot help: provider
+    handles (the route rows) are deleted by the rows phase, so a failed
+    release or revocation is left for a person (external cleanup pending)."""
+    if not pending or "providers" in pending:
+        return []
+    phases = [p for p in ("objects", "rows") if p in pending]
+    return phases + ["verify", "receipt"]
+
+
+async def _phase_receipt(ctx, op_id, tenant_id, progress, *, final_attempt: bool = False) -> dict:
+    """Succeed only on a clean verification AND a restore directive that was
+    written and read back (external audit 22.3, 29.4): without the directive a
+    restore from an older backup silently brings the brokerage back, and
+    nothing would re-erase it. Retryable shortfalls keep the operation
+    running for the job to retry (run_erasure)."""
     receipt = build_receipt(op_id, tenant_id, progress)
     import asyncio
 
     directive_written = await asyncio.to_thread(_write_erasure_directive, op_id, tenant_id, receipt)
-    clean = bool(progress.get("verify", {}).get("clean"))
-    provider_failures = int(progress.get("providers", {}).get("failed", 0))
-    emit_event("deletion.completed" if clean else "deletion.failed", operation_id=op_id, tenant_id=tenant_id,
+    verify = progress.get("verify", {})
+    clean = bool(verify.get("clean"))
+    pending = cleanup_pending(verify, directive_written)
+    retry = [] if final_attempt else _retry_phases(pending)
+    result = {"clean": clean, "directive_written": directive_written, "cleanup_pending": pending}
+    if retry:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE privacy_operations SET result = result || $2::jsonb, error=$3, updated_at=now() "
+                "WHERE id=$1", op_id, json.dumps(result),
+                "cleanup pending, retrying: " + ", ".join(pending))
+        return {**result, "retry": retry}
+    succeeded = not pending
+    provider_failures = int(verify.get("provider_failures", 0))
+    emit_event("deletion.completed" if succeeded else "deletion.failed", operation_id=op_id, tenant_id=tenant_id,
                rows_deleted=sum((progress.get("rows", {}).get("deleted") or {}).values()),
                objects_deleted=int(progress.get("objects", {}).get("deleted", 0)),
-               rows_left=sum((progress.get("verify", {}).get("rows_left") or {}).values()))
+               rows_left=sum((verify.get("rows_left") or {}).values()))
     if provider_failures:
         emit_event("deletion.external_cleanup_pending", operation_id=op_id, tenant_id=tenant_id,
                    provider_failures=provider_failures)
     async with tenant_tx(ctx) as conn:
-        await _finish_operation(conn, op_id, state="succeeded" if clean else "failed",
-                                result={"clean": clean, "directive_written": directive_written},
-                                receipt=receipt,
-                                error=None if clean else "verification found leftovers or provider failures")
-    return {"clean": clean, "directive_written": directive_written}
+        await _finish_operation(conn, op_id, state="succeeded" if succeeded else "failed",
+                                result=result, receipt=receipt,
+                                error=None if succeeded else "cleanup pending: " + ", ".join(pending))
+    return result
 
 
 def build_receipt(op_id: str, tenant_id: str, progress: dict) -> dict:
@@ -1265,11 +1357,16 @@ def _write_erasure_directive(op_id: str, tenant_id: str, receipt: dict) -> bool:
 
     directive = {"tenant_id": tenant_id, "operation_id": op_id,
                  "erased_at": receipt.get("erased_at"), "policy_version": POLICY_VERSION}
+    key = f"privacy/erasure-directives/{op_id}.json"
+    body = json.dumps(directive).encode()
     try:
         if not object_storage.is_configured():
             return False
-        object_storage.put_bytes(f"privacy/erasure-directives/{op_id}.json",
-                                 json.dumps(directive).encode(), "application/json")
+        object_storage.put_bytes(key, body, "application/json")
+        # Read it back: reapply-erasures can only act on a directive it can read.
+        if object_storage.get_bytes(key) != body:
+            log.error("erasure directive %s read back different bytes", key)
+            return False
         return True
     except Exception:  # noqa: BLE001 - reported in the result; the runbook covers it
         log.exception("erasure directive write failed")
@@ -1359,7 +1456,7 @@ async def reapply_erasures(*, apply: bool) -> list[dict]:
                         subject_kind="tenant", subject_ref=tenant, state="running",
                         reason="re-applied after database restore",
                         params={"reapply_of": directive.get("operation_id")})
-                await run_erasure(str(op["id"]))
+                await run_erasure(str(op["id"]), final_attempt=True)
                 async with tenant_tx(ctx) as conn:
                     final = await conn.fetchval("SELECT state FROM privacy_operations WHERE id=$1", op["id"])
                 entry.update({"status": "reapplied" if final == "succeeded" else "reapply_failed",
@@ -1377,9 +1474,16 @@ _PHASE_HANDLERS = {
 
 
 async def _erase_job(payload: dict, reporter) -> dict:
-    # Job handlers receive the payload; the job row is reporter.job.
-    result = await run_erasure(str(payload["operation_id"]))
-    return {"state": result.get("state"), "operation_id": result.get("operation_id")}
+    # Job handlers receive the payload; the job row is reporter.job. The last
+    # attempt fails the operation instead of leaving it running (22.4); a
+    # failed operation ends the job as partial, never as succeeded.
+    job = getattr(reporter, "job", None) or {}
+    final = int(job.get("attempt_count") or 1) >= int(job.get("max_attempts") or 1)
+    result = await run_erasure(str(payload["operation_id"]), final_attempt=final)
+    out = {"state": result.get("state"), "operation_id": result.get("operation_id")}
+    if result.get("state") == "failed":
+        out["_terminal_state"] = "partial"
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
