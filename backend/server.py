@@ -1330,9 +1330,54 @@ def make_engine_publisher(tenant_id: str):
     return publish
 
 
+async def _watch_voice_socket(websocket: WebSocket, ctx: TenantContext, session_uuid: str,
+                              last_seen: dict[str, float]) -> None:
+    """Keep a voice-session stream honest for as long as it stays open (external
+    audit 27.2, 27.8). The handshake checks are not enough for a socket that
+    can outlive them: close once the token expires (4401), the account's session
+    ends (4401), the caller can no longer read this call's content (4404: a
+    share revoked, the client reassigned, the user demoted or the record
+    erased), or the client has sent nothing for _WS_IDLE_TIMEOUT (1001).
+
+    Unlike /ws, a re-check that cannot complete closes the socket (1011): this
+    stream carries call content, and the client's reconnect is re-admitted from
+    scratch."""
+    import record_access
+
+    ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2)
+    last_check = time.monotonic()
+    while True:
+        await asyncio.sleep(ping_interval)
+        if ctx.expires_at is not None and time.time() >= ctx.expires_at:
+            await websocket.close(code=4401)
+            return
+        if time.monotonic() - last_check >= _WS_SESSION_RECHECK_SECONDS:
+            last_check = time.monotonic()
+            try:
+                await verify_session_current(ctx)
+                visible = ctx.is_platform_admin or await record_access.may_read_call_content(
+                    ctx.tenant_id, session_uuid, ctx.agent_id)
+            except HTTPException:
+                await websocket.close(code=4401)
+                return
+            except Exception:  # noqa: BLE001 — fail closed on call content
+                logger.warning("Voice socket re-check failed session=%s", session_uuid, exc_info=True)
+                await websocket.close(code=1011)
+                return
+            if not visible:
+                await websocket.close(code=4404)
+                return
+        if time.monotonic() - last_seen["t"] >= _WS_IDLE_TIMEOUT:
+            await websocket.close(code=1001)
+            return
+
+
 @app.websocket("/ws/voice-telemetry/{session_id}")
 async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
-    """Private session stream; identity and session tenancy are checked pre-upgrade."""
+    """Private session stream; identity, the live session and session tenancy
+    are checked pre-upgrade, and re-checked while it is open
+    (_watch_voice_socket). A client keeps it open by sending "PING" (answered
+    "PONG") at least every _WS_IDLE_TIMEOUT seconds."""
     from config import IS_DEV
 
     allowed_origins = {origin.strip() for origin in _ALLOWED_ORIGINS if origin.strip()}
@@ -1349,6 +1394,16 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
         session_uuid = str(uuid.UUID(session_id))
     except (ValueError, TypeError):
         await websocket.close(code=4404)
+        return
+    # As on /ws: whether the account is still live is a database fact, and a
+    # voice stream counts toward the replica's ceiling (27.2, 27.8).
+    try:
+        await verify_session_current(ctx)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+    if ws_hub.at_capacity():
+        await websocket.close(code=1013, reason="server at capacity, retry shortly")
         return
 
     try:
@@ -1411,10 +1466,26 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
                 ],
             }
         )
-        while True:
-            message = await websocket.receive_text()
-            if message == "PING":
-                await websocket.send_text("PONG")
+        last_seen = {"t": time.monotonic()}
+
+        async def receive() -> None:
+            while True:
+                message = await websocket.receive_text()
+                last_seen["t"] = time.monotonic()
+                if message == "PING":
+                    await websocket.send_text("PONG")
+
+        tasks = [asyncio.create_task(receive()),
+                 asyncio.create_task(_watch_voice_socket(websocket, ctx, session_uuid, last_seen))]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in done:
+            if not task.cancelled() and task.exception() is not None:
+                raise task.exception()
     except WebSocketDisconnect:
         pass
     finally:

@@ -745,6 +745,28 @@ next_task: "If the ambient feed is wanted: thread lead_id through the graph and 
 updated: 2026-11-16
 ```
 
+
+#### L03-17 A voice-session stream is admitted like /ws and re-checked while open: expiry, revocation, lost call access, capacity, idle (external audit 27.2, 27.8)
+```yaml
+id: L03-17
+status: tests_pass
+env: local
+evidence_shas: [e31c3b7]   # base; fix in the commit that adds this row
+files: [backend/server.py, backend/tests/test_voice_socket_lifecycle.py]
+tests_run:
+  - {cmd: "read server.voice_telemetry_websocket vs websocket_endpoint at e31c3b7", result: "identity and may_read_call_content checked once at the handshake, then the call's events streamed until the client left: no expiry/session/visibility re-check, no at_capacity() refusal though voice sockets count toward total_connections, no idle limit. A revoked session at the handshake was already refused (tenant_tx -> app_begin_session -> 1011), as the audit noted", date: 2026-11-16}
+  - {cmd: "pytest tests/test_voice_socket_lifecycle.py against e31c3b7's server.py", result: "red: 8 failed", date: 2026-11-16}
+  - {cmd: "same with the fix", result: "8 passed: revoked session 4401 and full replica 1013 before the upgrade; after joining, lost call access 4404, ended session 4401, expired token 4401, re-check error 1011, silent client 1001 while a pinging one stays open; a platform admin is not gated on record visibility", date: 2026-11-16}
+authz_checked: "Before accepting: verify_session_current (4401) and ws_hub.at_capacity() (1013), as on /ws, then the existing may_read_call_content + session lookup. While open, _watch_voice_socket checks every min(60 s, idle/2): token expiry (4401); every _WS_SESSION_RECHECK_SECONDS (300 s) verify_session_current (4401) and, for non-admins, may_read_call_content for THIS session (4404: share revoked, client reassigned, demotion, erasure); a re-check that cannot complete closes 1011 (fail closed on call content, unlike /ws which keeps sockets through a DB blip); no client message for _WS_IDLE_TIMEOUT (300 s) closes 1001. A client keeps the stream by sending \"PING\" (answered \"PONG\"); no in-repo client uses this socket yet."
+blockers:
+  - "Access lost after joining is noticed within _WS_SESSION_RECHECK_SECONDS (default 300 s), not instantly; frames broadcast in that window still reach the socket. Lower the env value or add a push-revocation path if that window is too long (owner/privacy call)."
+  - "Privacy (call content): independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [27.2, 27.8]
+decision_refs: []
+next_task: "22.x erasure and DSAR items."
+updated: 2026-11-16
+```
 ### L04
 CRM, contacts, leads and relationships.
 
