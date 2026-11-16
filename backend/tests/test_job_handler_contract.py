@@ -35,7 +35,7 @@ def test_privacy_handlers_take_the_payload(monkeypatch):
 
     calls = []
 
-    async def run_erasure(op):
+    async def run_erasure(op, **_kw):
         calls.append(("erase", op))
         return {"state": "succeeded", "operation_id": op}
 

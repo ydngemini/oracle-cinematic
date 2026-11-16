@@ -214,6 +214,18 @@ async def _scenario(monkeypatch, media_root):
                             "AND kind='closure' AND state='blocked_legal_hold'", T)
         op_id = await pl.begin_erasure(T, requested_by="test")
         assert op_id
+        # Storage unreachable: the erasure is not "succeeded"; it stays running
+        # with what is pending, and the retry finishes it (22.2, 22.3, 22.4).
+        import object_storage
+
+        with monkeypatch.context() as m:
+            m.setattr(object_storage, "is_configured", lambda: False)
+            with pytest.raises(pl.ErasureIncomplete):
+                await pl.run_erasure(op_id)
+        mid = await admin.fetchrow("SELECT state, result FROM privacy_operations WHERE id=$1", op_id)
+        assert mid["state"] == "running"
+        assert json.loads(mid["result"])["cleanup_pending"] == ["objects", "directive"]
+        assert (media_root / ids["media_key"]).exists()
         result = await pl.run_erasure(op_id)
         op = await admin.fetchrow("SELECT state, receipt, error FROM privacy_operations WHERE id=$1", op_id)
         receipt = json.loads(op["receipt"])
