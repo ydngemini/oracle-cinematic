@@ -1592,6 +1592,30 @@ next_task: "Bounded drain of the agent leg after hang-up (up to ~2 s) before can
 updated: 2026-11-13
 ```
 
+#### L09-10 Per-process, per-brokerage cap on concurrent realtime calls: 5 for the pilot (T09.10, partial AC09.02)
+```yaml
+id: L09-10
+status: tests_pass
+env: local
+evidence_shas: [d27bac3, fe57522, 0c2f986, 9325e61]   # base; salvage of Noah cycle 4ff352f; ACS + leak fix; pilot cap; the ceiling commit adds this note
+files: [backend/commands_api.py, backend/tests/test_realtime_call_cap.py]
+tests_run:
+  - {cmd: "pytest tests/test_realtime_call_cap.py tests/test_ai_budget_hosted_calls.py + plivo/twilio/elevenlabs/qwen realtime suites (fakes; no provider call)", result: "204 passed", date: 2026-11-16}
+  - {cmd: "mutation: _acquire_realtime_slot never refuses", result: "killed", date: 2026-11-16}
+  - {cmd: "mutation: release moved out of finally (leaks on construction failure / CancelledError)", result: "2 failed (killed)", date: 2026-11-16}
+authz_checked: "Unknown brokerage is refused before the cap (commands_api._realtime_refusal); the slot is per call's brokerage. All three realtime media routes (ACS, Twilio, Plivo incl. ElevenLabs) take the slot immediately before the try/finally that releases it (independent review, PR #76)."
+blockers:
+  - "PER PROCESS ONLY, not a global cap: N replicas or workers allow N x cap. A cluster-wide counter is required before more than one process serves calls."
+  - "Concurrency only. Not a per-call reservation, settlement or wall-clock cap: audit 34.2/23.6 stay open."
+  - "Default cap 5 per brokerage (owner decision 2026-11-16, five-agent pilot); 20 stays configurable via ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE pending real capacity testing. 0 (no cap) is honoured only when config.IS_DEV; elsewhere it falls back to 5, and any value above 20 is clamped to 20 (with a warning), so production cannot be made unlimited."
+  - "Open (not closed by this row): per-call duration/idle limits (23.6), live usage metering, per-call reservation and settlement (34.2)."
+  - "Not deployed (C4.4)."
+audit_refs: [34.2, 23.6]
+decision_refs: []
+next_task: "Per-call reservation + wall-clock/idle cap (34.2/23.6); a cluster-wide counter before more than one replica serves calls."
+updated: 2026-11-16
+```
+
 ### L10
 Communications and calendars.
 
