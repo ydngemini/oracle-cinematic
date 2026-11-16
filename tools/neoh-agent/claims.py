@@ -137,6 +137,19 @@ class ClaimStore:
                 event["signature"] = signature
             self._append(event)
 
+    def unblock(self, item_id: str, *, operator: str, reason: str) -> None:
+        """Return a BLOCKED item to PENDING, on the record. Only an operator
+        (a human, via the supervisor's own code — never a cycle) may do this,
+        e.g. after a red main that blocked the item is fixed."""
+        if not operator or not reason:
+            raise ClaimError("unblock needs an operator and a reason")
+        with self._locked():
+            current = self.replay().get(item_id, {"state": "PENDING"})
+            if current["state"] != "BLOCKED":
+                raise ClaimError(f"{item_id} is {current['state']}, not BLOCKED")
+            self._append({"item": item_id, "to": "PENDING", "exec_id": None,
+                          "reason": f"unblocked by {operator}: {reason}", "lease_until": 0})
+
     def recover_stale(self) -> list[str]:
         recovered = []
         with self._locked():

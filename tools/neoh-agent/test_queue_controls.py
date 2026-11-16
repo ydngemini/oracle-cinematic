@@ -515,3 +515,19 @@ def test_15_the_latest_review_record_decides():
     requested = accept(decision="changes_requested", pr=None)
     assert completion.acceptance_for(item(), "e1", [requested, accept()])[0]
     assert completion.acceptance_for(item(), "e1", [accept(), accept(decision="rejected")])[0] is None
+
+
+def test_a_blocked_item_returns_to_pending_only_through_an_operator_unblock(tmp_path):
+    """BLOCKED is terminal for cycles; an operator unblock is recorded with who and why."""
+    store = claims_mod.ClaimStore(tmp_path)
+    assert store.claim("NQ-07", "e1", 3600)
+    store.transition("NQ-07", "e1", "BLOCKED", reason="baseline_red")
+    assert not store.claim("NQ-07", "e2", 3600)
+    with pytest.raises(claims_mod.ClaimError):
+        store.unblock("NQ-07", operator="", reason="x")
+    store.unblock("NQ-07", operator="owner", reason="main fixed by PR #81")
+    entry = store.replay()["NQ-07"]
+    assert entry["state"] == "PENDING" and "main fixed by PR #81" in entry["history"][-1]["reason"]
+    assert store.claim("NQ-07", "e2", 3600)
+    with pytest.raises(claims_mod.ClaimError, match="not BLOCKED"):
+        store.unblock("NQ-07", operator="owner", reason="again")

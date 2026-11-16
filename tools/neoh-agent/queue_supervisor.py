@@ -109,6 +109,13 @@ def archive_and_remove(path: Path, name: str, floors: dict, retained_max: int) -
                            capture_output=True, timeout=120)
         patch = subprocess.run(["git", "-C", str(path), "diff", "--cached", "--binary", "HEAD"],
                                env=env, check=True, capture_output=True, timeout=120).stdout
+        if not patch.strip():
+            # A cycle that changed nothing (e.g. stopped at a red baseline):
+            # there is nothing to archive and nothing to recover.
+            destination.rmdir() if not any(destination.iterdir()) else None
+            subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(path)],
+                           capture_output=True, timeout=120)
+            return f"{name}: no changes to archive; worktree removed"
         (destination / f"{name}.patch").write_bytes(patch)
         check_env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "check")}
         subprocess.run(["git", "-C", str(ROOT), "read-tree", head], env=check_env, check=True,
