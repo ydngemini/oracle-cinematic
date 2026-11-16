@@ -4425,7 +4425,7 @@ tests_run:
   - {cmd: "pytest tests/test_ci_lists_every_live_test.py against 8894bbf's ci.yml, then with the glob", result: "red (the 8 named) -> 2 passed", date: 2026-11-16}
 authz_checked: n/a (CI configuration)
 blockers:
-  - "The 8 files ran locally against the dev database (see their rows); their first CI run is this PR's database security job."
+  - "First CI run of the glob: 135 passed incl. all 8; test_audit_fallback_drain_live failed only because the glob runs it early, on an empty audit chain (no predecessor row) -> the test now starts the verifier from the genesis anchor, as the verifier itself does."
   - "Not deployed (C4.4)."
 audit_refs: [35-07]
 decision_refs: []

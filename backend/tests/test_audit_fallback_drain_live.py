@@ -83,6 +83,10 @@ async def _scenario(tmp_path, monkeypatch):
         #    transaction, so the shared dev chain is never left forged).
         before = await admin.fetchrow(
             "SELECT seq, entry_hash FROM audit_ledger WHERE seq < $1 ORDER BY seq DESC LIMIT 1", rows[0]["seq"])
+        # On a fresh database (CI runs this file early) our rows may be the
+        # first in the chain: start from the genesis anchor, as the verifier does.
+        before_seq, before_hash = ((before["seq"], before["entry_hash"]) if before
+                                   else (0, audit_ledger._GENESIS))
         tx = admin.transaction()
         await tx.start()
         try:
@@ -90,7 +94,7 @@ async def _scenario(tmp_path, monkeypatch):
                 "INSERT INTO audit_chain_verification (id, cursor_seq, cursor_hash, rows_in_pass) "
                 "VALUES (1, $1, $2, 0) ON CONFLICT (id) DO UPDATE SET cursor_seq = EXCLUDED.cursor_seq, "
                 "cursor_hash = EXCLUDED.cursor_hash, rows_in_pass = 0, broken_seq = NULL, "
-                "alerted_broken_seq = NULL", before["seq"], before["entry_hash"])
+                "alerted_broken_seq = NULL", before_seq, before_hash)
             ok, alert = await ledger._verify_segment_on(admin, max_rows=3, page=2)
             assert ok["checked"] == 3 and ok["status"] == "intact" and alert is False
             state = await admin.fetchrow("SELECT cursor_seq, cursor_hash FROM audit_chain_verification")
