@@ -549,7 +549,17 @@ def _email_otp_env(monkeypatch):
 
     @asynccontextmanager
     async def tx(_ctx):
-        yield store
+        # Faithful to PostgreSQL: a transaction whose block raises is ROLLED
+        # BACK. The old fake kept writes made before the raise, which hid
+        # external audit 28.1 (the attempt counter never persisted).
+        import copy
+
+        snapshot = copy.deepcopy(store.rows)
+        try:
+            yield store
+        except BaseException:
+            store.rows[:] = snapshot
+            raise
 
     sent = []
     monkeypatch.setattr(db.connection, "tenant_tx", tx)
