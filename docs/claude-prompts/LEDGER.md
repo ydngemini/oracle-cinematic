@@ -701,9 +701,9 @@ next_task: "27.2/27.8: admit_operator_stream/watch_operator_stream for /ws/voice
 updated: 2026-11-16
 ```
 
-#### L03-15 The shared workflow engine's offers, owner names and contract prices never reach the whole brokerage (external audit 27.3; owner decision 2026-11-16)
+#### L03-16 The shared workflow engine's offers, owner names and contract prices never reach the whole brokerage (external audit 27.3; owner decision 2026-11-16)
 ```yaml
-id: L03-15
+id: L03-16
 status: tests_pass
 env: local
 evidence_shas: [ccc1d74]   # base; fix in the commit that adds this row
