@@ -293,7 +293,7 @@ def test_sensitive_lead_frames_fail_closed_live():
 
             results["private"] = await deliver("private", "a")
             results["pool"] = await deliver("pool", "b")
-            results["erased"] = await deliver("erased", "a")
+            results["erased"] = await deliver("erased", "b")   # not the former assignee
             results["deleted"] = await deliver("deleted", "a")
             results["foreign"] = await deliver("foreign", "a")
             results["pool_non_sensitive"] = await deliver("pool", "b", sensitive=False)
@@ -314,7 +314,7 @@ def test_sensitive_lead_frames_fail_closed_live():
     got = asyncio.run(go())
     assert got["private"] == {"owner", "a"}, got["private"]          # authorized recipients only
     assert got["pool"] == {"b"}, got["pool"]                         # the member on the call
-    assert got["erased"] == {"a"}, got["erased"]                     # erased client: never everyone
+    assert got["erased"] == {"b"}, got["erased"]                     # erased client: the caller only
     assert got["deleted"] == set(), got["deleted"]                   # deleted lead: nobody
     assert got["foreign"] == set(), got["foreign"]                   # another brokerage's lead: nobody
     assert got["pool_non_sensitive"] == {"owner", "a", "b"}          # ordinary pool frames unchanged

@@ -243,6 +243,22 @@ def test_a_sensitive_call_frame_never_reaches_the_whole_brokerage(hub, monkeypat
     assert got == expected
 
 
+@pytest.mark.parametrize("only, expected", [(["agent-b@x.test", "owner@x.test"], set()),
+                                            (["agent-a@x.test", "agent-b@x.test"], {"agent-a"})])
+def test_a_sensitive_pool_frame_with_only_still_reaches_the_caller_only(hub, monkeypatch, only, expected):
+    """Privacy review of #77: `only` must not widen a sensitive pool frame."""
+    import record_access
+
+    async def resolve(tenant_id, client_id, contact_id, lead_id=None):
+        return None
+
+    monkeypatch.setattr(record_access, "linked_audience", resolve)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, lead_id="pool", actor="agent-a@x.test",
+                                        only=only, sensitive=True))
+    assert {n for n in ("owner", "agent-a", "agent-b", "anon") if socks[n].frames} == expected
+
+
 def test_a_non_sensitive_pool_frame_keeps_its_pool_audience(hub, monkeypatch):
     """Not a regression for ordinary pool frames (assignment notices etc.)."""
     import record_access

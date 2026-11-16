@@ -573,8 +573,11 @@ async def broadcast_record(
                        type(exc).__name__, payload.get("type"))
         audience = [actor] if actor else []
     if audience is None:
-        if sensitive and only is None:
-            recipients = [actor] if actor else []
+        if sensitive:
+            # Never the whole brokerage: the member on the call, and only if an
+            # `only` list (when given) names them too.
+            caller = (actor or "").lower()
+            recipients = [actor] if actor and (only is None or caller in {u.lower() for u in only if u}) else []
         elif only is None and mirror:
             return await broadcast(tenant_id, payload)
         else:

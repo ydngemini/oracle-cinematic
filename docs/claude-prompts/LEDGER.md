@@ -691,6 +691,8 @@ tests_run:
 authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose copy is unchanged (27.5 open)."
 blockers:
   - "27.2/27.8 (voice-session socket never re-checks the session, no capacity or idle limit) and 27.3 (workflow engine fan-out) are separate and still open."
+  - {type: owner, note: "OPEN, pull paths (privacy review of PR #77): the per-session voice socket (server.py voice_telemetry_websocket) and GET /api/voice/telemetry admit anyone who can read the call under RLS. For a pool lead, or a lead whose client was erased (seller_client_id NULL, readable by every member under 0151), any member can read the transcript, counter offer, MAO and objection draft; with no session_id the REST feed returns the latest active session. Not a broadcast, but a tenant-wide transcript audience: needs the same caller-only rule for call content."}
+  - "OPEN, 27.3 (pre-existing): the workflow engine sends DATA_PULLED (investorOffer, as-is value, owner name) and contract prices to every socket of the tenant on that replica via deliver_local (server.py, workflow_engine.py), seeded from the first connecting user's own record scope; tests/test_realtime_fanout_scope.py TENANT_WIDE mislabels it as public-record candidates."
   - "Resolved by owner decision 2026-11-16: an erased/deleted private client's lead (ON DELETE SET NULL -> pool) no longer exposes call content; sensitive frames fail closed to the caller."
   - "Not deployed (C4.4)."
 audit_refs: [27.1, 27.4]
