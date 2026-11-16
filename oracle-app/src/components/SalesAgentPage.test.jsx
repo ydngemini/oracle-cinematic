@@ -20,8 +20,9 @@ function entry(id, name) {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((res) => { resolve = res; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 describe('SalesAgentPage work queue', () => {
@@ -54,4 +55,59 @@ describe('SalesAgentPage work queue', () => {
     expect(screen.getByRole('button', { name: /Newer Match/ }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('heading', { name: 'Newer Match' })).toBeTruthy();
   });
+
+  it('a stale request that fails never shows an error or leaves the queue loading', async () => {
+    const pending = {};
+    api.crmGet.mockImplementation((url) => {
+      const q = new URL(url, 'http://localhost').searchParams.get('q');
+      if (!q) return Promise.resolve({ items: [entry('base', 'Base Person')] });
+      pending[q] = deferred();
+      return pending[q].promise;
+    });
+
+    render(<SalesAgentPage onNavigate={() => {}} />);
+    await screen.findByRole('button', { name: /Base Person/ });
+    const search = screen.getByLabelText('Search');
+    fireEvent.change(search, { target: { value: 'a' } });
+    await waitFor(() => expect(pending.a).toBeDefined());
+    fireEvent.change(search, { target: { value: 'ab' } });
+    await waitFor(() => expect(pending.ab).toBeDefined());
+
+    await act(async () => { pending.ab.resolve({ items: [entry('new', 'Newer Match')] }); });
+    await screen.findByRole('button', { name: /Newer Match/ });
+    // The OLDER request now fails: the user's current results are not theirs to spoil.
+    await act(async () => { pending.a.reject(new Error('network dropped')); });
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Loading the work queue…')).toBeNull();
+    expect(screen.getByRole('button', { name: /Newer Match/ })).toBeTruthy();
+  });
+
+  it('an older request settling first does not end the newer search\'s loading state', async () => {
+    const pending = {};
+    api.crmGet.mockImplementation((url) => {
+      const q = new URL(url, 'http://localhost').searchParams.get('q');
+      if (!q) return Promise.resolve({ items: [entry('base', 'Base Person')] });
+      pending[q] = deferred();
+      return pending[q].promise;
+    });
+
+    render(<SalesAgentPage onNavigate={() => {}} />);
+    await screen.findByRole('button', { name: /Base Person/ });
+    const search = screen.getByLabelText('Search');
+    fireEvent.change(search, { target: { value: 'a' } });
+    await waitFor(() => expect(pending.a).toBeDefined());
+    fireEvent.change(search, { target: { value: 'ab' } });
+    await waitFor(() => expect(pending.ab).toBeDefined());
+
+    // The OLDER request settles while the newer one is still in flight.
+    await act(async () => { pending.a.resolve({ items: [entry('old', 'Older Match')] }); });
+    expect(screen.getByText('Loading the work queue…')).toBeTruthy();
+    expect(screen.queryAllByText('Older Match')).toHaveLength(0);
+
+    await act(async () => { pending.ab.resolve({ items: [entry('new', 'Newer Match')] }); });
+    await screen.findByRole('button', { name: /Newer Match/ });
+    expect(screen.queryByText('Loading the work queue…')).toBeNull();
+  });
 });
+
