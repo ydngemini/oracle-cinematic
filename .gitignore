@@ -75,3 +75,7 @@ observatory/
 # Load-test output: synthetic credentials and run results. Never committed.
 performance/out/
 backend/.rehearsal_migrations/
+
+# Local runtime spools (never commit: may hold tenant ids and phone numbers)
+backend/var/
+*.opt-out-spool.jsonl

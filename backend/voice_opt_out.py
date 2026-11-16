@@ -21,9 +21,12 @@ never what was said.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -86,9 +89,14 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
 #: App Platform redeploy wipes the container disk) would lose it — the health
 #: component pages first, and a shared durable store is an owner decision.
 RETRY_DELAYS: tuple[float, ...] = (0.5, 2.0, 5.0)
-SPOOL_PATH = Path(os.environ.get("ORACLE_OPT_OUT_SPOOL", "var/outbound-opt-out-spool.jsonl"))
+#: Absolute and OUTSIDE the source tree by default (never committed, never in
+#: the image); point ORACLE_OPT_OUT_SPOOL at a mounted volume where one exists.
+SPOOL_PATH = Path(os.environ.get(
+    "ORACLE_OPT_OUT_SPOOL", str(Path(tempfile.gettempdir()) / "neoh-outbound.opt-out-spool.jsonl")))
 _PENDING: set[tuple[str, str]] = set()
-_SPOOL_LOADED = False
+#: (stat signature, keys) of the spool as last read; re-read when it changes,
+#: so every worker process sees every other worker's pending STOPs.
+_SPOOL_SEEN: tuple = (None, None)
 
 
 def _key(state: Mapping[str, Any]) -> Optional[tuple[str, str]]:
@@ -97,6 +105,20 @@ def _key(state: Mapping[str, Any]) -> Optional[tuple[str, str]]:
     tenant_id = str(state.get("tenant_id") or "")
     contact = normalize_contact(str(state.get("callee") or ""), Channel.VOICE)
     return (tenant_id, contact) if tenant_id and contact else None
+
+
+@contextmanager
+def _spool_lock():
+    """Cross-process lock: appends and rewrites never interleave, so one
+    worker's rewrite can never drop another worker's concurrent append."""
+    SPOOL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(SPOOL_PATH) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _read_spool() -> list[tuple[str, str]]:
@@ -114,72 +136,76 @@ def _read_spool() -> list[tuple[str, str]]:
     return out
 
 
-def _load_spool_once() -> None:
-    global _SPOOL_LOADED
-    if not _SPOOL_LOADED:
-        _PENDING.update(_read_spool())
-        _SPOOL_LOADED = True
+def _spooled() -> set[tuple[str, str]]:
+    global _SPOOL_SEEN
+    try:
+        info = SPOOL_PATH.stat()
+        signature = (info.st_mtime_ns, info.st_size)
+    except FileNotFoundError:
+        return set()
+    if _SPOOL_SEEN[0] != signature:
+        _SPOOL_SEEN = (signature, set(_read_spool()))
+    return set(_SPOOL_SEEN[1])
 
 
 def _spool(key: tuple[str, str]) -> None:
-    """Append, fsynced, mode 0600. Called only after every retry failed."""
-    SPOOL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(SPOOL_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, (json.dumps({"tenant_id": key[0], "contact": key[1]}) + "\n").encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    """Append, fsynced, mode 0600, under the cross-process lock."""
+    with _spool_lock():
+        fd = os.open(SPOOL_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (json.dumps({"tenant_id": key[0], "contact": key[1]}) + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     _PENDING.add(key)
 
 
+def _remove(keys: set[tuple[str, str]]) -> None:
+    """Drop exactly `keys` (written at last) from the spool and memory. Reads
+    the CURRENT file under the lock, so STOPs spooled meanwhile — by this
+    process or another — are kept."""
+    if not keys:
+        return
+    _PENDING.difference_update(keys)
+    with _spool_lock():
+        if not SPOOL_PATH.exists():
+            return
+        keep = [k for k in _read_spool() if k not in keys]
+        tmp = SPOOL_PATH.with_name(SPOOL_PATH.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, "".join(json.dumps({"tenant_id": t, "contact": c}) + "\n" for t, c in keep).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, SPOOL_PATH)
+
+
 def pending_opt_out(tenant_id: str, contact: str) -> bool:
-    """True while this number's spoken STOP is spooled and not yet written:
-    the outreach gate treats it as suppressed (fail closed)."""
-    _load_spool_once()
-    return (str(tenant_id), contact) in _PENDING
+    """True while this number's spoken STOP is spooled (by any worker) and not
+    yet written: the outreach gate treats it as suppressed (fail closed)."""
+    key = (str(tenant_id), contact)
+    return key in _PENDING or key in _spooled()
 
 
 def pending_count() -> int:
-    _load_spool_once()
-    return len(set(_read_spool()) | _PENDING)
-
-
-def _rewrite_spool(remaining: list[tuple[str, str]]) -> None:
-    SPOOL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = SPOOL_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, "".join(json.dumps({"tenant_id": t, "contact": c}) + "\n" for t, c in remaining).encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, SPOOL_PATH)
-
-
-def _forget(key: tuple[str, str]) -> None:
-    """A spooled STOP was written after all: drop it from the spool and memory."""
-    _PENDING.discard(key)
-    if SPOOL_PATH.exists():
-        _rewrite_spool([k for k in _read_spool() if k != key])
+    return len(_spooled() | _PENDING)
 
 
 async def replay_spool() -> dict[str, int]:
-    """Write every spooled opt-out; keep only the ones that still fail.
-    Called by reconciliation.run_sweep. Idempotent (ON CONFLICT DO NOTHING)."""
-    _load_spool_once()
-    queued = list(dict.fromkeys(_read_spool() + sorted(_PENDING)))
-    remaining = []
+    """Write every spooled opt-out; remove only the ones written. Called by
+    reconciliation.run_sweep. Idempotent (ON CONFLICT DO NOTHING). A STOP
+    spooled while this runs is never dropped."""
+    queued = sorted(_spooled() | _PENDING)
+    written = set()
     for tenant_id, contact in queued:
         try:
             await record_outbound_opt_out({"tenant_id": tenant_id, "callee": contact})
         except OptOutNotRecorded:
-            remaining.append((tenant_id, contact))
-    if queued:
-        _rewrite_spool(remaining)
-    _PENDING.clear()
-    _PENDING.update(remaining)
-    return {"replayed": len(queued) - len(remaining), "still_pending": len(remaining)}
+            continue
+        written.add((tenant_id, contact))
+    _remove(written)
+    return {"replayed": len(written), "still_pending": len(queued) - len(written)}
 
 
 async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
@@ -191,7 +217,7 @@ async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
             await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
         except OptOutNotRecorded:
             continue
-        _forget(key)
+        _remove({key})
         logger.info("Spooled outbound opt-out recorded on retry: call=%s", call_ref)
         return
     logger.error("Outbound opt-out still not recorded after retries; left for reconciliation: call=%s", call_ref)

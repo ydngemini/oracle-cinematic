@@ -21,11 +21,13 @@ NUMBER = outreach_compliance.normalize_contact(STATE["callee"], outreach_complia
 
 
 @pytest.fixture(autouse=True)
-def isolated(monkeypatch, tmp_path):
-    monkeypatch.setattr(voice_opt_out, "SPOOL_PATH", tmp_path / "spool.jsonl")
-    monkeypatch.setattr(voice_opt_out, "_PENDING", set())
-    monkeypatch.setattr(voice_opt_out, "_SPOOL_LOADED", False)
+def isolated(monkeypatch):
+    # conftest._private_opt_out_spool already gives every test its own spool.
     monkeypatch.setattr(voice_opt_out, "RETRY_DELAYS", (0.0, 0.0, 0.0))
+
+
+def spool_line(tenant, contact):
+    return json.dumps({"tenant_id": tenant, "contact": contact}) + "\n"
 
 
 def honour_and_drain(state, ref):
@@ -153,3 +155,86 @@ def test_the_call_is_not_held_open_by_retries(monkeypatch):
 
     assert asyncio.run(go()) < 1.0 and len(calls) == 1
     assert voice_opt_out.pending_opt_out(TENANT, NUMBER)        # spooled + blocked immediately
+
+
+def test_a_restart_still_blocks_a_stop_spooled_by_an_earlier_process():
+    """The spool on disk, not memory, is what counts (mutant: forget the file)."""
+    voice_opt_out.SPOOL_PATH.write_text(spool_line(TENANT, NUMBER))
+    assert voice_opt_out.pending_opt_out(TENANT, NUMBER)
+    assert voice_opt_out.pending_count() == 1
+
+
+def test_another_workers_stop_is_seen_after_this_worker_cached_the_spool():
+    voice_opt_out.SPOOL_PATH.write_text(spool_line(TENANT, "+13025550001"))
+    assert not voice_opt_out.pending_opt_out(TENANT, NUMBER)        # cached now
+    with open(voice_opt_out.SPOOL_PATH, "a") as other_worker:
+        other_worker.write(spool_line(TENANT, NUMBER))
+    assert voice_opt_out.pending_opt_out(TENANT, NUMBER)
+
+
+def test_a_stop_spooled_during_a_replay_is_never_dropped(monkeypatch):
+    """Review of PR #84: replay rewrote the file from its snapshot and cleared
+    memory, losing a STOP spooled while its writes were awaited."""
+    voice_opt_out.SPOOL_PATH.write_text(spool_line(TENANT, "+13025550001"))
+    release = None
+
+    async def slow_ok(state):
+        await release.wait()                                        # the DB is slow
+
+    async def go():
+        nonlocal release
+        release = asyncio.Event()
+        monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", slow_ok)
+        replay = asyncio.ensure_future(voice_opt_out.replay_spool())
+        await asyncio.sleep(0)
+
+        async def failing(state):
+            raise voice_opt_out.OptOutNotRecorded("db down")
+
+        monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", failing)
+        await voice_opt_out.honour(STATE, "call-during-replay")     # spooled mid-replay
+        for task in list(voice_opt_out._IN_FLIGHT):
+            task.cancel()
+        monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", slow_ok)
+        release.set()
+        return await replay
+
+    result = asyncio.run(go())
+    assert result["replayed"] == 1
+    assert voice_opt_out.pending_opt_out(TENANT, NUMBER), "the STOP said during the replay was lost"
+    assert (TENANT, NUMBER) in set(voice_opt_out._read_spool())
+
+
+def test_email_through_the_gate_is_unaffected_by_a_pending_phone_stop(monkeypatch):
+    voice_opt_out.SPOOL_PATH.write_text(spool_line(TENANT, NUMBER))
+
+    @asynccontextmanager
+    async def no_db(ctx, conn):
+        yield None
+
+    async def state(_conn, _norm, _channel, _tomb):
+        return {"suppressed": False, "has_consent": True, "has_written_consent": True,
+                "vp_consent": False, "recent_voice": 0}
+
+    monkeypatch.setattr(outreach_compliance, "_conn_or_tx", no_db)
+    monkeypatch.setattr(outreach_compliance.ConsentLedger, "gather_state", state)
+    from tenancy import Role, TenantContext
+
+    ctx = TenantContext(agent_id="a@x.test", tenant_id=TENANT, role=Role.AGENT)
+    decision = asyncio.run(outreach_compliance.guard_outreach(
+        ctx, channel=outreach_compliance.Channel.EMAIL, contact="owner@example.test", state_code="DE", log=False))
+    assert "suppressed" not in " ".join(decision.blockers).lower()
+
+
+def test_the_default_spool_path_is_absolute_and_outside_the_source_tree(monkeypatch):
+    import importlib
+    import pathlib
+
+    monkeypatch.delenv("ORACLE_OPT_OUT_SPOOL", raising=False)
+    fresh = importlib.reload(voice_opt_out)
+    try:
+        path = fresh.SPOOL_PATH
+        assert path.is_absolute()
+        assert pathlib.Path(__file__).resolve().parents[2] not in path.resolve().parents
+    finally:
+        importlib.reload(voice_opt_out)
