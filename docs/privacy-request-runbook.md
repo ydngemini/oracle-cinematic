@@ -99,13 +99,19 @@ When it ends, the hourly task moves the tenant to `erasing` and queues
 **Before** the restored service takes traffic:
 
 ```
-python scripts/reapply-erasures.py          # lists erased brokerages the restore brought back
+python scripts/reapply-erasures.py          # lists erased brokerages and deleted people the restore brought back
 python scripts/reapply-erasures.py --apply  # erases them again; exit 1 if any need attention
 ```
 
 It reads the erasure directives kept in object storage, which a database
-restore cannot roll back. A directive for a tenant under legal hold is
-skipped and reported. Also re-run any MLS purge (`docs/mls-production-runbook.md`
+restore cannot roll back: one per erased brokerage
+(`privacy/erasure-directives/`) and one per person deleted by request
+(`privacy/subject-erasure-directives/`: row ids and keyed hashes, no customer
+data, saved before anything is deleted; a deletion whose directive cannot be
+saved deletes nothing and answers 503). A person deleted again gets a new
+`dsr_delete` operation naming the original (`params.reapply_of`), and their
+opt-out tombstones are restored. A directive for a tenant or person under
+legal hold is skipped and reported. Also re-run any MLS purge (`docs/mls-production-runbook.md`
 §R2) that is younger than the backup.
 
 ## 6. Orphaned objects
