@@ -1330,6 +1330,19 @@ def make_engine_publisher(tenant_id: str):
     return publish
 
 
+# A re-check that has not finished in this long closes the stream (1011), so a
+# starved pool cannot also stall the expiry and idle checks (review of 27.2).
+_VOICE_RECHECK_TIMEOUT_SECONDS = 10.0
+
+
+async def _close_socket(websocket: WebSocket, code: int) -> None:
+    """Close, ignoring a socket Starlette already marked closed (a failed send)."""
+    try:
+        await websocket.close(code=code)
+    except RuntimeError:
+        pass
+
+
 async def _watch_voice_socket(websocket: WebSocket, ctx: TenantContext, session_uuid: str,
                               last_seen: dict[str, float]) -> None:
     """Keep a voice-session stream honest for as long as it stays open (external
@@ -1339,36 +1352,45 @@ async def _watch_voice_socket(websocket: WebSocket, ctx: TenantContext, session_
     share revoked, the client reassigned, the user demoted or the record
     erased), or the client has sent nothing for _WS_IDLE_TIMEOUT (1001).
 
-    Unlike /ws, a re-check that cannot complete closes the socket (1011): this
-    stream carries call content, and the client's reconnect is re-admitted from
-    scratch."""
+    The session and visibility are re-proved every tenancy.SESSION_RECHECK_SECONDS
+    (60 s, as for operator streams), not /ws's 300 s: this stream carries call
+    content. For the same reason a re-check that fails or does not finish within
+    _VOICE_RECHECK_TIMEOUT_SECONDS closes the socket (1011), unlike /ws; the
+    client's reconnect is re-admitted from scratch. The first check is jittered
+    so sockets that connected together do not re-check in lockstep."""
     import record_access
+    import tenancy
 
-    ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2)
-    last_check = time.monotonic()
+    recheck = tenancy.SESSION_RECHECK_SECONDS
+    ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2, max(recheck, 0.05))
+    last_check = time.monotonic() - random.uniform(0.0, recheck)
+
+    async def still_allowed() -> bool:
+        await verify_session_current(ctx)
+        return ctx.is_platform_admin or await record_access.may_read_call_content(
+            ctx.tenant_id, session_uuid, ctx.agent_id)
+
     while True:
         await asyncio.sleep(ping_interval)
         if ctx.expires_at is not None and time.time() >= ctx.expires_at:
-            await websocket.close(code=4401)
+            await _close_socket(websocket, 4401)
             return
-        if time.monotonic() - last_check >= _WS_SESSION_RECHECK_SECONDS:
+        if time.monotonic() - last_check >= recheck:
             last_check = time.monotonic()
             try:
-                await verify_session_current(ctx)
-                visible = ctx.is_platform_admin or await record_access.may_read_call_content(
-                    ctx.tenant_id, session_uuid, ctx.agent_id)
+                visible = await asyncio.wait_for(still_allowed(), _VOICE_RECHECK_TIMEOUT_SECONDS)
             except HTTPException:
-                await websocket.close(code=4401)
+                await _close_socket(websocket, 4401)
                 return
-            except Exception:  # noqa: BLE001 — fail closed on call content
+            except Exception:  # noqa: BLE001 — incl. timeout: fail closed on call content
                 logger.warning("Voice socket re-check failed session=%s", session_uuid, exc_info=True)
-                await websocket.close(code=1011)
+                await _close_socket(websocket, 1011)
                 return
             if not visible:
-                await websocket.close(code=4404)
+                await _close_socket(websocket, 4404)
                 return
         if time.monotonic() - last_seen["t"] >= _WS_IDLE_TIMEOUT:
-            await websocket.close(code=1001)
+            await _close_socket(websocket, 1001)
             return
 
 
@@ -1395,12 +1417,12 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     except (ValueError, TypeError):
         await websocket.close(code=4404)
         return
-    # As on /ws: whether the account is still live is a database fact, and a
-    # voice stream counts toward the replica's ceiling (27.2, 27.8).
-    try:
-        await verify_session_current(ctx)
-    except HTTPException:
-        await websocket.close(code=4401)
+    # As on /ws: whether the account is still live is a database fact (4401;
+    # 1011 when it cannot be checked), and a voice stream counts toward the
+    # replica's ceiling (27.2, 27.8).
+    from tenancy import admit_operator_stream
+
+    if not await admit_operator_stream(websocket, ctx):
         return
     if ws_hub.at_capacity():
         await websocket.close(code=1013, reason="server at capacity, retry shortly")
@@ -1470,10 +1492,15 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
 
         async def receive() -> None:
             while True:
-                message = await websocket.receive_text()
-                last_seen["t"] = time.monotonic()
-                if message == "PING":
-                    await websocket.send_text("PONG")
+                try:
+                    message = await websocket.receive_text()
+                    last_seen["t"] = time.monotonic()
+                    if message == "PING":
+                        await websocket.send_text("PONG")
+                except RuntimeError:
+                    # Starlette marked the socket closed after a failed send:
+                    # the client is gone (as /ws treats it).
+                    return
 
         tasks = [asyncio.create_task(receive()),
                  asyncio.create_task(_watch_voice_socket(websocket, ctx, session_uuid, last_seen))]

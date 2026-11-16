@@ -60,27 +60,34 @@ class World:
         self.visible = True
         self.at_capacity = False
         self.recheck_error = False
+        self.visibility_error = False
+        self.visibility_stalls = False
+        self.admission_db_down = False
         self.visibility_checks = 0
+        self.registered: list = []
+        self.unregistered: list = []
 
 
 @pytest.fixture
 def world(monkeypatch):
     import config
     import record_access
+    import tenancy
     import voice_intel
     from db import connection
 
     w = World()
     monkeypatch.setattr(config, "IS_DEV", True)
     monkeypatch.setattr(server, "_WS_IDLE_TIMEOUT", 0.3)
-    monkeypatch.setattr(server, "_WS_SESSION_RECHECK_SECONDS", 0.0)
+    monkeypatch.setattr(tenancy, "SESSION_RECHECK_SECONDS", 0.0)
+    monkeypatch.setattr(server, "_VOICE_RECHECK_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(server, "record_platform_websocket", lambda *_a: None)
     monkeypatch.setattr(server.ws_hub, "at_capacity", lambda: w.at_capacity)
-    monkeypatch.setattr(server.ws_hub, "register", lambda *_a, **_k: None)
-    monkeypatch.setattr(server.ws_hub, "unregister", lambda *_a, **_k: None)
+    monkeypatch.setattr(server.ws_hub, "register", lambda *a, **_k: w.registered.append(a))
+    monkeypatch.setattr(server.ws_hub, "unregister", lambda *a, **_k: w.unregistered.append(a))
 
     async def verify(_ctx):
-        if w.recheck_error and w.visibility_checks:
+        if w.admission_db_down or (w.recheck_error and w.visibility_checks):
             raise ConnectionError("database unavailable")
         if not w.session_live:
             raise HTTPException(401, "session ended")
@@ -88,6 +95,10 @@ def world(monkeypatch):
     async def may_read(tenant_id, session_id, agent_id):
         assert (tenant_id, session_id) == (TENANT, SESSION)
         w.visibility_checks += 1
+        if w.visibility_checks > 1 and w.visibility_error:
+            raise ConnectionError("database unavailable")
+        if w.visibility_checks > 1 and w.visibility_stalls:
+            await asyncio.sleep(30)
         return w.visible
 
     class Conn:
@@ -102,7 +113,8 @@ def world(monkeypatch):
     async def events(*_a, **_k):
         return []
 
-    monkeypatch.setattr(server, "verify_session_current", verify)
+    monkeypatch.setattr(server, "verify_session_current", verify)   # the watchdog
+    monkeypatch.setattr(tenancy, "verify_session_current", verify)  # admit_operator_stream
     monkeypatch.setattr(record_access, "may_read_call_content", may_read)
     monkeypatch.setattr(connection, "tenant_tx", tx)
     monkeypatch.setattr(voice_intel, "load_session_events", events)
@@ -135,6 +147,14 @@ def test_a_revoked_session_is_refused_before_the_upgrade(world, monkeypatch):
     assert (ws.accepted, ws.closed_with) == (False, 4401)
 
 
+def test_an_unreachable_database_at_the_handshake_fails_closed(world, monkeypatch):
+    _identity(monkeypatch)
+    world.admission_db_down = True
+    ws = FakeSocket()
+    _run(ws)  # returns, never raises
+    assert (ws.accepted, ws.closed_with) == (False, 1011)
+
+
 def test_a_full_replica_refuses_a_voice_socket(world, monkeypatch):
     _identity(monkeypatch)
     world.at_capacity = True
@@ -155,6 +175,8 @@ def test_losing_access_to_the_call_closes_the_stream(world, monkeypatch):
     _run(ws, during=revoke)
     assert ws.closed_with == 4404
     assert ws.sent[0]["type"] == "VOICE_SESSION_HYDRATED"
+    # The socket leaves the call's broadcast group it joined.
+    assert len(world.registered) == 1 and world.unregistered == world.registered
 
 
 def test_an_ended_account_session_closes_the_stream(world, monkeypatch):
@@ -177,6 +199,28 @@ def test_a_recheck_that_cannot_complete_fails_closed(world, monkeypatch):
     ws = FakeSocket(pings=True)
     _run(ws)
     assert ws.closed_with == 1011
+
+
+@pytest.mark.parametrize("failure", ["visibility_error", "visibility_stalls"])
+def test_a_visibility_check_that_fails_or_hangs_closes_the_stream(world, monkeypatch, failure):
+    """A hung check must not also stall the expiry and idle checks (review)."""
+    _identity(monkeypatch)
+    setattr(world, failure, True)
+    ws = FakeSocket(pings=True)
+    _run(ws)
+    assert ws.closed_with == 1011
+    assert world.unregistered == world.registered
+
+
+def test_the_recheck_runs_at_the_operator_stream_cadence():
+    """Call content is re-proved every 60 s like operator streams, not /ws's 300 s."""
+    import inspect
+
+    import tenancy
+
+    assert tenancy.SESSION_RECHECK_SECONDS == 60.0
+    src = inspect.getsource(server._watch_voice_socket)
+    assert "tenancy.SESSION_RECHECK_SECONDS" in src and "_WS_SESSION_RECHECK_SECONDS" not in src
 
 
 def test_a_silent_client_is_closed_and_a_pinging_one_is_not(world, monkeypatch):
