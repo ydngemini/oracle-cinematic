@@ -3740,6 +3740,38 @@ next_task: "28.3: operator session epoch/jti revocation checked at admission and
 updated: 2026-11-16
 ```
 
+#### L17-33 A brokerage erasure says "succeeded" only when it did: unverifiable storage and an unwritten restore directive keep it running and retried; what a retry cannot redo fails it (external audit 22.2, 22.3, 22.4, 29.4)
+```yaml
+id: L17-33
+status: tests_pass
+env: local
+evidence_shas: [1569501]   # base; fix in the commit that adds this row
+files: [backend/privacy_lifecycle.py, backend/tests/test_erasure_completion_truth.py, backend/tests/test_job_handler_contract.py]
+tests_run:
+  - {cmd: "read privacy_lifecycle at 1569501", result: "confirmed: _phase_verify counted unconfigured storage and an unlistable prefix as 0 objects (clean); _phase_receipt marked succeeded with directive_written=false; run_erasure returned 'succeeded' whatever the receipt stored, and the job completed (no retry); a failed op could never be resumed", date: 2026-11-16}
+  - {cmd: "pytest tests/test_erasure_completion_truth.py against 1569501's privacy_lifecycle.py", result: "8 failed, 2 passed (the 2 are controls: a reachable empty store is clean; a finished op answers its stored state)", date: 2026-11-16}
+  - {cmd: "after: test_erasure_completion_truth + test_job_handler_contract + test_privacy_provider_failure + test_privacy_periodic", result: "17 passed", date: 2026-11-16}
+  - {cmd: "live PostgreSQL (local backend under tmp_path): pytest tests/test_privacy_lifecycle_live.py", result: "1 passed: storage made unreachable -> ErasureIncomplete, op 'running' with cleanup_pending [objects, directive], media file still there; retry -> succeeded, carried key deleted, directive present; verify past RLS; resume no-op; restore + reapply (final_attempt)", date: 2026-11-16}
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; pytest tests/test_erasure_completion_truth.py", result: "14 passed. Review: a rows retry would crash in privacy_assert_erasure (tenant already 'erased') and leave the op 'running' forever -> rows leftovers are now terminal; a phase raising on the final attempt, or a stored retry seen on it, now fails the op (guarded: never overwrites a finished one). Mutant (rows retryable again) -> 1 red", date: 2026-11-16}
+authz_checked: "unchanged: erasure runs in the platform context; nothing new is read or exposed. Progress now carries the storage KEYS a failed attempt could not delete (paths, never content) so a retry deletes them after their rows are gone."
+blockers:
+  - {type: owner, note: "Behaviour change: an environment without object storage can no longer finish an erasure (verification cannot see the store, so it fails after the retries instead of claiming clean)."}
+  - {type: owner, note: "A provider failure (number release, hosted SMS, credential revoke, Stripe) is terminal 'failed' with cleanup_pending=[providers]: the route rows are deleted by the rows phase, so a retry cannot redo it. A person finishes it from the deletion.external_cleanup_pending event. Keeping provider handles until release is confirmed is a larger redesign."}
+  - {type: owner, note: "Leftover ROWS after verification are terminal too (failed, cleanup_pending=[rows]): the tenant is already 'erased' and the erase functions refuse anything but 'erasing'. Only objects and the directive are retried."}
+  - "A failed erasure still cannot be resumed (22.4's 'could never resume' holds once it is 'failed'); finishing one is a person's job from the error and cleanup_pending."
+  - "If the worker dies or its lease is reaped on the FINAL attempt, the reaper dead-letters the job without running the handler and the op stays 'running' (tenant already 'erased'). Visible in list_operations; not handled here."
+  - "reapply-erasures runs as a single final attempt: one transient storage error reports reapply_failed; run it again."
+  - "privacy_operations.progress (a retained record) keeps the storage keys a failed attempt could not delete: tenant id + generated object paths, never content."
+  - "Adjacent, not changed: _set_cancel_at_period_end's stripe_not_configured with a live subscription is not counted as a provider failure (renewal may continue after erasure)."
+  - "No new operation state (no migration): 'running' + result.cleanup_pending stands in for cleanup_pending; the final job attempt fails the operation."
+  - "29.4's second half (single-person deletion writes no directive, privacy_requests.py) is in the DSAR slice with 29.3/29.8."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [22.2, 22.3, 22.4, 29.4]
+decision_refs: []
+next_task: "29.3/29.8/29.4b: DSAR subject resolution, complete export, and a directive for single-person deletion; then 22.5 departing agent's routes."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 
