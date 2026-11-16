@@ -231,11 +231,17 @@ OPT_OUTS = [
     "Please take me off your list", "remove me from your list", "Unsubscribe me", "opt out",
     "Opt me out", "Don’t text me again", "do not contact me", "No more texts", "I said STOP!",
     "revoke my consent", "not interested. stop",
+    # independent review of PR #78
+    "STOP STOP", "stop it now", "lol stop", "cancel all", "leave me alone", "dont contact me",
+    "never message me again", "Delete my number", "Wrong number", "unsub", "ALTO", "BAJA",
+    "STOP\nwho is this", "UNSUBSCRIBE ME NOW",
 ]
 NOT_OPT_OUTS = [
     "Please stop by the house on Tuesday", "Stop by at 5", "End of the day works",
     "I want to cancel my listing with my agent", "yes please call me", "Can you send the comps?",
     "We could end up selling in the spring", "Remove the old fridge before showing?",
+    "Can you remove measurements from the listing?", "I quit my job last week",
+    "cancel the showing tomorrow", "the end of the month is fine",
 ]
 
 
@@ -249,9 +255,23 @@ def test_ordinary_replies_using_keyword_words_are_not_opt_outs(text):
     assert not is_stop_keyword(text), text
 
 
-def test_sms_and_voice_share_one_opt_out_vocabulary():
-    import inbound_voice
-    import outreach_compliance
+def test_a_line_break_ends_a_clause():
+    """'STOP' on its own line, then a question, is still STOP (mutant pin)."""
+    assert is_stop_keyword("STOP\nwho is this")
+    assert not is_stop_keyword("STOP who is this")
 
-    assert inbound_voice._OPT_OUT_PHRASES is outreach_compliance.OPT_OUT_PHRASES
-    assert inbound_voice._OPT_OUT_FILLER is outreach_compliance.OPT_OUT_FILLER
+
+@pytest.mark.parametrize("speech, expected", [
+    ("My lender said stop sending documents", False),
+    ("There will be no more calls from the bank once we close", False),
+    ("Don't text my wife, text me", False),
+    ("I'll withdraw consent for the inspection if they push", False),
+    ("Please stop calling me", True),
+    ("I'm not interested, stop.", True),
+])
+def test_spoken_opt_out_rule_is_unchanged(speech, expected):
+    """A voice opt-out is permanent and discards the caller's answers, so the
+    SMS broadening must not leak into speech (review of PR #78)."""
+    import inbound_voice
+
+    assert inbound_voice._requested_opt_out([{"role": "caller", "text": speech}]) is expected

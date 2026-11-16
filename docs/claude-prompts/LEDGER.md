@@ -1861,7 +1861,7 @@ id: L10-15
 status: tests_pass
 env: local
 evidence_shas: [5723117]   # base; fix in the commit that adds this row
-files: [backend/outreach_compliance.py, backend/inbound_voice.py, backend/compliance_engine/tests/test_outreach_compliance.py]
+files: [backend/outreach_compliance.py, backend/compliance_engine/tests/test_outreach_compliance.py]
 tests_run:
   - {cmd: "read outreach_compliance.is_stop_keyword at 5723117", result: "the WHOLE body, letters only, had to equal one keyword; REVOKE was not a keyword. messaging_api (Telnyx inbound), POST /api/outreach/inbound and the orphan opt-out path all use it, so plain-language replies recorded no suppression", date: 2026-11-16}
   - {cmd: "pytest test_outreach_compliance.py -k plain_language against 5723117", result: "red: 16 of 17 real opt-out replies not recognised", date: 2026-11-16}
