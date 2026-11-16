@@ -35,7 +35,7 @@ describe('SalesAgentPage work queue', () => {
     });
 
     render(<SalesAgentPage onNavigate={() => {}} />);
-    await screen.findByText('Base Person');
+    await screen.findByRole('button', { name: /Base Person/ });
 
     const search = screen.getByLabelText('Search');
     fireEvent.change(search, { target: { value: 'a' } });
@@ -45,11 +45,12 @@ describe('SalesAgentPage work queue', () => {
 
     // The newer request (q=ab) resolves first, then the older one (q=a) resolves last.
     await act(async () => { pending.ab.resolve({ items: [entry('new', 'Newer Match')] }); });
-    await screen.findByText('Newer Match');
+    await screen.findByRole('button', { name: /Newer Match/ });
     await act(async () => { pending.a.resolve({ items: [entry('old', 'Older Match')] }); });
 
-    expect(screen.queryByText('Older Match')).toBeNull();
-    expect(screen.getByText('Newer Match')).toBeTruthy();
+    // The name appears in the queue list AND the heading, so assert by role:
+    // nothing about the older query is shown anywhere.
+    expect(screen.queryAllByText('Older Match')).toHaveLength(0);
     expect(screen.getByRole('button', { name: /Newer Match/ }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('heading', { name: 'Newer Match' })).toBeTruthy();
   });

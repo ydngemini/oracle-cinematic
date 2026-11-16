@@ -21,14 +21,6 @@ function errorText(error) {
   return friendlyError(error, { fallback: 'That didn’t go through. Try again in a moment.' });
 }
 
-// The selected contact's name is also shown in the queue list; word spans keep the
-// heading's accessible name intact while text queries match one element per name.
-function NameWords({ name }) {
-  return name.split(' ').map((word, index) => (
-    <span key={index}>{index > 0 ? ' ' : ''}{word}</span>
-  ));
-}
-
 export default function SalesAgentPage({ onNavigate }) {
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -193,7 +185,7 @@ export default function SalesAgentPage({ onNavigate }) {
 
         <section className={styles.panel} aria-labelledby="sales-contact-title">
           <header className={styles.panelHeader}>
-            <div><h4 id="sales-contact-title" aria-label={selected?.contact?.full_name || undefined}>{selected?.contact?.full_name ? <NameWords name={selected.contact.full_name} /> : 'Select a contact'}</h4><p>{selected ? `${selected.client.stage} · ${selected.contact.preferred_channel || 'no preference'}` : 'CRM context and next actions'}</p></div>
+            <div><h4 id="sales-contact-title">{selected?.contact?.full_name || 'Select a contact'}</h4><p>{selected ? `${selected.client.stage} · ${selected.contact.preferred_channel || 'no preference'}` : 'CRM context and next actions'}</p></div>
             {selected ? <span className={styles.badge} data-tone={selected.client.lead_score >= 70 ? 'good' : 'warn'}>{selected.client.lead_score} score</span> : null}
           </header>
           {selected ? (
