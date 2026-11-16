@@ -530,10 +530,10 @@ class _OtpStore:
     async def execute(self, query, *args):
         if "SET code_hmac" in query:
             next(r for r in self.rows if r["id"] == args[0])["code_hmac"] = args[1]
-        elif "SET attempts" in query:
+        elif "SET attempts = attempts + 1" in query:
             r = next(r for r in self.rows if r["id"] == args[0])
-            r["attempts"] = args[1]
-            r["consumed"] = args[1] >= args[2]
+            r["attempts"] += 1
+            r["consumed"] = r["attempts"] >= args[1]
         elif "SET consumed_at = now() WHERE id" in query:
             next(r for r in self.rows if r["id"] == args[0])["consumed"] = True
         elif "SET consumed_at = now()" in query:
@@ -549,7 +549,17 @@ def _email_otp_env(monkeypatch):
 
     @asynccontextmanager
     async def tx(_ctx):
-        yield store
+        # Faithful to PostgreSQL: a transaction whose block raises is ROLLED
+        # BACK. The old fake kept writes made before the raise, which hid
+        # external audit 28.1 (the attempt counter never persisted).
+        import copy
+
+        snapshot = copy.deepcopy(store.rows)
+        try:
+            yield store
+        except BaseException:
+            store.rows[:] = snapshot
+            raise
 
     sent = []
     monkeypatch.setattr(db.connection, "tenant_tx", tx)
