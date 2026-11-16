@@ -827,7 +827,8 @@ async def run_erasure(operation_id: str, *, final_attempt: bool = False) -> dict
     unreachable, the restore directive unwritten), the phases that redo it are
     reopened, the operation stays 'running' with result.cleanup_pending, and
     ErasureIncomplete is raised so the job retries. On the final attempt the
-    operation fails instead of retrying forever."""
+    operation fails instead of retrying forever, including when a phase
+    raises (review of 22.4: it was left 'running' with the job dead-lettered)."""
     ctx = _platform_ctx("privacy-erasure")
     async with tenant_tx(ctx) as conn:
         op = await conn.fetchrow("SELECT * FROM privacy_operations WHERE id=$1", operation_id)
@@ -838,19 +839,31 @@ async def run_erasure(operation_id: str, *, final_attempt: bool = False) -> dict
     tenant_id = str(op["tenant_id"])
     progress = op["progress"] if isinstance(op["progress"], dict) else json.loads(op["progress"] or "{}")
 
-    for phase in PHASES:
-        if progress.get(phase, {}).get("done"):
-            continue
-        handler = _PHASE_HANDLERS[phase]
-        extra = {"final_attempt": final_attempt} if phase == "receipt" else {}
-        outcome = await handler(ctx, operation_id, tenant_id, progress, **extra)
-        progress[phase] = {**outcome, "done": True,
-                           "at": datetime.now(timezone.utc).isoformat()}
-        async with tenant_tx(ctx) as conn:
-            await conn.execute(
-                "UPDATE privacy_operations SET progress=$2::jsonb, updated_at=now() WHERE id=$1",
-                operation_id, json.dumps(progress, default=str))
+    try:
+        for phase in PHASES:
+            if progress.get(phase, {}).get("done"):
+                continue
+            handler = _PHASE_HANDLERS[phase]
+            extra = {"final_attempt": final_attempt} if phase == "receipt" else {}
+            outcome = await handler(ctx, operation_id, tenant_id, progress, **extra)
+            progress[phase] = {**outcome, "done": True,
+                               "at": datetime.now(timezone.utc).isoformat()}
+            async with tenant_tx(ctx) as conn:
+                await conn.execute(
+                    "UPDATE privacy_operations SET progress=$2::jsonb, updated_at=now() WHERE id=$1",
+                    operation_id, json.dumps(progress, default=str))
+    except Exception as exc:
+        if final_attempt:
+            await _fail_if_running(ctx, operation_id, ["incomplete"],
+                                   f"erasure stopped on its final attempt: {type(exc).__name__}")
+        raise
     retry = progress.get("receipt", {}).get("retry") or []
+    if retry and final_attempt:
+        # A retry recorded by an earlier attempt that crashed before reopening
+        # its phases: the last attempt ends the operation instead.
+        pending = progress["receipt"].get("cleanup_pending") or []
+        await _fail_if_running(ctx, operation_id, pending, "cleanup pending: " + ", ".join(pending))
+        retry = []
     if retry:
         for phase in retry:
             progress.setdefault(phase, {})["done"] = False
@@ -864,6 +877,15 @@ async def run_erasure(operation_id: str, *, final_attempt: bool = False) -> dict
     async with tenant_tx(ctx) as conn:
         state = await conn.fetchval("SELECT state FROM privacy_operations WHERE id=$1", operation_id)
     return {"operation_id": operation_id, "state": state, "progress": progress}
+
+
+async def _fail_if_running(ctx, operation_id: str, pending: list[str], error: str) -> None:
+    """Fail an erasure that is still running; never overwrite a finished one."""
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            "UPDATE privacy_operations SET state='failed', completed_at=now(), updated_at=now(), "
+            "result = result || $2::jsonb, error=$3 WHERE id=$1 AND state='running'",
+            operation_id, json.dumps({"cleanup_pending": pending}), error)
 
 
 async def _phase_freeze(ctx, op_id, tenant_id, progress) -> dict:
@@ -1263,12 +1285,17 @@ def cleanup_pending(verify: dict, directive_written: bool) -> list[str]:
 
 
 def _retry_phases(pending: list[str]) -> list[str]:
-    """The phases a retry re-runs. None when a retry cannot help: provider
-    handles (the route rows) are deleted by the rows phase, so a failed
-    release or revocation is left for a person (external cleanup pending)."""
-    if not pending or "providers" in pending:
+    """The phases a retry re-runs. None when a retry cannot help, and the
+    operation fails for a person to finish:
+    * providers: their handles (the route rows) are deleted by the rows phase,
+      so a failed release or revocation cannot be redone (external cleanup
+      pending);
+    * rows: the tenant_row phase has already moved the tenant to 'erased', and
+      the erase functions refuse a tenant that is not 'erasing'
+      (privacy_assert_erasure), which no transition can restore (review)."""
+    if not pending or "providers" in pending or "rows" in pending:
         return []
-    phases = [p for p in ("objects", "rows") if p in pending]
+    phases = ["objects"] if "objects" in pending else []
     return phases + ["verify", "receipt"]
 
 

@@ -101,6 +101,10 @@ class Db:
                 elif "SET result = result ||" in sql:
                     db.op["result"].update(json.loads(args[1]))
                     db.op["error"] = args[2]
+                elif "SET state='failed'" in sql:     # _fail_if_running
+                    if db.op["state"] == "running":
+                        db.op.update(state="failed", error=args[2])
+                        db.op["result"].update(json.loads(args[1]))
                 elif sql.lstrip().startswith("INSERT INTO erasure_ledger"):
                     pass
                 else:
@@ -265,3 +269,50 @@ def test_the_job_runs_the_last_attempt_as_final_and_never_reports_success(monkey
     Reporter.job = {"attempt_count": 3, "max_attempts": 20}
     asyncio.run(pl._erase_job({"operation_id": OP}, Reporter()))
     assert seen["final"] is False
+
+
+def test_leftover_rows_are_terminal_not_retried(world):
+    """tenant_row has moved the tenant to 'erased', and the erase functions
+    refuse anything but 'erasing': a rows retry could only crash (review)."""
+    _, db, _, handlers = world
+
+    async def dirty_verify(ctx, op_id, tenant_id, progress):
+        return {"rows_left": {"clients": 1}, "objects_left": 0, "objects_unverified": [],
+                "provider_failures": 0, "object_failures": 0, "clean": False}
+
+    handlers["verify"] = dirty_verify
+    result = asyncio.run(pl.run_erasure(OP))
+    assert result["state"] == "failed" == db.op["state"]
+    assert db.op["result"]["cleanup_pending"] == ["rows"]
+    assert db.op["progress"]["rows"]["done"] is True               # never reopened
+
+
+def test_a_phase_that_raises_on_the_final_attempt_fails_the_operation(world):
+    _, db, _, handlers = world
+
+    async def broken(ctx, op_id, tenant_id, progress):
+        raise ConnectionError("database blip")
+
+    handlers["tombstones"] = broken
+    with pytest.raises(ConnectionError):
+        asyncio.run(pl.run_erasure(OP))
+    assert db.op["state"] == "running"                             # not final: the job retries
+    with pytest.raises(ConnectionError):
+        asyncio.run(pl.run_erasure(OP, final_attempt=True))
+    assert db.op["state"] == "failed" and "final attempt" in db.op["error"]
+
+
+def test_a_retry_left_by_a_crash_is_not_reopened_on_the_final_attempt(world):
+    _, db, *_ = world
+    db.op["progress"] = {p: {"done": True} for p in pl.PHASES}
+    db.op["progress"]["receipt"].update(retry=["verify", "receipt"], cleanup_pending=["directive"])
+    result = asyncio.run(pl.run_erasure(OP, final_attempt=True))
+    assert result["state"] == "failed" == db.op["state"]
+    assert db.op["result"]["cleanup_pending"] == ["directive"]
+
+
+def test_a_finished_operation_is_never_overwritten_by_the_failure_path(world):
+    _, db, *_ = world
+    db.op["state"] = "succeeded"
+    asyncio.run(pl._fail_if_running(None, OP, ["incomplete"], "x"))
+    assert db.op["state"] == "succeeded"
