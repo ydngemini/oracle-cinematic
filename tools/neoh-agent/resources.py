@@ -20,7 +20,13 @@ def mem_available_bytes(meminfo: str | None = None) -> int:
     return 0
 
 
-def check_floors(floors: dict, core2: str, root: str = "/", *, statvfs=os.statvfs,
+# Inside Noah's sandbox "/" is the sandbox's own tmpfs, so statvfs("/") says
+# nothing about the host root partition. /usr is a read-only bind of the host's
+# /usr, which lives on the host root partition: probe that instead.
+ROOT_PROBE = os.environ.get("NEOH_ROOT_PROBE", "/usr")
+
+
+def check_floors(floors: dict, core2: str, root: str = ROOT_PROBE, *, statvfs=os.statvfs,
                  meminfo: str | None = None, extra_core2_gib: float = 0.0) -> tuple[bool, list[str]]:
     problems: list[str] = []
     for label, path, free_floor in (("SYPHER_CORE2", core2, floors["core2_free_gib"] + extra_core2_gib),

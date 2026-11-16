@@ -21,6 +21,7 @@ import audit_queue  # noqa: E402
 import budget as budget_mod  # noqa: E402
 import claims as claims_mod  # noqa: E402
 import continuous  # noqa: E402
+import resources  # noqa: E402
 
 SMALL_SAMPLE = 10
 
@@ -64,7 +65,7 @@ def build(state_dir: Path, owner_context: Path) -> dict:
     except audit_queue.QueueInvalid as error:
         depth, blocked = {"error": str(error)}, {}
     disk = {label: round(shutil.disk_usage(path).free / 1024 ** 3, 2)
-            for label, path in (("sypher_core2_free_gib", state_dir), ("root_free_gib", "/"))}
+            for label, path in (("sypher_core2_free_gib", state_dir), ("root_free_gib", resources.ROOT_PROBE))}
     worktrees = list((state_dir / "worktrees").glob("cycle-*"))
     return {
         "legacy_history": {"cycles": len(history),

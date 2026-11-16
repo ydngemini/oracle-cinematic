@@ -347,7 +347,7 @@ def test_9_reserve_settle_contingency_and_hard_stops(tmp_path):
 # 10: disk floors on every filesystem ---------------------------------------
 def statvfs_factory(free_gib: dict, inode_ratio: dict):
     def statvfs(path):
-        key = "root" if path == "/" else "core2"
+        key = "root" if path == resources.ROOT_PROBE else "core2"
         return SimpleNamespace(f_bavail=int(free_gib[key] * resources.GIB), f_frsize=1,
                                f_files=1000, f_favail=int(1000 * inode_ratio[key]))
     return statvfs
@@ -494,3 +494,16 @@ def test_policy_canary_requires_an_item_and_sane_caps(tmp_path):
     with pytest.raises(audit_queue.QueueInvalid, match="per_task <= daily"):
         audit_queue.load_policy(write(tmp_path, "p.json", policy(per_task_usd=5.0)))
     assert audit_queue.load_policy(write(tmp_path, "p.json", policy()))["mode"] == "canary_single_cycle"
+
+
+def test_10_root_floor_probes_the_host_root_not_the_sandbox_tmpfs():
+    """Inside the sandbox "/" is a tmpfs; /usr is the host root partition."""
+    assert resources.ROOT_PROBE == os.environ.get("NEOH_ROOT_PROBE", "/usr")
+    seen = []
+
+    def statvfs(path):
+        seen.append(path)
+        return SimpleNamespace(f_bavail=10 * resources.GIB, f_frsize=1, f_files=10, f_favail=9)
+
+    resources.check_floors(policy()["disk_floors"], "/core2", statvfs=statvfs, meminfo=MEM_OK)
+    assert seen == ["/core2", resources.ROOT_PROBE] and "/" not in seen
