@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -34,7 +34,12 @@ export default function SalesAgentPage({ onNavigate }) {
   const [draft, setDraft] = useState(null);
   const [taskTitle, setTaskTitle] = useState('');
 
+  const loadSeq = useRef(0);
+
+  useEffect(() => () => { loadSeq.current += 1; }, []);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError('');
     try {
@@ -42,15 +47,16 @@ export default function SalesAgentPage({ onNavigate }) {
       if (query.trim()) params.set('q', query.trim());
       if (stage) params.set('stage', stage);
       const response = await crmGet(`/api/sales/agent/work-queue?${params}`, { retries: 0 });
+      if (seq !== loadSeq.current) return;
       const next = response?.items || [];
       setItems(next);
       setSelectedId((current) => (
         next.some((item) => item.contact.id === current) ? current : next[0]?.contact?.id || null
       ));
     } catch (loadError) {
-      setError(errorText(loadError));
+      if (seq === loadSeq.current) setError(errorText(loadError));
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [query, stage]);
 
