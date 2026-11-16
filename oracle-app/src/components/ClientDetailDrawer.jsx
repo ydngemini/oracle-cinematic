@@ -26,7 +26,7 @@ const RelationshipIntelligence = lazy(() =>
 
 import styles from './ClientDetailDrawer.module.css';
 import { friendlyError, isHumanMessage } from '../lib/errorMessages';
-import { degradedLabel, propertyLookupView } from '../lib/propertyLookupStatus';
+import { candidateBasisView, degradedLabel, propertyLookupView } from '../lib/propertyLookupStatus';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
@@ -826,7 +826,7 @@ function AutomationBrief({ automation }) {
           <ul>{candidates.map((candidate) => (
             <li key={candidate.public_record_id}>
               <strong>{candidate.address || candidate.parcel_id || 'Public record'}</strong>
-              <span>{[candidate.city, candidate.state, candidate.zip_code].filter(Boolean).join(', ')} · {candidate.match_basis}</span>
+              <span>{[candidate.city, candidate.state, candidate.zip_code].filter(Boolean).join(', ')} · {candidateBasisView(candidate.match_basis)}</span>
             </li>
           ))}</ul>
           <small>No property is linked until an address or parcel relationship is confirmed.</small>

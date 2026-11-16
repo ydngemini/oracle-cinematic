@@ -220,6 +220,52 @@ def _platform_read_metadata(request: Request, path: str, status_code: int,
     }
 
 
+
+def record_platform_websocket(websocket, ctx: Optional[TenantContext]) -> None:
+    """Record a platform_admin's accepted WebSocket subscription (L17-17).
+
+    BaseHTTPMiddleware never sees a WebSocket, so each handler that
+    authenticates a user calls this once, right after accept(). One row per
+    subscription, never per frame; a reconnect to the same path inside the
+    coalescing window is the same subscription. Like the HTTP rows: who, which
+    tenant when the route names one (else "all"), the route and path, the
+    client address. Never the query string (it can carry a token or a search
+    term) and never any frame content. Tenant roles are not recorded here.
+    """
+    if ctx is None or getattr(ctx.role, "value", ctx.role) != _PLATFORM_ROLE or not ctx.agent_id:
+        return
+    try:
+        _record_platform_websocket(websocket, ctx)
+    except Exception as exc:  # noqa: BLE001 — audit never breaks the stream it records
+        log.warning("Platform-admin WebSocket audit skipped: %s", type(exc).__name__)
+
+
+def _record_platform_websocket(websocket, ctx: TenantContext) -> None:
+    scope = getattr(websocket, "scope", {}) or {}
+    path = scope.get("path") or ""
+    if not _platform_read_is_new(str(ctx.agent_id), "WEBSOCKET " + path, time.monotonic()):
+        return
+    path_params = scope.get("path_params") or {}
+    query = getattr(websocket, "query_params", None) or {}
+    named = path_params.get("tenant_id") or query.get("tenant_id")
+    route = scope.get("route")
+    client = getattr(websocket, "client", None)
+    tenant_id, user_id = _tenant_and_user(ctx)
+    _spawn_record(
+        category=AuditCategory.ADMIN_ACTION,
+        action=f"platform_read WEBSOCKET {path}",
+        tenant_id=tenant_id,
+        user_id=user_id,
+        metadata={
+            "method": "WEBSOCKET",
+            "path": path,
+            "route": getattr(route, "path", None),
+            "target_tenant_id": named if _is_uuid(named) else "all",
+            "client_ip": client.host if client else "unknown",
+            "coalesce_window_seconds": int(_PLATFORM_READ_WINDOW_SECONDS),
+        },
+    )
+
 async def _record_anomaly_safe(
     *,
     tenant_id: Optional[str],

@@ -121,4 +121,16 @@ VALUES ('aaaaaaaa-0000-4000-8000-00000000000a', 'agent-a@drill.invalid',
 INSERT INTO messaging_routes (tenant_id, agent_id, provider)
 VALUES ('aaaaaaaa-0000-4000-8000-00000000000a', 'agent-a@drill.invalid', 'telnyx');
 
+-- ── A sealed note (DR-001/REC-02) ──────────────────────────────────────────
+
+-- Encrypted with the per-tenant key the APP derives:
+-- crypto.derive_tenant_key('aaaaaaaa-0000-4000-8000-00000000000a', 'drill-probe-key').
+-- The validator re-derives it in SQL from the drill's master key and must
+-- decrypt this; test_backup_restore_scripts.py pins the literal to the Python
+-- function, so a drift in either derivation fails CI.
+INSERT INTO client_notes (id, tenant_id, client_id, body, author_id, body_ciphertext) VALUES
+  ('ad000001-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-00000000000a',
+   'ac000001-0000-4000-8000-000000000001', '', 'drill',
+   oracle_encrypt('drill sealed note', '9353a006e1ebc51a47677c5228dca440077b277fa4e1055ee7b8f43c2f2f171a'));
+
 COMMIT;

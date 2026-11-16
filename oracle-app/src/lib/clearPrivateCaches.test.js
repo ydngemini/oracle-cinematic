@@ -30,4 +30,31 @@ describe('clearPrivateCaches', () => {
     await clearPrivateCaches();
     expect(deleted).toEqual(['oracle-predictive-cache', 'neoh-capture']);
   });
+
+  it('waits out a blocked delete instead of calling it done (WEB-001)', async () => {
+    const outcomes = [];
+    vi.stubGlobal('indexedDB', {
+      deleteDatabase(name) {
+        const req = {};
+        // Blocked first, then the open handle closes and the delete completes.
+        queueMicrotask(() => { req.onblocked?.(); setTimeout(() => { outcomes.push(name); req.onsuccess?.(); }, 20); });
+        return req;
+      },
+    });
+    const result = await clearPrivateCaches({ blockedWaitMs: 1000 });
+    expect(outcomes).toEqual(['oracle-predictive-cache', 'neoh-capture']);
+    expect(result.blocked).toEqual([]);
+  });
+
+  it('reports a delete that stays blocked rather than pretending it worked (WEB-001)', async () => {
+    vi.stubGlobal('indexedDB', {
+      deleteDatabase() {
+        const req = {};
+        queueMicrotask(() => req.onblocked?.());
+        return req;
+      },
+    });
+    const result = await clearPrivateCaches({ blockedWaitMs: 30 });
+    expect(result.blocked).toEqual(['oracle-predictive-cache', 'neoh-capture']);
+  });
 });

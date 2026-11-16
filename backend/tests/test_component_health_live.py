@@ -90,3 +90,36 @@ async def _twilio_scenario():
         await admin.execute("DELETE FROM provider_health WHERE provider = ANY($1::text[])", names)
         await admin.close()
         await connection.close_pool()
+
+
+def test_a_stale_unmarked_sending_email_counts_as_unknown_delivery(monkeypatch):
+    """RUN-04 / COMMS-001: a row claimed ('sending') and then lost kept no
+    delivery_unknown marker, so the email_outbox component never saw it."""
+    monkeypatch.delenv("ORACLE_RECOVERY_MODE", raising=False)
+    asyncio.run(_stale_sending())
+
+
+async def _stale_sending():
+    import asyncpg
+
+    import component_health as ch
+    from db import connection
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=2)
+    tenant, client = uuid.uuid4(), uuid.uuid4()
+    try:
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Mail')", tenant, f"m-{tenant.hex[:8]}")
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,'C')", client, tenant)
+        before = int((await ch._db_components())["email_outbox"]["detail"].get("unknown", 0))
+        await admin.execute(
+            "INSERT INTO email_outbox (tenant_id, client_id, to_email, subject, body_text, status, updated_at) "
+            "VALUES ($1,$2,'c@client.test','s','b','sending', now() - interval '20 minutes')", tenant, client)
+        out = (await ch._db_components())["email_outbox"]
+        assert out["state"] == ch.DEGRADED and out["detail"]["unknown"] == before + 1, out
+    finally:
+        await admin.execute("DELETE FROM email_outbox WHERE tenant_id=$1", tenant)
+        await admin.execute("DELETE FROM clients WHERE tenant_id=$1", tenant)
+        await admin.execute("DELETE FROM tenants WHERE id=$1", tenant)
+        await admin.close()
+        await connection.close_pool()

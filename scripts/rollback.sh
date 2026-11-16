@@ -59,6 +59,16 @@ head2(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
   CI uploads a release manifest for every deploy; download the one for the
   release you want to return to."
 [ -f "$TO" ] || die "no such manifest: $TO"
+if [ "$APPLY" -eq 1 ]; then
+  # DEP-02: the safety verdict compares the target with what is DEPLOYED. The
+  # working tree's newest migration is what this checkout knows, not what the
+  # live database is at; an operator on a stale or newer branch got a verdict
+  # about the wrong gap.
+  [ -n "$FROM" ] || die "--apply needs --from <deployed-release-manifest.json>.
+  The rollback is judged against the schema the LIVE release left behind;
+  download that release's manifest from its CI run."
+  [ -f "$FROM" ] || die "no such manifest: $FROM"
+fi
 
 m() {
   local file="$1" key="$2"
@@ -112,6 +122,9 @@ head2 "Migration compatibility"
 
 CURRENT_HEAD=""
 [ -n "$FROM" ] && [ -f "$FROM" ] && CURRENT_HEAD="$(m "$FROM" migration_head)"
+if [ -z "$CURRENT_HEAD" ] && [ "$APPLY" -eq 1 ]; then
+  die "could not read migration_head from $FROM — refusing to guess the live schema"
+fi
 if [ -z "$CURRENT_HEAD" ]; then
   CURRENT_HEAD="$(migration_files "$REPO/backend/db/migrations" | tail -1)"
   say "current head taken from the working tree: $CURRENT_HEAD"
@@ -198,11 +211,17 @@ SPEC_OUT="${ORACLE_ROLLBACK_SPEC:-/tmp/app.rollback.yaml}"
 # promise above is "database UNTOUCHED". So the job's command becomes a no-op
 # here, whatever runner the target image carries.
 ROLLBACK_JOB_COMMAND='echo "rollback - the PRE_DEPLOY migration job leaves the database untouched"'
-sed -e "s|__BACKEND_DIGEST__|$TARGET_BACKEND|g" \
-    -e "s|__FRONTEND_DIGEST__|$TARGET_FRONTEND|g" \
-    -e "s|__ENVIRONMENT__|production|g" \
-    -e "s|^\(    run_command: \)python run_migrations.py --precheck-then-migrate\$|\1$ROLLBACK_JOB_COMMAND|" \
-    "$REPO/infra/digitalocean/app.yaml" > "$SPEC_OUT"
+# DEP-03b: rendered exactly as the production deploy renders it
+# (render-app-spec.py, with NEOH_DOMAIN), not sed over the raw template — that
+# spec had no domains block, and DigitalOcean replaces the whole spec on
+# update, so a rollback would have detached the production hostname.
+python3 "$REPO/scripts/render-app-spec.py" --env production \
+    --backend-digest "$TARGET_BACKEND" --frontend-digest "$TARGET_FRONTEND" \
+    --domain "${NEOH_DOMAIN:-}" > "$SPEC_OUT.rendered" \
+  || { rm -f "$SPEC_OUT.rendered"; die "the production spec could not be rendered (needs PyYAML) — nothing was changed"; }
+sed -e "s|^\( *run_command: \)python run_migrations.py --precheck-then-migrate\$|\1$ROLLBACK_JOB_COMMAND|" \
+    "$SPEC_OUT.rendered" > "$SPEC_OUT"
+rm -f "$SPEC_OUT.rendered"
 
 if grep -q "__.*_DIGEST__\|__ENVIRONMENT__" "$SPEC_OUT"; then
   die "a placeholder survived substitution in $SPEC_OUT"
@@ -217,9 +236,10 @@ if [ "$APPLY" -ne 1 ]; then
 
   Nothing has been changed. To apply:
 
-      scripts/rollback.sh --to $TO --apply
+      scripts/rollback.sh --to $TO --from <deployed-release-manifest.json> --apply
 
-  Requires DIGITALOCEAN_APP_ID and an authenticated doctl.
+  Requires DIGITALOCEAN_APP_ID, an authenticated doctl, PyYAML, and NEOH_DOMAIN
+  when production has a custom domain (the apply step refuses to detach one).
 
 EOF
   exit 0
@@ -239,6 +259,29 @@ head2 "Applying"
 # applying a blank SECRET WIPES it — the rollback would take the app down
 # instead of restoring it. Carry the encrypted values of the ACTIVE deployment
 # first (scripts/carry-secrets.py; names only are printed; needs PyYAML).
+# DEP-03 / DEP-03b: a wrong DIGITALOCEAN_APP_ID would have replaced some other
+# app's spec with production's; a spec without the live domains detaches them.
+APP_JSON="$(mktemp)"
+doctl apps get "$DIGITALOCEAN_APP_ID" -o json > "$APP_JSON" || \
+  { rm -f "$APP_JSON"; die "could not read app $DIGITALOCEAN_APP_ID — nothing was changed"; }
+python3 - "$APP_JSON" "$SPEC_OUT" <<'PY' || { rm -f "$APP_JSON"; die "the target app does not match this rollback — nothing was changed"; }
+import json, sys
+import yaml
+app = json.load(open(sys.argv[1]))
+app = app[0] if isinstance(app, list) and app else app
+live = (app or {}).get("spec") or {}
+spec = yaml.safe_load(open(sys.argv[2])) or {}
+if live.get("name") != spec.get("name"):
+    print(f"  app {live.get('name')!r} is not {spec.get('name')!r}: wrong DIGITALOCEAN_APP_ID?")
+    sys.exit(1)
+names = lambda s: {d.get("domain") for d in (s.get("domains") or []) if d.get("domain")}
+missing = sorted(names(live) - names(spec))
+if missing:
+    print("  the rollback spec would detach " + ", ".join(missing) + "; set NEOH_DOMAIN")
+    sys.exit(1)
+print(f"  target app {spec.get('name')!r} confirmed; domains kept: {sorted(names(spec)) or 'none'}")
+PY
+rm -f "$APP_JSON"
 DEPLOYMENTS="$(mktemp)"
 doctl apps list-deployments "$DIGITALOCEAN_APP_ID" -o json > "$DEPLOYMENTS" || \
   { rm -f "$DEPLOYMENTS"; die "could not read the app's deployments — nothing was changed"; }
@@ -251,6 +294,21 @@ doctl apps update "$DIGITALOCEAN_APP_ID" --spec "$SPEC_OUT.deploy" --wait || \
 rm -f "$SPEC_OUT.deploy"
 
 head2 "Verify"
-say "run the smoke test against the rolled-back release:"
-say "    APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
+# DEP-06: the smoke test used to be a suggestion printed after the deploy, so
+# a rollback that came up broken (or as the wrong release) still exited 0.
+# It now runs here; without APP_URL, or when it fails, the exit is 4 —
+# rolled back, but not verified — so automation and people can tell.
+if [ -z "${APP_URL:-}" ]; then
+  say "ROLLED_BACK_BUT_UNVERIFIED: APP_URL is not set, so the release could not be checked."
+  say "    APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
+  echo
+  exit 4
+fi
+SMOKE="${ORACLE_ROLLBACK_SMOKE:-$REPO/infra/digitalocean/smoke-test.sh}"
+if ! APP_URL="$APP_URL" EXPECTED_GIT_SHA="$TARGET_SHA" bash "$SMOKE"; then
+  say "ROLLED_BACK_BUT_UNVERIFIED: the smoke test failed against $APP_URL (expected release $TARGET_SHA)."
+  echo
+  exit 4
+fi
+say "rolled back and verified: $APP_URL serves $TARGET_SHA"
 echo

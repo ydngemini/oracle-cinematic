@@ -57,6 +57,30 @@ comms_router = APIRouter(prefix="/api/comms", tags=["Communications"])
 STAGING_DIR = Path(os.getenv("ORACLE_AUDIO_STAGING", "/tmp/oracle_audio"))
 MAX_AUDIO_BYTES = int(os.getenv("ORACLE_AUDIO_MAX_BYTES", str(25 * 1024 * 1024)))
 ALLOWED_SUFFIXES = {".m4a", ".wav", ".mp3", ".webm", ".ogg"}
+
+
+def _sniff_audio(data: bytes) -> Optional[str]:
+    """The allowed container a recording really is, as its canonical suffix.
+
+    faster-whisper opens the staged file with ffmpeg, which picks its demuxer
+    from the content, not the name: a ".mp3" holding an HLS playlist (or any
+    other demuxer's input) was queued and opened (T17.10). Only these five
+    containers are accepted.
+    """
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return ".m4a"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data.startswith(b"ID3"):
+        return ".mp3"
+    # MPEG audio frame sync; layer bits 00 is ADTS AAC, which is not MP3.
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0 and (data[1] >> 1) & 0x3:
+        return ".mp3"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return ".webm"
+    if data.startswith(b"OggS"):
+        return ".ogg"
+    return None
 QUEUE_MAX = int(os.getenv("ORACLE_VOICE_QUEUE_MAX", "100"))
 # Tunable alongside ORACLE_JOB_WORKERS and RECON_WORKER_COUNT. Transcription is
 # the heaviest per-task work in the process, so this is the knob that decides
@@ -222,14 +246,19 @@ def voice_session_group(tenant_id: str, session_id: str) -> str:
 
 
 async def _broadcast_voice(
-    ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any
+    ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any,
+    lead_id: Any,
 ) -> None:
     """A call's live frames carry what the customer said and the offer math:
     the dashboards of members who may read the call's client/contact (C3.6,
-    0145), and the session's own stream, whose sockets were admitted under
-    RLS for this session (server.voice_telemetry_websocket)."""
+    0145) — or, for a call opened on a lead with neither, of members who may
+    read that lead's seller client (0143/0151); never the whole brokerage
+    just because the call names no client (audit 27.1) — and the session's
+    own stream, whose sockets were admitted under RLS for this session
+    (server.voice_telemetry_websocket)."""
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=client_id,
-                                  contact_id=contact_id, actor=ctx.agent_id)
+                                  contact_id=contact_id, lead_id=lead_id, actor=ctx.agent_id,
+                                  sensitive=True)
     await ws_hub.broadcast_group(voice_session_group(ctx.tenant_id, session_id), frame)
 
 
@@ -307,6 +336,17 @@ async def log_walkthrough(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"unsupported audio format {suffix or '(none)'} — expected one of {sorted(ALLOWED_SUFFIXES)}",
         )
+    # The content decides, not the name: refuse anything that is not one of the
+    # allowed containers, and stage/queue it under the suffix it really has.
+    header = audio_file.file.read(64)
+    audio_file.file.seek(0)
+    sniffed = _sniff_audio(header)
+    if sniffed is None:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            "the file is not M4A, WAV, MP3, WebM or Ogg audio",
+        )
+    suffix = sniffed
 
     # The note becomes the lead's log row: 404 for a lead the caller cannot
     # see, 403 for a client's house shared view-only — before the audio is
@@ -449,7 +489,8 @@ async def create_voice_session(
         "started_at": session["started_at"].isoformat(),
         "event_id": consent_event["id"],
     }
-    await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None)
+    await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None,
+                           lead_id=lead_id)
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action="voice_session_created",
@@ -591,7 +632,8 @@ async def ingest_voice_telemetry(
         "requires_agent_approval": True,
     }
     await _broadcast_voice(ctx, str(body.session_id), frame,
-                           client_id=call["client_id"], contact_id=call["contact_id"])
+                           client_id=call["client_id"], contact_id=call["contact_id"],
+                           lead_id=call["lead_id"])
     return frame
 
 
@@ -622,25 +664,39 @@ async def read_voice_telemetry(
     limit: int = Query(default=100, ge=1, le=250),
     ctx: TenantContext = Depends(require_context),
 ):
-    """REST recovery feed for browsers whose voice socket is offline."""
+    """REST recovery feed for browsers whose voice socket is offline.
+
+    Call content (transcript, offer, MAO) is readable only by the call record's
+    audience — or, for a pool / erased-client / unlinked call, by the member
+    who created it (record_access.may_read_call_content; owner decision
+    2026-11-16). Anyone else gets 404, as if the session did not exist."""
+    # Which sessions the caller can see (their row-level security) ...
     async with tenant_tx(ctx) as conn:
         if session_id is None:
-            session_id = await conn.fetchval(
+            visible = [row["id"] for row in await conn.fetch(
                 """
                 SELECT id FROM live_call_sessions
                  WHERE transcript_status IN ('pending','active')
                  ORDER BY created_at DESC
-                 LIMIT 1
+                 LIMIT 200
                 """
-            )
+            )]
+        else:
+            visible = [session_id] if await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)", session_id) else []
+    # ... and, in ONE query outside that transaction (never two pool
+    # connections at once), whose content they may read, newest first.
+    if ctx.is_platform_admin:
+        readable = [str(v) for v in visible]
+    else:
+        readable = await record_access.may_read_call_content_many(ctx.tenant_id, visible, ctx.agent_id)
+    if not readable:
         if session_id is None:
             return {"session_id": None, "events": [], "next_event_id": after_event_id}
-        session_exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)",
-            session_id,
-        )
-        if not session_exists:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+    session_id = uuid.UUID(readable[0])
+
+    async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
             SELECT id,event_type,transcript_excerpt,counter_offer,arv,rehab,mao,
@@ -886,8 +942,10 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 content_key,
             )
 
-        # The note's summary is the house's content: a client's house's goes
-        # only to whoever may read that client (0151), a prospect's to all.
+        # The note's summary and price adjustment are the house's content: a
+        # client's house's goes only to whoever may read that client (0151);
+        # a prospect's (pool) goes to the agent who recorded it, never to the
+        # whole brokerage (sensitive: owner decision 2026-11-16).
         reached = await ws_hub.broadcast_record(
             job.ctx.tenant_id,
             {
@@ -899,7 +957,7 @@ async def _process(job: VoiceJob) -> Optional[str]:
                 # Why there is no extraction, when the AI budget stopped it.
                 "extraction_code": budget_code,
             },
-            lead_id=job.lead_id, actor=job.ctx.agent_id,
+            lead_id=job.lead_id, actor=job.ctx.agent_id, sensitive=True,
         )
         logger.info(
             "Voice note logged: lead=%s sentiment=%r broadcast→%d socket(s)",

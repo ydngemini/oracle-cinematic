@@ -361,6 +361,11 @@ class QwenOmniRealtimeBridge:
             # Checked per utterance; nothing said is stored.
             await voice_opt_out.honour(state, self.call_connection_id)
             raise QwenCallOptOut("outbound callee asked not to be contacted")
+        if (voice_opt_out.is_inbound(state) and not getattr(self, "_inbound_opt_out_recorded", False)
+                and voice_opt_out.spoken_opt_out(transcript)):
+            # RUN-02: written now, not only by finalize at hang-up.
+            self._inbound_opt_out_recorded = await voice_opt_out.honour_inbound(
+                state, self.call_connection_id)
         self._turns += 1
         logger.info(
             "Qwen caller turn transcribed: cid=%s chars=%d turn=%d",

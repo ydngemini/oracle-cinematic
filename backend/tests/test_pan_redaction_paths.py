@@ -144,7 +144,7 @@ def test_call_telemetry_stores_no_card(monkeypatch):
     class _Conn:
         async def fetchrow(self, query, *args):
             if "FROM live_call_sessions" in query:
-                return {"consent_recorded": True, "client_id": None, "contact_id": None}
+                return {"consent_recorded": True, "client_id": None, "contact_id": None, "lead_id": None}
             assert "INSERT INTO negotiation_events" in query
             inserts.append(args)
             return {"id": 7, "created_at": NOW}
@@ -286,6 +286,11 @@ def test_a_logged_email_and_its_outbox_row_hold_no_card(monkeypatch):
 
     monkeypatch.setattr(crm, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(crm, "enforce_outreach", allow)
+
+    async def member(_ctx):
+        return True
+
+    monkeypatch.setattr(crm, "sender_is_active_member", member)
     monkeypatch.setattr(email_outbox, "enqueue_delivery", enqueue)
     asyncio.run(crm.send_message(
         CLIENT_ID, crm.MessageCreate(channel="email", subject=f"Card {PAN}", body=SAID), CTX))

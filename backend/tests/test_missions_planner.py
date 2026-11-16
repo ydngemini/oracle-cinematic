@@ -71,7 +71,14 @@ def _restore_real_gateway():
 
 
 def _run(gateway, mission=MISSION, candidates=CANDIDATES):
+    # A copy of the real module with only `complete` replaced: a bare stub
+    # broke when the planner's call path began importing other names
+    # (ATTACHMENT_TOKENS), and passed in the full suite only by test order.
+    import importlib
+
+    real = importlib.import_module("llm_gateway")
     fake = types.ModuleType("llm_gateway")
+    fake.__dict__.update({k: v for k, v in vars(real).items() if not k.startswith("__")})
     fake.complete = gateway.complete
     sys.modules["llm_gateway"] = fake
     return asyncio.run(planner.propose_plan(CTX, mission, candidates))

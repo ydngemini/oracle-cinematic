@@ -1,5 +1,5 @@
 // Auth for the AWS observability dashboard. The /api/aws/ws stream is gated to
-// platform_admin/broker_owner, so this app must obtain a real JWT before it can
+// platform_admin, so this app must obtain a real JWT before it can
 // connect. Mirrors the main Neoh app: POST {VITE_API_BASE}/auth/login with
 // { agent_id, passphrase } → { token, role, ... }.
 // `?.`: Vite replaces import.meta.env at build time; under Node's own test
@@ -7,7 +7,7 @@
 const API_BASE = (import.meta.env?.VITE_API_BASE || '').replace(/\/+$/, '');
 
 // Roles the backend WS accepts (must match _OBS_ALLOWED_ROLES in aws_observability.py).
-export const OBS_ROLES = new Set(['platform_admin', 'broker_owner']);
+export const OBS_ROLES = new Set(['platform_admin']);
 
 const TOKEN_KEY = 'oracle_token';
 const ROLE_KEY = 'oracle_role';
@@ -42,7 +42,7 @@ export async function login(agentId, passphrase) {
   }
   const body = await res.json();
   if (!OBS_ROLES.has(body.role)) {
-    throw new Error('This account has no AWS observability access (platform_admin / broker_owner only).');
+    throw new Error('This account has no AWS observability access (platform_admin only).');
   }
   try {
     sessionStorage.setItem(TOKEN_KEY, body.token);

@@ -97,6 +97,68 @@ def _s3_client():
 _VALID_BACKENDS = ("local", "azure-files", "azure-blob", "s3")
 
 
+# DEP-08: what /health/storage reports. A wrong key or a missing bucket is
+# ours to fix (a release failure); a provider having a bad minute is not.
+STORAGE_HEALTHY = "healthy"
+STORAGE_AUTH_FAILED = "auth_failed"        # 401/403, bad or revoked keys
+STORAGE_MISCONFIGURED = "misconfigured"    # bucket missing / unset
+STORAGE_DEGRADED = "degraded"              # 5xx, timeout, network
+STORAGE_UNAVAILABLE = "unavailable"        # mount missing or read-only
+STORAGE_NOT_PROBED = "not_probed"          # configured, no cheap probe here
+
+_AUTH_CODES = {"401", "403", "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "Forbidden"}
+_MISSING_CODES = {"404", "NoSuchBucket", "NotFound"}
+
+
+def probe() -> dict:
+    """Prove the storage the app writes to answers with the app's OWN
+    credentials (DEP-08). The release smoke test probed Spaces with the CI
+    runner's credentials, which CI never had, so it could only warn. Never
+    raises; never returns a secret or an endpoint."""
+    try:
+        backend = _check_backend()
+    except StorageError:
+        return {"backend": BACKEND, "state": STORAGE_MISCONFIGURED}
+    if backend in _FILESYSTEM_BACKENDS:
+        return {"backend": backend,
+                "state": STORAGE_HEALTHY if _mount_is_writable() else STORAGE_UNAVAILABLE}
+    if backend == "azure-blob":
+        return {"backend": backend,
+                "state": STORAGE_NOT_PROBED if is_configured() else STORAGE_MISCONFIGURED}
+    if not S3_BUCKET:
+        return {"backend": backend, "state": STORAGE_MISCONFIGURED}
+    try:
+        from botocore.exceptions import ClientError
+
+        _s3_probe_client().head_bucket(Bucket=S3_BUCKET)
+        return {"backend": backend, "state": STORAGE_HEALTHY}
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code", ""))
+        status = str((exc.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode", ""))
+        if code in _AUTH_CODES or status in {"401", "403"}:
+            return {"backend": backend, "state": STORAGE_AUTH_FAILED}
+        if code in _MISSING_CODES or status == "404":
+            return {"backend": backend, "state": STORAGE_MISCONFIGURED}
+        return {"backend": backend, "state": STORAGE_DEGRADED}
+    except Exception:  # noqa: BLE001 — timeout, DNS, no SDK: not ours to fail a release on
+        return {"backend": backend, "state": STORAGE_DEGRADED}
+
+
+def _s3_probe_client():
+    """Like _s3_client, but a probe must answer quickly: short timeouts, one try."""
+    import boto3
+    from botocore.client import Config
+
+    options = {"connect_timeout": 3, "read_timeout": 3, "retries": {"max_attempts": 1}}
+    if S3_ENDPOINT_URL:
+        options["s3"] = {"addressing_style": "virtual"}
+    return boto3.client(
+        "s3", region_name=S3_REGION, endpoint_url=S3_ENDPOINT_URL,
+        aws_access_key_id=S3_ACCESS_KEY_ID, aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+        config=Config(**options),
+    )
+
+
 class StorageError(RuntimeError):
     """Raised when a backend is misconfigured or a transfer fails."""
 

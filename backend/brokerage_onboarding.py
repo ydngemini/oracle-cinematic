@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
 from tenancy import Role, TenantContext, require_context, require_role
+from admin_ops import require_platform_admin
 
 log = logging.getLogger("oracle.brokerage_onboarding")
 
@@ -1061,7 +1062,7 @@ async def list_mls_entitlements(
 @router.post("/mls/entitlements", status_code=status.HTTP_201_CREATED)
 async def grant_mls_entitlement(
     body: MlsEntitlementGrant,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
     _mls: None = Depends(require_mls_enabled),
 ) -> dict[str, Any]:
     """Grant a brokerage access to a licensed feed. Platform admin only.
@@ -1073,7 +1074,6 @@ async def grant_mls_entitlement(
     psql. An operator needs to be able to hand access out before flipping the
     switch, and take it back without a migration.
     """
-    require_role(ctx, Role.PLATFORM_ADMIN)
     import uuid as _uuid
     try:
         _uuid.UUID(body.tenant_id)
@@ -1094,12 +1094,11 @@ async def grant_mls_entitlement(
 async def revoke_mls_entitlement(
     mls_id: str,
     tenant_id: str,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_platform_admin),
     _mls: None = Depends(require_mls_enabled),
 ) -> dict[str, Any]:
     """Withdraw access. Platform admin only, and deliberately explicit about
     which tenant — revoking the wrong brokerage's MLS is a silent outage."""
-    require_role(ctx, Role.PLATFORM_ADMIN)
     async with tenant_tx(ctx) as conn:
         result = await conn.execute(
             "DELETE FROM mls_feed_entitlements WHERE tenant_id = $1::uuid AND mls_id = $2",

@@ -734,6 +734,18 @@ def _foundry_response(input_items: list[dict], context_type: str | None,
     )
 
 
+def _next_call_index(bundle: dict) -> int:
+    """The turn's next tool-call index, shared by every round and every provider
+    tier (AI-005). Each tier used to restart at 0, so after a fall-through the
+    next tier's calls collided with the earlier tier's ledger rows (refused as
+    conflicts or replayed); the Bedrock tier passed none and was unledgered.
+    A job retry rebuilds the bundle and restarts at 0, replaying the same
+    indices as before."""
+    index = int(bundle.get("_tool_call_index", 0))
+    bundle["_tool_call_index"] = index + 1
+    return index
+
+
 def _withheld(bundle: dict) -> frozenset[str]:
     """The tools this turn's actor is not offered (tool_offer, set by _generate)."""
     offer = bundle.get("tool_offer") if isinstance(bundle, dict) else None
@@ -774,10 +786,8 @@ async def _foundry_generate(
         timeout=_FOUNDRY_ROUND_SECONDS)
     actions: list[dict] = applied if applied is not None else []
 
-    # Monotonic across the WHOLE turn, not per round: the ledger's identity is
-    # (assistant_id, call_index), so a per-round counter would make round 2's
-    # first call collide with round 1's and replay the wrong receipt.
-    call_index = 0
+    # Monotonic across the WHOLE turn — every round AND every provider tier
+    # (_next_call_index): the ledger's identity is (assistant_id, call_index).
     for round_index in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
@@ -793,9 +803,8 @@ async def _foundry_generate(
                 arguments = {}
             receipt = await execute_safe_tool(
                 ctx, ctx.agent_id, assistant_id, call.name, arguments,
-                context_type, context_id, call_index,
+                context_type, context_id, _next_call_index(bundle),
             )
-            call_index += 1
             if _is_record_change(call.name, receipt):
                 actions.append(receipt)
             tool_outputs.append({
@@ -1173,9 +1182,7 @@ async def _local_fallback(
                 lambda: _local_chat(payload, url=url, api_key=api_key, timeout=timeout))
         return await _local_chat(payload, url=url, api_key=api_key, timeout=timeout)
 
-    # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
-    # this counts every tool call in the turn, across rounds.
-    call_index = 0
+    # See the Foundry loop: one counter for the whole turn (_next_call_index).
     staged_commands: list[str] = []
     nudged = False
     for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):
@@ -1240,7 +1247,7 @@ async def _local_fallback(
             else:
                 receipt = await execute_safe_tool(
                     ctx, ctx.agent_id, assistant_id, name, arguments,
-                    context_type, context_id, call_index,
+                    context_type, context_id, _next_call_index(bundle),
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
@@ -1257,7 +1264,6 @@ async def _local_fallback(
                 f"refused:{receipt.get('constraint')}"
                 if isinstance(receipt, dict) and receipt.get("refused") else "failed")
             logger.info("chat tool %s %s", name, outcome)
-            call_index += 1
             messages.append(
                 {
                     "role": "tool",
@@ -1582,6 +1588,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 receipt = await execute_safe_tool(
                     ctx, ctx.agent_id, assistant_id, tool_use.get("name", ""),
                     tool_use.get("input") or {}, context_type, context_id,
+                    _next_call_index(bundle),  # AI-005: this tier was unledgered
                 )
                 if _is_record_change(tool_use.get("name", ""), receipt):
                     actions.append(receipt)

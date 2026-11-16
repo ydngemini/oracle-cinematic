@@ -123,6 +123,13 @@ def client(monkeypatch):
     monkeypatch.setattr(plivo_call_handler, "plivo_qwen_enabled", lambda s=None: False)
     monkeypatch.setattr(telephony_api, "_plivo_credentials", fake_creds)
 
+    async def outcome_recorded(ref, status, duration):
+        return None  # the outcome write succeeds unless a test says otherwise (RUN-05)
+
+    import commands_api
+
+    monkeypatch.setattr(commands_api, "record_call_outcome", outcome_recorded)
+
     app = FastAPI()
     app.include_router(telephony_api.router)
     c = TestClient(app)
@@ -161,10 +168,41 @@ def test_status_refuses_an_unsigned_request_and_does_not_clean_up(client):
     assert client.cleaned == []
 
 
-def test_status_cleans_up_when_signed(client):
+def _outcome(monkeypatch, *results):
+    """record_call_outcome answers with each result in turn (an exception is
+    raised); returns the calls it saw."""
+    import commands_api
+
+    calls = []
+
+    async def record(ref, status, duration):
+        calls.append((ref, status))
+        result = results[min(len(calls), len(results)) - 1]
+        if isinstance(result, Exception):
+            raise result
+
+    monkeypatch.setattr(commands_api, "record_call_outcome", record)
+    return calls
+
+
+def test_status_cleans_up_when_signed(client, monkeypatch):
+    _outcome(monkeypatch, None)
     params = {"CallUUID": UUID, "CallStatus": "completed"}
     r = client.post(STATUS, data=params, headers=_sign(STATUS, params, PLATFORM_TOKEN))
     assert r.status_code == 204 and client.cleaned == [UUID]
+
+
+def test_an_unrecorded_outcome_keeps_the_call_and_asks_for_a_retry(client, monkeypatch):
+    """RUN-05: the outcome write failing used to be logged, the call state
+    cleaned up and 204 returned — the outcome (and a speed-to-lead call's only
+    lead_engaged meter) was lost, and a retry found nothing to record."""
+    calls = _outcome(monkeypatch, OSError("database went away"), None)
+    params = {"CallUUID": UUID, "CallStatus": "completed", "Duration": "42"}
+    first = client.post(STATUS, data=params, headers=_sign(STATUS, params, PLATFORM_TOKEN))
+    assert first.status_code == 503 and client.cleaned == [], "state kept"
+    again = client.post(STATUS, data=params, headers=_sign(STATUS, params, PLATFORM_TOKEN, nonce="nonce-2"))
+    assert again.status_code == 204 and client.cleaned == [UUID]
+    assert len(calls) == 2, "recorded on the retry"
 
 
 REQUEST = "99999999-8888-7777-6666-555555555555"

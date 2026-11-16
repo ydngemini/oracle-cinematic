@@ -33,7 +33,7 @@ httpx==0.28.1                  # K8s HPA / pod queries in admin_c2.py (lazy impo
 requests==2.34.2               # RunPod reconstruction provider HTTP submit/poll
 # Custom-domain verification (site_domains.py, T14.04): async TXT/CNAME lookups
 # with a bounded lifetime. ISC licence, pure Python, no required dependencies.
-dnspython==2.9.0
+dnspython==2.9.2
 # PodProvider pushes a capture to a rented RunPod GPU over SSH and pulls the
 # .sog back. Lazy-imported, so only the pods reconstruction path needs it.
 asyncssh==2.24.0

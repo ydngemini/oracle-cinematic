@@ -75,7 +75,7 @@ export default function OutreachConsentPanel() {
   const recordConsent = () => act('consent', async () => {
     const payload = {
       contact: contact.trim(),
-      channel,
+      channel: voiceprint ? 'voice' : channel,
       consent_type: consentType,
     };
     if (stateCode.trim()) payload.state_code = stateCode.trim().toUpperCase();
@@ -95,6 +95,9 @@ export default function OutreachConsentPanel() {
   });
 
   const allowed = result?.allowed ?? result?.permitted;
+  // A voiceprint release only counts on the voice channel, so the picker
+  // shows (and sends) voice while that consent type is chosen.
+  const voiceprint = consentType === 'biometric_voiceprint';
 
   return (
     <section className={styles.panel} aria-labelledby="consent-title">
@@ -117,7 +120,11 @@ export default function OutreachConsentPanel() {
         </label>
         <label>
           <span>Channel</span>
-          <select value={channel} onChange={(event) => setChannel(event.target.value)}>
+          <select
+            value={voiceprint ? 'voice' : channel}
+            disabled={voiceprint}
+            onChange={(event) => setChannel(event.target.value)}
+          >
             {CHANNELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>

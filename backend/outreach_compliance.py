@@ -117,9 +117,67 @@ BIOMETRIC_VOICE_DISCLOSURE = (
 )
 
 # Keywords that, inbound, constitute a TCPA opt-out via "any reasonable method".
+# inbound_voice applies this set to SPEECH with its own narrower clause rule (a
+# voice opt-out is permanent and discards the caller's answers): unchanged here.
 STOP_KEYWORDS: frozenset[str] = frozenset(
     {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out", "remove"}
 )
+
+# SMS keywords: the above plus REVOKE (named per-se valid by the FCC's 2024
+# revocation rule), UNSUB, and the Spanish ALTO/BAJA/PARAR/CANCELAR that CTIA
+# asks Spanish-language programs to honour (audit 25.3).
+SMS_STOP_KEYWORDS: frozenset[str] = STOP_KEYWORDS | {"revoke", "unsub", "alto", "baja", "parar", "cancelar"}
+
+# SMS only. Plain-language opt-outs, matched on WORD BOUNDARIES anywhere in a
+# reply. Known safe-direction over-matches (accepted, audit 25.3 review):
+# "unsubscribe from Zillow?", "remove me from the deed", "don't call before 9".
+SMS_OPT_OUT_PHRASES: tuple[str, ...] = (
+    "do not contact", "don't contact", "dont contact", "do not call", "don't call", "dont call",
+    "never call", "never contact", "never text", "never message", "stop calling", "stop contacting",
+    "stop texting", "stop txting", "stop texing", "stop messaging", "stop msging", "stop sending",
+    "stop receiving", "quit calling", "quit contacting", "quit texting", "do not text", "don't text",
+    "dont text", "don't ever text", "don't ever call", "don't ever contact", "no more texts",
+    "no more messages", "no more calls", "remove me", "take me off", "take my name off",
+    "take my number off", "delete my number", "lose my number", "lose this number",
+    "remove my number", "remove this number", "leave me alone", "wrong number", "stop txt",
+    "opt-out",
+    "unsubscribe", "opt out", "opt me out", "revoke consent", "revoke my consent",
+    "withdraw my consent", "withdraw consent",
+)
+_SMS_PHRASE_RE = re.compile(
+    r"(?<![a-z'])(?:" + "|".join(re.escape(p) for p in SMS_OPT_OUT_PHRASES) + r")(?![a-z])")
+
+# Words that can sit alongside a bare stop keyword in a text without changing
+# that it is the whole instruction: "STOP please", "stop it now", "lol stop".
+_SMS_FILLER: frozenset[str] = frozenset(
+    {
+        "i", "im", "id", "ive", "me", "my", "you", "your", "it", "all", "this", "lol",
+        "please", "pls", "plz", "just", "now", "really", "actually", "seriously", "already",
+        "ok", "okay", "no", "nope", "yes", "yeah", "yep", "well", "so", "and",
+        "but", "um", "uh", "look", "listen", "hey", "sir", "maam",
+        "said", "say", "saying", "sorry", "thanks", "thank", "thx",
+    }
+)
+
+# Clause boundaries for texts: punctuation, line breaks, a spaced dash ("Stop - not
+# selling") and conjunctions. A hyphen INSIDE a word is not a boundary
+# ("opt-out" stays one token).
+_SMS_CLAUSE_RE = re.compile(r"[.,;:!?—–\n]+|\s-+\s|\b(?:and|but|so|then|because)\b")
+
+
+def requests_opt_out(text: str) -> bool:
+    """SMS: True when a reply asks not to be contacted — an opt-out phrase
+    (word-bounded) anywhere, or a clause that is only stop keywords plus
+    filler ("STOP", "STOP STOP", "stop it now", "REVOKE.")."""
+    lowered = (text or "").lower().replace("\u2019", "'").replace("\u2018", "'")
+    if _SMS_PHRASE_RE.search(lowered):
+        return True
+    normalized_stop = {keyword.replace(" ", "") for keyword in SMS_STOP_KEYWORDS}
+    for clause in _SMS_CLAUSE_RE.split(lowered):
+        tokens = [t for t in re.findall(r"[a-z]+(?:-[a-z]+)?", clause or "") if t not in _SMS_FILLER]
+        if tokens and set(tokens) <= normalized_stop:
+            return True
+    return False
 
 # Representative IANA tz per state for the calling-hours check. Multi-zone states
 # map to their most-populous zone; this is an approximation — when a contact's
@@ -201,9 +259,16 @@ def _infer_channel(contact: str) -> Channel:
 
 
 def is_stop_keyword(body: str) -> bool:
-    """True when an inbound message body is a TCPA opt-out request."""
+    """True when an inbound message body is a TCPA opt-out request.
+
+    Was: the WHOLE body, letters only, had to be one keyword, so "REVOKE",
+    "STOP please", "Stop texting me" and "please take me off your list"
+    recorded no suppression and later messages could still be approved
+    (audit 25.3). Now: SMS keywords, word-bounded SMS phrases, or a clause of
+    only stop keywords plus filler (requests_opt_out). Spoken opt-out keeps its
+    own, narrower rule in inbound_voice; the two deliberately differ."""
     token = re.sub(r"[^a-z]", "", (body or "").strip().lower())
-    return token in STOP_KEYWORDS
+    return token in SMS_STOP_KEYWORDS or requests_opt_out(body)
 
 
 # ── Pure evaluation (no DB) ──────────────────────────────────────────────────
@@ -357,11 +422,18 @@ class ConsentLedger:
     queries run through tenant_tx so RLS scopes rows to the caller's tenant."""
 
     @staticmethod
-    async def gather_state(conn, contact: str, channel: Channel, tombstone: Optional[str] = None):
+    async def gather_state(conn, contact: str, channel: Channel, tombstone: Optional[str] = None,
+                           *, tenant_id: str):
         """One round-trip on a caller-supplied connection returning every fact
         guard_outreach needs: suppression, channel consent, BIPA voiceprint
         consent, and the 24h voice-attempt count. Replaces what used to be four
-        separate tenant_tx acquisitions. RLS scopes rows to the conn's tenant."""
+        separate tenant_tx acquisitions.
+
+        Consent and the attempt count are filtered to ``tenant_id`` explicitly:
+        a PLATFORM_ADMIN context (the command worker that places AI calls) reads
+        EVERY brokerage's rows under RLS, so another brokerage's release must not
+        authorise this one's call (review of the 26.7/26.8 fix). Suppression is
+        deliberately not narrowed: there a wider read only blocks more."""
         return await conn.fetchrow(
             """
             SELECT
@@ -373,23 +445,28 @@ class ConsentLedger:
                  OR ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM suppression_tombstones
                         WHERE contact_hmac = $3 AND channel IN ($2, '*')))) AS suppressed,
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND channel = $2
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
                           AND consent_type IN ('express_written', 'express_oral', 'prior_business')
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_consent,
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND channel = $2
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
                           AND consent_type = 'express_written'
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_written_consent,
+                -- A BIPA release counts only on the voice channel and only
+                -- until it expires (external audit 26.8).
                 EXISTS(SELECT 1 FROM outreach_consent
-                        WHERE contact = $1 AND consent_type = 'biometric_voiceprint'
-                          AND revoked_at IS NULL)                       AS vp_consent,
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = 'voice'
+                          AND consent_type = 'biometric_voiceprint'
+                          AND revoked_at IS NULL
+                          AND (expires_at IS NULL OR expires_at > now())) AS vp_consent,
                 (SELECT count(*) FROM outreach_attempt_log
-                        WHERE contact = $1 AND channel = 'voice' AND allowed = true
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = 'voice'
+                          AND allowed = true
                           AND attempted_at > now() - interval '24 hours') AS recent_voice
             """,
-            contact, channel.value, tombstone,
+            contact, channel.value, tombstone, tenant_id,
         )
 
     @staticmethod
@@ -442,12 +519,29 @@ class ConsentLedger:
         and must survive even when the caller's surrounding tx rolls back — e.g.
         enforce_outreach raises HTTP 451 inside crm.send_message's tenant_tx."""
         async with tenant_tx(ctx) as conn:
-            await conn.execute(
-                """INSERT INTO outreach_attempt_log
-                       (tenant_id, contact, channel, state_code, allowed, block_reason)
-                   VALUES ($1,$2,$3,$4,$5,$6)""",
-                ctx.tenant_id, contact, channel.value, state_code, allowed, block_reason,
-            )
+            await ConsentLedger.insert_attempt(
+                conn, ctx, contact=contact, channel=channel, state_code=state_code,
+                allowed=allowed, block_reason=block_reason)
+
+    @staticmethod
+    async def insert_attempt(
+        conn, ctx: TenantContext, *, contact: str, channel: Channel,
+        state_code: Optional[str], allowed: bool, block_reason: Optional[str],
+    ) -> None:
+        """The attempt-log INSERT on a caller-supplied connection."""
+        await conn.execute(
+            """INSERT INTO outreach_attempt_log
+                   (tenant_id, contact, channel, state_code, allowed, block_reason)
+               VALUES ($1,$2,$3,$4,$5,$6)""",
+            ctx.tenant_id, contact, channel.value, state_code, allowed, block_reason,
+        )
+
+    @staticmethod
+    async def lock_voice_attempts(conn, tenant_id: str, contact: str) -> None:
+        """Serialise voice attempts to one contact within one brokerage until the
+        surrounding transaction ends (external audit 26.7)."""
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                           f"outreach-voice:{tenant_id}:{contact}")
 
 
 # ── Guard entrypoint used by send paths ──────────────────────────────────────
@@ -481,25 +575,51 @@ async def guard_outreach(
     pool acquisition; otherwise one is acquired. The attempt log is written on a
     SEPARATE, independently-committed transaction so the denial record survives
     even when the caller's surrounding tx rolls back (e.g. enforce_outreach
-    raises 451 inside that tx)."""
+    raises 451 inside that tx).
+
+    A LOGGED voice attempt is the exception (external audit 26.7): the 24-hour
+    count, the decision and the attempt row are one transaction of its own,
+    under an advisory lock on (brokerage, contact). Otherwise two workers
+    calling the same person at once both read the count below the cap and both
+    dial. That path never reuses ``conn``: the claim must commit on its own."""
     channel = Channel(channel)
     now_utc = now_utc or datetime.now(timezone.utc)
     norm = normalize_contact(contact, channel)
     is_voice = channel is Channel.VOICE
+    tombstone = _tombstone_hash(ctx.tenant_id, norm)
+
+    import voice_opt_out  # a spoken STOP still being written counts as suppressed (23.5)
+
+    def decide(row) -> OutreachDecision:
+        suppressed = bool(row["suppressed"]) or (
+            channel in (Channel.SMS, Channel.VOICE)
+            and voice_opt_out.pending_opt_out(ctx.tenant_id, normalize_contact(contact, Channel.VOICE)))
+        return evaluate(
+            channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
+            suppressed=suppressed, has_consent=bool(row["has_consent"]),
+            has_written_consent=bool(row["has_written_consent"]),
+            has_voiceprint_consent=bool(row["vp_consent"]) if is_voice else False,
+            recent_voice_attempts=int(row["recent_voice"]) if is_voice else 0,
+            tz_name=tz_name,
+            voice_mode=voice_mode,
+            recording_enabled=recording_enabled,
+        )
+
+    if is_voice and log:
+        async with tenant_tx(ctx) as c:
+            await ConsentLedger.lock_voice_attempts(c, ctx.tenant_id, norm)
+            decision = decide(await ConsentLedger.gather_state(
+                c, norm, channel, tombstone, tenant_id=ctx.tenant_id))
+            await ConsentLedger.insert_attempt(
+                c, ctx, contact=norm, channel=channel, state_code=decision.state_code,
+                allowed=decision.allowed,
+                block_reason=decision.blockers[0] if decision.blockers else None,
+            )
+        return decision
 
     async with _conn_or_tx(ctx, conn) as c:
-        row = await ConsentLedger.gather_state(c, norm, channel, _tombstone_hash(ctx.tenant_id, norm))
-
-    decision = evaluate(
-        channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
-        suppressed=bool(row["suppressed"]), has_consent=bool(row["has_consent"]),
-        has_written_consent=bool(row["has_written_consent"]),
-        has_voiceprint_consent=bool(row["vp_consent"]) if is_voice else False,
-        recent_voice_attempts=int(row["recent_voice"]) if is_voice else 0,
-        tz_name=tz_name,
-        voice_mode=voice_mode,
-        recording_enabled=recording_enabled,
-    )
+        row = await ConsentLedger.gather_state(c, norm, channel, tombstone, tenant_id=ctx.tenant_id)
+    decision = decide(row)
 
     if log:
         await ConsentLedger.log_attempt(
@@ -580,6 +700,13 @@ async def record_consent(body: ConsentRecord, ctx: TenantContext = Depends(requi
         "express_written", "express_oral", "prior_business", "biometric_voiceprint"
     ):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid consent_type")
+    if body.consent_type == "biometric_voiceprint" and (
+            body.channel is not Channel.VOICE or _infer_channel(body.contact) is Channel.EMAIL):
+        # The gate reads a voiceprint release on the voice channel only, for a
+        # phone number (26.8).
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "a biometric voiceprint release is recorded on the voice channel "
+                            "for a phone number")
     norm = normalize_contact(body.contact, body.channel)
     consent_id = await ConsentLedger.record_consent(
         ctx, contact=norm, channel=body.channel, consent_type=body.consent_type,

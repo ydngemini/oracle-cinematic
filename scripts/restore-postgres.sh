@@ -231,17 +231,31 @@ else
   set -e
 fi
 
-# pg_restore exits non-zero for warnings that are expected against a clean
-# target (extensions the role may not create, comments on them). Those are
-# reported, not swallowed — but they do not by themselves mean failure. The
-# verifier is what decides, which is why it is not optional.
-if [ "$RC" -ne 0 ]; then
+# REC-03 (2026-11-13): every "pg_restore: error" used to be printed, called
+# "not automatically a failure", and the log deleted at the end — so a restore
+# that dropped objects could still be handed to the verifier, which samples a
+# subset. A clean target produces none (the CI drill tolerates zero), so any
+# error now fails the restore unless the operator has explained it in
+# ORACLE_RESTORE_EXPECTED_ERRORS (an extended regex matched against each
+# error line). The log is kept beside the manifest either way.
+RESTORE_LOG="$DIR/restore-$(date -u +%Y%m%dT%H%M%SZ).log"
+[ -f "$DIR/.restore.log" ] && mv "$DIR/.restore.log" "$RESTORE_LOG"
+ERRORS="$(grep -E "^pg_restore: error" "$RESTORE_LOG" 2>/dev/null || true)"
+if [ -n "${ORACLE_RESTORE_EXPECTED_ERRORS:-}" ] && [ -n "$ERRORS" ]; then
+  UNEXPLAINED="$(printf '%s\n' "$ERRORS" | grep -Ev -- "$ORACLE_RESTORE_EXPECTED_ERRORS" || true)"
+else
+  UNEXPLAINED="$ERRORS"
+fi
+if [ -n "$UNEXPLAINED" ]; then
   echo
-  echo "  pg_restore exited $RC. Diagnostics:"
-  grep -E "^pg_restore: error" "$DIR/.restore.log" | head -20 | sed 's/^/    /'
-  echo
-  echo "  This is not automatically a failure — some errors are expected against"
-  echo "  a clean target. scripts/verify-restore.sh decides. Continuing."
+  echo "  pg_restore exited ${RC:-?} with $(printf '%s\n' "$UNEXPLAINED" | wc -l | tr -d ' ') unexplained error(s):"
+  printf '%s\n' "$UNEXPLAINED" | head -20 | sed 's/^/    /'
+  die "the restore reported errors nobody has explained. Full log: $RESTORE_LOG
+  Do not treat this database as recovered. If an error is genuinely expected
+  against this target, re-run with ORACLE_RESTORE_EXPECTED_ERRORS='<regex>'."
+fi
+if [ "${RC:-0}" -ne 0 ]; then
+  echo "  pg_restore exited $RC; every error line was expected (ORACLE_RESTORE_EXPECTED_ERRORS). Log: $RESTORE_LOG"
 fi
 
 if [ -n "$EXTRACT_FILE" ]; then
@@ -268,5 +282,5 @@ fi
 echo "  NOT DONE YET. Run:"
 echo "      scripts/verify-restore.sh $MANIFEST"
 echo "  A restore is finished when the verifier passes, not when pg_restore exits."
+echo "  pg_restore log kept: $RESTORE_LOG"
 echo
-rm -f "$DIR/.restore.log"

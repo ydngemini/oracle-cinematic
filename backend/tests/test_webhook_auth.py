@@ -1,7 +1,7 @@
 """HOOK-3 (security review 2026-10-01, L17-10): the ACS and custom-call webhook
 secret no longer travels in callback URLs. A header, a body signature or an
-expiring signed URL authenticates; the old `?token=` form is accepted for one
-release with a deprecation log line that never carries the secret."""
+expiring signed URL authenticates; the old `?token=` form is refused (removed
+2026-11-13, SEC-002), with a log line that never carries the secret."""
 
 from __future__ import annotations
 
@@ -90,12 +90,14 @@ def test_callback_urls_carry_an_expiring_signature_not_the_secret(monkeypatch):
     assert _denied(_Req(query={**query, "sig": "0" * 64}, path=parts.path)) == 403
 
 
-def test_old_query_token_works_for_one_release_and_logs_without_the_secret(caplog, monkeypatch):
+def test_the_removed_query_token_is_refused_and_logged_without_the_secret(caplog, monkeypatch):
+    """SEC-002 / L17-10: the correct secret in ?token= no longer authenticates,
+    and the old compatibility switch cannot bring it back."""
     with caplog.at_level(logging.WARNING, logger="oracle.webhook_auth"):
-        assert _verify(_Req(query={"token": SECRET})) == "query_token_deprecated"
-    assert "DEPRECATED webhook credential" in caplog.text and ENV in caplog.text
+        assert _denied(_Req(query={"token": SECRET})) == 403
+    assert "removed" in caplog.text and ENV in caplog.text
     assert SECRET not in caplog.text
-    monkeypatch.setenv("ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT", "0")
+    monkeypatch.setenv("ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT", "1")
     assert _denied(_Req(query={"token": SECRET})) == 403
 
 

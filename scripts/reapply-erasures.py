@@ -5,7 +5,9 @@ A managed-database backup is a point-in-time copy. Restoring one taken before
 a brokerage was erased brings that brokerage's data back — silently, unless
 something remembers the erasure outside the database. privacy_lifecycle
 writes a directive (tenant id, operation id, time; no customer data) to
-object storage under privacy/erasure-directives/ when an erasure completes.
+object storage under privacy/erasure-directives/ when an erasure completes,
+and privacy_requests writes one per person deleted by request (row ids and
+keyed hashes) under privacy/subject-erasure-directives/ before deleting.
 This script reads those directives and erases again whatever the restore
 resurrected. Run it after every restore, BEFORE the service takes traffic
 (docs/disaster-recovery.md, docs/privacy-request-runbook.md §Restore).
@@ -32,16 +34,24 @@ sys.path.insert(0, os.path.abspath(BACKEND))
 async def main(apply: bool) -> int:
     from db import connection
     from privacy_lifecycle import reapply_erasures
+    from privacy_requests import reapply_subject_erasures
 
     await connection.init_pool(min_size=1, max_size=2)
     try:
+        # Brokerages first, then people deleted by request (audit 29.4).
         report = await reapply_erasures(apply=apply)
+        try:
+            report += await reapply_subject_erasures(apply=apply)
+        except Exception as exc:  # noqa: BLE001 - still print the brokerage pass
+            report.append({"kind": "subject", "status": "reapply_failed", "detail": type(exc).__name__})
     finally:
         await connection.close_pool()
     for entry in report:
         print(json.dumps(entry, default=str))
     todo = [e for e in report if e["status"] == "resurrected"]
-    bad = [e for e in report if e["status"] in ("reapply_failed", "skipped_legal_hold", "unreadable")]
+    bad = [e for e in report if e["status"] in ("reapply_failed", "skipped_legal_hold", "unreadable",
+                                                 "needs_review", "tenant_erased_rows_back",
+                                                 "expired_rows_back")]
     if not apply:
         print(f"\n{len(todo)} erasure(s) to re-apply. Re-run with --apply.")
         return 1 if todo else 0

@@ -215,11 +215,96 @@ def test_verifier_checks_the_things_that_fail_silently(verify):
         assert guarantee in verify, f"the verifier does not check {guarantee}"
 
 
-def test_verifier_will_not_claim_verification_without_a_decrypt_round_trip(verify):
-    """26 ciphertext columns come back as NULL, not as an error, when the key
-    is absent. Row counts still pass. This is the quietest failure there is."""
-    assert "oracle_decrypt(oracle_encrypt(" in verify
-    assert "decryptability is UNPROVEN" in verify
+# ── DR-001 / REC-02: the restored ciphertext must open with the real key ───
+#
+# The verifier used to encrypt and decrypt the literal 'k' and, with no key at
+# all, warned and still printed RESTORE VERIFIED. These run the real script
+# against a stand-in psql that answers by query shape, and read section 4's
+# verdict. (Real PostgreSQL proves the key derivation in the CI DR drill, whose
+# fixture holds a note sealed with crypto.derive_tenant_key's output.)
+
+FAKE_PSQL = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_LOG.argv"
+SQL="$*"
+if [[ " $* " == *" -f - "* ]]; then SQL="$(cat)"; printf '%s\n' "$SQL" >> "$FAKE_LOG.stdin"; fi
+case "$SQL" in
+  *"column_name LIKE"*) [ "$FAKE_COLUMNS" = yes ] && echo "client_notes body_ciphertext" ;;
+  *"oracle_decrypt(s.v"*) echo "$FAKE_DECRYPT" ;;
+  *"|| ' 0'"*) echo "$FAKE_PRESENT" ;;
+  *) echo "" ;;
+esac
+"""
+
+
+def _verify_section_4(tmp_path, *, key, columns="yes", decrypt="3 0", present="3 0"):
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "psql"
+    fake.write_text(FAKE_PSQL)
+    fake.chmod(0o755)
+    manifest = tmp_path / "m.json"
+    manifest.write_text('{"migration_head": "0999_x.sql", "ciphertext_columns": "29"}')
+    env = {k: v for k, v in os.environ.items() if k != "ORACLE_ENCRYPTION_MASTER_KEY"}
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", ORACLE_DB_HOST="127.0.0.1", ORACLE_DB_NAME="r",
+               ORACLE_DB_USER="postgres", PGPASSWORD="pw", FAKE_LOG=str(tmp_path / "psql"),
+               FAKE_COLUMNS=columns, FAKE_DECRYPT=decrypt, FAKE_PRESENT=present)
+    if key:
+        env["ORACLE_ENCRYPTION_MASTER_KEY"] = key
+    done = subprocess.run(["bash", str(VERIFY), str(manifest)], env=env, capture_output=True,
+                          text=True, timeout=60)
+    lines = [ln for ln in done.stdout.splitlines() if "decrypt" in ln or "ciphertext value" in ln
+             or "MASTER_KEY" in ln]
+    return done, "\n".join(lines), tmp_path / "psql"
+
+
+def test_no_key_with_restored_ciphertext_fails_the_restore(tmp_path):
+    done, verdict, _ = _verify_section_4(tmp_path, key=None)
+    assert "FAIL" in verdict and "not set" in verdict, verdict
+    assert done.returncode != 0 and "RESTORE VERIFIED" not in done.stdout
+
+
+def test_a_key_that_does_not_open_the_restored_ciphertext_fails(tmp_path):
+    _, verdict, _ = _verify_section_4(tmp_path, key="wrong-key", decrypt="3 3")
+    assert "FAIL" in verdict and "do NOT decrypt" in verdict, verdict
+
+
+def test_the_right_key_opening_restored_ciphertext_passes_that_check(tmp_path):
+    _, verdict, log = _verify_section_4(tmp_path, key="the-real-master-key", decrypt="3 0")
+    assert "PASS" in verdict and "3 restored ciphertext value(s)" in verdict, verdict
+    assert "the-real-master-key" not in (log.parent / "psql.argv").read_text(), "the key reached argv"
+    sent = (log.parent / "psql.stdin").read_text()
+    assert "\\getenv mk ORACLE_ENCRYPTION_MASTER_KEY" in sent and "the-real-master-key" not in sent
+    assert "oracle-pii-v1:" in sent, "crypto.derive_tenant_key's HKDF info prefix"
+
+
+def test_a_dump_with_no_ciphertext_values_needs_no_key(tmp_path):
+    _, verdict, _ = _verify_section_4(tmp_path, key=None, present="0 0")
+    assert "PASS" in verdict and "nothing encrypted" in verdict, verdict
+
+
+def test_an_unsampleable_column_is_a_failure_not_a_pass(tmp_path):
+    _, verdict, _ = _verify_section_4(tmp_path, key="k1", decrypt="")
+    assert "FAIL" in verdict and "could not be sampled" in verdict, verdict
+
+
+def test_the_literal_key_probe_is_gone(verify):
+    assert "oracle_encrypt('neoh-restore-probe', 'k')" not in verify
+
+
+def test_the_drill_fixture_seals_a_note_with_the_apps_own_key_derivation():
+    """The CI drill decrypts this with the SQL derivation; the literal must be
+    what crypto.derive_tenant_key produces, or the drill proves nothing."""
+    import sys
+
+    sys.path.insert(0, str(SCRIPTS.parent / "backend"))
+    from crypto import derive_tenant_key
+
+    fixture = (SCRIPTS / "dr-drill-fixture.sql").read_text()
+    key = derive_tenant_key("aaaaaaaa-0000-4000-8000-00000000000a", "drill-probe-key")
+    assert f"oracle_encrypt('drill sealed note', '{key}')" in fixture
 
 
 def test_verifier_exits_nonzero_when_anything_failed(verify):
@@ -330,3 +415,117 @@ def test_the_drill_proves_isolation_with_the_real_application_role():
     text = DRILL.read_text(encoding="utf-8")
     assert "oracle_app_login" in text
     assert "CREATE ROLE drill_app" not in text
+
+
+# ── REC-03: an unexplained pg_restore error fails the restore; the log is kept ─
+
+FAKE_PG = r"""#!/usr/bin/env bash
+case "$(basename "$0")" in
+  psql) echo "0" ;;                                   # an empty target
+  pg_restore) [ -n "$FAKE_RESTORE_STDERR" ] && printf '%s\n' "$FAKE_RESTORE_STDERR" >&2; exit "${FAKE_RC:-0}" ;;
+esac
+"""
+
+
+def _restore(tmp_path, *, stderr="", rc=0, expected=None):
+    import hashlib
+    import json
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("psql", "pg_restore"):
+        (bin_dir / tool).write_text(FAKE_PG)
+        (bin_dir / tool).chmod(0o755)
+    dump = tmp_path / "neoh.dump"
+    dump.write_bytes(b"PGDMP fake dump")
+    manifest = tmp_path / "neoh.manifest.json"
+    manifest.write_text(json.dumps({"dump_filename": dump.name,
+                                    "dump_sha256": hashlib.sha256(dump.read_bytes()).hexdigest(),
+                                    "migration_head": "0999_x.sql", "scope": "full"}))
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ORACLE_DB_HOST": "127.0.0.1",
+           "ORACLE_DB_NAME": "r", "ORACLE_DB_USER": "postgres", "PGPASSWORD": "pw",
+           "FAKE_RESTORE_STDERR": stderr, "FAKE_RC": str(rc)}
+    env.pop("ORACLE_RESTORE_EXPECTED_ERRORS", None)
+    if expected:
+        env["ORACLE_RESTORE_EXPECTED_ERRORS"] = expected
+    done = subprocess.run(["bash", str(RESTORE), str(manifest)], env=env, capture_output=True,
+                          text=True, timeout=60)
+    return done, done.stdout + done.stderr, sorted(tmp_path.glob("restore-*.log"))
+
+
+DROPPED = "pg_restore: error: could not execute query: ERROR:  insert or update on table \"property_media\" violates foreign key"
+
+
+def test_an_unexplained_restore_error_fails_the_restore_and_keeps_the_log(tmp_path):
+    done, out, logs = _restore(tmp_path, stderr=DROPPED, rc=1)
+    assert done.returncode != 0 and "nobody has explained" in out, out
+    assert "NOT DONE YET" not in out, "it must stop, not hand a damaged restore to the verifier"
+    assert len(logs) == 1 and "violates foreign key" in logs[0].read_text()
+
+
+def test_an_operator_explained_error_lets_the_restore_continue(tmp_path):
+    done, out, logs = _restore(tmp_path, stderr="pg_restore: error: must be owner of extension plpgsql",
+                               rc=1, expected="must be owner of extension")
+    assert done.returncode == 0 and "every error line was expected" in out, out
+    assert len(logs) == 1
+
+
+def test_a_clean_restore_still_points_at_the_verifier_and_keeps_its_log(tmp_path):
+    done, out, logs = _restore(tmp_path)
+    assert done.returncode == 0 and "NOT DONE YET" in out and "log kept" in out, out
+    assert len(logs) == 1
+
+
+# ── REC-04: tenant isolation must come back in full, not "at least one table" ─
+
+FAKE_PSQL_RLS = r"""#!/usr/bin/env bash
+case "$*" in
+  *relforcerowsecurity*) echo "$FAKE_FORCED" ;;
+  *relrowsecurity*) echo "$FAKE_RLS" ;;
+  *pg_policies*) echo "$FAKE_POLICIES" ;;
+  *) echo "" ;;
+esac
+"""
+
+
+def _verify_rls(tmp_path, *, rls, forced, policies, manifest_counts):
+    import json
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "psql").write_text(FAKE_PSQL_RLS)
+    (bin_dir / "psql").chmod(0o755)
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"migration_head": "0999_x.sql", **manifest_counts}))
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ORACLE_DB_HOST": "127.0.0.1",
+           "ORACLE_DB_NAME": "r", "ORACLE_DB_USER": "postgres", "PGPASSWORD": "pw",
+           "FAKE_RLS": rls, "FAKE_FORCED": forced, "FAKE_POLICIES": policies}
+    out = subprocess.run(["bash", str(VERIFY), str(manifest)], env=env, capture_output=True,
+                         text=True, timeout=60).stdout
+    return "\n".join(line for line in out.splitlines() if "row-level security" in line or "RLS policies" in line)
+
+
+def test_a_restore_that_lost_rls_on_most_tables_fails(tmp_path):
+    lines = _verify_rls(tmp_path, rls="3", forced="3", policies="5",
+                        manifest_counts={"rls_tables": "120", "rls_forced_tables": "118", "rls_policies": "123"})
+    assert lines.count("FAIL") == 3 and "the backup had 120" in lines, lines
+
+
+def test_a_full_rls_restore_matches_the_backup(tmp_path):
+    lines = _verify_rls(tmp_path, rls="120", forced="118", policies="123",
+                        manifest_counts={"rls_tables": "120", "rls_forced_tables": "118", "rls_policies": "123"})
+    assert lines.count("PASS") == 3 and "FAIL" not in lines, lines
+
+
+def test_an_older_manifest_falls_back_to_the_weaker_check_and_says_so(tmp_path):
+    lines = _verify_rls(tmp_path, rls="3", forced="3", policies="5", manifest_counts={})
+    assert lines.count("PASS") == 3 and "predates exact RLS counts" in lines, lines
+
+
+def test_the_backup_manifest_records_the_rls_counts(backup):
+    for key in ('"rls_tables"', '"rls_forced_tables"', '"rls_policies"'):
+        assert key in backup

@@ -1,4 +1,5 @@
 import asyncio
+import re
 import json
 import logging
 import os
@@ -36,7 +37,9 @@ from billing import router as billing_router
 from billing_usage import router as billing_usage_router
 from ai_budget_api import router as ai_budget_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
-from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
+from audit_middleware import (
+    AuditMiddleware, audit_action, audit_now, drain_pending, record_platform_websocket,
+)
 from tenancy import require_context, TenantContext, verify_session_current
 from admin_c2 import router as admin_c2_router
 from rate_limit_middleware import (
@@ -153,6 +156,13 @@ async def lifespan(app: FastAPI):
             await close_pool()
             raise RuntimeError("Production database initialization failed") from e
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
+    # Spoken STOPs this container still owes (23.5 / 34.5). In EVERY process
+    # role: the media websockets — and so the spool — live in the web/api
+    # role, which does not run background work. Needs no database; never
+    # raises.
+    import voice_opt_out
+
+    voice_opt_out.resume_pending()
     if config.RUNS_BACKGROUND_WORK:
         await start_voice_workers()
         await start_reconstruction_workers()
@@ -664,6 +674,33 @@ async def product_status(ctx: TenantContext = Depends(require_context)) -> JSONR
 
     snap = await component_health.snapshot()
     return JSONResponse({"state": snap["state"], "messages": component_health.user_banner(snap)})
+
+
+_storage_probe_cache: dict = {"at": 0.0, "body": None}
+
+
+@app.get("/health/storage")
+async def health_storage() -> JSONResponse:
+    """Does the app's own storage answer with the app's own credentials?
+    (DEP-08.) The release smoke test asserts this instead of probing Spaces
+    with CI's credentials, which CI never had. Unauthenticated like /health:
+    it returns the backend kind and a state, never a key, bucket or endpoint.
+    Cached for 60 s so a burst of calls costs one probe. 503 when the cause is
+    ours to fix (bad keys, missing bucket, missing mount)."""
+    import object_storage
+
+    now = time.monotonic()
+    body = _storage_probe_cache["body"]
+    if body is None or now - _storage_probe_cache["at"] > 60:
+        try:
+            async with asyncio.timeout(8.0):
+                body = await asyncio.to_thread(object_storage.probe)
+        except TimeoutError:
+            body = {"backend": object_storage.BACKEND, "state": object_storage.STORAGE_DEGRADED}
+        _storage_probe_cache.update(at=now, body=body)
+    ours = body["state"] in {object_storage.STORAGE_AUTH_FAILED, object_storage.STORAGE_MISCONFIGURED,
+                             object_storage.STORAGE_UNAVAILABLE}
+    return JSONResponse(status_code=503 if ours else 200, content=body)
 
 
 @app.get("/health/workers")
@@ -1252,9 +1289,117 @@ def _payload_coordinate(payload, names, minimum, maximum):
     return None
 
 
+#: The shared workflow engine is ambient: it has no caller, and its records
+#: come from the FIRST connecting user's own scope (real_leads.fetch_real_records),
+#: so they can include that user's private-client leads. Its record frames —
+#: DATA_PULLED (investor offer, as-is value), TRANSCRIPT_LINE (owner name),
+#: LEGAL_PACKAGE (contract price), PREDICTIVE_CACHE (property list) — must never
+#: reach every member (owner decision 2026-11-16: offer figures and owner
+#: content are never tenant-wide). An allowlist, so a new frame type is not
+#: broadcast until someone decides it carries no record content.
+ENGINE_TENANT_WIDE_FRAMES = frozenset({"STATUS_UPDATE", "STAGE_PROPERTY"})
+#: STATUS_UPDATE text is free-form (the regional scout's carries a parcel id and
+#: motivation score), so only the engine's fixed, content-free messages pass.
+_ENGINE_STATUS_ALLOWED = re.compile(
+    r"^(WORKFLOW ENGINE — (initializing pipeline|all agents online|pipeline shutdown complete"
+    r"|no real leads to seed \(graph empty\)|seeded \d+ real parcels into graph)"
+    r"|AGENT ANALYST — scoring novelty across graph)$")
+
+
+def engine_frame_is_tenant_wide(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("type")
+    if kind == "STAGE_PROPERTY":
+        return set(payload) == {"type"}
+    if kind == "STATUS_UPDATE":
+        return set(payload) == {"type", "agent"} and isinstance(payload["agent"], str) \
+            and bool(_ENGINE_STATUS_ALLOWED.match(payload["agent"]))
+    return False
+
+
+def make_engine_publisher(tenant_id: str):
+    """The shared workflow engine's ONLY tenant-wide publisher: record frames
+    (offers, owner names, contract prices, scout parcel ids) never pass."""
+    async def publish(payload: dict) -> None:
+        if engine_frame_is_tenant_wide(payload):
+            await ws_hub.deliver_local(tenant_id, payload)
+        else:
+            logger.debug("Workflow-engine frame %s not delivered tenant-wide (record content)",
+                         payload.get("type") if isinstance(payload, dict) else type(payload).__name__)
+    return publish
+
+
+# A re-check that has not finished in this long closes the stream (1011), so a
+# starved pool cannot also stall the expiry and idle checks (review of 27.2).
+_VOICE_RECHECK_TIMEOUT_SECONDS = 10.0
+
+
+async def _close_socket(websocket: WebSocket, code: int) -> None:
+    """Close, ignoring a socket Starlette already marked closed (a failed send)."""
+    try:
+        await websocket.close(code=code)
+    except RuntimeError:
+        pass
+
+
+async def _watch_voice_socket(websocket: WebSocket, ctx: TenantContext, session_uuid: str,
+                              last_seen: dict[str, float]) -> None:
+    """Keep a voice-session stream honest for as long as it stays open (external
+    audit 27.2, 27.8). The handshake checks are not enough for a socket that
+    can outlive them: close once the token expires (4401), the account's session
+    ends (4401), the caller can no longer read this call's content (4404: a
+    share revoked, the client reassigned, the user demoted or the record
+    erased), or the client has sent nothing for _WS_IDLE_TIMEOUT (1001).
+
+    The session and visibility are re-proved every tenancy.SESSION_RECHECK_SECONDS
+    (60 s, as for operator streams), not /ws's 300 s: this stream carries call
+    content. For the same reason a re-check that fails or does not finish within
+    _VOICE_RECHECK_TIMEOUT_SECONDS closes the socket (1011), unlike /ws; the
+    client's reconnect is re-admitted from scratch. The first check is jittered
+    so sockets that connected together do not re-check in lockstep."""
+    import record_access
+    import tenancy
+
+    recheck = tenancy.SESSION_RECHECK_SECONDS
+    ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2, max(recheck, 0.05))
+    last_check = time.monotonic() - random.uniform(0.0, recheck)
+
+    async def still_allowed() -> bool:
+        await verify_session_current(ctx)
+        return ctx.is_platform_admin or await record_access.may_read_call_content(
+            ctx.tenant_id, session_uuid, ctx.agent_id)
+
+    while True:
+        await asyncio.sleep(ping_interval)
+        if ctx.expires_at is not None and time.time() >= ctx.expires_at:
+            await _close_socket(websocket, 4401)
+            return
+        if time.monotonic() - last_check >= recheck:
+            last_check = time.monotonic()
+            try:
+                visible = await asyncio.wait_for(still_allowed(), _VOICE_RECHECK_TIMEOUT_SECONDS)
+            except HTTPException:
+                await _close_socket(websocket, 4401)
+                return
+            except Exception:  # noqa: BLE001 — incl. timeout: fail closed on call content
+                logger.warning("Voice socket re-check failed session=%s", session_uuid, exc_info=True)
+                await _close_socket(websocket, 1011)
+                return
+            if not visible:
+                await _close_socket(websocket, 4404)
+                return
+        if time.monotonic() - last_seen["t"] >= _WS_IDLE_TIMEOUT:
+            await _close_socket(websocket, 1001)
+            return
+
+
 @app.websocket("/ws/voice-telemetry/{session_id}")
 async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
-    """Private session stream; identity and session tenancy are checked pre-upgrade."""
+    """Private session stream; identity, the live session and session tenancy
+    are checked pre-upgrade, and re-checked while it is open
+    (_watch_voice_socket). A client keeps it open by sending "PING" (answered
+    "PONG") at least every _WS_IDLE_TIMEOUT seconds."""
     from config import IS_DEV
 
     allowed_origins = {origin.strip() for origin in _ALLOWED_ORIGINS if origin.strip()}
@@ -1272,10 +1417,29 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     except (ValueError, TypeError):
         await websocket.close(code=4404)
         return
+    # As on /ws: whether the account is still live is a database fact (4401;
+    # 1011 when it cannot be checked), and a voice stream counts toward the
+    # replica's ceiling (27.2, 27.8).
+    from tenancy import admit_operator_stream
+
+    if not await admit_operator_stream(websocket, ctx):
+        return
+    if ws_hub.at_capacity():
+        await websocket.close(code=1013, reason="server at capacity, retry shortly")
+        return
 
     try:
         from db.connection import tenant_tx
+        import record_access
 
+        # Call content follows the record, and a pool / erased-client call only
+        # its creator (owner decision 2026-11-16). Checked BEFORE the caller's
+        # transaction (no nested pool connections); a refusal looks exactly
+        # like a missing session, and no snapshot is ever sent.
+        if not ctx.is_platform_admin and not await record_access.may_read_call_content(
+                ctx.tenant_id, session_uuid, ctx.agent_id):
+            await websocket.close(code=4404)
+            return
         async with tenant_tx(ctx) as conn:
             session = await conn.fetchrow(
                 """
@@ -1298,6 +1462,7 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
         return
 
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     group = voice_session_group(ctx.tenant_id, session_uuid)
     ws_hub.register(group, websocket)
     try:
@@ -1323,10 +1488,31 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
                 ],
             }
         )
-        while True:
-            message = await websocket.receive_text()
-            if message == "PING":
-                await websocket.send_text("PONG")
+        last_seen = {"t": time.monotonic()}
+
+        async def receive() -> None:
+            while True:
+                try:
+                    message = await websocket.receive_text()
+                    last_seen["t"] = time.monotonic()
+                    if message == "PING":
+                        await websocket.send_text("PONG")
+                except RuntimeError:
+                    # Starlette marked the socket closed after a failed send:
+                    # the client is gone (as /ws treats it).
+                    return
+
+        tasks = [asyncio.create_task(receive()),
+                 asyncio.create_task(_watch_voice_socket(websocket, ctx, session_uuid, last_seen))]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in done:
+            if not task.cancelled() and task.exception() is not None:
+                raise task.exception()
     except WebSocketDisconnect:
         pass
     finally:
@@ -1369,6 +1555,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
+    record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
 
     # Production identity is claim-derived. Query parameters never override it.
     user_id = ctx.agent_id
@@ -1398,9 +1585,10 @@ async def websocket_endpoint(websocket: WebSocket):
     voice_agent = QwenVoiceAgent(websocket=websocket)
 
     # Shared across this tenant's sockets on this replica. The engine publishes
-    # through ws_hub, so it needs no socket of its own.
-    async def _publish_to_tenant(payload: dict) -> None:
-        await ws_hub.deliver_local(tenant_id, payload)
+    # through ws_hub, so it needs no socket of its own. Only frames with no
+    # record content reach every socket (audit 27.3; owner decision
+    # 2026-11-16): see make_engine_publisher.
+    _publish_to_tenant = make_engine_publisher(tenant_id)
 
     engine = await tenant_engines.acquire(
         tenant_id,

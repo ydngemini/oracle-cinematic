@@ -504,6 +504,53 @@ async def verify_session_current(ctx: TenantContext) -> None:
         ) from None
 
 
+# How often an open operator stream re-proves its session (SEC-001, L17-29).
+SESSION_RECHECK_SECONDS = 60.0
+
+
+async def admit_operator_stream(websocket, ctx: TenantContext) -> bool:
+    """The handshake half of the REST gate's verify_session_current, for the
+    platform-admin WebSockets (AWS observability, audit trail, surge
+    telemetry). Call after the role check and before accept(). Returns False
+    after closing: 4401 when the session has ended, 1011 when it could not be
+    checked (fail closed, but not reported as a bad credential)."""
+    try:
+        await verify_session_current(ctx)
+    except HTTPException:
+        log.warning("Operator stream refused: session ended (%s).", actor_ref(ctx.agent_id))
+        await websocket.close(code=4401)
+        return False
+    except Exception:  # noqa: BLE001 — database unreachable: refuse, say why
+        log.exception("Operator stream refused: session could not be checked.")
+        await websocket.close(code=1011)
+        return False
+    return True
+
+
+def watch_operator_stream(websocket, ctx: TenantContext) -> "asyncio.Task":
+    """Re-prove an open operator stream's session every SESSION_RECHECK_SECONDS
+    and close it (4401) once the account is demoted, deactivated or signed out
+    everywhere, so producers stop pushing to it. Cancel the task in the
+    handler's finally."""
+    import asyncio
+
+    async def _watch() -> None:
+        while True:
+            await asyncio.sleep(SESSION_RECHECK_SECONDS)
+            try:
+                await verify_session_current(ctx)
+            except HTTPException:
+                log.warning("Operator stream closed: session ended (%s).", actor_ref(ctx.agent_id))
+                await websocket.close(code=4401)
+                return
+            except Exception:  # noqa: BLE001 — cannot re-prove it: fail closed
+                log.exception("Operator stream closed: session could not be re-checked.")
+                await websocket.close(code=1011)
+                return
+
+    return asyncio.create_task(_watch())
+
+
 def require_policy_context(
     request: Request,
     authorization: Optional[str] = Header(default=None),

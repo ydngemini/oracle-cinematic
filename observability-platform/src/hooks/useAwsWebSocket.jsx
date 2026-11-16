@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { resolveToken } from '../lib/auth';
 
-// The /api/aws/ws stream is auth-gated (platform_admin/broker_owner) — it exposes
+// The /api/aws/ws stream is auth-gated (platform_admin only) — it exposes
 // the full AWS infra inventory + billing. The browser WebSocket API can't set an
 // Authorization header, so the JWT is sent as a WebSocket subprotocol value.
 // Unlike a query parameter, it does not land in browser history or access URLs.

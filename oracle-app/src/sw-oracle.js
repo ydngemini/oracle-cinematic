@@ -46,7 +46,15 @@ function openDB() {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // WEB-001: every read and write opened a connection that was never
+      // closed, so sign-out's deleteDatabase was blocked while the worker
+      // lived and the previous user's media stayed on disk. Yield to a delete
+      // (versionchange) and close once each transaction is done.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -56,8 +64,8 @@ async function idbPut(storeName, data) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     tx.objectStore(storeName).put(data);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -68,6 +76,7 @@ async function idbGet(storeName, key) {
     const req = tx.objectStore(storeName).get(key);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    tx.oncomplete = tx.onerror = tx.onabort = () => db.close();
   });
 }
 
@@ -76,8 +85,8 @@ async function idbDelete(storeName, key) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     tx.objectStore(storeName).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -175,7 +184,10 @@ self.addEventListener('message', async (event) => {
     } catch { /* nothing open */ }
     await new Promise((resolve) => {
       const req = indexedDB.deleteDatabase(IDB_NAME);
-      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+      // 'blocked' is not done: the delete stays queued until open handles
+      // close (they now close themselves), so wait for its outcome — bounded.
+      const timer = setTimeout(resolve, 3000);
+      req.onsuccess = req.onerror = () => { clearTimeout(timer); resolve(); };
     });
     return;
   }

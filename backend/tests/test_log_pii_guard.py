@@ -37,11 +37,10 @@ _PII_NAMES = {
 # actor_ref() is a keyed pseudonym of an account id.
 _SAFE_WRAPPERS = {"len", "bool", "type", "id", "actor_ref"}
 _ACCOUNT_NAMES = {"agent_id", "agent_identity", "current_agent_id"}
-# crypto.py logs ctx.agent_id at three sites (pii_context, access_pii_field).
-# A parallel slice (platform-admin read logging) owns crypto.py on 2026-10-14,
-# so those sites move to actor_ref() at that merge. Account ids only: any other
-# PII name in crypto.py still fails. Remove this entry once they are fixed.
-_ACCOUNT_ID_DEFERRED = {"crypto.py"}
+# Files whose account-id log sites are deferred to another slice. Empty since
+# 2026-11-08: crypto.py's three sites (pii_context, access_pii_field) now log
+# actor_ref(). Account ids only; any other PII name in a listed file still fails.
+_ACCOUNT_ID_DEFERRED: set[str] = set()
 
 
 def _pii_in(node: ast.AST) -> list[str]:
@@ -208,6 +207,58 @@ def test_account_ids_are_logged_as_a_pseudonym():
     assert [n for c in _logging_calls(bad) for a in c.args[1:] for n in _pii_in(a)] == ["agent_id"]
     assert [n for c in _logging_calls(ok) for a in c.args[1:] for n in _pii_in(a)] == []
 
+
+
+def test_pii_reads_log_the_reader_as_a_pseudonym(caplog, monkeypatch):
+    """crypto.py's three account-id sites (the L17-11 deferral, removed
+    2026-11-08): pii_context, a PII read, and a PII read whose audit write
+    fails with the reader's email in the error. The audit chain keeps the real
+    id; the log keeps only actor_ref()."""
+    import pytest
+
+    import crypto
+    from log_redaction import actor_ref
+    from tenancy import Role, TenantContext
+
+    email = "jane.agent@example.test"
+    ctx = TenantContext(agent_id=email, tenant_id="11111111-1111-4111-8111-111111111111",
+                        role=Role.AGENT)
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-master-key")
+
+    async def fake_decrypt(conn, ciphertext, key):
+        return "+13025550142"
+
+    class Conn:
+        async def execute(self, *args):
+            return None
+
+    recorded = []
+
+    async def record(**entry):
+        recorded.append(entry)
+
+    async def refuse(**entry):
+        raise RuntimeError(f"ledger refused the entry for {email}")
+
+    monkeypatch.setattr(crypto, "decrypt_pii", fake_decrypt)
+    monkeypatch.setattr(crypto.ledger, "record", record)
+    caplog.set_level(logging.DEBUG, logger="oracle.crypto")
+
+    async def read():
+        async with crypto.pii_context(Conn(), ctx):
+            pass
+        return await crypto.access_pii_field(Conn(), ctx, "lead-1", "phone", b"x")
+
+    assert asyncio.run(read()) == "+13025550142"
+    monkeypatch.setattr(crypto.ledger, "record", refuse)
+    with pytest.raises(crypto.CryptoError):
+        asyncio.run(crypto.access_pii_field(Conn(), ctx, "lead-1", "phone", b"x"))
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "oracle.crypto"]
+    assert len(lines) == 3, lines
+    assert all(actor_ref(email) in line for line in lines), lines
+    assert not any("jane" in line.lower() or "3025550142" in line for line in lines), lines
+    assert recorded and recorded[0]["user_id"] == email
 
 def _scrubbed_logger():
     import io

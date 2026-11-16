@@ -511,7 +511,7 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
               <span>Floor-plan image</span>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/webp,image/bmp"
                 onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
               />
             </label>

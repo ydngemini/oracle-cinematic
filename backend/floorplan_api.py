@@ -803,6 +803,32 @@ async def extract_parcel(
 MAX_PLAN_IMAGE_BYTES = 25 * 1024 * 1024
 
 
+def _sniff_plan_image(data: bytes) -> Optional[str]:
+    """The formats a floor-plan scan arrives in, recognised by their first bytes.
+
+    cv2.imdecode picks its decoder from the content and also opens TIFF,
+    JPEG 2000, PFM, HDR and the Netpbm family; each extra decoder is attack
+    surface on an authenticated upload (T17.10). Only these four reach it.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
+
+def _plan_image_refusal(data: bytes) -> str:
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return "TIFF floor plans are not accepted; export the scan as PNG or JPEG."
+    if data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"hevc", b"mif1", b"msf1"):
+        return "HEIC photos are not accepted; export the photo as JPEG (or PNG)."
+    return "Unsupported image format; upload the floor plan as PNG or JPEG (WebP and BMP also work)."
+
+
 @router.post("/crm/floorplan/extract-image")
 async def extract_image(
     file: UploadFile = File(...),
@@ -836,6 +862,8 @@ async def extract_image(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             f"Floor-plan image exceeds the {MAX_PLAN_IMAGE_BYTES // (1024 * 1024)} MB limit.",
         )
+    if _sniff_plan_image(data) is None:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, _plan_image_refusal(data))
 
     async with tenant_tx(ctx) as conn:
         await _assert_subject_exists(conn, lead_id, listing_id)

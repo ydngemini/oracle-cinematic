@@ -8,6 +8,7 @@ import json
 from fastapi import WebSocketDisconnect
 
 import audit_ledger
+import tenancy
 from auth import _issue_jwt
 from tenancy import Role
 
@@ -84,6 +85,11 @@ def test_audit_websocket_rejects_non_admin_before_history(monkeypatch):
 def test_audit_websocket_allows_platform_admin_and_unsubscribes(monkeypatch):
     fake_ledger = _FakeLedger()
     monkeypatch.setattr(audit_ledger, "ledger", fake_ledger)
+
+    async def session_current(_ctx):
+        return None  # the live session check (SEC-001) needs PostgreSQL; see test_operator_stream_sessions.py
+
+    monkeypatch.setattr(tenancy, "verify_session_current", session_current)
     token = _issue_jwt(
         "operator",
         "00000000-0000-0000-0000-000000000000",

@@ -400,8 +400,11 @@ def test_production_config_resolves_jwt_scope_and_gates_webhook_secrets():
 
 class _WebhookRequest:
     def __init__(self, payload, token=""):
+        # The secret travels in the X-Neoh-Webhook-Token header; the old
+        # ?token= query form is refused (SEC-002, test_webhook_auth.py).
         self._payload = payload
-        self.query_params = {"token": token} if token else {}
+        self.headers = {"x-neoh-webhook-token": token} if token else {}
+        self.query_params = {}
 
     async def json(self):
         return self._payload

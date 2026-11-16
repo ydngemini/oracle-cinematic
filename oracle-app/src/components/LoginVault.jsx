@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { safeSet } from '../lib/safeStorage.js';
 import styles from './LoginVault.module.css';
 import { apiPost, ApiError } from '../lib/apiClient';
 import { useNetwork } from '../context/useNetwork';
@@ -48,9 +49,11 @@ export function LoginVault({ onAuthenticated }) {
   const overlayRef = useRef(null);
 
   function finishAuth(data) {
-    if (data.role) sessionStorage.setItem('oracle_role', data.role);
-    if (data.agent_id) localStorage.setItem('oracle_user_id', data.agent_id);
-    if (data.tenant_id) localStorage.setItem('oracle_tenant_id', data.tenant_id);
+    // The server has already set the session cookie: a blocked or full
+    // storage must not turn this into a sign-in error (WEB-002).
+    if (data.role) safeSet('sessionStorage', 'oracle_role', data.role);
+    if (data.agent_id) safeSet('localStorage', 'oracle_user_id', data.agent_id);
+    if (data.tenant_id) safeSet('localStorage', 'oracle_tenant_id', data.tenant_id);
     // Strip ?reset= so a refresh doesn't re-trigger reset mode.
     if (window.location.search) window.history.replaceState({}, '', window.location.pathname);
     setLoading(false);

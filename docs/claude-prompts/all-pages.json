@@ -1071,7 +1071,8 @@
       ],
       "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
       "apis": [
-        "GET /api/portfolio/summary"
+        "GET /api/portfolio/summary",
+        "POST /api/intelligence/title/findings/{param}/review"
       ],
       "legacy": null,
       "verdict": "not_inspected",

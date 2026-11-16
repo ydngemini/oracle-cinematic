@@ -787,6 +787,13 @@ async def _privacy_lifecycle_task() -> dict:
 
     started = await start_due_erasures()
     expired = await expire_exports()
+    from privacy_requests import expire_subject_directives
+
+    try:
+        directives_expired = await expire_subject_directives()
+    except Exception:  # noqa: BLE001 - storage trouble must not skip the retention sweep
+        logger.warning("subject directive expiry failed", exc_info=True)
+        directives_expired = 0
     days = {c: policy_for(c).retention_days for c in (
         R.CAPABILITY_TOKEN, R.OPERATIONAL, R.CONSENT_SUPPRESSION, R.PRIVACY_RECORD, R.AUDIT_SECURITY)}
     async with tenant_tx(_platform_ctx("retention-sweep")) as conn:
@@ -801,6 +808,7 @@ async def _privacy_lifecycle_task() -> dict:
     from privacy_lifecycle import emit_event
 
     emit_event("retention.purge_executed", exports_expired=expired, audit_rows_expired=int(audit_expired or 0),
+               subject_directives_expired=directives_expired,
                **{f"swept_{k}": int(v) for k, v in (swept or {}).items()})
     return {"erasures_started": len(started), "exports_expired": expired,
             "swept": swept, "audit_rows_expired": audit_expired}

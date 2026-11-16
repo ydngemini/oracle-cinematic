@@ -129,3 +129,20 @@ describe('LoginVault two-step sign-in for brokerage accounts (L17-19)', () => {
     window.history.replaceState({}, '', '/');
   });
 });
+
+describe('LoginVault with blocked browser storage (WEB-002)', () => {
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+  it('completes a successful sign-in even when storage throws', async () => {
+    api.apiPost.mockReset();
+    api.apiPost.mockResolvedValueOnce({ agent_id: 'ops@neoh.test', role: 'agent', tenant_id: 't-1' });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const onAuthenticated = vi.fn();
+    render(<LoginVault onAuthenticated={onAuthenticated} />);
+    signIn();
+    await waitFor(() => expect(onAuthenticated).toHaveBeenCalled(), { timeout: 3000 });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

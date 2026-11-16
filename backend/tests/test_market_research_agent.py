@@ -146,3 +146,79 @@ def test_only_latest_observation_per_source_metric_and_state_is_persisted():
         ("IL", newer.period_end, 301_500),
         ("DC", other_state.period_end, 700_000),
     }
+
+
+
+def _fake_http(monkeypatch, https_answers: list[bytes]):
+    """Route urllib's HTTP and HTTPS handlers to fake connections (subclasses
+    of the real HTTPConnection, so urllib sees what it expects). Each HTTPS request gets the next raw answer
+    from `https_answers`; any plain-HTTP connection is recorded and answers
+    200. Returns the (scheme, host) of every connection opened."""
+    import http.client
+    import io
+
+    opened: list[tuple[str, str]] = []
+    answers = iter(https_answers)
+
+    class _Sock:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def makefile(self, *args, **kwargs):
+            return io.BytesIO(self._raw)
+
+    def _fake(base, kind, next_raw):
+        class _Conn(base):
+            def __init__(self, host, *args, **kwargs):
+                super().__init__(host, *args, **kwargs)
+                opened.append((kind, self.host))
+
+            def connect(self):
+                pass
+
+            def request(self, *args, **kwargs):
+                pass
+
+            def getresponse(self):
+                response = http.client.HTTPResponse(_Sock(next_raw()))
+                response.begin()
+                return response
+
+            def close(self):
+                pass
+        return _Conn
+
+    import urllib.request
+
+    fake_https = _fake(http.client.HTTPConnection, "https", lambda: next(answers))
+    fake_http = _fake(http.client.HTTPConnection, "http",
+                      lambda: b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecret")
+    monkeypatch.setattr(urllib.request.HTTPSHandler, "https_open",
+                        lambda self, req: self.do_open(fake_https, req))
+    monkeypatch.setattr(urllib.request.HTTPHandler, "http_open",
+                        lambda self, req: self.do_open(fake_http, req))
+    return opened
+
+
+def test_a_publisher_redirect_off_the_allow_list_is_never_followed(monkeypatch):
+    """SSRF (prompt 17 T17.10): the host check ran only on the first URL and
+    urllib follows redirects, so an allow-listed host (or anyone able to answer
+    for it) could send the worker to the cloud metadata address over plain
+    HTTP. The redirect must be refused before any request is made to it."""
+    opened = _fake_http(monkeypatch, [
+        b"HTTP/1.1 302 Found\r\n"
+        b"Location: http://169.254.169.254/metadata/v1/\r\n"
+        b"Content-Length: 0\r\n\r\n"])
+    with pytest.raises(ValueError, match="allow-listed"):
+        _download_sync("https://www.fhfa.gov/hpi.csv")
+    assert ("http", "169.254.169.254") not in opened, opened
+
+
+def test_a_redirect_between_allow_listed_https_hosts_is_still_followed(monkeypatch):
+    opened = _fake_http(monkeypatch, [
+        b"HTTP/1.1 302 Found\r\nLocation: https://www.huduser.gov/data.csv\r\n"
+        b"Content-Length: 0\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\na,b\n1,2"])
+    download = _download_sync("https://www.fhfa.gov/hpi.csv")
+    assert download.body == b"a,b\n1,2"
+    assert opened == [("https", "www.fhfa.gov"), ("https", "www.huduser.gov")]

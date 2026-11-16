@@ -287,11 +287,31 @@ async def settle(ctx: TenantContext, hold: Hold, response: Any) -> None:
     """Record the call's reported usage and drop its hold, in one transaction.
     Never raises: the answer already came back. A transaction that fails
     leaves the hold to lapse (its estimate stands in for the usage until
-    then); a usage row refused inside it is logged by record_usage and is not
-    counted — a stated gap, as is a call whose provider reported no usage."""
+    then). A call whose provider reported no usage is a stated gap.
+
+    A usage row refused inside the transaction (BILL-001) used to be logged and
+    the hold dropped anyway, so those tokens counted toward the brokerage's
+    monthly cap nowhere. Now the hold is kept instead, resized to the reported
+    usage and held to the end of the month: the cap still counts the call."""
     try:
         async with tenant_tx(_own(ctx)) as conn:
-            await billing_usage.record_inference(_own(ctx), response, idempotency_key=hold.call_key, conn=conn)
+            try:
+                await billing_usage.record_inference(_own(ctx), response, idempotency_key=hold.call_key,
+                                                     conn=conn, raise_errors=True)
+            except Exception as exc:  # noqa: BLE001 — the savepoint rolled back; conn is usable
+                from llm_gateway import token_usage_of
+
+                used = sum(token_usage_of(response))
+                if hold.held:
+                    await conn.execute(
+                        """UPDATE ai_token_reservations
+                              SET tokens = GREATEST(tokens, $2),
+                                  expires_at = (date_trunc('month', now() AT TIME ZONE 'UTC')
+                                                + interval '1 month') AT TIME ZONE 'UTC'
+                            WHERE call_key = $1""", hold.call_key, used)
+                logger.warning("ai budget: usage row refused (%s); the hold stands in for %d tokens "
+                               "until the month ends", type(exc).__name__, used)
+                return
             if hold.held:
                 await conn.execute("DELETE FROM ai_token_reservations WHERE call_key = $1", hold.call_key)
     except Exception as exc:  # noqa: BLE001

@@ -18,6 +18,7 @@ reviews:
     base_branches:
       - main
       - "feat/.*"
+      - "work/.*"
 
   # Keep noise out of the diff — generated, vendored, binary, and secret-ish paths.
   path_filters:

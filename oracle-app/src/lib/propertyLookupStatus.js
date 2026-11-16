@@ -52,6 +52,24 @@ export function propertyLookupView(automation) {
   };
 }
 
+// The producer (client_ai_automation._property_candidates) stores "exact owner
+// name" but compares the name lower-cased with everything outside a-z and 0-9
+// removed, so the drawer says what the comparison is and that nobody has
+// confirmed it (F11.04). The stored words are unchanged: Neoh's renderer keys
+// on them.
+const OWNER_BASIS = 'owner name, ignoring case, spaces, punctuation and letters outside a-z';
+const BASIS_TEXT = {
+  'exact owner name': OWNER_BASIS,
+  'exact owner name and target ZIP': `${OWNER_BASIS}, in the target ZIP`,
+};
+
+/** "Possible match: ..." for a review-only candidate's stored match_basis. */
+export function candidateBasisView(basis) {
+  const recorded = typeof basis === 'string' ? basis.trim() : '';
+  if (!recorded) return 'Possible match';
+  return `Possible match: ${BASIS_TEXT[recorded] || recorded}`;
+}
+
 // The brokerage's AI budget (or the platform switch) stopped the AI step; the
 // pass reconciled recorded facts only and retries once there is budget.
 const AI_BUDGET_CODES = new Set([

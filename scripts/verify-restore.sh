@@ -130,15 +130,25 @@ FORCED="$("${Q[@]}" -c "
    WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity;" 2>/dev/null)"
 POLICIES="$("${Q[@]}" -c "SELECT count(*)::text FROM pg_policies WHERE schemaname='public';" 2>/dev/null)"
 
-[ "${RLS_TABLES:-0}" -gt 0 ] \
-  && ok "row-level security enabled on $RLS_TABLES tables" \
-  || bad "NO table has row-level security — every tenant can read every other tenant"
-[ "${FORCED:-0}" -gt 0 ] \
-  && ok "FORCE row-level security on $FORCED tables" \
-  || bad "no table FORCEs RLS — the owner role bypasses every policy"
-[ "${POLICIES:-0}" -gt 0 ] \
-  && ok "$POLICIES policies present" \
-  || bad "no RLS policies present"
+# REC-04: "> 0" passed a restore that lost RLS on all but one table. The
+# manifest now records the exact counts at backup time; all must come back.
+rls_check() {
+  local label="$1" got="$2" want="$3" none="$4"
+  if [ -n "$want" ]; then
+    [ "${got:-x}" = "$want" ] \
+      && ok "$label: $got, as backed up" \
+      || bad "$label: ${got:-none}, but the backup had $want — tenant isolation did not fully come back"
+  else
+    [ "${got:-0}" -gt 0 ] \
+      && ok "$label: $got (this manifest predates exact RLS counts, so only '> 0' is checked)" \
+      || bad "$none"
+  fi
+}
+rls_check "tables with row-level security" "$RLS_TABLES" "$(m rls_tables)" \
+  "NO table has row-level security — every tenant can read every other tenant"
+rls_check "tables that FORCE row-level security" "$FORCED" "$(m rls_forced_tables)" \
+  "no table FORCEs RLS — the owner role bypasses every policy"
+rls_check "RLS policies" "$POLICIES" "$(m rls_policies)" "no RLS policies present"
 
 # The functions the policies are written in terms of. A policy referencing a
 # missing function does not fail closed — it fails to create, and the table is
@@ -173,19 +183,60 @@ else
   bad "pgcrypto is MISSING — nothing encrypted can ever be read back"
 fi
 
-# Prove a round trip actually works with the key this environment holds. This
-# is the check that distinguishes "restored and readable" from "restored".
-if [ -n "${ORACLE_ENCRYPTION_MASTER_KEY:-}" ]; then
-  ROUNDTRIP="$("${Q[@]}" -c "
-    SELECT oracle_decrypt(oracle_encrypt('neoh-restore-probe', 'k'), 'k');" 2>/dev/null)"
-  [ "$ROUNDTRIP" = "neoh-restore-probe" ] \
-    && ok "encrypt/decrypt round trip works" \
-    || bad "encrypt/decrypt round trip FAILED (got '${ROUNDTRIP:-<null>}') — ciphertext columns are unreadable"
+# Prove the RESTORED ciphertext opens with the key this environment holds
+# (DR-001/REC-02, 2026-11-13). This used to encrypt and decrypt the literal
+# 'k' — proving only that pgcrypto works — and with no key it warned and still
+# reported VERIFIED. Now, for every *_ciphertext column on a table with a
+# tenant_id, up to 3 restored values are decrypted with the tenant's real key:
+# crypto.derive_tenant_key = HKDF-SHA256(salt = 32 zero bytes, ikm = master,
+# info = 'oracle-pii-v1:' || tenant_id), 32 bytes, i.e. two HMACs, which
+# pgcrypto's hmac() computes in the restored database itself. The master key
+# reaches psql through \getenv (psql >= 15), never the command line; an older
+# psql leaves :'mk' unset, the query fails, and that counts as unreadable.
+ZERO_SALT="\\x$(printf '0%.0s' $(seq 1 64))"
+CIPHER_PAIRS="$("${Q[@]}" -c "
+  SELECT c.table_name || ' ' || c.column_name
+    FROM information_schema.columns c
+    JOIN information_schema.columns t
+      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+     AND t.column_name = 'tenant_id' AND t.data_type = 'uuid'
+   WHERE c.table_schema = 'public' AND c.data_type = 'bytea'
+     AND c.column_name LIKE '%\_ciphertext' ESCAPE '\\'
+   ORDER BY 1;" 2>/dev/null)"
+WITH_DATA=0; SAMPLED=0; UNREADABLE=0; QUERY_FAILED=0
+while read -r CT_TABLE CT_COL; do
+  [ -n "${CT_TABLE:-}" ] || continue
+  SAMPLE="SELECT tenant_id, \"$CT_COL\" AS v FROM \"$CT_TABLE\"
+           WHERE \"$CT_COL\" IS NOT NULL AND tenant_id IS NOT NULL LIMIT 3"
+  if [ -n "${ORACLE_ENCRYPTION_MASTER_KEY:-}" ]; then
+    R="$(printf '%s\n' '\getenv mk ORACLE_ENCRYPTION_MASTER_KEY' "
+      SELECT count(*) || ' ' || count(*) FILTER (WHERE oracle_decrypt(s.v, encode(hmac(
+               convert_to('oracle-pii-v1:' || s.tenant_id::text, 'UTF8') || '\\x01'::bytea,
+               hmac(convert_to(:'mk', 'UTF8'), '$ZERO_SALT'::bytea, 'sha256'),
+               'sha256'), 'hex')) IS NULL)
+        FROM ($SAMPLE) s;" | "${Q[@]}" -f - 2>/dev/null | tail -1)"
+  else
+    R="$("${Q[@]}" -c "SELECT count(*) || ' 0' FROM ($SAMPLE) s;" 2>/dev/null)"
+  fi
+  case "$R" in
+    *[0-9]\ *[0-9]) ;;
+    *) QUERY_FAILED=$((QUERY_FAILED+1)); continue ;;
+  esac
+  N="${R%% *}"; BADN="${R##* }"
+  [ "$N" -gt 0 ] && WITH_DATA=$((WITH_DATA+1))
+  SAMPLED=$((SAMPLED+N)); UNREADABLE=$((UNREADABLE+BADN))
+done <<< "$CIPHER_PAIRS"
+
+if [ "$QUERY_FAILED" -gt 0 ]; then
+  bad "$QUERY_FAILED ciphertext column(s) could not be sampled (psql < 15 has no \\getenv, or the query failed) — decryptability unproven"
+elif [ "$WITH_DATA" -eq 0 ]; then
+  ok "no restored ciphertext values to decrypt (nothing encrypted in this dump)"
+elif [ -z "${ORACLE_ENCRYPTION_MASTER_KEY:-}" ]; then
+  bad "ORACLE_ENCRYPTION_MASTER_KEY is not set: $WITH_DATA column(s) hold ciphertext that would read as NULL. Not verified until it decrypts with the real key"
+elif [ "$UNREADABLE" -gt 0 ]; then
+  bad "$UNREADABLE of $SAMPLED restored ciphertext value(s) do NOT decrypt with this key (wrong or rotated key?) — they would read as empty"
 else
-  echo "  WARN  ORACLE_ENCRYPTION_MASTER_KEY not set here, so decryptability is UNPROVEN."
-  echo "        The dump contains $CIPHER_COLS ciphertext columns. Without the key they"
-  echo "        read as NULL, not as an error. Do not call this restore verified"
-  echo "        until a round trip has been demonstrated with the real key."
+  ok "$SAMPLED restored ciphertext value(s) across $WITH_DATA column(s) decrypt with the per-tenant key"
 fi
 
 # ── 5. Function grants ─────────────────────────────────────────────────────

@@ -68,11 +68,7 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 @pytest.mark.parametrize(
     "env, expected",
     [
-        # azure-files with the default /mnt/neoh, which is not a real mount in
-        # a test environment. "Configured" means a write would actually land,
-        # so an unmounted default must answer False — see the writable-root case
-        # below for the positive path.
-        ({}, False),
+        # azure-files unusable/unwritable roots: hermetic tests below.
         ({"ORACLE_STORAGE_BACKEND": "s3"}, False),                   # no bucket
         ({"ORACLE_STORAGE_BACKEND": "s3", "RECON_S3_BUCKET": "b"}, True),
         ({"ORACLE_STORAGE_BACKEND": "azure-blob"}, False),           # no account
@@ -87,6 +83,31 @@ def test_unknown_backend_fails_loudly(monkeypatch):
 )
 def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, expected):
     assert _reload(monkeypatch, **env).is_configured() is expected
+
+
+def test_azure_files_with_an_unusable_root_is_not_configured(monkeypatch, tmp_path):
+    """azure-files (the default backend) whose root can never be created or
+    written answers False. "Configured" means a write would actually land.
+
+    The root sits beneath a regular FILE, so mkdir raises an OSError on every
+    host — root or not, tmpfs or not (NotADirectoryError on POSIX)."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x")
+    mod = _reload(monkeypatch, ORACLE_MEDIA_ROOT=blocker / "media")
+    assert mod.BACKEND == "azure-files"
+    assert mod.is_configured() is False
+
+
+def test_azure_files_root_that_exists_but_is_not_writable_is_not_configured(
+    monkeypatch, tmp_path
+):
+    """The root exists (a mount that came up read-only) but refuses writes.
+
+    os.access is stubbed rather than chmod-ing the directory: root ignores
+    permission bits, so a chmod-based test would depend on the host's user."""
+    mod = _reload(monkeypatch, ORACLE_MEDIA_ROOT=tmp_path)
+    monkeypatch.setattr(mod.os, "access", lambda path, mode: False)
+    assert mod.is_configured() is False
 
 
 def test_a_real_writable_mount_is_configured(monkeypatch, tmp_path):

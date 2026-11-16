@@ -20,9 +20,11 @@ or address is still blocked.
 from __future__ import annotations
 
 import json
+import uuid as uuid_mod
 from typing import Any, Optional
 
 from db.connection import tenant_tx
+from retention_policy import BACKUP_DAYS as _BACKUP_DAYS
 from tenancy import TenantContext
 
 # Children that would block (RESTRICT) deleting a client or contact; removed
@@ -38,6 +40,11 @@ _DEPENDENTS: tuple[tuple[str, str], ...] = (
     ("contact_intake_sessions", "client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[])"),
     ("contact_property_relationships", "client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[])"),
 )
+
+# Every table a directive may name (privacy_erase_subject_rows' allow-list).
+_SUBJECT_TABLES = frozenset({t for t, _ in _DEPENDENTS} | {
+    "sms_messages", "inbound_voice_calls", "email_outbox", "outreach_attempt_log",
+    "outreach_consent", "outreach_suppression", "clients", "agent_contacts"})
 
 # Broker records that name the person and are never deleted by a request.
 _RETAINED = (
@@ -137,6 +144,65 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
     return {"ids": found, "retained": retained, "identifiers": identifiers}
 
 
+async def _assert_one_subject(conn, tenant_id: str, email: Optional[str], phone: Optional[str],
+                              contact_id: Optional[str], client_id: Optional[str]) -> None:
+    """Every identifier given must point at the same person (external audit
+    29.3). Discovery ORs them, so A's email with B's phone (or B's record id)
+    used to return, or delete, both people's records under one request.
+
+    Each identifier is resolved on its own to the CRM records it reaches
+    (clients and contacts, with their links). Any two that reach different
+    record sets are refused before anything is read or deleted. An email or
+    phone that reaches no CRM record still matches texts, calls, emails and
+    consent rows by its raw value, so it must be one of the addresses on the
+    records the other identifiers reach; and when none of several identifiers
+    reaches a record, nothing ties them to one person (review of 29.3). Two
+    rows of the same person that are not linked to each other are refused
+    too: the owner can link them, or ask by record id."""
+    from contact_truth import normalize_email, normalize_phone
+    from privacy_lifecycle import LifecycleError
+
+    def refuse(detail: str) -> None:
+        raise LifecycleError(
+            f"ambiguous_subject: {detail}. Nothing was read or deleted. "
+            "Send one request per person, or name the record by its id.", status_code=409)
+
+    given = [(label, kw) for label, kw in (
+        ("email", {"email": email}), ("phone", {"phone": phone}),
+        ("contact_id", {"contact_id": contact_id}), ("client_id", {"client_id": client_id}))
+        if next(iter(kw.values()))]
+    if len(given) < 2:
+        return
+    reached: dict[str, frozenset[str]] = {}
+    known_addresses: set[str] = set()
+    unreached: list[tuple[str, dict]] = []
+    for label, kw in given:
+        found = await _discover(conn, tenant_id, kw.get("email"), kw.get("phone"),
+                                kw.get("contact_id"), kw.get("client_id"))
+        records = frozenset([f"client:{i}" for i in found["ids"]["clients"]]
+                            + [f"contact:{i}" for i in found["ids"]["agent_contacts"]])
+        if records:
+            reached[label] = records
+            known_addresses.update(found["identifiers"])
+        else:
+            unreached.append((label, kw))
+    if len(set(reached.values())) > 1:
+        refuse("these identifiers point to different records ("
+               + ", ".join(f"the {label} reaches {len(r)} record(s)" for label, r in reached.items()) + ")")
+    if not reached:
+        refuse("none of these identifiers reaches a client or contact, so nothing shows they are one person")
+    for label, kw in unreached:
+        value = kw.get("email") or kw.get("phone")
+        if value is None:
+            continue  # a record id that names nothing reads and deletes nothing
+        try:
+            norm = normalize_email(value) if label == "email" else normalize_phone(value)
+        except ValueError:
+            norm = None
+        if norm not in known_addresses:
+            refuse(f"the {label} is not on the records the other identifiers reach")
+
+
 def subject_ref(tenant_id: str, email: Optional[str], phone: Optional[str]) -> str:
     """Stable keyed reference to the person, stored instead of their address."""
     from privacy_lifecycle import contact_hmac
@@ -151,6 +217,7 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
 
     ref = subject_ref(ctx.tenant_id, email, phone or contact_id or client_id)
     async with tenant_tx(ctx) as conn:
+        await _assert_one_subject(conn, ctx.tenant_id, email, phone, contact_id, client_id)
         found = await _discover(conn, ctx.tenant_id, email, phone, contact_id, client_id)
     counts = {t: len(ids) for t, ids in found["ids"].items() if ids}
     caveat = ("Found by email/phone only. Names or details typed into free-text notes, chat "
@@ -165,10 +232,23 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     op_id = str(op["id"])
 
     if kind == "dsr_access":
-        async with tenant_tx(ctx) as conn:
-            data = await _access_bundle(conn, ctx.tenant_id, found["ids"])
-            await _finish_operation(conn, op_id, state="succeeded", result={"matches": counts},
-                                    receipt={"matches": counts, "caveat": caveat})
+        try:
+            async with tenant_tx(ctx) as conn:
+                data = await _access_bundle(conn, ctx.tenant_id, found["ids"])
+                await _finish_operation(conn, op_id, state="succeeded", result={"matches": counts},
+                                        receipt={"matches": counts, "caveat": caveat})
+        except Exception as exc:
+            # Fail closed (29.8): no partial answer is handed over as complete,
+            # and the operation does not stay 'running'.
+            try:
+                async with tenant_tx(ctx) as conn:
+                    await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
+                                            error=f"access bundle incomplete: {type(exc).__name__}")
+            except Exception:  # noqa: BLE001 - never mask the original failure
+                import logging
+
+                logging.getLogger(__name__).exception("could not mark access request %s failed", op_id)
+            raise
         await _audit(ctx, "privacy.subject.access", target=op_id, metadata={"matches": counts})
         return {"operation_id": op_id, "kind": kind, "matches": counts, "records": data, "caveat": caveat}
 
@@ -189,12 +269,54 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
             "This person appears in transaction records the brokerage must keep by law. "
             "Nothing was deleted; ask counsel how to proceed.", status_code=409)
 
-    deleted = await _delete_subject(ctx, op_id, found)
+    # Write-ahead restore directive (external audit 29.4): a restore from a
+    # backup taken before this deletion brings the person back, and nothing
+    # outside the database remembered to delete them again. Saved (and read
+    # back) BEFORE anything is deleted; if it cannot be saved, nothing is.
+    import asyncio
+
+    from privacy_lifecycle import contact_hmac
+
+    from datetime import datetime, timezone
+
+    directive = {
+        "kind": "subject", "state": "pending", "created_at": datetime.now(timezone.utc).isoformat(),
+        "tenant_id": ctx.tenant_id, "operation_id": op_id, "subject_ref": ref,
+        "ids": {t: [str(i) for i in ids] for t, ids in found["ids"].items() if ids},
+        "tombstones": sorted(contact_hmac(ctx.tenant_id, c) for c in found["identifiers"]),
+    }
+    key = await asyncio.to_thread(_write_subject_directive, op_id, directive)
+    if key is None:
+        async with tenant_tx(ctx) as conn:
+            await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
+                                    error="restore_directive_unwritten")
+        raise LifecycleError(
+            "Nothing was deleted: the record that re-applies this deletion after a backup restore "
+            "could not be saved. Try again shortly.", status_code=503)
+    try:
+        deleted = await _delete_subject(ctx, op_id, found)
+    except Exception:
+        # Nothing was deleted (one transaction): drop the directive so a later
+        # restore does not delete what the brokerage still holds.
+        await asyncio.to_thread(_drop_subject_directive, key)
+        async with tenant_tx(ctx) as conn:
+            await _finish_operation(conn, op_id, state="failed", result={"matches": counts},
+                                    error="deletion failed; nothing was deleted")
+        raise
+    # Only a committed directive is ever re-applied (review): a pending one
+    # may belong to a deletion that never happened.
+    committed = await asyncio.to_thread(_write_subject_directive, op_id, {**directive, "state": "committed"})
     receipt = {"operation_id": op_id, "deleted": deleted, "opt_out_kept_as_keyed_hash": True,
-               "caveat": caveat,
-               "backups": "Copies remain in encrypted database backups for up to 7 days."}
+               "caveat": caveat, "restore_directive": key,
+               "restore_directive_state": "committed" if committed else "pending_review",
+               "backups": ("Copies remain in encrypted database backups for up to 7 days. If one is "
+                           "restored, this deletion is re-applied before the service reopens "
+                           "(scripts/reapply-erasures.py).")}
     async with tenant_tx(ctx) as conn:
-        await _finish_operation(conn, op_id, state="succeeded", result={"deleted": deleted}, receipt=receipt)
+        await _finish_operation(conn, op_id, state="succeeded",
+                                result={"deleted": deleted,
+                                        "restore_directive_state": receipt["restore_directive_state"]},
+                                receipt=receipt)
     await _audit(ctx, "privacy.subject.deleted", target=op_id, metadata={"deleted": deleted})
     return {"operation_id": op_id, "kind": kind, **receipt}
 
@@ -202,43 +324,266 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
 async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> dict[str, int]:
     from privacy_lifecycle import contact_hmac
 
-    ids = found["ids"]
-    deleted: dict[str, int] = {}
     async with tenant_tx(ctx) as conn:
-        # The opt-out outlives the person, as a keyed hash.
-        for contact in found["identifiers"]:
-            await conn.execute(
-                "INSERT INTO suppression_tombstones (tenant_id, contact_hmac, channel, reason) "
-                "VALUES ($1,$2,'*','erased_by_request') ON CONFLICT DO NOTHING",
-                ctx.tenant_id, contact_hmac(ctx.tenant_id, contact))
-        order = [t for t, _ in _DEPENDENTS] + [
-            "sms_messages", "inbound_voice_calls", "email_outbox",
-            "outreach_attempt_log", "outreach_consent", "outreach_suppression"]
-        for table in order:
-            if ids.get(table):
-                deleted[table] = int(await conn.fetchval(
-                    "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
-        # Break the clients <-> agent_contacts reference cycle, then delete both.
-        await conn.execute("UPDATE agent_contacts SET legacy_client_id=NULL WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
-                           ctx.tenant_id, ids["agent_contacts"])
-        await conn.execute("UPDATE clients SET contact_id=NULL WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
-                           ctx.tenant_id, ids["clients"])
-        for table in ("clients", "agent_contacts"):
-            if ids.get(table):
-                deleted[table] = int(await conn.fetchval(
-                    "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
+        return await _erase_subject_rows(
+            conn, ctx.tenant_id, op_id, found["ids"],
+            [contact_hmac(ctx.tenant_id, c) for c in found["identifiers"]])
+
+
+async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, list],
+                              tombstones: list[str]) -> dict[str, int]:
+    """Delete one person's rows (privacy_erase_subject_rows, under a running
+    dsr_delete operation) and keep their opt-out as keyed hashes. Shared by
+    the request and by reapply_subject_erasures after a restore."""
+    deleted: dict[str, int] = {}
+    # The opt-out outlives the person, as a keyed hash.
+    for hmac_value in tombstones:
+        await conn.execute(
+            "INSERT INTO suppression_tombstones (tenant_id, contact_hmac, channel, reason) "
+            "VALUES ($1,$2,'*','erased_by_request') ON CONFLICT DO NOTHING",
+            tenant_id, hmac_value)
+    order = [t for t, _ in _DEPENDENTS] + [
+        "sms_messages", "inbound_voice_calls", "email_outbox",
+        "outreach_attempt_log", "outreach_consent", "outreach_suppression"]
+    for table in order:
+        if ids.get(table):
+            deleted[table] = int(await conn.fetchval(
+                "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
+    # Break the clients <-> agent_contacts reference cycle, then delete both.
+    await conn.execute("UPDATE agent_contacts SET legacy_client_id=NULL WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                       tenant_id, ids.get("agent_contacts") or [])
+    await conn.execute("UPDATE clients SET contact_id=NULL WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                       tenant_id, ids.get("clients") or [])
+    for table in ("clients", "agent_contacts"):
+        if ids.get(table):
+            deleted[table] = int(await conn.fetchval(
+                "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
     return deleted
 
 
+SUBJECT_DIRECTIVES = "privacy/subject-erasure-directives/"
+# Kept past the longest backup a restore could bring back, then deleted.
+SUBJECT_DIRECTIVE_DAYS = _BACKUP_DAYS + 23
+# Never under privacy/erasure-directives/: reapply_erasures reads every
+# directive there as a WHOLE-BROKERAGE erasure.
+
+
+def _write_subject_directive(op_id: str, directive: dict) -> Optional[str]:
+    """Save the directive (row ids and keyed hashes; no customer data) and
+    read it back. Returns its key, or None when it is not safely stored."""
+    import logging
+
+    import object_storage
+
+    key = f"{SUBJECT_DIRECTIVES}{op_id}.json"
+    body = json.dumps(directive, sort_keys=True).encode()
+    try:
+        if not object_storage.is_configured():
+            return None
+        object_storage.put_bytes(key, body, "application/json")
+        return key if object_storage.get_bytes(key) == body else None
+    except Exception:  # noqa: BLE001 - the request refuses instead
+        logging.getLogger(__name__).exception("subject erasure directive write failed")
+        return None
+
+
+def _drop_subject_directive(key: str) -> None:
+    import logging
+
+    import object_storage
+
+    try:
+        object_storage.delete_object(key)
+    except Exception:  # noqa: BLE001 - a stray directive only re-deletes what the person asked to delete
+        logging.getLogger(__name__).exception("could not remove unused directive %s", key)
+
+
+async def reapply_subject_erasures(*, apply: bool) -> list[dict]:
+    """After a database restore: find people deleted by request whom the
+    restore brought back (from the directives in object storage) and, with
+    apply=True, delete them again under a new dsr_delete operation.
+    scripts/reapply-erasures.py runs this after reapply_erasures."""
+    import asyncio
+
+    import object_storage
+    from privacy_lifecycle import LifecycleError, _create_operation, _finish_operation, _platform_ctx
+
+    if not object_storage.is_configured():
+        raise LifecycleError("object storage is not configured; erasure directives are unreadable", status_code=503)
+    keys = await asyncio.to_thread(object_storage.list_prefix, SUBJECT_DIRECTIVES)
+    ctx = _platform_ctx("reapply-erasures")
+    report: list[dict] = []
+    for key in keys:
+        try:
+            report.append(await _reapply_one(ctx, key, apply))
+        except Exception as exc:  # noqa: BLE001 - one bad directive never stops the run
+            report.append({"kind": "subject", "directive": key, "status": "reapply_failed",
+                           "detail": type(exc).__name__})
+    return report
+
+
+def _directive_expired(d: dict) -> bool:
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        made = datetime.fromisoformat(str(d["created_at"]))
+    except (KeyError, ValueError):
+        return True  # undated (pre-release format, never committed): expire it
+    return datetime.now(timezone.utc) - made > timedelta(days=SUBJECT_DIRECTIVE_DAYS)
+
+
+async def _reapply_one(ctx, key: str, apply: bool) -> dict:
+    import asyncio
+
+    import object_storage
+    from privacy_lifecycle import _create_operation, _finish_operation, active_legal_hold
+
+    try:
+        d = json.loads(await asyncio.to_thread(object_storage.get_bytes, key))
+        tenant = str(d["tenant_id"])
+        ids = {str(t): [str(uuid_mod.UUID(str(i))) for i in v]
+               for t, v in d["ids"].items() if str(t) in _SUBJECT_TABLES}
+        tombstones = [str(h) for h in d.get("tombstones") or []]
+    except Exception as exc:  # noqa: BLE001 - reported, never skipped silently
+        return {"kind": "subject", "directive": key, "status": "unreadable", "detail": type(exc).__name__}
+    entry: dict[str, Any] = {"kind": "subject", "directive": key, "tenant_id": tenant,
+                             "operation_id": d.get("operation_id")}
+    async with tenant_tx(ctx) as conn:
+        state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant)
+        # Child rows the restore brought back that point at the directive's
+        # OWN client/contact ids but are not listed (e.g. removed between the
+        # backup and the request) would block the delete (RESTRICT). Only those
+        # are added: never another client or contact, never a match by address
+        # (review: the restored data may still carry another person's number).
+        for table, rows in (await _linked_children(conn, tenant, ids.get("clients", []),
+                                                   ids.get("agent_contacts", []))).items():
+            ids[table] = sorted(set(ids.get(table, [])) | set(rows))
+        back = {}
+        for table, table_ids in ids.items():
+            n = int(await conn.fetchval(
+                f"SELECT count(*) FROM public.{table} WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                tenant, table_ids) or 0)
+            if n:
+                back[table] = n
+        have = set(await conn.fetchval(
+            "SELECT coalesce(array_agg(contact_hmac), '{}') FROM suppression_tombstones "
+            "WHERE tenant_id=$1 AND contact_hmac = ANY($2::text[])", tenant, tombstones))
+        hold = (await active_legal_hold(conn, tenant)
+                or await active_legal_hold(conn, tenant, scope="contact", subject_ref=d.get("subject_ref")))
+    entry.update(rows_back=back, tombstones_missing=len(set(tombstones) - have))
+    if _directive_expired(d):
+        # Older than any backup a restore could use: never applied, and
+        # expire_subject_directives removes it. Rows back means an older
+        # restore than policy allows: a person must look.
+        entry["status"] = "expired_rows_back" if back else "expired"
+        return entry
+    if state is None or state == "erased":
+        entry["status"] = "still_erased" if not back else "tenant_erased_rows_back"
+        return entry
+    if not (back or entry["tombstones_missing"]):
+        entry["status"] = "still_erased"
+        return entry
+    if d.get("state") != "committed":
+        # The deletion may never have committed (a crash, or a failure whose
+        # cleanup also failed): the brokerage was told nothing was deleted.
+        entry["status"] = "needs_review"
+        return entry
+    entry["status"] = "resurrected"
+    if not apply:
+        return entry
+    if hold:
+        entry["status"] = "skipped_legal_hold"
+        return entry
+    op_id = None
+    try:
+        async with tenant_tx(ctx) as conn:
+            op = await _create_operation(
+                conn, tenant_id=tenant, kind="dsr_delete", requested_by="reapply-erasures",
+                subject_kind="contact", subject_ref=d.get("subject_ref"), state="running",
+                reason="re-applied after database restore",
+                params={"reapply_of": d.get("operation_id")})
+        op_id = str(op["id"])
+        async with tenant_tx(ctx) as conn:
+            deleted = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
+            await _finish_operation(conn, op_id, state="succeeded",
+                                    result={"deleted": deleted, "reapply_of": d.get("operation_id")})
+        entry.update(status="reapplied", reapply_operation_id=op_id, deleted=deleted)
+    except Exception as exc:  # noqa: BLE001 - legal hold or a DB error: needs a person
+        held = getattr(exc, "hint", None) == "legal_hold"
+        entry.update(status="skipped_legal_hold" if held else "reapply_failed", detail=type(exc).__name__)
+        if op_id:
+            async with tenant_tx(ctx) as conn:
+                await _finish_operation(conn, op_id, state="blocked_legal_hold" if held else "failed",
+                                        result={"reapply_of": d.get("operation_id")},
+                                        error=type(exc).__name__)
+    return entry
+
+
+async def _linked_children(conn, tenant_id: str, clients: list, contacts: list) -> dict[str, list[str]]:
+    """Ids of rows that reference these exact clients/contacts by foreign key."""
+    from privacy_lifecycle import _bind_used
+
+    out: dict[str, list[str]] = {}
+    if not clients and not contacts:
+        return out
+    queries = [(t, f"SELECT id FROM {t} WHERE tenant_id=$1 AND ({w})") for t, w in _DEPENDENTS] + [
+        ("sms_messages", "SELECT id FROM sms_messages WHERE tenant_id=$1 "
+                         "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))"),
+        ("inbound_voice_calls", "SELECT id FROM inbound_voice_calls WHERE tenant_id=$1 "
+                                "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))"),
+        ("email_outbox", "SELECT id FROM email_outbox WHERE tenant_id=$1 AND client_id = ANY($2::uuid[])"),
+    ]
+    for table, sql in queries:
+        rows = await conn.fetch(*_bind_used(sql, (tenant_id, clients, contacts)))
+        if rows:
+            out[table] = [str(r[0]) for r in rows]
+    return out
+
+
+async def expire_subject_directives() -> int:
+    """Delete subject directives older than any backup a restore could use
+    (BACKUP_DAYS plus margin): they hold row ids and keyed hashes, and
+    re-applying an old one would restart an expired opt-out's clock (review).
+    Run by the periodic privacy task."""
+    import asyncio
+
+    import object_storage
+
+    if not object_storage.is_configured():
+        return 0
+    removed = 0
+    for key in await asyncio.to_thread(object_storage.list_prefix, SUBJECT_DIRECTIVES):
+        try:
+            d = json.loads(await asyncio.to_thread(object_storage.get_bytes, key))
+        except Exception:  # noqa: BLE001 - unreadable: left for reapply to report
+            continue
+        if _directive_expired(d):
+            await asyncio.to_thread(object_storage.delete_object, key)
+            removed += 1
+    return removed
+
+
 async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str, Any]:
-    """The person's records, readable. Encrypted contact fields decrypted."""
+    """The person's records, readable. Encrypted contact fields decrypted.
+
+    Complete or nothing (external audit 29.8): every table discovery found
+    rows in is returned, in full. It used to cap each table at 5,000 rows,
+    answer a failed query with no rows, skip encrypted contacts and calls
+    when the key was missing, and count but never return the dependent tables
+    (intake sessions, lead events, call intents, ...). Each of those now
+    raises, and the request fails instead of handing over a partial answer."""
     import os
 
     from crypto import derive_tenant_key
+    from privacy_lifecycle import LifecycleError
 
     out: dict[str, Any] = {}
     key = derive_tenant_key(tenant_id, os.environ["ORACLE_ENCRYPTION_MASTER_KEY"]) \
         if os.getenv("ORACLE_ENCRYPTION_MASTER_KEY") else None
+    if not key and (ids.get("agent_contacts") or ids.get("inbound_voice_calls")
+                    or any(ids.get(t) for t in _sealed_generic_tables())):
+        raise LifecycleError("The encryption key is unavailable, so this person's encrypted records "
+                             "cannot be opened. Nothing was returned.", status_code=503)
     queries = {
         "clients": "SELECT id, full_name, email, phone, company, notes, preferences, created_at FROM clients",
         # 0152 (A01): a body is sealed at rest; opened below, never silently dropped.
@@ -253,11 +598,8 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
     }
     for table, sql in queries.items():
         if ids.get(table):
-            try:
-                rows = await conn.fetch(sql + " WHERE tenant_id=$1 AND id = ANY($2::uuid[]) LIMIT 5000",
-                                        tenant_id, ids[table])
-            except Exception:  # noqa: BLE001 - a column renamed must not hide the rest
-                rows = []
+            rows = await conn.fetch(sql + " WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                                    tenant_id, ids[table])
             if table in ("sms_messages", "email_outbox"):
                 import sealed_text
 
@@ -278,4 +620,46 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
             "pgp_sym_decrypt(summary_ciphertext, $3) END AS summary FROM inbound_voice_calls "
             "WHERE tenant_id=$1 AND id = ANY($2::uuid[])", tenant_id, ids["inbound_voice_calls"], key)
         out["inbound_voice_calls"] = [json.loads(json.dumps(dict(r), default=str)) for r in rows]
+    for table, table_ids in ids.items():
+        if table_ids and table not in out:
+            out[table] = await _generic_rows(conn, tenant_id, table, table_ids, key)
+    missing = sorted(t for t, table_ids in ids.items() if table_ids and t not in out)
+    if missing:  # defensive: never answer as complete without them
+        raise LifecycleError(f"Records were found in {', '.join(missing)} but could not be returned.",
+                             status_code=500)
     return out
+
+
+def _sealed_generic_tables() -> list[str]:
+    from privacy_export import DECRYPT
+
+    return [t for t in DECRYPT if t not in ("agent_contacts", "inbound_voice_calls", "sms_messages", "email_outbox")]
+
+
+async def _generic_rows(conn, tenant_id: str, table: str, table_ids: list, key: Optional[str]) -> list[dict]:
+    """Every column of the person's rows in a table discovery found, as the
+    brokerage export writes them: sealed columns opened (privacy_export.DECRYPT),
+    hashes, secrets and raw ciphertext left out (privacy_export._omit)."""
+    from privacy_export import DECRYPT, _default, _omit, _q
+
+    cols = await conn.fetch(
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
+        "WHERE a.attrelid = to_regclass('public.' || quote_ident($1)) AND a.attnum > 0 "
+        "AND NOT a.attisdropped ORDER BY a.attnum", table)
+    if not cols:
+        raise RuntimeError(f"no columns for {table}")
+    decrypt = DECRYPT.get(table, {})
+    select = []
+    for c in cols:
+        name, dtype = c["attname"], c["t"]
+        if name in decrypt:
+            select.append(f"CASE WHEN {_q(name)} IS NULL THEN NULL ELSE "
+                          f"pgp_sym_decrypt({_q(name)}, $3) END AS {_q(decrypt[name])}")
+        elif not _omit(name, dtype):
+            select.append(_q(name))
+    sql = f"SELECT {', '.join(select)} FROM public.{_q(table)} WHERE tenant_id=$1 AND id = ANY($2::uuid[])"
+    args: list[Any] = [tenant_id, table_ids]
+    if any(c["attname"] in decrypt for c in cols):
+        args.append(key)
+    rows = await conn.fetch(sql, *args)
+    return [json.loads(json.dumps(dict(r), default=_default)) for r in rows]

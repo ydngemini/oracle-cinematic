@@ -1134,6 +1134,10 @@ def _applied(
 # repeating the mutation. Read-only tools never participate.
 
 
+class ToolOperationClaimLost(Exception):
+    """A concurrent duplicate committed this operation first."""
+
+
 class ToolIdentityMismatch(Exception):
     """Same (assistant_id, call_index) presented with different work.
 
@@ -1179,6 +1183,11 @@ async def _ledger_replay(
         ctx.tenant_id, assistant_id, call_index,
     )
     if row is None:
+        return None
+    if row["status"] == "failed":
+        # Nothing committed under it, so it protects nothing — not even its
+        # identity: the retry (or another provider tier's call at this index)
+        # may be different work. _ledger_claim takes the row over (AI-005).
         return None
     import sealed_text  # lazy: crypto pulls in tenancy
 
@@ -1228,14 +1237,28 @@ async def _ledger_claim(
     is why there is no durable 'running' state to strand and no lease, heartbeat
     or sweeper anywhere in this design.
     """
-    await conn.execute(
+    # A 'failed' row is taken over (AI-005): it was written after its
+    # mutation rolled back, so nothing is protected by it, and a plain INSERT
+    # hit the unique key and reported the retry as "could not be persisted".
+    # A 'completed' row is never touched: zero rows means a concurrent
+    # duplicate won, exactly as the old unique violation did.
+    taken = await conn.fetchval(
         """
         INSERT INTO ai_tool_operations
             (tenant_id,user_id,assistant_id,call_index,tool_name,arguments_hash,status)
         VALUES ($1::uuid,$2,$3::uuid,$4,$5,$6,'completed')
+        ON CONFLICT ON CONSTRAINT ai_tool_operations_identity DO UPDATE
+           SET user_id=EXCLUDED.user_id, tool_name=EXCLUDED.tool_name,
+               arguments_hash=EXCLUDED.arguments_hash, status='completed',
+               result=NULL, result_ciphertext=NULL, error_code=NULL, completed_at=NULL
+         WHERE ai_tool_operations.status = 'failed'
+        RETURNING 1
         """,
         ctx.tenant_id, user_id, assistant_id, call_index, tool_name, arguments_hash,
     )
+    if taken is None:
+        raise ToolOperationClaimLost(
+            f"call_index {call_index} of this turn is already recorded as completed")
 
 
 async def _ledger_attach_result(

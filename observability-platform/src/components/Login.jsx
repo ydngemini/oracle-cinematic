@@ -28,7 +28,7 @@ export default function Login({ onAuth }) {
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <h1>AWS <span>Observability</span></h1>
-        <p className="login-sub">platform_admin / broker_owner sign-in</p>
+        <p className="login-sub">platform_admin sign-in</p>
         <input
           autoFocus
           autoComplete="username"

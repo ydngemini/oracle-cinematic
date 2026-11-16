@@ -1356,3 +1356,64 @@ def test_the_migration_is_additive_for_the_previous_release():
 
     (verdict,) = classify_files([MIGRATION])
     assert verdict.classification == ADDITIVE, verdict
+
+
+# ── BILL-001: a refused usage row must not take the call off the cap ────────
+
+class _SettleConn:
+    """A connection whose usage INSERT fails (inside its savepoint) when told."""
+
+    def __init__(self, fail_insert):
+        self.fail_insert, self.executed = fail_insert, []
+
+    def transaction(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def savepoint():
+            yield
+        return savepoint()
+
+    async def fetchrow(self, sql, *args):
+        if "INSERT INTO billing_usage_events" in sql and self.fail_insert:
+            raise OSError("usage table unavailable")
+        return {"id": 1}
+
+    async def execute(self, sql, *args):
+        self.executed.append((" ".join(sql.split()), args))
+
+
+def _settle(monkeypatch, *, fail_insert, held=True):
+    from contextlib import asynccontextmanager
+
+    import ai_budget
+    from tenancy import Role, TenantContext
+
+    conn = _SettleConn(fail_insert)
+
+    @asynccontextmanager
+    async def fake_tx(_ctx):
+        yield conn
+
+    monkeypatch.setattr(ai_budget, "tenant_tx", fake_tx)
+    monkeypatch.setattr("billing_usage.tenant_tx", fake_tx, raising=False)
+    ctx = TenantContext(agent_id="a@b.test", tenant_id="11111111-1111-4111-8111-111111111111", role=Role.AGENT)
+    hold = ai_budget.Hold(call_key="call-1", tokens=500, state="ok", held=held)
+    asyncio.run(ai_budget.settle(ctx, hold, {"usage": {"prompt_tokens": 120, "completion_tokens": 30}}))
+    return conn.executed
+
+
+def test_a_settled_call_drops_its_hold(monkeypatch):
+    executed = _settle(monkeypatch, fail_insert=False)
+    assert any(sql.startswith("DELETE FROM ai_token_reservations") for sql, _ in executed)
+
+
+def test_a_refused_usage_row_keeps_the_hold_counting_the_reported_tokens(monkeypatch):
+    executed = _settle(monkeypatch, fail_insert=True)
+    assert not any(sql.startswith("DELETE FROM ai_token_reservations") for sql, _ in executed), \
+        "the hold was dropped although nothing recorded the usage"
+    update = [(sql, args) for sql, args in executed if sql.startswith("UPDATE ai_token_reservations")]
+    assert len(update) == 1
+    sql, args = update[0]
+    assert args == ("call-1", 150) and "GREATEST(tokens, $2)" in sql
+    assert "interval '1 month'" in sql and "AT TIME ZONE 'UTC'" in sql, "held to the cap's own month end"

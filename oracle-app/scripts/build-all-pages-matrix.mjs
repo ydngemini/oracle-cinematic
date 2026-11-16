@@ -39,18 +39,40 @@ function loadCrawl() {
   return JSON.parse(readFileSync(CRAWL, 'utf8'));
 }
 
+// A verdict is a named human's sign-off (AC02.09), so an automated agent
+// cannot be the reviewer.
+const AUTOMATED_REVIEWER = /^\s*(claude|agent|bot|auto|neoh-agent)\b/i;
+
+/**
+ * Shape problems in the hand-kept verdicts: a well-formed object, non-blank
+ * evidence and reviewer, a real calendar date, and a human reviewer.
+ * Comment keys (`//`) are skipped. Returns the problems found.
+ */
+export function verdictShapeProblems(verdicts) {
+  const problems = [];
+  const text = (x) => typeof x === 'string' && x.trim() !== '';
+  for (const [id, v] of Object.entries(verdicts)) {
+    if (id.startsWith('//')) continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)
+      || !VERDICT_VALUES.has(v.verdict) || !text(v.evidence) || !text(v.reviewer) || !v.date) {
+      problems.push(`${id} needs verdict (pass|fail|setup_required), evidence, reviewer and date`);
+      continue;
+    }
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v.date));
+    const day = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (!m || day.getUTCFullYear() !== +m[1] || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) {
+      problems.push(`${id} date must be a real YYYY-MM-DD date`);
+    }
+    if (AUTOMATED_REVIEWER.test(v.reviewer)) problems.push(`${id} reviewer must be a named person, not an automated agent`);
+  }
+  return problems;
+}
+
 function loadVerdicts() {
   if (!existsSync(VERDICTS)) return {};
   const raw = JSON.parse(readFileSync(VERDICTS, 'utf8'));
-  for (const [id, v] of Object.entries(raw)) {
-    if (id.startsWith('//')) continue;
-    if (!VERDICT_VALUES.has(v?.verdict) || !v.evidence || !v.reviewer || !v.date) {
-      throw new Error(`all-pages-verdicts.json: ${id} needs verdict (pass|fail|setup_required), evidence, reviewer and date`);
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.date))) {
-      throw new Error(`all-pages-verdicts.json: ${id} date must be YYYY-MM-DD`);
-    }
-  }
+  const problems = verdictShapeProblems(raw);
+  if (problems.length) throw new Error(`all-pages-verdicts.json: ${problems.join('; ')}`);
   return raw;
 }
 
@@ -71,6 +93,28 @@ export function verdictProblems(verdicts, rows, crawlPages = {}) {
     else if (crawl.writes_attempted_on_open?.length) problems.push(`${id}: pass is not allowed when opening the page attempted writes`);
   }
   return problems;
+}
+
+/**
+ * Where each page stands for the human sign-off (AC02.09). Reads matrix rows
+ * (verdict + crawl) and records nothing: a verdict is a named reviewer's call.
+ *   recorded         has a verdict already
+ *   ready_for_review no verdict, last crawl clean, no writes on open, not legacy
+ *   needs_attention  no verdict, crawl not clean or opening the page attempted writes
+ *   not_crawled      no verdict and no crawl entry
+ *   legacy           no verdict, out of scope (D-2026-10-12-01); never passable
+ */
+export function verdictQueue(rows) {
+  const queue = { total: rows.length, recorded: [], ready_for_review: [], needs_attention: [], not_crawled: [], legacy: [] };
+  for (const r of rows) {
+    if (r.verdict && r.verdict !== 'not_inspected') queue.recorded.push(r.id);
+    else if (r.legacy) queue.legacy.push(r.id);
+    else if (!r.crawl) queue.not_crawled.push(r.id);
+    else if (r.crawl.writes_attempted_on_open?.length) queue.needs_attention.push(`${r.id} (writes on open)`);
+    else if (r.crawl.status !== 'clean') queue.needs_attention.push(`${r.id} (crawl ${r.crawl.status})`);
+    else queue.ready_for_review.push(r.id);
+  }
+  return queue;
 }
 
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
@@ -305,7 +349,16 @@ function markdown(rows) {
 
 async function main() {
   const rows = await buildMatrix();
-  const json = `${JSON.stringify({ generated_by: 'oracle-app/scripts/build-all-pages-matrix.mjs', pages: rows }, null, 2)}\n`;
+  if (process.argv.includes('--verdicts')) {
+    // Read-only: print the review queue; write nothing.
+    const q = verdictQueue(rows);
+    console.log(`${q.recorded.length} of ${q.total} pages have a verdict.`);
+    for (const key of ['ready_for_review', 'needs_attention', 'not_crawled', 'legacy']) {
+      console.log(`${key} (${q[key].length}): ${q[key].join(', ') || '—'}`);
+    }
+    return;
+  }
+  const json =`${JSON.stringify({ generated_by: 'oracle-app/scripts/build-all-pages-matrix.mjs', pages: rows }, null, 2)}\n`;
   const md = `${markdown(rows)}\n`;
   if (process.argv.includes('--check')) {
     const stale = (!existsSync(OUT_JSON) || readFileSync(OUT_JSON, 'utf8') !== json)

@@ -381,3 +381,25 @@ async def test_the_drain_scopes_every_statement_to_the_tenant_explicitly(monkeyp
     select_sql, select_args = calls[0]
     assert "tenant_id=$3::uuid" in select_sql
     assert TENANT_ID in select_args
+
+
+@pytest.mark.parametrize("quantity", ["abc", "NaN", float("nan"), "Infinity", float("inf"), -1, None, object()])
+def test_an_invalid_quantity_is_refused_never_raised_or_stored(monkeypatch, quantity):
+    """BILL-003: record_usage is documented never to raise; text and NaN raised,
+    and Infinity would have been stored as infinite usage."""
+    import billing_usage
+    from tenancy import Role, TenantContext
+
+    reached = []
+
+    def no_db(*_a, **_k):
+        # record_usage swallows exceptions, so record the reach, not just raise.
+        reached.append(True)
+        raise AssertionError("an invalid quantity must not reach the database")
+
+    monkeypatch.setattr(billing_usage, "tenant_tx", no_db)
+    ctx = TenantContext(agent_id="a@b.test", tenant_id="11111111-1111-4111-8111-111111111111", role=Role.AGENT)
+    metric = next(m for m in sorted(billing_usage.METRICS) if m not in billing_usage._STAGE_BOUND)
+    assert asyncio.run(billing_usage.record_usage(ctx, metric=metric, quantity=quantity,
+                                                  idempotency_key="k")) is False
+    assert reached == [], "refused before any database work"

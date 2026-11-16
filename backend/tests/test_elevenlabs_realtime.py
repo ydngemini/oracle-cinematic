@@ -344,16 +344,80 @@ def test_stop_as_an_ordinary_verb_does_not_end_the_call(monkeypatch, recorded):
     assert recorded == [] and bridge._transcript == [], "and still nothing said is kept"
 
 
-def test_an_inbound_stop_is_left_to_the_inbound_finalizer(monkeypatch, recorded):
+INBOUND = {"direction": "inbound", "tenant_id": "11111111-1111-4111-8111-111111111111",
+           "agent_id": "agent@example.test"}
+
+
+@pytest.fixture
+def inbound_recorded(monkeypatch):
+    """record_inbound_opt_out replaced; each call is (call_id, state)."""
     import inbound_voice
 
-    async def finalize(*_a, **_k):
+    calls = []
+
+    async def record(call_sid, state):
+        calls.append((call_sid, dict(state)))
+        return True
+
+    monkeypatch.setattr(inbound_voice, "record_inbound_opt_out", record)
+    return calls
+
+
+def _finalize_fails(monkeypatch):
+    import inbound_voice
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("database went away at hang-up")
+
+    async def nothing(*_a, **_k):
         return None
 
-    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", finalize)
-    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", finalize)
-    _run(monkeypatch, [], [_said("stop")], state={"direction": "inbound", "tenant_id": "t-1"})
-    assert recorded == []
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", broken)
+    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", nothing)
+
+
+def test_an_inbound_opt_out_is_recorded_when_said_even_if_finalize_fails(monkeypatch, recorded, inbound_recorded):
+    """RUN-02 (P0): the suppression used to be written only by finalize, whose
+    failure every bridge swallows; a TCPA opt-out was lost on a DB blip."""
+    _finalize_fails(monkeypatch)
+    _, _, _, bridge = _run(monkeypatch, [], [_said("Hi, I'm selling a house."),
+                                             _said("Actually, please don't call me again.")],
+                           state=INBOUND)
+    assert [state["direction"] for _, state in inbound_recorded] == ["inbound"]
+    assert inbound_recorded[0][0] == bridge.call_uuid
+    assert recorded == [], "not the outbound recorder"
+
+
+def test_an_inbound_opt_out_does_not_end_the_call_and_is_written_once(monkeypatch, inbound_recorded):
+    _finalize_fails(monkeypatch)
+    _, _, _, bridge = _run(monkeypatch, [], [_said("stop"), _said("I said stop."), _said("And my number is ...")],
+                           state=INBOUND)
+    assert len(inbound_recorded) == 1
+    assert len(bridge._transcript) == 3, "the call went on; the caller may still leave a message"
+
+
+def test_a_failed_inbound_write_is_tried_again_on_the_next_opt_out(monkeypatch):
+    import inbound_voice
+
+    attempts = []
+
+    async def flaky(call_sid, state):
+        attempts.append(call_sid)
+        if len(attempts) == 1:
+            raise inbound_voice.InboundOptOutNotRecorded("database blip")
+        return True
+
+    monkeypatch.setattr(inbound_voice, "record_inbound_opt_out", flaky)
+    _finalize_fails(monkeypatch)
+    _run(monkeypatch, [], [_said("Take me off your list."), _said("Do not call me again."), _said("stop")],
+         state=INBOUND)
+    assert len(attempts) == 2, "retried after the failure, then stopped once recorded"
+
+
+def test_ordinary_inbound_conversation_records_nothing(monkeypatch, inbound_recorded):
+    _finalize_fails(monkeypatch)
+    _run(monkeypatch, [], [_said("Can you stop by the house on Tuesday?")], state=INBOUND)
+    assert inbound_recorded == []
 
 
 def test_a_failed_suppression_still_ends_the_call(monkeypatch):
@@ -380,11 +444,24 @@ def test_the_qwen_bridges_honour_an_outbound_stop_too(monkeypatch, recorded):
     with pytest.raises(q.QwenCallOptOut) as ended:
         asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "Do not call me again."))
     assert isinstance(ended.value, q.QwenCallLimitReached) and len(recorded) == 1
-    bridge._call_state["direction"] = "inbound"
-    asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "stop"))
     no_state = types.SimpleNamespace(call_connection_id="acs-1", _turns=0, _max_turns=20)
     asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(no_state, "caller", "stop"))
-    assert len(recorded) == 1, "inbound and ACS (no call state) are not handled here"
+    assert len(recorded) == 1, "ACS (no call state) is not handled here"
+
+
+def test_the_qwen_bridges_record_an_inbound_opt_out_when_said(monkeypatch, recorded, inbound_recorded):
+    """RUN-02: the same hook serves the Twilio and Plivo inbound bridges, and
+    does not end the call."""
+    import types
+
+    import qwen_omni_realtime as q
+
+    bridge = types.SimpleNamespace(_call_state=dict(INBOUND), call_connection_id="call-2",
+                                   _turns=0, _max_turns=20)
+    asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "Do not call me again."))
+    asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "stop"))
+    assert [sid for sid, _ in inbound_recorded] == ["call-2"]
+    assert recorded == []
 
 
 def test_the_record_stores_no_words():
@@ -392,3 +469,32 @@ def test_the_record_stores_no_words():
 
     assert voice_opt_out.SOURCE_TEXT == "outbound AI call: callee asked not to be contacted"
     assert voice_opt_out.spoken_opt_out("") is False
+
+
+def test_a_hang_up_cannot_cancel_an_inbound_opt_out_write(monkeypatch):
+    """RUN-06 for inbound (RUN-02's mid-call write): cancelling the bridge's
+    task as the caller hangs up does not cancel the suppression write."""
+    import inbound_voice
+    import voice_opt_out
+
+    written = []
+
+    async def slow_record(call_sid, state):
+        await asyncio.sleep(0.05)
+        written.append(call_sid)
+        return True
+
+    monkeypatch.setattr(inbound_voice, "record_inbound_opt_out", slow_record)
+
+    async def scenario():
+        call = asyncio.ensure_future(voice_opt_out.honour_inbound(dict(INBOUND), "call-3"))
+        await asyncio.sleep(0.01)
+        call.cancel()
+        try:
+            await call
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.1)
+        return written
+
+    assert asyncio.run(scenario()) == ["call-3"]

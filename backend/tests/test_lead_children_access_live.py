@@ -295,7 +295,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             await refused(video_studio_api.cancel_video_job(ids["video_studio_jobs"]["b"], ctx=ctx(who)), code)
             await refused(video_studio_api.delete_video_job(ids["video_studio_jobs"]["b"], ctx=ctx(who)), code)
             await refused(voice_intel.log_walkthrough(
-                str(lead["b"]), UploadFile(file=io.BytesIO(b"\x00" * 16), filename="walk.m4a"), ctx=ctx(who)), code)
+                str(lead["b"]), UploadFile(file=io.BytesIO(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 16), filename="walk.m4a"), ctx=ctx(who)), code)
         assert await admin.fetchval("SELECT count(*) FROM client_portals WHERE tenant_id=$1", tenant) == portals_before
         assert await admin.fetchval("SELECT revoked_at FROM client_portals WHERE id=$1",
                                     ids["client_portals"]["b"]) is None
@@ -338,7 +338,9 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         assert {x.lower() for x in audience} == {agent["owner"], agent["b"], agent["c"]}, audience
         for k in ("pool", "harvest"):
             assert await record_access.linked_audience(tenant, None, None, lead_id=lead[k]) is None, k
-        assert await record_access.linked_audience(tenant, None, None, lead_id=uuid.uuid4()) is None
+        # A lead that does not exist reaches NO ONE, never everyone (audit 27.4,
+        # owner decision 2026-11-16).
+        assert await record_access.linked_audience(tenant, None, None, lead_id=uuid.uuid4()) == []
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

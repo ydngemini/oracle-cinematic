@@ -408,6 +408,11 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
         })
 
     candidate = "".join(otp.split())
+    # Decide INSIDE the transaction, raise AFTER it commits (external audit
+    # 28.1): raising inside tenant_tx rolled back the attempt counter, so the
+    # five-attempt lock never engaged on PostgreSQL and the code could be
+    # guessed without limit for its 10-minute life.
+    accepted = False
     async with tenant_tx(_admin_ctx()) as conn:
         row = await conn.fetchrow(
             "SELECT id::text AS id, code_hmac, attempts FROM operator_otp_challenges "
@@ -415,19 +420,26 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
             "ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
             account,
         )
-        if row is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
-        if not (len(candidate) == 6 and candidate.isdigit()
-                and hmac.compare_digest(row["code_hmac"], _otp_hmac(row["id"], candidate))):
-            attempts = row["attempts"] + 1
-            await conn.execute(
-                "UPDATE operator_otp_challenges SET attempts = $2, "
-                "consumed_at = CASE WHEN $2 >= $3 THEN now() ELSE NULL END WHERE id = $1::uuid",
-                row["id"], attempts, _EMAIL_OTP_MAX_ATTEMPTS,
-            )
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
-        await conn.execute(
-            "UPDATE operator_otp_challenges SET consumed_at = now() WHERE id = $1::uuid", row["id"])
+        if row is not None:
+            if (len(candidate) == 6 and candidate.isdigit()
+                    and hmac.compare_digest(row["code_hmac"], _otp_hmac(row["id"], candidate))):
+                await conn.execute(
+                    "UPDATE operator_otp_challenges SET consumed_at = now() WHERE id = $1::uuid", row["id"])
+                accepted = True
+            else:
+                # Counted IN SQL (the row is FOR UPDATE-locked, but the count must
+                # not depend on that) with an explicit cast: PostgreSQL could not
+                # infer the old `$2 >= $3` between two untyped parameters
+                # (AmbiguousParameterError on every wrong code — found by the 28.1
+                # live test).
+                await conn.execute(
+                    "UPDATE operator_otp_challenges SET attempts = attempts + 1, "
+                    "consumed_at = CASE WHEN attempts + 1 >= $2::int THEN now() ELSE NULL END "
+                    "WHERE id = $1::uuid",
+                    row["id"], _EMAIL_OTP_MAX_ATTEMPTS,
+                )
+    if not accepted:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
 
 
 async def _require_operator_otp(agent_id: str, otp: Optional[str]) -> None:
