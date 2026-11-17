@@ -3873,6 +3873,28 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-39 Releasing or rejecting a staged command is one transaction; commands stranded by the old split are repaired (external audit 24.1)
+```yaml
+id: L17-39
+status: tests_pass
+env: local
+evidence_shas: [04d43da]   # base; fix in the commit that adds this row
+files: [backend/approval_service.py, backend/automation_jobs.py, backend/commands_api.py, backend/reconciliation.py, backend/tests/test_command_release_atomic_live.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api.release_command / withdraw_command, approval_service.decide_approval, automation_jobs.enqueue_job at 04d43da", result: "release = three transactions (approval decided; job inserted; command -> queued); withdraw = two (approval rejected; command -> cancelled). The worker refuses a command not in queued/failed", date: 2026-11-16}
+  - {cmd: "red: test_command_release_atomic_live against 04d43da's four modules (live PostgreSQL)", result: "a failure after the job insert left ('awaiting_approval', 'approved', 1 job) — the stranded state the audit describes", date: 2026-11-16}
+  - {cmd: "after: live test_command_release_atomic_live + test_reconciliation_live + test_billing_degradation_live + test_command_drafts_access_live", result: "11 passed: a failure inside release or reject rolls back the decision; another connection cannot see the job before the command is queued; a second click is 409; an expired approval is 409 with 'expired' kept and nothing queued; the sweep queues an in-date stranded approval (once), fails one whose approval expired since, cancels rejected/expired", date: 2026-11-16}
+authz_checked: "decide_approval_in_tx is decide_approval's body unchanged (same _require_decider / role-override rules); the release locks the command row FOR UPDATE, then the approval FOR UPDATE; enqueue_job_in_tx keeps the approved/in-date/payload-hash checks. The reconciler runs as the platform per tenant and only acts on approvals a person already decided."
+blockers:
+  - "Approve/Reject on a command that is no longer awaiting approval, or whose approval was already decided, now answers 409 with the reason; before, decide_approval's ValueError reached the generic handler as a 500."
+  - "The audit ledger and decision trace are written after the commit (before, decide_approval wrote them before the job existed). A failure writing them now reports an error for a release that did commit."
+  - "Reconciler grace is 2 minutes after the decision; it is skipped in recovery mode (it queues sends). An approved command whose approval expired before the sweep is 'failed' with a plain last_error: nothing was sent."
+  - "Outbound-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.1]
+next_task: "24.4 / 25.5 durable provider outcome inbox; 24.2 pre-bound Twilio correlation."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 

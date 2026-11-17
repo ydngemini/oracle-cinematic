@@ -42,9 +42,16 @@ import sealed_text
 import semantic_language
 import ws_hub
 from agent_profile import load_agent_identity
-from approval_service import create_approval, decide_approval, list_approvals, require_decider
+from approval_service import (
+    create_approval,
+    decide_approval,
+    decide_approval_in_tx,
+    list_approvals,
+    record_approval_decision,
+    require_decider,
+)
 from audit_ledger import AuditCategory, ledger
-from automation_jobs import enqueue_job, register_handler
+from automation_jobs import JobApprovalError, enqueue_job, enqueue_job_in_tx, register_handler
 from command_providers import (
     ProviderConfigurationError,
     ProviderRejectedError,
@@ -2076,47 +2083,181 @@ async def release_command(
     if refusal is not None:
         raise HTTPException(status_code=refusal[0], detail=refusal[1])
     command_id = str(row["id"])
-    approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="approved", reason=reason
-    )
-    stored_draft = _decode(row["draft"])
-    execution = _execution_payload(
-        command_id=command_id,
-        command_type=CommandType(row["command_type"]),
-        target=_decode(row["target"]),
-        draft=dict(stored_draft.get("content") or {}),
-        context=dict(stored_draft.get("context") or {}),
-        tenant_id=ctx.tenant_id,
-    )
-    job, _ = await enqueue_job(
-        ctx,
-        job_type="command:execute",
-        payload=execution,
-        idempotency_key=f"command:{command_id}:execute",
-        created_by=ctx.agent_id,
-        scheduled_at=row["scheduled_at"],
-        priority=10,
-        risk=_RISK[CommandType(row["command_type"])],
-        approval_id=str(row["approval_id"]),
-    )
+    # ONE transaction: the approval decision, the job and the command's move to
+    # 'queued' commit together or not at all (external audit 24.1). They were
+    # three: a failure after the approval committed left an approved action
+    # with no job that nobody could approve again, and a worker that claimed
+    # the new job before the third commit refused the command as still
+    # 'awaiting_approval'. The command row is locked first, so a double click
+    # or a mission release racing a person queues it once.
+    expired = None
     async with tenant_tx(ctx) as conn:
-        updated = await conn.fetchrow(
-            """
-            UPDATE command_executions
-               SET state='queued', job_id=$2::uuid, updated_at=now()
-             WHERE id=$1::uuid
-            RETURNING *
-            """,
-            command_id,
-            job["id"],
-        )
-        import outreach_lifecycle
+        current = await conn.fetchrow(
+            "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+        if current["state"] != "awaiting_approval":
+            raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
+        try:
+            decided, before = await decide_approval_in_tx(
+                conn, ctx, str(current["approval_id"]), decision="approved", reason=reason)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if decided["status"] != "approved":
+            # Expired before anyone approved it. The 'expired' decision commits
+            # (it is the truth); nothing is queued.
+            expired = (decided, before)
+        else:
+            stored_draft = _decode(current["draft"])
+            execution = _execution_payload(
+                command_id=command_id,
+                command_type=CommandType(current["command_type"]),
+                target=_decode(current["target"]),
+                draft=dict(stored_draft.get("content") or {}),
+                context=dict(stored_draft.get("context") or {}),
+                tenant_id=ctx.tenant_id,
+            )
+            try:
+                job, _ = await enqueue_job_in_tx(
+                    conn,
+                    ctx,
+                    job_type="command:execute",
+                    payload=execution,
+                    idempotency_key=f"command:{command_id}:execute",
+                    created_by=ctx.agent_id,
+                    scheduled_at=current["scheduled_at"],
+                    priority=10,
+                    risk=_RISK[CommandType(current["command_type"])],
+                    approval_id=str(current["approval_id"]),
+                )
+            except JobApprovalError as exc:
+                # e.g. the approved draft no longer hashes to the job: the whole
+                # release rolls back, the approval stays pending.
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            updated = await conn.fetchrow(
+                """
+                UPDATE command_executions
+                   SET state='queued', job_id=$2::uuid, updated_at=now()
+                 WHERE id=$1::uuid
+                RETURNING *
+                """,
+                command_id,
+                job["id"],
+            )
+            import outreach_lifecycle
 
-        await outreach_lifecycle.advance_first_response(
-            conn, tenant_id=ctx.tenant_id, command_id=command_id,
-            stage=outreach_lifecycle.Stage.APPROVED,
-        )
+            await outreach_lifecycle.advance_first_response(
+                conn, tenant_id=ctx.tenant_id, command_id=command_id,
+                stage=outreach_lifecycle.Stage.APPROVED,
+            )
+    if expired is not None:
+        await record_approval_decision(ctx, str(current["approval_id"]), *expired)
+        raise HTTPException(status_code=409, detail="This approval expired before it was approved. Stage the message again.")
+    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
     return {"command": _command_dict(updated), "approval": approval, "job": job}
+
+
+STRANDED_RELEASE_GRACE_MINUTES = 2
+
+
+async def reconcile_stranded_releases(only_tenant: Optional[str] = None, *, limit: int = 100) -> dict[str, int]:
+    """Commands left 'awaiting_approval' behind an approval that was already
+    decided (external audit 24.1). Before the single-transaction release a
+    failure between the approval and the queue insert stranded them: approved
+    with no job, or rejected with the command still staged — and the decided
+    approval refuses a second click.
+
+    approved, approval still in date → queued now (the job's idempotency key
+                                        makes an existing job the one used)
+    approved, approval since expired  → 'failed', never sent: stage it again
+    rejected / expired                → 'cancelled'
+    Called from reconciliation.run_sweep. Each command is fixed in its own
+    transaction with the command row locked, so a person approving at the
+    same moment and this sweep cannot both act.
+    """
+    platform = TenantContext(agent_id="command-reconciler",
+                             tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID",
+                                                 "00000000-0000-0000-0000-000000000000"),
+                             role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ce.id, ce.tenant_id
+              FROM command_executions ce
+              JOIN action_approvals aa ON aa.id = ce.approval_id AND aa.tenant_id = ce.tenant_id
+             WHERE ce.state = 'awaiting_approval'
+               AND aa.status IN ('approved', 'rejected', 'expired')
+               AND aa.decided_at < now() - make_interval(mins => $1)
+               AND ($2::uuid IS NULL OR ce.tenant_id = $2)
+             ORDER BY aa.decided_at
+             LIMIT $3
+            """, STRANDED_RELEASE_GRACE_MINUTES, only_tenant, limit)
+    counts = {"queued": 0, "failed_expired": 0, "cancelled": 0}
+    import outreach_lifecycle
+
+    for row in rows:
+        ctx = TenantContext(agent_id="command-reconciler", tenant_id=str(row["tenant_id"]),
+                            role=Role.PLATFORM_ADMIN)
+        command_id = str(row["id"])
+        try:
+            async with tenant_tx(ctx) as conn:
+                command = await conn.fetchrow(
+                    "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+                if command is None or command["state"] != "awaiting_approval":
+                    continue
+                approval = await conn.fetchrow(
+                    "SELECT status, decided_by, expires_at FROM action_approvals WHERE id=$1::uuid FOR SHARE",
+                    command["approval_id"])
+                if approval is None or approval["status"] == "pending":
+                    continue
+                if approval["status"] in ("rejected", "expired"):
+                    await conn.execute(
+                        "UPDATE command_executions SET state='cancelled', updated_at=now() WHERE id=$1::uuid",
+                        command_id)
+                    await outreach_lifecycle.advance_first_response(
+                        conn, tenant_id=ctx.tenant_id, command_id=command_id,
+                        stage=outreach_lifecycle.Stage.CANCELLED)
+                    counts["cancelled"] += 1
+                    continue
+                if approval["expires_at"] <= datetime.now(timezone.utc):
+                    await conn.execute(
+                        "UPDATE command_executions SET state='failed', updated_at=now(), last_error=$2 "
+                        "WHERE id=$1::uuid", command_id,
+                        "Approved, but it was never queued and the approval has since expired. "
+                        "Nothing was sent; stage it again to send it.")
+                    counts["failed_expired"] += 1
+                    continue
+                stored_draft = _decode(command["draft"])
+                job, _ = await enqueue_job_in_tx(
+                    conn, ctx,
+                    job_type="command:execute",
+                    payload=_execution_payload(
+                        command_id=command_id,
+                        command_type=CommandType(command["command_type"]),
+                        target=_decode(command["target"]),
+                        draft=dict(stored_draft.get("content") or {}),
+                        context=dict(stored_draft.get("context") or {}),
+                        tenant_id=ctx.tenant_id,
+                    ),
+                    idempotency_key=f"command:{command_id}:execute",
+                    created_by=approval["decided_by"] or "command-reconciler",
+                    scheduled_at=command["scheduled_at"],
+                    priority=10,
+                    risk=_RISK[CommandType(command["command_type"])],
+                    approval_id=str(command["approval_id"]),
+                )
+                await conn.execute(
+                    "UPDATE command_executions SET state='queued', job_id=$2::uuid, updated_at=now() "
+                    "WHERE id=$1::uuid", command_id, job["id"])
+                await outreach_lifecycle.advance_first_response(
+                    conn, tenant_id=ctx.tenant_id, command_id=command_id,
+                    stage=outreach_lifecycle.Stage.APPROVED)
+                counts["queued"] += 1
+        except Exception:  # noqa: BLE001 - one bad row must not stop the sweep; it is retried next time
+            logger.exception("stranded command %s not reconciled", command_id)
+    return counts
 
 
 @router.post("/{command_id}/approve", dependencies=[Depends(require_active_subscription)])
@@ -2152,10 +2293,22 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
     """Reject a staged command's approval and cancel the command — the Reject
     button, and a correction that supersedes it (correction.py, F05.04)."""
     command_id = str(row["id"])
-    approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="rejected", reason=reason
-    )
+    # One transaction, like release_command (24.1): a rejection that committed
+    # before the cancel left a command no one could approve or reject again.
     async with tenant_tx(ctx) as conn:
+        current = await conn.fetchrow(
+            "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+        if current["state"] != "awaiting_approval":
+            raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
+        try:
+            decided, before = await decide_approval_in_tx(
+                conn, ctx, str(current["approval_id"]), decision="rejected", reason=reason)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         updated = await conn.fetchrow(
             "UPDATE command_executions SET state='cancelled' WHERE id=$1::uuid RETURNING *",
             command_id,
@@ -2168,6 +2321,7 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
             conn, tenant_id=ctx.tenant_id, command_id=command_id,
             stage=outreach_lifecycle.Stage.CANCELLED,
         )
+    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
     return {"command": _command_dict(updated), "approval": approval}
 
 
