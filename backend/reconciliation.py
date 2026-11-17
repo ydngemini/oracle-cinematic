@@ -180,9 +180,13 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
         out["provider_checks"] = "skipped: recovery mode"
         return out
     out["commands"] = await _reconcile_commands(only_tenant)
-    from messaging_data import repair_missing_outbound_rows  # 25.5: after a provider confirm, too
+    from messaging_data import repair_missing_outbound_rows  # 25.5
 
-    out["sms_rows_repaired"] = await repair_missing_outbound_rows(only_tenant)
+    try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
+        out["sms_rows_repaired"] = await repair_missing_outbound_rows(only_tenant)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("sms log-row repair failed")
+        out["sms_rows_repaired"] = f"failed: {type(exc).__name__}"
     out["purchases"] = await _reconcile_purchases(only_tenant)
     import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)
 

@@ -47,10 +47,14 @@ async def _scenario(monkeypatch):
     agent, lost = f"agent-{s}@live.test", f"lost-{s}@live.test"
     client = str(uuid.uuid4())
     sender = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
-    msg, orphan = f"msg-{s}", f"orphan-{s}"
+    line_now = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
+    erased_phone = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
+    msg, orphan, gone = f"msg-{s}", f"orphan-{s}", f"gone-{s}"
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=4)
     try:
+        from privacy_lifecycle import contact_hmac
+
         async with admin.transaction():
             await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,$3)", T, f"sms-{s}", f"B {s}")
             for who in (agent, lost):
@@ -59,47 +63,70 @@ async def _scenario(monkeypatch):
             await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,$3)",
                                 client, T, f"X {s}")
             account = "AC" + secrets.token_hex(16)
+            # The agent's line TODAY is not the number the text went out from.
             await admin.execute(
                 "INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, active, provider, "
                 "twilio_account_sid, provider_account_id, voice_caller_id_e164, voice_caller_id_verified, "
                 "agent_forward_e164, outbound_verification_status) "
                 "VALUES ($1,$2,$3,true,'twilio',$4,$5,$6,true,'+13025550188','verified')",
-                T, agent, sender, account, account, sender)
-            for who, ref, key in ((agent, msg, "a"), (lost, orphan, "b")):
+                T, agent, line_now, account, account, line_now)
+            # A person erased by a deletion request: their opt-out tombstone remains.
+            await admin.execute("INSERT INTO suppression_tombstones (tenant_id, contact_hmac, channel, reason) "
+                                "VALUES ($1,$2,'*','erased_by_request')", T, contact_hmac(T, erased_phone))
+            for who, ref, key, phone, with_job in ((agent, msg, "a", "+13025550142", True),
+                                                   (lost, orphan, "b", "+13025550142", False),
+                                                   (agent, gone, "c", erased_phone, False)):
+                job = None
+                if with_job:   # the worker's job kept the provider result: the real sender
+                    job = await admin.fetchval(
+                        "INSERT INTO automation_jobs (tenant_id, job_type, queue_name, state, risk_class, payload, "
+                        "priority, max_attempts, idempotency_key, created_by, result, completed_at) "
+                        "VALUES ($1,'command:execute','default','succeeded','outreach','{}'::jsonb,10,5,$2,$3,"
+                        "$4::jsonb, now()) RETURNING id", T, f"job-{s}-{key}", who,
+                        json.dumps({"provider": "telnyx", "reference": ref, "status": "queued",
+                                    "detail": {"to": phone, "from": sender}}))
                 await admin.execute(
                     "INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, target, "
                     "draft, state, idempotency_key, created_by, provider, provider_reference, provider_submitted_at, "
-                    "updated_at) VALUES ($1,'SMS','external','outreach',$2::jsonb,$3::jsonb,'succeeded',$4,$5,"
-                    "'telnyx',$6, now() - interval '10 minutes', now() - interval '10 minutes')",
-                    T, json.dumps({"phone": "+13025550142", "client_id": client}),
-                    json.dumps({"content": {"body": f"hello {s}"}, "context": {}}), f"sms-{s}-{key}", who, ref)
+                    "updated_at, job_id) VALUES ($1,'SMS','external','outreach',$2::jsonb,$3::jsonb,'succeeded',$4,$5,"
+                    "'telnyx',$6, now() - interval '10 minutes', now() - interval '10 minutes', $7)",
+                    T, json.dumps({"phone": phone, "client_id": client} if key != "c" else {"phone": phone}),
+                    json.dumps({"content": {"body": f"hello {s}"}, "context": {}}), f"sms-{s}-{key}", who, ref, job)
 
         # Before: the receipt has nothing to attach to (the webhook answers 503).
         assert await messaging_data.record_delivery_update(
             provider="telnyx", provider_message_id=msg, status="delivered", error_reason=None) is False
 
-        # Two sweeps at once: one row, one timeline entry.
+        # Two repairs at once: exactly one inserts.
         first, second = await asyncio.gather(messaging_data.repair_missing_outbound_rows(T),
                                              messaging_data.repair_missing_outbound_rows(T))
-        assert first["no_sender"] == 1 and second["no_sender"] == 1      # the agent with no line: left for a person
+        assert first["repaired"] + second["repaired"] == 1
         row = await admin.fetchrow(
             "SELECT agent_id, client_id, from_e164, to_e164, status, activity_id, "
             "pgp_sym_decrypt(body_ciphertext, $2) AS body FROM sms_messages WHERE provider='telnyx' "
             "AND provider_message_id=$1", msg, sealed_text.key_for(T))
         assert row is not None
         assert (row["agent_id"], str(row["client_id"]), row["from_e164"], row["to_e164"], row["body"]) == (
-            agent, client, sender, "+13025550142", f"hello {s}")
+            agent, client, sender, "+13025550142", f"hello {s}")       # the send-time sender, not today's line
         assert row["activity_id"] is not None
-        assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE provider_message_id=$1", msg) == 1
         assert await admin.fetchval("SELECT count(*) FROM client_activities WHERE tenant_id=$1", T) == 1
-        assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE provider_message_id=$1", orphan) == 0
+        # Never rebuilt: the agent with no line (left for a person) and the erased person.
+        assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE provider_message_id = ANY($1::text[])",
+                                    [orphan, gone]) == 0
+        set_aside = await admin.fetch("SELECT provider_reference FROM command_executions WHERE tenant_id=$1 "
+                                      "AND reconcile_checked_at IS NOT NULL", uuid.UUID(T))
+        assert {r["provider_reference"] for r in set_aside} == {orphan, gone}
 
         # After: the carrier's retry attaches.
         assert await messaging_data.record_delivery_update(
             provider="telnyx", provider_message_id=msg, status="delivered", error_reason=None) is True
         assert await admin.fetchval("SELECT status FROM sms_messages WHERE provider_message_id=$1", msg) == "delivered"
-        again = await messaging_data.repair_missing_outbound_rows(T)
-        assert again["repaired"] == 0
+
+        # Through the scheduled sweep: rows set aside are not retried every run.
+        import reconciliation
+
+        swept = await reconciliation.run_sweep(only_tenant=T)
+        assert swept["sms_rows_repaired"] == {"repaired": 0, "erased": 0, "no_sender": 0, "failed": 0}
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
