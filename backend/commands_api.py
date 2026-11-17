@@ -43,6 +43,7 @@ import semantic_language
 import ws_hub
 from agent_profile import load_agent_identity
 from approval_service import (
+    approval_dict,
     create_approval,
     decide_approval_in_tx,
     list_approvals,
@@ -2227,7 +2228,16 @@ async def reconcile_stranded_releases(only_tenant: Optional[str] = None, *, limi
     counts = {"queued": 0, "cancelled": 0, "held_not_entitled": 0}
     import outreach_lifecycle
 
+    entitled: dict[str, bool] = {}   # per tenant, read before any row lock is taken
     for row in rows:
+        tenant = str(row["tenant_id"])
+        if tenant not in entitled:
+            try:
+                entitled[tenant] = await billing.entitlement_refusal(TenantContext(
+                    agent_id="command-reconciler", tenant_id=tenant, role=Role.PLATFORM_ADMIN)) is None
+            except Exception:  # noqa: BLE001 - unreadable billing: hold, never queue
+                entitled[tenant] = False
+
         ctx = TenantContext(agent_id="command-reconciler", tenant_id=str(row["tenant_id"]),
                             role=Role.PLATFORM_ADMIN)
         command_id = str(row["id"])
@@ -2256,13 +2266,17 @@ async def reconcile_stranded_releases(only_tenant: Optional[str] = None, *, limi
                         stage=outreach_lifecycle.Stage.CANCELLED)
                     counts["cancelled"] += 1
                     continue
-                if await billing.entitlement_refusal(ctx) is not None:
+                if not entitled[str(row["tenant_id"])]:
                     counts["held_not_entitled"] += 1   # F18.07: nothing queued for a lapsed/closing brokerage
                     continue
                 queued_job = await _queue_execution_in_tx(
                     conn, ctx, command, created_by=approval["decided_by"] or "command-reconciler")
                 counts["queued"] += 1
-            if queued_job is not None:
+        except Exception:  # noqa: BLE001 - one bad row must not stop the sweep; it is retried next time
+            logger.exception("stranded command %s not reconciled", command_id)
+            continue
+        if queued_job is not None:
+            try:
                 await ledger.record(
                     category=AuditCategory.USER_STATE_CHANGE,
                     action="command_release_reconciled",
@@ -2272,8 +2286,8 @@ async def reconcile_stranded_releases(only_tenant: Optional[str] = None, *, limi
                     metadata={"job_id": str(queued_job["id"]), "approval_id": str(command["approval_id"]),
                               "reason": "approved release had not been queued (24.1)"},
                 )
-        except Exception:  # noqa: BLE001 - one bad row must not stop the sweep; it is retried next time
-            logger.exception("stranded command %s not reconciled", command_id)
+            except Exception:  # noqa: BLE001 - the command IS queued; only its audit entry failed
+                logger.exception("stranded command %s queued, but its audit entry failed", command_id)
     return counts
 
 
@@ -2321,13 +2335,21 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
             raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
         if current["approval_id"] is None:
             raise HTTPException(status_code=409, detail="This command has no approval to reject.")
-        try:
-            decided, before = await decide_approval_in_tx(
-                conn, ctx, str(current["approval_id"]), decision="rejected", reason=reason)
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        lapsed = await conn.fetchrow(
+            "SELECT * FROM action_approvals WHERE id=$1::uuid FOR UPDATE", current["approval_id"])
+        if lapsed is not None and lapsed["status"] == "expired":
+            # Approve was clicked after expiry (24.1 keeps the command staged):
+            # Reject still withdraws it — the person who may decide it can cancel it.
+            require_decider(ctx, lapsed)
+            decided = before = None
+        else:
+            try:
+                decided, before = await decide_approval_in_tx(
+                    conn, ctx, str(current["approval_id"]), decision="rejected", reason=reason)
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         updated = await conn.fetchrow(
             "UPDATE command_executions SET state='cancelled' WHERE id=$1::uuid RETURNING *",
             command_id,
@@ -2340,6 +2362,8 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
             conn, tenant_id=ctx.tenant_id, command_id=command_id,
             stage=outreach_lifecycle.Stage.CANCELLED,
         )
+    if decided is None:
+        return {"command": _command_dict(updated), "approval": approval_dict(lapsed)}
     approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
     return {"command": _command_dict(updated), "approval": approval}
 
@@ -3394,6 +3418,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             # never send it, and never retry it.
             superseded = RuntimeError("this job's approval was replaced by an edit; not sent")
             superseded.job_terminal = True
+            superseded.job_error_code = "APPROVAL_SUPERSEDED"
             raise superseded
         if command["state"] not in {"queued", "failed"}:
             raise RuntimeError(f"command is not executable from state {command['state']}")

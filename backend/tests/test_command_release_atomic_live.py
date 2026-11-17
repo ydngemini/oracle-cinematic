@@ -168,6 +168,12 @@ async def _scenario(monkeypatch):
                 Reporter())
         assert getattr(superseded.value, "job_terminal", False) is True
         assert await state(stranded["approved"]["id"]) == ("queued", "approved", 1)
+        assert getattr(superseded.value, "job_error_code", "") == "APPROVAL_SUPERSEDED"
+
+        # 7. Reject still withdraws a command whose approval expired at the click.
+        withdrawn = await commands_api.withdraw_command(octx, late, reason="rejected in test")
+        assert withdrawn["command"]["state"] == "cancelled"
+        assert await state(late["id"]) == ("cancelled", "expired", 0)
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
