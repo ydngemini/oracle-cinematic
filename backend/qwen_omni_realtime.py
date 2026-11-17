@@ -273,46 +273,46 @@ class QwenOmniRealtimeBridge:
             ping_timeout=20,
             max_size=8 * 1024 * 1024,
         )
-        await self._send_qwen(
-            {
-                "type": "session.update",
-                "session": {
-                    "modalities": ["text", "audio"],
-                    "voice": self.settings.voice,
-                    "instructions": self._session_instructions(),
-                    "enable_search": False,
-                    "input_audio_format": "pcm",
-                    "output_audio_format": "pcm",
-                    "input_audio_transcription": {
-                        "model": "qwen3-asr-flash-realtime"
-                    },
-                    "turn_detection": {
-                        "type": "semantic_vad",
-                        "threshold": 0.1,
-                        "prefix_padding_ms": 500,
-                        "silence_duration_ms": 700,
-                    },
-                },
-            }
-        )
-
-        qwen_task = asyncio.create_task(
-            self._qwen_to_acs(), name=f"qwen-to-acs:{self.call_connection_id}"
-        )
         try:
-            await asyncio.wait_for(
-                self._session_ready.wait(), timeout=_SESSION_READY_TIMEOUT
+            await self._send_qwen(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["text", "audio"],
+                        "voice": self.settings.voice,
+                        "instructions": self._session_instructions(),
+                        "enable_search": False,
+                        "input_audio_format": "pcm",
+                        "output_audio_format": "pcm",
+                        "input_audio_transcription": {
+                            "model": "qwen3-asr-flash-realtime"
+                        },
+                        "turn_detection": {
+                            "type": "semantic_vad",
+                            "threshold": 0.1,
+                            "prefix_padding_ms": 500,
+                            "silence_duration_ms": 700,
+                        },
+                    },
+                }
             )
-        except asyncio.TimeoutError as exc:
-            qwen_task.cancel()
-            await asyncio.gather(qwen_task, return_exceptions=True)
-            raise QwenRealtimeError("Qwen session configuration timed out") from exc
 
-        acs_task = asyncio.create_task(
-            self._acs_to_qwen(), name=f"acs-to-qwen:{self.call_connection_id}"
-        )
-        tasks = {qwen_task, acs_task}
-        try:
+            qwen_task = asyncio.create_task(
+                self._qwen_to_acs(), name=f"qwen-to-acs:{self.call_connection_id}"
+            )
+            try:
+                await asyncio.wait_for(
+                    self._session_ready.wait(), timeout=_SESSION_READY_TIMEOUT
+                )
+            except asyncio.TimeoutError as exc:
+                qwen_task.cancel()
+                await asyncio.gather(qwen_task, return_exceptions=True)
+                raise QwenRealtimeError("Qwen session configuration timed out") from exc
+
+            acs_task = asyncio.create_task(
+                self._acs_to_qwen(), name=f"acs-to-qwen:{self.call_connection_id}"
+            )
+            tasks = {qwen_task, acs_task}
             done, pending = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
             )
