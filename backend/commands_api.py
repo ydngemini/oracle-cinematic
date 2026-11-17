@@ -2874,8 +2874,11 @@ async def _update_call_session_async(call_connection_id: str, status: str,
         await conn.execute(
             """
             UPDATE live_call_sessions
+               -- An answer retried after the hang-up (Twilio retries a 503,
+               -- 24.3) must not start the call after it ended.
                SET started_at=CASE WHEN $2='in-progress'
-                                    THEN COALESCE(started_at,now()) ELSE started_at END,
+                                    THEN COALESCE(started_at, LEAST(now(), COALESCE(ended_at, now())))
+                                    ELSE started_at END,
                    -- The first final callback wins; duplicates do not move it.
                    ended_at=CASE WHEN $2 IN ('completed','failed')
                                   THEN COALESCE(ended_at, now()) ELSE ended_at END,
@@ -2919,7 +2922,8 @@ async def _record_call_answered(provider_call_id: str) -> None:
 
 
 async def record_call_outcome(provider_call_id: str, call_status: str,
-                              duration_seconds: Optional[int] = None) -> None:
+                              duration_seconds: Optional[int] = None, *,
+                              provider: str = "plivo") -> None:
     """Carrier-confirmed call status → live_call_sessions + the client's timeline.
 
     Plivo's outbound status callback only logged and cleaned up, so an approved
@@ -2946,8 +2950,11 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     if summary is None:
         return
     await _update_call_session_async(provider_call_id, "completed", outcome=status_value)
-    if status_value == "completed" and duration_seconds is not None and duration_seconds <= 0:
+    if (status_value == "completed" and duration_seconds is not None and duration_seconds <= 0
+            and provider != "twilio"):
         # Plivo reports a never-answered call as completed with zero billed time.
+        # Twilio does not: an unanswered Twilio call is no-answer/busy, and its
+        # 'completed' at 0 s is an answer hung up at once (already delivered).
         summary = "Call not answered"
     elif status_value == "completed" and duration_seconds:
         minutes, seconds = divmod(int(duration_seconds), 60)
@@ -3076,7 +3083,7 @@ async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, 
                     UPDATE provider_call_outcomes o SET claimed_until = now() + interval '2 minutes'
                      WHERE o.id = $1 AND o.applied_at IS NULL
                        AND (o.claimed_until IS NULL OR o.claimed_until < now())
-                    RETURNING o.id, o.tenant_id, o.call_status, o.duration_seconds,
+                    RETURNING o.id, o.tenant_id, o.provider, o.call_status, o.duration_seconds,
                               (SELECT s.provider_call_id FROM live_call_sessions s
                                 WHERE s.tenant_id = o.tenant_id
                                   AND (s.provider_call_id = o.provider_call_id
@@ -3090,7 +3097,7 @@ async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, 
                 continue
             try:
                 await record_call_outcome(claimed["session_call_id"], claimed["call_status"],
-                                          claimed["duration_seconds"])
+                                          claimed["duration_seconds"], provider=claimed["provider"])
             except Exception:
                 await _release_call_outcome(claimed["id"])
                 raise
@@ -4185,9 +4192,48 @@ async def twilio_tts_audio(token: str):
     )
 
 
+#: Twilio call statuses that carry an outcome. initiated/ringing/queued say
+#: nothing the session or the first response needs.
+_TWILIO_OUTCOME_STATUSES = frozenset({"in-progress", "answered", "completed", "busy", "failed",
+                                      "no-answer", "canceled"})
+_TWILIO_TERMINAL_STATUSES = frozenset({"completed", "busy", "failed", "no-answer", "canceled"})
+
+
+async def _twilio_call_brokerage(call_sid: str) -> str:
+    """The brokerage whose outbound Twilio call this is: from the call state the
+    worker wrote, else from the call session recorded with it. '' when
+    neither knows it yet (the callback beat the worker; 24.2)."""
+    from twilio_call_handler import load_twilio_call_state
+
+    try:
+        state = await load_twilio_call_state(call_sid)
+    except Exception:  # noqa: BLE001 - the command row below still knows
+        logger.warning("Twilio call state unreadable for %s; using the command record", call_sid,
+                       exc_info=True)
+        state = None
+    if state and state.get("direction") == "outbound" and state.get("tenant_id"):
+        return str(state["tenant_id"])
+    async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
+        tenant = await conn.fetchval(
+            # Written with the command's provider reference, in one
+            # transaction; indexed by provider_call_id (0174).
+            "SELECT tenant_id::text FROM live_call_sessions WHERE provider_call_id = $1 LIMIT 1",
+            call_sid)
+    return str(tenant or "")
+
+
 @router.post("/webhooks/twilio/status", include_in_schema=False)
 async def twilio_status_webhook(request: Request):
-    """Consume signed Twilio call lifecycle events and release Redis state."""
+    """Signed Twilio outbound call status → the same durable outcome path as
+    Plivo (external audit 24.3).
+
+    This route used to update live_call_sessions and clean up Redis only, so a
+    Twilio call's answer never reached record_call_outcome: no first-response
+    delivery, no lead_engaged meter, no carrier line on the client's timeline.
+    Now the outcome is stored in provider_call_outcomes before Twilio is
+    answered and applied through record_call_outcome, once, whether it arrives
+    before or after the worker writes the session.
+    """
     from twilio_call_handler import cleanup_twilio_call
 
     form = await request.form()
@@ -4198,14 +4244,31 @@ async def twilio_status_webhook(request: Request):
     )
     call_sid = str(form.get("CallSid") or "")
     call_status = str(form.get("CallStatus") or "").strip().lower()
-    if call_sid:
-        # Awaited, not fire-and-forget: if the write fails the exception
-        # becomes a 503 and Twilio retries, instead of the outcome vanishing.
-        if call_status in {"in-progress", "answered"}:
-            await _update_call_session_async(call_sid, "in-progress")
-        elif call_status in {"completed", "busy", "failed", "no-answer", "canceled"}:
-            await _update_call_session_async(call_sid, "completed", outcome=call_status)
-            await cleanup_twilio_call(call_sid)
+    if call_sid and call_status in _TWILIO_OUTCOME_STATUSES:
+        try:
+            duration: Optional[int] = int(str(form.get("CallDuration") or "").strip())
+        except ValueError:
+            duration = None
+        if duration is not None and not 0 <= duration < 2**31:
+            duration = None       # 0174's CHECK would refuse it on every retry
+        try:
+            brokerage = await _twilio_call_brokerage(call_sid)
+            if not brokerage:
+                # Whose call this is is not known yet, so it cannot be stored
+                # against anyone. 503: Twilio retries (TWILIO_STATUS_RETRY).
+                logger.warning("Twilio call outcome not attributable yet; asking for a retry: sid=%s status=%s",
+                             call_sid, call_status)
+                return Response(status_code=503)
+            await accept_call_outcome("twilio", call_sid, call_status, duration, tenant_id=brokerage)
+        except Exception:  # noqa: BLE001 - answered 503, never acknowledged into oblivion
+            logger.error("Twilio call outcome NOT recorded; asking for a retry: sid=%s status=%s",
+                         call_sid, call_status, exc_info=True)
+            return Response(status_code=503)
+        if call_status in _TWILIO_TERMINAL_STATUSES:
+            try:
+                await cleanup_twilio_call(call_sid)
+            except Exception:  # noqa: BLE001 - the state's TTL ends it
+                logger.warning("Twilio call state cleanup failed: sid=%s", call_sid, exc_info=True)
     logger.info(
         "Twilio call status received: sid=%s status=%s",
         call_sid,

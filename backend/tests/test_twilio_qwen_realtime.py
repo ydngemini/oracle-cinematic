@@ -406,7 +406,7 @@ def test_twilio_calls_api_uses_separate_twiml_and_status_urls(monkeypatch):
     assert captured["url"] == "https://api.example.test/api/commands/webhooks/twilio"
     assert (
         captured["status_callback"]
-        == "https://api.example.test/api/commands/webhooks/twilio/status"
+        == "https://api.example.test/api/commands/webhooks/twilio/status#rc=3&rp=5xx,ct"
     )
     assert captured["status_callback_event"] == [
         "initiated",

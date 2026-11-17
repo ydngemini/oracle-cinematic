@@ -371,6 +371,13 @@ async def create_google_calendar_event(
     )
 
 
+#: Twilio retries a webhook only on a failed connection unless told otherwise
+#: (webhook connection overrides, in the URL fragment, which Twilio leaves out
+#: of the signature). The status route answers 503 when it cannot store an
+#: outcome (external audit 24.3); without this the outcome was simply gone.
+TWILIO_STATUS_RETRY = "#rc=3&rp=5xx,ct"
+
+
 async def place_twilio_call(
     draft: Mapping[str, Any],
     *,
@@ -395,7 +402,7 @@ async def place_twilio_call(
     to_number = str((draft.get("target") or {}).get("phone") or "").strip()
     callback_base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
     status_callback = (
-        f"{callback_base}/api/commands/webhooks/twilio/status"
+        f"{callback_base}/api/commands/webhooks/twilio/status{TWILIO_STATUS_RETRY}"
         if callback_base
         else ""
     )

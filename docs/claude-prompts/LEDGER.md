@@ -3962,10 +3962,10 @@ tests_run:
   - {cmd: "after (revised per independent review): run_migrations (0174) + live test_call_outcome_inbox_live + test_reconciliation_live; unit test_plivo_outbound_webhooks + test_killer_demo_paths", result: "live 2 passed: an early 'completed' is stored (a retry adds no row); once the session exists the worker, a webhook retry and the sweep racing apply it exactly once (one timeline entry, 0:42); a callback that beat the provider ack (stored under Neoh's correlation with the carrier ids as aliases) applies to the session written under the request id via the worker's hook; an outcome for an existing session applies at once; the tenant-confined sweep has nothing left; expiry reports never-matched rows. unit 59 passed incl. the pre-ack route test: aliases carry RequestUUID/CallUUID/correlation and the call state is NOT cleaned up before the reference is recorded", date: 2026-11-17}
 authz_checked: "each outcome is bound to the brokerage whose call state verified the callback's Plivo signature (tenant_id, FK ON DELETE CASCADE) and applies only to a session of that brokerage, so ids a brokerage signs for its own Plivo account (CallUUID/RequestUUID/neoh_ref aliases) cannot reach another brokerage's session (live test: an intruder tenant's outcome naming this brokerage's call ids stays unapplied). Tenant table: RLS + FORCE with the standard tenant-isolation policy; rls_security_review.sql PASS. Applying goes through the unchanged record_call_outcome."
 blockers:
-  - "Plivo only. Twilio's outbound status webhook still does not call record_call_outcome at all (24.3, separate); the table already accepts provider 'twilio' for it."
+  - "Plivo only at the time. Twilio's outbound status webhook now uses this inbox too (24.3, L17-44)."
   - "Early SMS delivery receipts (25.5 follow-up) are not covered by this table."
   - "An outcome whose session is never written (the provider ack could not be persisted -> reconciliation; or a reconcile-confirmed command, which gets no session) waits 30 days and is deleted unapplied; the sweep logs outcomes unmatched after 60 min and counts never-matched expiries."
-  - "Applying runs the unchanged record_call_outcome: only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
+  - "Applying runs record_call_outcome (unchanged here; 24.3 later added its provider argument, L17-44): only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
   - "Session start/end and first-response times use the apply time, not the carrier's arrival time (an outcome applied by the sweep can be up to 15 min late)."
   - "Terminal-status cleanup of the Redis call state is skipped until the worker has recorded the provider reference (the state then expires by TTL); before, a callback that beat the ack deleted it and the worker failed the command into reconciliation."
   - "0174 also adds idx_live_call_sessions_provider_call_id (sessions are now looked up by provider call id on every webhook, worker hook and sweep)."
@@ -4027,6 +4027,35 @@ blockers:
 audit_refs: [21.4]
 decision_refs: []
 next_task: "24.3 Twilio call status via record_call_outcome and the 0174 inbox; 24.2 pre-bound Twilio correlation."
+updated: 2026-11-17
+```
+
+#### L17-44 A Twilio outbound call's status is stored and applied through record_call_outcome, like Plivo's (external audit 24.3)
+```yaml
+id: L17-44
+status: tests_pass
+env: local
+evidence_shas: [929ff4c]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/command_providers.py, backend/tests/test_twilio_call_outcome.py, backend/tests/test_twilio_call_outcome_live.py, backend/tests/test_outbound_verified_caller_id.py, backend/tests/test_twilio_qwen_realtime.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read commands_api.twilio_status_webhook, record_call_outcome, accept_call_outcome and command_providers.place_twilio_call at 929ff4c; Twilio docs (webhook connection overrides)", result: "the Twilio route only UPDATEd live_call_sessions and cleaned up Redis: no record_call_outcome (first-response delivery, lead_engaged meter, timeline line), no durable store, a status before the session updated nothing and answered 204; Twilio retries only a failed connection by default, so the route's '503 -> Twilio retries' never happened", date: 2026-11-17}
+  - {cmd: "red: unit test_twilio_call_outcome against 929ff4c's commands_api.py + command_providers.py", result: "20 red (7 failed, 13 errors: no brokerage resolution, nothing stored, no retry policy)", date: 2026-11-17}
+  - {cmd: "red: live test_twilio_call_outcome_live with 929ff4c's code", result: "fails at the first assertion: an answered call's status stored nothing in provider_call_outcomes", date: 2026-11-17}
+  - {cmd: "after: unit test_twilio_call_outcome + test_outbound_verified_caller_id + test_twilio_qwen_realtime + test_killer_demo_paths (81); live test_twilio_call_outcome_live + test_call_outcome_inbox_live (2); full suite at 98bccbe", result: "all pass (6700 passed)", date: 2026-11-17}
+  - {cmd: "independent review (APPROVE, 4 minor + 5 nits) -> a retried answer after the hang-up no longer starts the call after it ended; a Twilio 'completed' at 0 s stays 'Call answered and ended' (record_call_outcome takes the provider); out-of-range CallDuration is unknown, not a CHECK failure; an unattributable status logs a warning; a real signature test (signed without the fragment: accepted; over it: refused); the live test now proves the first response is delivered and lead_engaged metered once (in-progress + two completed), and an out-of-order 0 s call", result: "all pass", date: 2026-11-17}
+  - {cmd: "full suite (tests + compliance_engine/tests) at 2803c5e, after the review fixes; independent re-review APPROVE (2 optional nits: the provider default stays plivo, as the only production caller passes it; L17-41 wording updated)", result: "6703 passed, 133 skipped", date: 2026-11-17}
+authz_checked: "Signature (platform TWILIO_AUTH_TOKEN) is checked before anything is read or stored. The outcome is stored against the brokerage of the outbound call state the worker wrote (direction outbound only), else of the live_call_sessions row with that CallSid; it applies only to that brokerage's session (0174's tenant match)."
+blockers:
+  - "A status that arrives before the worker has written the call state (Twilio's create call has not returned yet; 24.2) cannot be attributed: answered 503, and the status callback URL now carries Twilio's retry override (#rc=3&rp=5xx,ct; the fragment is not signed). Twilio caps retries inside its 15 s webhook window, so a longer gap still loses that status; 24.2's pre-bound correlation is the real fix."
+  - "Calls placed on a brokerage's own Twilio account are signed with that account's token, which this route has never checked (only the platform token): their status callbacks are still refused, as before."
+  - "initiated/ringing/queued are not stored (they carry no outcome). An answered call adds up to two rows (in-progress, then completed); rows expire after 30 days (CALL_OUTCOME_KEEP_DAYS)."
+  - "Twilio 'completed' always means answered (an unanswered call is no-answer/busy), so a 0 s Twilio 'completed' is not rewritten to 'Call not answered' (Plivo's rule stays Plivo's). A missing, unparseable or out-of-range CallDuration is stored as unknown, which record_call_outcome does not count as delivery on 'completed' (the earlier in-progress already did)."
+  - "Inherited: the first-response ledger (outreach_lifecycle.advance_first_response / meter_delivered_engagement) never raises by design, so a transient error there is logged and the outcome is still marked applied: that call's delivered stage and lead_engaged meter are lost, as on Plivo. Making the inbox retry it means changing that shared contract (texts, email); separate."
+  - "No answering-machine detection: a voicemail pickup is 'in-progress' and meters lead_engaged, as Plivo already does. A metering decision for the owner."
+  - "Customer-contact/metering change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.3]
+decision_refs: []
+next_task: "24.2 pre-bound Twilio correlation (state before the create call; callbacks resolve it); 24.5/24.6."
 updated: 2026-11-17
 ```
 
