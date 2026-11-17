@@ -14,6 +14,7 @@ Skipped unless ORACLE_LIVE_DB_ADMIN_DSN is set (see test_privacy_lifecycle_live)
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import uuid
@@ -57,7 +58,7 @@ async def _scenario(monkeypatch):
     async def state(cid) -> tuple:
         return tuple(await admin.fetchrow(
             "SELECT ce.state, aa.status, (SELECT count(*) FROM automation_jobs j WHERE j.tenant_id = ce.tenant_id "
-            "AND j.idempotency_key = 'command:' || ce.id || ':execute') AS jobs "
+            "AND j.job_type = 'command:execute' AND j.payload->>'command_id' = ce.id::text) AS jobs "
             "FROM command_executions ce JOIN action_approvals aa ON aa.id = ce.approval_id WHERE ce.id=$1",
             uuid.UUID(str(cid))))
 
@@ -88,8 +89,8 @@ async def _scenario(monkeypatch):
 
         async def peek(conn, **kwargs):
             seen["jobs_visible"] = await admin.fetchval(
-                "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND idempotency_key=$2",
-                uuid.UUID(T), f"command:{row['id']}:execute")
+                "SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 AND job_type='command:execute' "
+                "AND payload->>'command_id' = $2", uuid.UUID(T), str(row["id"]))
             return await real_advance(conn, **kwargs)
 
         monkeypatch.setattr(outreach_lifecycle, "advance_first_response", peek)
@@ -110,7 +111,8 @@ async def _scenario(monkeypatch):
         assert await state(rej["id"]) == ("awaiting_approval", "pending", 0)
         monkeypatch.setattr(outreach_lifecycle, "advance_first_response", real_advance)
 
-        # 4. An expired approval: a 409, the 'expired' decision is kept, nothing queued.
+        # 4. An expired approval: a 409, the 'expired' decision is kept, nothing
+        #    queued, and the command stays staged (editable), as it was before.
         late = await stage("late")
         await admin.execute("UPDATE action_approvals SET expires_at = now() - interval '1 minute' "
                             "WHERE id = (SELECT approval_id FROM command_executions WHERE id=$1)", late["id"])
@@ -120,25 +122,52 @@ async def _scenario(monkeypatch):
         assert await state(late["id"]) == ("awaiting_approval", "expired", 0)
 
         # 5. Commands stranded by the old three-transaction release are repaired.
-        stranded = {k: await stage(k) for k in ("approved", "approved_expired", "rejected")}
+        stranded = {k: await stage(k) for k in ("approved", "approved_expired", "rejected", "dead_job")}
         for k, status, expiry in (("approved", "approved", 1440),
                                   ("approved_expired", "approved", -1),
-                                  ("rejected", "rejected", 1440)):
+                                  ("rejected", "rejected", 1440),
+                                  ("dead_job", "approved", 1440)):
             await admin.execute(
                 "UPDATE action_approvals SET status=$2, decided_by=$3, decided_at=now() - interval '10 minutes', "
                 "expires_at = now() + make_interval(mins => $4) WHERE id = (SELECT approval_id FROM command_executions WHERE id=$1)",
                 stranded[k]["id"], status, owner, expiry)
         await admin.execute("UPDATE action_approvals SET decided_at = now() - interval '10 minutes' "
                             "WHERE id = (SELECT approval_id FROM command_executions WHERE id=$1)", late["id"])
+        # The old release's job committed and the worker dead-lettered it
+        # ("not executable from awaiting_approval"): the sweep must not attach it.
+        dead_cmd = stranded["dead_job"]
+        dead_job = await admin.fetchval(
+            "INSERT INTO automation_jobs (tenant_id, job_type, queue_name, state, risk_class, payload, priority, "
+            "max_attempts, attempt_count, idempotency_key, approval_id, created_by, completed_at) "
+            "VALUES ($1,'command:execute','default','dead_letter','outreach',$2::jsonb,10,5,5,$3,$4,$5,now()) "
+            "RETURNING id", uuid.UUID(T), json.dumps({"command_id": str(dead_cmd["id"])}),
+            f"command:{dead_cmd['id']}:execute", dead_cmd["approval_id"], owner)
         counts = await commands_api.reconcile_stranded_releases(T)
-        assert counts == {"queued": 1, "failed_expired": 1, "cancelled": 2}
+        assert counts == {"queued": 2, "cancelled": 2, "held_not_entitled": 0}
         assert await state(stranded["approved"]["id"]) == ("queued", "approved", 1)
-        assert await state(stranded["approved_expired"]["id"]) == ("failed", "approved", 0)
+        assert await state(stranded["approved_expired"]["id"]) == ("cancelled", "approved", 0)
         assert await state(stranded["rejected"]["id"]) == ("cancelled", "rejected", 0)
-        assert await state(late["id"]) == ("cancelled", "expired", 0)
-        job = await admin.fetchval("SELECT job_id FROM command_executions WHERE id=$1", stranded["approved"]["id"])
-        assert job is not None
-        assert await commands_api.reconcile_stranded_releases(T) == {"queued": 0, "failed_expired": 0, "cancelled": 0}
+        assert await state(late["id"]) == ("awaiting_approval", "expired", 0)     # still editable
+        new_job = await admin.fetchrow(
+            "SELECT j.id, j.state FROM command_executions ce JOIN automation_jobs j ON j.id = ce.job_id "
+            "WHERE ce.id=$1", dead_cmd["id"])
+        assert new_job["id"] != dead_job and new_job["state"] == "queued"
+        assert await commands_api.reconcile_stranded_releases(T) == {"queued": 0, "cancelled": 0,
+                                                                     "held_not_entitled": 0}
+
+        # 6. A job built for an approval an edit replaced never runs, and never retries.
+        class Reporter:
+            job = {"tenant_id": T, "approval_id": str(uuid.uuid4()), "created_by": owner}
+
+            async def progress(self, *_a, **_k):
+                raise AssertionError("must stop before any work")
+
+        with pytest.raises(RuntimeError) as superseded:
+            await commands_api._execute_command_job(
+                {"command_type": "EMAIL", "command_id": str(stranded["approved"]["id"]), "target": {}, "draft": {}},
+                Reporter())
+        assert getattr(superseded.value, "job_terminal", False) is True
+        assert await state(stranded["approved"]["id"]) == ("queued", "approved", 1)
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

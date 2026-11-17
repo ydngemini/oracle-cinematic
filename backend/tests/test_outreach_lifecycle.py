@@ -399,7 +399,9 @@ def test_approval_and_rejection_move_the_first_response():
 
     import commands_api as ca
 
-    assert "Stage.APPROVED" in inspect.getsource(ca.release_command)
+    # Release queues through _queue_execution_in_tx, which advances the stage (24.1).
+    assert "_queue_execution_in_tx(" in inspect.getsource(ca.release_command)
+    assert "Stage.APPROVED" in inspect.getsource(ca._queue_execution_in_tx)
     # Reject and a correction both cancel through withdraw_command (L05-07).
     assert "withdraw_command" in inspect.getsource(ca.reject_command)
     assert "Stage.CANCELLED" in inspect.getsource(ca.withdraw_command)

@@ -184,7 +184,11 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
         return out
     from commands_api import reconcile_stranded_releases  # 24.1; queues work, so not in recovery mode
 
-    out["stranded_releases"] = await reconcile_stranded_releases(only_tenant)
+    try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
+        out["stranded_releases"] = await reconcile_stranded_releases(only_tenant)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("stranded-release reconciliation failed")
+        out["stranded_releases"] = f"failed: {type(exc).__name__}"
     out["commands"] = await _reconcile_commands(only_tenant)
     out["purchases"] = await _reconcile_purchases(only_tenant)
     import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)

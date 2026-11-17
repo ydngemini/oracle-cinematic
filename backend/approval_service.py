@@ -160,7 +160,8 @@ async def decide_approval(
         row, existing = await decide_approval_in_tx(
             conn, ctx, approval_id, decision=decision, reason=reason,
             expected_action_type=expected_action_type)
-    return await record_approval_decision(ctx, approval_id, row, existing, edited_payload=edited_payload)
+    return await record_approval_decision(ctx, approval_id, row, existing, edited_payload=edited_payload,
+                                          reason=validate_approval_reason(reason))
 
 
 async def decide_approval_in_tx(
@@ -243,9 +244,11 @@ async def record_approval_decision(
     existing: Any,
     *,
     edited_payload: Optional[Mapping[str, Any]] = None,
+    reason: Optional[str] = None,
 ) -> dict[str, Any]:
     """After the decision has COMMITTED: audit it and capture it as training
-    signal. Returns the approval as the API reports it."""
+    signal. Returns the approval as the API reports it. `reason` defaults to
+    the one stored on the decided row."""
     approval = approval_dict(row)
     await ledger.record(
         category=AuditCategory.ADMIN_ACTION
@@ -255,7 +258,8 @@ async def record_approval_decision(
         tenant_id=ctx.tenant_id,
         user_id=ctx.agent_id,
         target_id=approval_id,
-        metadata={"reason": row["reason"], "risk_class": existing["risk_class"]},
+        metadata={"reason": reason if reason is not None else row["reason"],
+                  "risk_class": existing["risk_class"]},
     )
 
     # Capture the judgement as training signal. This runs after the decision is
