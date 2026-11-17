@@ -1,0 +1,10 @@
+.root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+  padding: var(--space-4);
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-dim, rgba(244, 244, 245, 0.62));
+}
