@@ -1252,22 +1252,24 @@ async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, lim
                        ORDER BY r.active DESC, r.updated_at DESC NULLS LAST LIMIT 1)) AS sender,
                    (NULLIF(ce.target->>'client_id', '') IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM clients c WHERE c.tenant_id = ce.tenant_id
-                          AND c.id::text = ce.target->>'client_id'))
+                          AND c.id::text = lower(ce.target->>'client_id')))
                    OR (NULLIF(ce.target->>'contact_id', '') IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM agent_contacts a WHERE a.tenant_id = ce.tenant_id
-                          AND a.id::text = ce.target->>'contact_id')) AS record_gone
+                          AND a.id::text = lower(ce.target->>'contact_id'))) AS record_gone
               FROM command_executions ce
               LEFT JOIN automation_jobs j ON j.id = ce.job_id AND j.tenant_id = ce.tenant_id
              WHERE ce.command_type = 'SMS' AND ce.state = 'succeeded' AND ce.provider = 'telnyx'
                AND ce.provider_reference IS NOT NULL
-               AND ce.updated_at < now() - interval '2 minutes'
-               AND ce.updated_at > now() - interval '30 days'
+               -- the SEND time: updated_at moves with every write (set_updated_at
+               -- trigger), including this repair's own set-aside mark
+               AND COALESCE(ce.provider_submitted_at, ce.created_at) < now() - interval '2 minutes'
+               AND COALESCE(ce.provider_submitted_at, ce.created_at) > now() - interval '30 days'
                AND (ce.reconcile_checked_at IS NULL
                     OR ce.reconcile_checked_at < now() - make_interval(hours => $3))
                AND ($1::uuid IS NULL OR ce.tenant_id = $1)
                AND NOT EXISTS (SELECT 1 FROM sms_messages m
                                 WHERE m.provider = 'telnyx' AND m.provider_message_id = ce.provider_reference)
-             ORDER BY ce.reconcile_checked_at NULLS FIRST, ce.updated_at
+             ORDER BY ce.reconcile_checked_at NULLS FIRST, COALESCE(ce.provider_submitted_at, ce.created_at)
              LIMIT $2
             """, only_tenant, limit, REPAIR_RECHECK_HOURS)
     counts = {"repaired": 0, "erased": 0, "no_sender": 0, "failed": 0}

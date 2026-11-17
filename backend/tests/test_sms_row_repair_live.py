@@ -49,7 +49,8 @@ async def _scenario(monkeypatch):
     sender = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
     line_now = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
     erased_phone = "+1302" + str(secrets.randbelow(10 ** 7)).zfill(7)
-    msg, orphan, gone = f"msg-{s}", f"orphan-{s}", f"gone-{s}"
+    msg, orphan, gone, deleted = f"msg-{s}", f"orphan-{s}", f"gone-{s}", f"deleted-{s}"
+    client_deleted = str(uuid.uuid4())
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=4)
     try:
@@ -60,8 +61,8 @@ async def _scenario(monkeypatch):
             for who in (agent, lost):
                 await admin.execute("INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
                                     "VALUES ($1,$2,'agent',$2,'scrypt$x$y')", T, who)
-            await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,$3)",
-                                client, T, f"X {s}")
+            await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,$3),($4,$2,$5)",
+                                client, T, f"X {s}", client_deleted, f"Y {s}")
             account = "AC" + secrets.token_hex(16)
             # The agent's line TODAY is not the number the text went out from.
             await admin.execute(
@@ -75,7 +76,8 @@ async def _scenario(monkeypatch):
                                 "VALUES ($1,$2,'*','erased_by_request')", T, contact_hmac(T, erased_phone))
             for who, ref, key, phone, with_job in ((agent, msg, "a", "+13025550142", True),
                                                    (lost, orphan, "b", "+13025550142", False),
-                                                   (agent, gone, "c", erased_phone, False)):
+                                                   (agent, gone, "c", erased_phone, False),
+                                                   (agent, deleted, "d", "+13025550143", False)):
                 job = None
                 if with_job:   # the worker's job kept the provider result: the real sender
                     job = await admin.fetchval(
@@ -90,8 +92,11 @@ async def _scenario(monkeypatch):
                     "draft, state, idempotency_key, created_by, provider, provider_reference, provider_submitted_at, "
                     "updated_at, job_id) VALUES ($1,'SMS','external','outreach',$2::jsonb,$3::jsonb,'succeeded',$4,$5,"
                     "'telnyx',$6, now() - interval '10 minutes', now() - interval '10 minutes', $7)",
-                    T, json.dumps({"phone": phone, "client_id": client} if key != "c" else {"phone": phone}),
+                    T, json.dumps({"c": {"phone": phone}, "d": {"phone": phone, "client_id": client_deleted}}.get(
+                        key, {"phone": phone, "client_id": client})),
                     json.dumps({"content": {"body": f"hello {s}"}, "context": {}}), f"sms-{s}-{key}", who, ref, job)
+
+        await admin.execute("DELETE FROM clients WHERE id=$1", client_deleted)   # the client it named is gone
 
         # Before: the receipt has nothing to attach to (the webhook answers 503).
         assert await messaging_data.record_delivery_update(
@@ -112,10 +117,10 @@ async def _scenario(monkeypatch):
         assert await admin.fetchval("SELECT count(*) FROM client_activities WHERE tenant_id=$1", T) == 1
         # Never rebuilt: the agent with no line (left for a person) and the erased person.
         assert await admin.fetchval("SELECT count(*) FROM sms_messages WHERE provider_message_id = ANY($1::text[])",
-                                    [orphan, gone]) == 0
+                                    [orphan, gone, deleted]) == 0
         set_aside = await admin.fetch("SELECT provider_reference FROM command_executions WHERE tenant_id=$1 "
                                       "AND reconcile_checked_at IS NOT NULL", uuid.UUID(T))
-        assert {r["provider_reference"] for r in set_aside} == {orphan, gone}
+        assert {r["provider_reference"] for r in set_aside} == {orphan, gone, deleted}
 
         # After: the carrier's retry attaches.
         assert await messaging_data.record_delivery_update(
