@@ -2797,8 +2797,12 @@ async def accept_call_outcome(provider: str, provider_call_id: str, call_status:
     how many outcomes were applied now (0: waiting for the session).
     """
     status_value = (call_status or "").strip().lower()
-    if not provider_call_id or not status_value or not tenant_id:
+    if not provider_call_id or not status_value:
         return 0
+    if not tenant_id:
+        # A verified callback always has its brokerage; without one the outcome
+        # cannot be attributed — answered 503, never acknowledged into oblivion.
+        raise ValueError("call outcome has no brokerage to belong to")
     known = sorted({str(a)[:128] for a in (provider_call_id, *aliases) if a})[:8]
     async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
         await conn.execute(
@@ -2806,7 +2810,7 @@ async def accept_call_outcome(provider: str, provider_call_id: str, call_status:
             INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds,
                                                 call_aliases, tenant_id)
             VALUES ($1, $2, $3, $4, $5::text[], $6::uuid)
-            ON CONFLICT (provider, provider_call_id, call_status) DO UPDATE
+            ON CONFLICT (tenant_id, provider, provider_call_id, call_status) DO UPDATE
                SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds),
                    call_aliases = (SELECT array_agg(DISTINCT a) FROM unnest(
                        provider_call_outcomes.call_aliases || EXCLUDED.call_aliases) a)

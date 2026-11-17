@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS provider_call_outcomes (
     claimed_until     timestamptz,
     applied_at        timestamptz,
     -- one row per (call, status): a carrier retry of the same callback is a no-op
-    CONSTRAINT provider_call_outcomes_event UNIQUE (provider, provider_call_id, call_status)
+    CONSTRAINT provider_call_outcomes_event UNIQUE (tenant_id, provider, provider_call_id, call_status)
 );
 
 -- The apply step looks up pending outcomes by call id, and the sweep scans
