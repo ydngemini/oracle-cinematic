@@ -89,9 +89,10 @@ def test_statuses_without_an_outcome_store_nothing(hook, status):
     assert hook.accepted == [] and hook.cleaned == []
 
 
-def test_an_unparseable_duration_is_unknown_not_zero(hook):
-    _post({"CallSid": SID, "CallStatus": "completed", "CallDuration": "soon"})
-    assert hook.accepted[0][3] is None    # unknown is not "not answered"
+@pytest.mark.parametrize("raw", ["soon", "-5", str(2**31)])
+def test_an_unusable_duration_is_unknown_not_zero(hook, raw):
+    _post({"CallSid": SID, "CallStatus": "completed", "CallDuration": raw})
+    assert hook.accepted[0][3] is None    # unknown is not "not answered"; never a CHECK failure
 
 
 def test_an_outcome_that_cannot_be_stored_asks_twilio_to_retry(hook):
@@ -127,8 +128,30 @@ def test_twilio_is_told_to_retry_a_failed_status_callback(monkeypatch):
     assert command_providers.TWILIO_STATUS_RETRY.startswith("#")
     assert "rp=5xx" in command_providers.TWILIO_STATUS_RETRY
     assert "{TWILIO_STATUS_RETRY}" in inspect.getsource(command_providers.place_twilio_call)
-    # The validator signs the path alone: no fragment can reach it.
-    assert "#" not in "/api/commands/webhooks/twilio/status"
+
+
+def test_a_status_signed_for_the_url_without_its_fragment_is_accepted(monkeypatch):
+    """Twilio is given .../status#rc=3&rp=5xx,ct and signs the URL without the
+    fragment; the validator must accept exactly that, and refuse a signature
+    over the fragment form."""
+    import command_providers
+    from fastapi import HTTPException
+    from twilio.request_validator import RequestValidator
+
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://api.example.test")
+    suffix = "/api/commands/webhooks/twilio/status"
+    given = f"https://api.example.test{suffix}{command_providers.TWILIO_STATUS_RETRY}"
+    params = {"CallSid": SID, "CallStatus": "completed"}
+    signed = RequestValidator("test-token").compute_signature(given.split("#", 1)[0], params)
+
+    request = _Request(params)
+    request.headers["X-Twilio-Signature"] = signed
+    ca._validate_twilio_webhook_signature(request, request._form, suffix)   # accepted
+
+    request.headers["X-Twilio-Signature"] = RequestValidator("test-token").compute_signature(given, params)
+    with pytest.raises(HTTPException):
+        ca._validate_twilio_webhook_signature(request, request._form, suffix)
 
 
 # ── whose call is it ──────────────────────────────────────────────────────

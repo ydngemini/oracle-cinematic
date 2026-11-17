@@ -16,6 +16,7 @@ import json
 import os
 import secrets
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -46,8 +47,10 @@ async def _scenario(monkeypatch):
     import asyncpg
 
     import commands_api
+    import speed_to_lead
     import twilio_call_handler
     from db import connection
+    from tenancy import Role, TenantContext
 
     s = secrets.token_hex(5)
     T = str(uuid.uuid4())
@@ -55,7 +58,9 @@ async def _scenario(monkeypatch):
     client = str(uuid.uuid4())
     sid = "CA" + secrets.token_hex(16)
     early = "CA" + secrets.token_hex(16)
-    states = {sid: {"tenant_id": T, "direction": "outbound"}}
+    reordered = "CA" + secrets.token_hex(16)
+    states = {sid: {"tenant_id": T, "direction": "outbound"},
+              reordered: {"tenant_id": T, "direction": "outbound"}}
     answered = []
 
     async def load_state(call_sid, **_k):
@@ -87,12 +92,26 @@ async def _scenario(monkeypatch):
                                 "VALUES ($1,$2,'broker_owner',$2,'scrypt$x$y')", T, owner)
             await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,$3)",
                                 client, T, f"X {s}")
-            command = await admin.fetchval(
-                "INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, target, "
-                "draft, state, idempotency_key, created_by, provider, provider_reference) "
-                "VALUES ($1,'CALL','external','outreach',$2::jsonb,'{}'::jsonb,'executing',$3,$4,'twilio',$5) "
-                "RETURNING id", T, json.dumps({"phone": "+13025550142", "client_id": client}),
-                f"call-{s}", owner, sid)
+            commands = []
+            for key, call_sid in (("a", sid), ("b", reordered)):
+                commands.append(await admin.fetchval(
+                    "INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, "
+                    "target, draft, state, idempotency_key, created_by, provider, provider_reference) "
+                    "VALUES ($1,'CALL','external','outreach',$2::jsonb,'{}'::jsonb,'succeeded',$3,$4,'twilio',$5) "
+                    "RETURNING id", T, json.dumps({"phone": "+13025550142", "client_id": client}),
+                    f"call-{s}-{key}", owner, call_sid))
+            command = commands[0]
+        # A speed-to-lead first response for this call: the answer delivers it
+        # and meters lead_engaged, once (the audit's headline effect).
+        worker = TenantContext(agent_id="command-worker", tenant_id=T, role=Role.PLATFORM_ADMIN)
+        await speed_to_lead._record_response_event(
+            worker, intake_event_id=str(uuid.uuid4()), contact_id=None, client_id=None, lead_id=None,
+            channel="voice", disposition="staged", command_id=str(command),
+            lead_created_at=datetime.now(timezone.utc) - timedelta(seconds=30))
+
+        async def engaged():
+            return await admin.fetchval("SELECT count(*) FROM billing_usage_events WHERE tenant_id=$1 "
+                                        "AND metric='lead_engaged'", uuid.UUID(T))
 
         # The answer beats the worker's session row: stored, nothing applied.
         assert await post({"CallSid": sid, "CallStatus": "in-progress"}) == 204
@@ -113,6 +132,9 @@ async def _scenario(monkeypatch):
         assert session["started_at"] is not None and session["ended_at"] is not None
         assert session["outcome"] == "completed"
         assert answered and set(answered) == {sid}         # the first response is told it was answered
+        assert await admin.fetchval("SELECT disposition FROM lead_response_events WHERE command_id=$1",
+                                    command) == "delivered"
+        assert await engaged() == 1                        # once, despite in-progress + two completed
         rows = await admin.fetch("SELECT summary, meta FROM client_activities WHERE tenant_id=$1 "
                                  "AND meta->>'provider_call_id' = $2", uuid.UUID(T), sid)
         assert len(rows) == 1 and "0:42" in rows[0]["summary"]
@@ -131,6 +153,24 @@ async def _scenario(monkeypatch):
                                     "WHERE provider_call_id=$1 AND call_status='busy'", sid) == T
         assert await admin.fetchval("SELECT outcome FROM live_call_sessions WHERE provider_call_id=$1",
                                     sid) == "completed"     # the first final outcome stands
+        assert await engaged() == 1
+
+        # Out of order (a retried answer after the hang-up): the call never
+        # starts after it ended, and a 0 s Twilio 'completed' is not "not answered".
+        await admin.execute(
+            "INSERT INTO live_call_sessions (tenant_id, command_id, client_id, consent_recorded, consent_basis, "
+            "transcript_status, provider_call_id, created_by) VALUES ($1,$2,$3,false,"
+            "'awaiting_explicit_live_transcription_consent','pending',$4,$5)",
+            T, commands[1], client, reordered, owner)
+        assert await post({"CallSid": reordered, "CallStatus": "completed", "CallDuration": "0"}) == 204
+        await asyncio.sleep(0.05)
+        assert await post({"CallSid": reordered, "CallStatus": "in-progress"}) == 204
+        session = await admin.fetchrow("SELECT started_at, ended_at FROM live_call_sessions "
+                                       "WHERE provider_call_id=$1", reordered)
+        assert session["started_at"] <= session["ended_at"]
+        summary = await admin.fetchval("SELECT summary FROM client_activities WHERE tenant_id=$1 "
+                                       "AND meta->>'provider_call_id' = $2", uuid.UUID(T), reordered)
+        assert summary.startswith("Call answered and ended")
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

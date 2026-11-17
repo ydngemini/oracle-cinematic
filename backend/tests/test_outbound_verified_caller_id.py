@@ -252,7 +252,9 @@ def test_all_eight_call_states_are_accepted_without_error(patched_webhook):
 outcomes: list = []
 
 
-def test_active_states_map_to_in_progress_and_terminal_states_map_to_completed(patched_webhook):
+def test_outcome_statuses_are_stored_and_terminal_ones_clean_up(patched_webhook):
+    """The session mapping itself is record_call_outcome's, proven live in
+    test_twilio_call_outcome_live; here: which statuses are stored, and cleanup."""
     updates, cleanups = patched_webhook
     call_sid = "CA" + "b" * 32
 
