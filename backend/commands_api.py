@@ -2768,6 +2768,84 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
         logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)
 
 
+CALL_OUTCOME_KEEP_DAYS = 30
+
+
+async def accept_call_outcome(provider: str, provider_call_id: str, call_status: str,
+                              duration_seconds: Optional[int] = None) -> int:
+    """A verified carrier call outcome, made durable BEFORE the carrier is
+    acknowledged, then applied if its call session exists (external audit 24.4).
+
+    The worker writes live_call_sessions only after the provider acknowledges
+    the call, so a status callback can arrive first. record_call_outcome then
+    updated nothing, the route answered 204 and the outcome was lost. Now it
+    waits in provider_call_outcomes and is applied when the worker creates
+    the session (apply_pending_call_outcomes) or by the reconciliation sweep.
+
+    Raises if the outcome cannot be stored or a matched outcome cannot be
+    applied, so the route answers 503 and the carrier retries. Returns how
+    many outcomes were applied now (0: waiting for the session).
+    """
+    status_value = (call_status or "").strip().lower()
+    if not provider_call_id or not status_value:
+        return 0
+    async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (provider, provider_call_id, call_status) DO UPDATE
+               SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds)
+            """,
+            provider, provider_call_id[:128], status_value[:40], duration_seconds)
+    return await apply_pending_call_outcomes(provider_call_id[:128], raise_errors=True)
+
+
+async def apply_pending_call_outcomes(provider_call_id: Optional[str] = None, *, limit: int = 200,
+                                      raise_errors: bool = False) -> int:
+    """Apply stored outcomes whose call session now exists, oldest first, each
+    once (applied_at). For one call (the webhook, the worker) or, with no id,
+    every pending outcome (the reconciliation sweep). record_call_outcome is
+    idempotent, so two appliers racing record an outcome once."""
+    async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id, o.provider_call_id, o.call_status, o.duration_seconds
+              FROM provider_call_outcomes o
+             WHERE o.applied_at IS NULL
+               AND ($1::text IS NULL OR o.provider_call_id = $1)
+               AND EXISTS (SELECT 1 FROM live_call_sessions s WHERE s.provider_call_id = o.provider_call_id)
+             ORDER BY o.id
+             LIMIT $2
+            """, provider_call_id, limit)
+    applied = 0
+    for row in rows:
+        try:
+            await record_call_outcome(row["provider_call_id"], row["call_status"], row["duration_seconds"])
+            async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now() WHERE id=$1", row["id"])
+            applied += 1
+        except Exception:  # noqa: BLE001 - kept pending; the next applier tries again
+            if raise_errors:
+                raise
+            logger.warning("call outcome %s for %s not applied; kept", row["id"], row["provider_call_id"],
+                           exc_info=True)
+    return applied
+
+
+async def expire_call_outcomes() -> int:
+    """Applied outcomes, and ones no session ever claimed, are deleted after
+    CALL_OUTCOME_KEEP_DAYS (they hold a call id and a status, nothing else)."""
+    async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+        result = await conn.execute(
+            "DELETE FROM provider_call_outcomes WHERE received_at < now() - make_interval(days => $1)",
+            CALL_OUTCOME_KEEP_DAYS)
+    try:
+        return int(str(result).rsplit(" ", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 #: Who wrote a note the AI took on a call — never the agent's own id: the agent
 #: did not say these words, the callee did, and the AI summarised them.
 AI_CALL_NOTE_AUTHOR = "neoh-ai-call"
@@ -3665,6 +3743,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     if not recorded:
         # The provider may have accepted the action; never retry it blindly.
         raise RuntimeError("provider acknowledgement could not be persisted; manual reconciliation required")
+    if command_type is CommandType.CALL and provider_result.reference:
+        # A carrier status that beat the session row has been waiting (24.4).
+        try:
+            await apply_pending_call_outcomes(str(provider_result.reference))
+        except Exception:  # noqa: BLE001 - the sweep applies it later
+            logger.warning("waiting call outcomes not applied for %s", provider_result.reference, exc_info=True)
     # The acknowledgement above is the one write that must not be lost. What
     # follows is bookkeeping that makes the send visible to the intelligence
     # layer, and it is deliberately OUTSIDE the retry loop and best-effort: a

@@ -1762,7 +1762,7 @@ async def plivo_outbound_status(request: Request) -> Response:
         tokens=await _outbound_plivo_tokens(state),
     )
     # The carrier's own word on the call, recorded where the agent looks.
-    from commands_api import record_call_outcome
+    from commands_api import accept_call_outcome
 
     try:
         duration = int(str(form.get("Duration") or form.get("BillDuration") or "").strip() or -1)
@@ -1771,7 +1771,10 @@ async def plivo_outbound_status(request: Request) -> Response:
     try:
         # live_call_sessions knows the call by the id placing it returned:
         # Plivo's request id.
-        await record_call_outcome(state.get("reference") or state.get("request_uuid")
+        # Stored durably first (24.4): an outcome that beats the worker's
+        # session row waits in provider_call_outcomes instead of updating
+        # nothing and being acknowledged into oblivion.
+        await accept_call_outcome("plivo", state.get("reference") or state.get("request_uuid")
                                   or request_uuid or call_uuid,
                                   call_status, duration if duration >= 0 else None)
     except Exception:  # noqa: BLE001 — answered below, never swallowed

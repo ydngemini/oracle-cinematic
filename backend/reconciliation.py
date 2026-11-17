@@ -12,6 +12,8 @@ waiting for a human:
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
+* carrier call outcomes that arrived before their call session (24.4) →
+  applied once the session exists; kept 30 days
 * delivered speed-to-lead responses with no lead_engaged row → re-metered (BILL-001)
 * email_outbox rows left `sending` with no outcome → marked delivery_unknown, never resent
 * chat turns `pending` 2+ minutes with no job → job enqueued (RUN-01)
@@ -177,6 +179,14 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     if recovery_mode.is_recovery_mode():
         out["provider_checks"] = "skipped: recovery mode"
         return out
+    from commands_api import apply_pending_call_outcomes, expire_call_outcomes  # 24.4
+
+    try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
+        out["call_outcomes_applied"] = await apply_pending_call_outcomes()
+        out["call_outcomes_expired"] = await expire_call_outcomes()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("call outcome inbox step failed")
+        out["call_outcomes_applied"] = f"failed: {type(exc).__name__}"
     out["commands"] = await _reconcile_commands(only_tenant)
     out["purchases"] = await _reconcile_purchases(only_tenant)
     import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)

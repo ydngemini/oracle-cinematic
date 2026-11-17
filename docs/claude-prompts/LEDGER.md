@@ -3873,6 +3873,28 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-41 A carrier call outcome that arrives before its call session is stored and applied later, never acknowledged into oblivion (migration 0174; external audit 24.4)
+```yaml
+id: L17-41
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0174_provider_call_outcomes.sql, backend/commands_api.py, backend/telephony_api.py, backend/reconciliation.py, backend/privacy_data_map.py, backend/tests/test_call_outcome_inbox_live.py, backend/tests/test_plivo_outbound_webhooks.py, backend/tests/test_killer_demo_paths.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read telephony_api.plivo_outbound_status, commands_api.record_call_outcome and the worker's live_call_sessions insert at a1ca828", result: "the session row is written only after the provider ack; an earlier verified callback runs record_call_outcome against no row (zero-row updates, no timeline, no lead_engaged meter), answers 204 and cleans up the call state; nothing can replay it", date: 2026-11-17}
+  - {cmd: "after: run_migrations (0174) + live test_call_outcome_inbox_live + test_reconciliation_live", result: "2 passed: an early 'completed' is stored (a retry adds no row) and applied once when the session exists (ended_at + outcome + one timeline entry with the 0:42 duration); two early statuses for another call are applied in arrival order by run_sweep; nothing left pending; rows older than 30 days expire", date: 2026-11-17}
+authz_checked: "provider_call_outcomes has no tenant column (call id, status, duration only) and so no RLS, like stripe_webhook_events (0118); oracle_app gets SELECT/INSERT/UPDATE/DELETE on it only. Only outcomes that passed the existing Plivo signature + call-state verification are stored; applying them goes through the unchanged record_call_outcome."
+blockers:
+  - "Plivo only. Twilio's outbound status webhook still does not call record_call_outcome at all (24.3, separate); the table already accepts provider 'twilio' for it."
+  - "Early SMS delivery receipts (25.5 follow-up) are not covered by this table."
+  - "An outcome whose session is never written (the provider ack could not be persisted -> reconciliation) waits 30 days and is deleted unapplied."
+  - "Migration 0174: run as doadmin (non-superuser) on staging/prod — CREATE TABLE + GRANT to oracle_app only, no functions or SET clauses."
+  - "Call-outcome / metering change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.4]
+next_task: "24.3 Twilio call status through record_call_outcome + this inbox; 24.2 pre-bound Twilio correlation."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 

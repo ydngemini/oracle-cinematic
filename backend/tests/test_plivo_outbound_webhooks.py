@@ -123,12 +123,12 @@ def client(monkeypatch):
     monkeypatch.setattr(plivo_call_handler, "plivo_qwen_enabled", lambda s=None: False)
     monkeypatch.setattr(telephony_api, "_plivo_credentials", fake_creds)
 
-    async def outcome_recorded(ref, status, duration):
+    async def outcome_recorded(provider, ref, status, duration):
         return None  # the outcome write succeeds unless a test says otherwise (RUN-05)
 
     import commands_api
 
-    monkeypatch.setattr(commands_api, "record_call_outcome", outcome_recorded)
+    monkeypatch.setattr(commands_api, "accept_call_outcome", outcome_recorded)
 
     app = FastAPI()
     app.include_router(telephony_api.router)
@@ -169,19 +169,19 @@ def test_status_refuses_an_unsigned_request_and_does_not_clean_up(client):
 
 
 def _outcome(monkeypatch, *results):
-    """record_call_outcome answers with each result in turn (an exception is
+    """accept_call_outcome (24.4: store, then apply) answers with each result in turn (an exception is
     raised); returns the calls it saw."""
     import commands_api
 
     calls = []
 
-    async def record(ref, status, duration):
+    async def record(provider, ref, status, duration):
         calls.append((ref, status))
         result = results[min(len(calls), len(results)) - 1]
         if isinstance(result, Exception):
             raise result
 
-    monkeypatch.setattr(commands_api, "record_call_outcome", record)
+    monkeypatch.setattr(commands_api, "accept_call_outcome", record)
     return calls
 
 
@@ -374,13 +374,13 @@ def test_status_reports_the_outcome_under_the_commands_reference(client, monkeyp
             return {**client.state_box["value"], "reference": CORRELATION}
         return None
 
-    async def fake_record(ref, status, duration):
+    async def fake_record(provider, ref, status, duration):
         recorded.append((ref, status))
 
     import commands_api
 
     monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", only_correlation)
-    monkeypatch.setattr(commands_api, "record_call_outcome", fake_record)
+    monkeypatch.setattr(commands_api, "accept_call_outcome", fake_record)
     path = f"{STATUS}?neoh_ref={CORRELATION}"
     params = {"CallUUID": UUID, "CallStatus": "completed", "Duration": "10"}
     r = client.post(path, data=params, headers=_sign(path, params, PLATFORM_TOKEN))
