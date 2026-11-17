@@ -198,17 +198,26 @@ def patched_webhook(monkeypatch):
     updates: list[tuple[str, str]] = []
     cleanups: list[str] = []
 
-    async def fake_update(call_sid: str, status: str, outcome=None) -> None:
-        updates.append((call_sid, status))
-        if outcome:
-            outcomes.append((call_sid, outcome))
+    async def fake_accept(provider, call_sid, status, duration=None, *, tenant_id, aliases=()):
+        # Stored then applied through record_call_outcome (24.3); the session
+        # side of that is what these tests watch.
+        assert provider == "twilio" and tenant_id == "brokerage-1"
+        if status in {"in-progress", "answered"}:
+            updates.append((call_sid, "in-progress"))
+        else:
+            updates.append((call_sid, "completed"))
+            outcomes.append((call_sid, status))
+        return 1
+
+    async def fake_brokerage(_sid):
+        return "brokerage-1"
 
     async def fake_cleanup(call_sid: str) -> None:
         cleanups.append(call_sid)
 
     outcomes.clear()
-    # The webhook now awaits the write (a failure → 503 → Twilio retries).
-    monkeypatch.setattr(ca, "_update_call_session_async", fake_update)
+    monkeypatch.setattr(ca, "accept_call_outcome", fake_accept)
+    monkeypatch.setattr(ca, "_twilio_call_brokerage", fake_brokerage)
 
     import twilio_call_handler
 
@@ -253,7 +262,7 @@ def test_active_states_map_to_in_progress_and_terminal_states_map_to_completed(p
                 FakeStatusRequest({"CallSid": call_sid, "CallStatus": status})
             )
         )
-    assert ("in-progress" in [u[1] for u in updates]) is False  # not yet answered
+    assert updates == []   # not yet answered, and nothing to store
 
     asyncio.run(
         ca.twilio_status_webhook(
@@ -277,10 +286,9 @@ def test_active_states_map_to_in_progress_and_terminal_states_map_to_completed(p
 
 
 def test_duplicate_status_callback_for_same_callsid_is_idempotent(patched_webhook):
-    """Two 'completed' deliveries for the same CallSid must not be treated
-    differently from one — the underlying write is an UPDATE keyed on
-    provider_call_id (no INSERT), so replays converge rather than
-    duplicating a call record or CRM activity."""
+    """Two 'completed' deliveries for the same CallSid converge: the outcome
+    is stored under a unique (brokerage, provider, call, status) key and the
+    session write is an UPDATE keyed on provider_call_id (no INSERT)."""
     updates, cleanups = patched_webhook
     call_sid = "CA" + "d" * 32
 
@@ -294,23 +302,20 @@ def test_duplicate_status_callback_for_same_callsid_is_idempotent(patched_webhoo
 
     assert updates.count((call_sid, "completed")) == 2
     assert cleanups.count(call_sid) == 2
-    # _update_call_session_async is a plain UPDATE ... WHERE provider_call_id=$1
-    # (no INSERT), so replaying it never creates a second live_call_sessions
-    # row or a second CRM write — verified structurally here since the fake
-    # webhook layer only proves "called twice", not "row count", which is
-    # covered by _update_call_session_async's own UPDATE-only shape below.
     import ast
     import pathlib
 
-    # The fixture replaces the function with a fake; read the real one from
-    # the module file (reloading the module would break later tests).
-    tree = ast.parse(pathlib.Path(ca.__file__).read_text())
+    text = pathlib.Path(ca.__file__).read_text()
+    tree = ast.parse(text)
     node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                 and n.name == "_update_call_session_async")
-    source = ast.get_source_segment(pathlib.Path(ca.__file__).read_text(), node)
+    source = ast.get_source_segment(text, node)
     assert "UPDATE live_call_sessions" in source
     assert "INSERT" not in source
     assert "COALESCE(ended_at" in source       # duplicates no longer move ended_at
+    node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "accept_call_outcome")
+    assert "ON CONFLICT (tenant_id, provider, provider_call_id, call_status)" in ast.get_source_segment(text, node)
 
 
 def test_status_callback_event_subscription_covers_terminal_states():
@@ -326,9 +331,9 @@ def test_status_callback_event_subscription_covers_terminal_states():
     source = inspect.getsource(command_providers.place_twilio_call)
     assert 'status_callback_event=["initiated", "ringing", "answered", "completed"]' in source
 
-    handler_source = inspect.getsource(ca.twilio_status_webhook)
     for terminal in ["completed", "busy", "failed", "no-answer", "canceled"]:
-        assert f'"{terminal}"' in handler_source
+        assert terminal in ca._TWILIO_TERMINAL_STATUSES
+        assert terminal in ca._TWILIO_OUTCOME_STATUSES
 
 
 # ── No SMS code path touched ────────────────────────────────────────────────

@@ -4030,6 +4030,31 @@ next_task: "24.3 Twilio call status via record_call_outcome and the 0174 inbox; 
 updated: 2026-11-17
 ```
 
+#### L17-44 A Twilio outbound call's status is stored and applied through record_call_outcome, like Plivo's (external audit 24.3)
+```yaml
+id: L17-44
+status: tests_pass
+env: local
+evidence_shas: [929ff4c]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/command_providers.py, backend/tests/test_twilio_call_outcome.py, backend/tests/test_twilio_call_outcome_live.py, backend/tests/test_outbound_verified_caller_id.py, backend/tests/test_twilio_qwen_realtime.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read commands_api.twilio_status_webhook, record_call_outcome, accept_call_outcome and command_providers.place_twilio_call at 929ff4c; Twilio docs (webhook connection overrides)", result: "the Twilio route only UPDATEd live_call_sessions and cleaned up Redis: no record_call_outcome (first-response delivery, lead_engaged meter, timeline line), no durable store, a status before the session updated nothing and answered 204; Twilio retries only a failed connection by default, so the route's '503 -> Twilio retries' never happened", date: 2026-11-17}
+  - {cmd: "red: unit test_twilio_call_outcome against 929ff4c's commands_api.py + command_providers.py", result: "20 red (7 failed, 13 errors: no brokerage resolution, nothing stored, no retry policy)", date: 2026-11-17}
+  - {cmd: "red: live test_twilio_call_outcome_live with 929ff4c's code", result: "fails at the first assertion: an answered call's status stored nothing in provider_call_outcomes", date: 2026-11-17}
+  - {cmd: "after: unit test_twilio_call_outcome + test_outbound_verified_caller_id + test_twilio_qwen_realtime + test_killer_demo_paths (81); live test_twilio_call_outcome_live + test_call_outcome_inbox_live (2)", result: "all pass", date: 2026-11-17}
+authz_checked: "Signature (platform TWILIO_AUTH_TOKEN) is checked before anything is read or stored. The outcome is stored against the brokerage of the outbound call state the worker wrote (direction outbound only), else of the live_call_sessions row with that CallSid; it applies only to that brokerage's session (0174's tenant match)."
+blockers:
+  - "A status that arrives before the worker has written the call state (Twilio's create call has not returned yet; 24.2) cannot be attributed: answered 503, and the status callback URL now carries Twilio's retry override (#rc=3&rp=5xx,ct; the fragment is not signed). Twilio caps retries inside its 15 s webhook window, so a longer gap still loses that status; 24.2's pre-bound correlation is the real fix."
+  - "Calls placed on a brokerage's own Twilio account are signed with that account's token, which this route has never checked (only the platform token): their status callbacks are still refused, as before."
+  - "initiated/ringing/queued are not stored (they carry no outcome). An answered call adds up to two rows (in-progress, then completed); rows expire after 30 days (CALL_OUTCOME_KEEP_DAYS)."
+  - "Twilio 'completed' always means answered (an unanswered call is no-answer/busy); a missing or unparseable CallDuration is stored as unknown, which record_call_outcome does not count as delivery on 'completed' (the earlier in-progress already did)."
+  - "Customer-contact/metering change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.3]
+decision_refs: []
+next_task: "24.2 pre-bound Twilio correlation (state before the create call; callbacks resolve it); 24.5/24.6."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 
