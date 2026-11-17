@@ -3910,12 +3910,15 @@ tests_run:
   - {cmd: "red: test_ai_budget_hosted_calls -k 'cannot_spend_is_refused or cannot_spend_says' against a7f6d38's ai_chat_agent.py", result: "13 failed: a cancelled, suspended, unreadable or slow-to-read brokerage got a model reply on the Twilio, custom-call and ACS turns", date: 2026-11-17}
   - {cmd: "red: live test_realtime_entitlement_live -k turn_replies with a7f6d38's inbound_voice.py, then with a7f6d38's ai_chat_agent.py", result: "a suspended brokerage's line still resolved; a cancelled brokerage's turn did not raise SpendRefused", date: 2026-11-17}
   - {cmd: "after: unit test_ai_budget_hosted_calls (140) + test_ai_chat (32) + every unit test importing inbound_voice/telephony_api/acs_call_handler (736); live test_realtime_entitlement_live (2) + test_suspended_agent_line_live", result: "all pass", date: 2026-11-17}
+  - {cmd: "independent review (APPROVE, 5 findings) -> the direct (no-gateway) ladder now gets what is left of the turn too; test_the_entitlement_read_comes_out_of_the_turns_budget[gateway,direct] (a 1 s read leaves <= 7.1 s), red on the direct path at the first commit; unit test_ai_budget_hosted_calls + test_ai_chat (174)", result: "all pass", date: 2026-11-17}
 authz_checked: "billing.call_entitlement_refusal is the one reading (entitlement_refusal, in the call's brokerage context on the app pool) behind the realtime admission and every spoken turn; resolve_inbound_route still runs as the platform and now also requires tenants.lifecycle_state = 'active'"
 blockers:
   - "A refused turn is said as each route's existing refusal (VOICE_REFUSED_LINE, then the call ends), the same as a budget refusal. A suspended or closing brokerage's inbound call hears the existing safe hangup ('This call cannot be connected safely'), as a call to an unknown route does; it is not forwarded to the agent."
   - "A lapsed subscription (402) with the brokerage still open: the inbound webhook still resolves and records the call; only the paid model is refused (at the media socket and on each turn)."
   - "Inbound texts are unchanged: a suspended or closing brokerage's number still files texts (a STOP must still be recorded); deciding what a closing brokerage's inbound texts should do is separate."
-  - "One more database read per spoken turn (bounded at 2 s and taken out of the turn's 8 s budget)."
+  - "One more database read per spoken turn, bounded at 2 s and taken out of the turn's 8 s budget on both the gateway and the direct ladder (asyncio.wait_for waits for a cancelled read to clean up, so a wedged connection can overrun slightly, as on the realtime gate)."
+  - "ACS inbound calls with no brokerage are metered to the platform tenant: with billing enforced, their spoken turns are now refused unless the platform tenant holds an entitled subscription row (the realtime gate already did this). Intended: no paid model without an entitled payer."
+  - "The route-resolution SQL change is proven by the live test only; the unit fake (FakeRoutesConn) matches on query text and does not model tenants."
   - "Spend/billing and customer-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
 audit_refs: [21.4]
 decision_refs: []

@@ -873,7 +873,7 @@ def test_without_a_gateway_the_original_ladder_still_answers_callers(monkeypatch
     with a stall line — the pre-gateway ladder is kept for exactly that."""
     called = {}
 
-    async def _direct(caller_id, speech_text):
+    async def _direct(caller_id, speech_text, *, budget=None):
         called["used"] = True
         return "answered by the direct path"
 

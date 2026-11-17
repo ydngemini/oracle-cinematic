@@ -1950,7 +1950,7 @@ async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: 
         if not _gateway_chat_providers():
             # No gateway on this deployment: the original ladder still answers
             # callers rather than leaving them with a stall line on every turn.
-            return await _voice_reply_direct(caller_id, speech_text)
+            return await _voice_reply_direct(caller_id, speech_text, budget=remaining)
 
         import llm_gateway
 
@@ -1989,7 +1989,7 @@ async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: 
     return reply.strip()[:300] or _VOICE_STALL_LINE
 
 
-async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
+async def _voice_reply_direct(caller_id: str, speech_text: str, *, budget: Optional[float] = None) -> str:
     """Compose the spoken reply for a live phone turn.
 
     Fireworks first: Foundry is unreachable on this deployment, and its failure
@@ -2014,7 +2014,8 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
     """
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + VOICE_REPLY_BUDGET_SECONDS
+    # `budget`: what is left of the turn after the entitlement read (21.4).
+    deadline = loop.time() + (VOICE_REPLY_BUDGET_SECONDS if budget is None else budget)
 
     def _remaining() -> float:
         return deadline - loop.time()

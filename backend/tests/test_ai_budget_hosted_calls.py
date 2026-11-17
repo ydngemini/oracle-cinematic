@@ -779,6 +779,37 @@ def test_a_voice_reply_for_an_entitled_open_brokerage_is_answered_within_one_bud
     assert seen["timeout"] <= ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
 
 
+@pytest.mark.parametrize("path", ["gateway", "direct"])
+def test_the_entitlement_read_comes_out_of_the_turns_budget(monkeypatch, path):
+    import billing
+
+    seen = {}
+
+    async def slow_but_open(_ctx):
+        await asyncio.sleep(1.0)
+        return None
+
+    monkeypatch.setattr(billing, "entitlement_refusal", slow_but_open)
+    budget = ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+    if path == "gateway":
+        async def complete(_prompt, **kwargs):
+            seen["budget"] = kwargs["timeout"]
+            return "Happy to help."
+
+        _gateway_voice(monkeypatch, complete)
+    else:
+        monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [])
+
+        async def direct(_caller, _speech, *, budget=None):
+            seen["budget"] = budget
+            return "Happy to help."
+
+        monkeypatch.setattr(ai_chat_agent, "_voice_reply_direct", direct)
+    asyncio.run(ai_chat_agent._generate_voice_reply(CALLER, "hello?", tenant_id=TENANT))
+    # One second spent reading the entitlement is one second less for the reply.
+    assert seen["budget"] is not None and seen["budget"] <= budget - 0.9
+
+
 @pytest.mark.parametrize("stop,code", _TURN_STOPS[:3])
 def test_a_twilio_turn_for_a_brokerage_that_cannot_spend_says_the_refusal_and_ends(monkeypatch, stop, code):
     _entitlement(monkeypatch, stop)
