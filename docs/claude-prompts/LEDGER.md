@@ -3965,7 +3965,7 @@ blockers:
   - "Plivo only at the time. Twilio's outbound status webhook now uses this inbox too (24.3, L17-44)."
   - "Early SMS delivery receipts (25.5 follow-up) are not covered by this table."
   - "An outcome whose session is never written (the provider ack could not be persisted -> reconciliation; or a reconcile-confirmed command, which gets no session) waits 30 days and is deleted unapplied; the sweep logs outcomes unmatched after 60 min and counts never-matched expiries."
-  - "Applying runs the unchanged record_call_outcome: only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
+  - "Applying runs record_call_outcome (unchanged here; 24.3 later added its provider argument, L17-44): only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
   - "Session start/end and first-response times use the apply time, not the carrier's arrival time (an outcome applied by the sweep can be up to 15 min late)."
   - "Terminal-status cleanup of the Redis call state is skipped until the worker has recorded the provider reference (the state then expires by TTL); before, a callback that beat the ack deleted it and the worker failed the command into reconciliation."
   - "0174 also adds idx_live_call_sessions_provider_call_id (sessions are now looked up by provider call id on every webhook, worker hook and sweep)."
