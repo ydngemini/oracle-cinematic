@@ -351,7 +351,7 @@ function BillingCard({ data }) {
         <div><dt>Stripe</dt><dd>{hooks.stripe_mode || 'unknown'}</dd></div>
         <div><dt>Webhook secret</dt><dd>{hooks.webhook_secret_configured ? 'configured' : 'missing'}</dd></div>
         <div><dt>Last Stripe event</dt><dd>{relTime(hooks.last_processed_at) ?? 'none recorded'}</dd></div>
-        <div><dt>Usage metering</dt><dd>{usage.state === 'off' ? 'off (history only)' : usage.state === 'backlog' ? `${usage.unreported} unreported` : usage.state || 'unknown'}</dd></div>
+        <div><dt>Usage metering</dt><dd>{usageMeteringText(usage)}</dd></div>
       </dl>
       {refusals.length ? (
         <p className={styles.warnNote}>
@@ -389,6 +389,23 @@ function PilotCard({ data }) {
 }
 
 /* ── Overview ──────────────────────────────────────────────────────────── */
+
+// The drain never resends usage whose send outcome is unknown past Stripe's
+// de-duplication window, nor usage older than Stripe accepts; both wait on a
+// person (audits 24.5, 24.6), so they are named, not folded into "unreported".
+function usageMeteringText(usage) {
+  if (usage.state === 'off') return 'off (history only)';
+  if (usage.state === 'attention') {
+    const parts = [];
+    if (usage.uncertain) parts.push(`${usage.uncertain} to reconcile with Stripe`);
+    if (usage.expired) parts.push(`${usage.expired} too old to report`);
+    if (usage.aging) parts.push(`${usage.aging} nearing Stripe's 35-day limit`);
+    if (usage.unreported) parts.push(`${usage.unreported} unreported`);
+    return parts.join(' · ') || 'needs attention';
+  }
+  if (usage.state === 'backlog') return `${usage.unreported} unreported`;
+  return usage.state || 'unknown';
+}
 
 export default function OperatorOverview() {
   const [feeds, refetch] = useOperatorFeeds();

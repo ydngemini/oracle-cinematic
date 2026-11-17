@@ -4347,6 +4347,30 @@ next_task: "Schedule reconcile_lead_engagements and alert on drift against Strip
 updated: 2026-11-14
 ```
 
+#### L18-13 Usage reaches the Stripe meter at most once, and old usage no longer blocks the drain (external audits 24.5, 24.6)
+```yaml
+id: L18-13
+status: tests_pass
+env: local
+evidence_shas: [36ce875]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0175_usage_report_claims.sql, backend/billing_usage.py, backend/operator_api.py, backend/tests/test_billing_usage.py, backend/tests/test_usage_report_claims_live.py, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.test.jsx, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read drain_usage_to_stripe and drain_all_tenants at 36ce875", result: "24.5 confirmed: rows selected reported_at IS NULL with no claim, sent, then stamped; a failure after Stripe accepted left no record of the attempt and two replicas could send the same rows. 24.6 confirmed: no age filter, oldest first, failed rows stay eligible", date: 2026-11-17}
+  - {cmd: "live test_usage_report_claims_live (4 parts: unknown outcome, resend window, expired, two replicas) against 36ce875's billing_usage.py with 0175 applied", result: "4 failed", date: 2026-11-17}
+  - {cmd: "after: live test_usage_report_claims_live + test_engagement_lifecycle_live; unit test_billing_usage + test_operator_api; vitest OperatorOverview + eslint", result: "4 + 2 live pass; 53 unit pass; 13 vitest pass, lint clean", date: 2026-11-17}
+authz_checked: "Every drain statement still names the tenant itself (tenant_id = $1), as under the platform-admin sweep RLS is open; the unit guard now checks all three statements (quarantine, claim, aging count). The operator figures stay platform-admin only. No new route, no new personal data."
+blockers:
+  - "Stripe's v1 meter-event API has no way to look up one event, so an unknown outcome cannot be checked at Stripe automatically. It is settled inside Stripe's de-duplication window instead (identifier unique for at least 24 h): the attempt is recorded with the claim, before the call, and the same identifier is resent only while the first uncertain attempt is under 20 h old. After that the row is quarantined 'uncertain' and never resent: a person checks the Stripe meter. Alert: ORACLE_ALERT usage_meter_quarantined, and the operator billing card shows the count."
+  - "A refusal (invalid request, auth, permission, rate limit) means Stripe did not record the event, so it adds no uncertainty; a refusal of a resend does not erase an earlier uncertain attempt. Stripe's v2 code duplicate_meter_event is taken as proof the first send landed. Whether v1 answers a duplicate identifier with an error or silently is not documented; either way the row is not billed twice."
+  - "Rows older than 34 days (Stripe accepts 35) are quarantined 'expired' and kept for a manual billing or credit decision; rows older than 28 days still in play raise ORACLE_ALERT usage_meter_aging. Quarantined rows still count as unbilled in the AI billing tools and usage summary."
+  - "One row is claimed per transaction with a 300 s lease (FOR UPDATE SKIP LOCKED), longer than one Stripe call; a crashed drain's lease lapses and the row is resent inside the window. The Stripe call is still synchronous (24.7, not in this change)."
+  - "Migration 0175 adds columns, two CHECKs and replaces a partial index; applied to the local dev database. Billing change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.5, 24.6]
+decision_refs: []
+next_task: "24.7/24.8; 25.1/25.2."
+updated: 2026-11-17
+```
+
 ### L19
 Production operations.
 

@@ -314,12 +314,141 @@ async def reconcile_lead_engagements(ctx: TenantContext, *, limit: int = 200) ->
     return [dict(row) for row in rows]
 
 
-async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict[str, Any]:
-    """Push unreported usage to Stripe's meter, oldest first.
+# ── Reporting usage to Stripe (audits 24.5, 24.6; migration 0175) ───────────
+# Stripe de-duplicates a meter event's identifier for a rolling period of at
+# least 24 hours, no longer. Inside that window a resend with the same
+# identifier is safe whether or not the first attempt landed; after it, a
+# resend may bill the lead twice. So every attempt is recorded (and the row
+# claimed) BEFORE Stripe is called, a row may be resent only while its first
+# uncertain attempt is younger than this, and a row still unacknowledged after
+# it is quarantined for a person to reconcile — never resent automatically.
+REPORT_RESEND_WINDOW_HOURS = 20
+# Stripe accepts a meter event whose timestamp is within the past 35 days. A
+# day of margin: a row this old is quarantined as 'expired' and leaves the drain.
+REPORT_EXPIRY_DAYS = 34
+# Unreported usage this old is alerted on, a week before it would expire.
+REPORT_AGING_ALERT_DAYS = 28
+# One row is claimed at a time and its lease outlives one Stripe call (the SDK
+# times out at 80 s), so a second drain replica never sends a leased row.
+REPORT_CLAIM_LEASE_SECONDS = 300
 
-    Each row carries its own ``identifier`` so a retry after a partial failure
-    cannot double-count — Stripe de-duplicates on it, and our UNIQUE key means we
-    never generate two identifiers for the same underlying event.
+# A row still in play: not reported, not quarantined.
+_IN_PLAY = "reported_at IS NULL AND report_state IS NULL"
+
+# Errors with which Stripe REFUSED the request: the event was not recorded, so
+# the attempt adds no uncertainty. Everything else — a connection failure, a
+# timeout, a 5xx, our own failure after Stripe answered — may have recorded it.
+_REFUSED = (
+    stripe.InvalidRequestError, stripe.AuthenticationError, stripe.PermissionError,
+    stripe.RateLimitError, stripe.CardError,
+)
+# The v2 meter-event API answers a duplicate identifier with this code; it
+# proves an earlier attempt landed. (Any OTHER refusal of a row that already had
+# an uncertain attempt leaves that uncertainty standing.)
+_DUPLICATE_EVENT = "duplicate_meter_event"
+
+
+def _error_text(exc: BaseException) -> str:
+    return (str(exc).strip() or exc.__class__.__name__)[:500]
+
+
+async def _quarantine_unreportable(conn: Any, tenant_id: str) -> dict[str, int]:
+    """Take rows that may no longer be sent out of the drain (24.5, 24.6).
+
+    'uncertain': an attempt that may have reached Stripe began more than
+    REPORT_RESEND_WINDOW_HOURS ago and was never acknowledged. Resending could
+    bill twice; a person checks the Stripe meter and settles it.
+    'expired': older than Stripe accepts. Kept for a manual billing or credit
+    decision instead of failing every sweep ahead of current usage.
+    A row under a live claim is left to its sender.
+    """
+    rows = await conn.fetch(
+        """
+        UPDATE billing_usage_events
+           SET report_state = CASE WHEN report_uncertain_since IS NOT NULL
+                                   THEN 'uncertain' ELSE 'expired' END,
+               report_quarantined_at = now(),
+               report_claimed_until = NULL,
+               updated_at = now()
+         WHERE tenant_id = $1::uuid AND """ + _IN_PLAY + """
+           AND metric = ANY($2::text[]) AND """ + BILLABLE_PREDICATE + """
+           AND (report_claimed_until IS NULL OR report_claimed_until < now())
+           AND (occurred_at <= now() - make_interval(days => $3)
+                OR report_uncertain_since <= now() - make_interval(hours => $4))
+        RETURNING report_state
+        """,
+        tenant_id, sorted(_STRIPE_REPORTED), REPORT_EXPIRY_DAYS, REPORT_RESEND_WINDOW_HOURS,
+    )
+    counts = {"expired": 0, "uncertain": 0}
+    for row in rows:
+        counts[row["report_state"]] = counts.get(row["report_state"], 0) + 1
+    if rows:
+        logger.warning(
+            "ORACLE_ALERT usage_meter_quarantined tenant=%s expired=%d uncertain=%d"
+            " (reconcile against the Stripe meter; these rows are never resent)",
+            tenant_id, counts["expired"], counts["uncertain"],
+        )
+    return counts
+
+
+async def _claim_next_report(conn: Any, tenant_id: str, skip: list[str]) -> Optional[Any]:
+    """Claim one sendable row and record, before any send, that an attempt began.
+
+    FOR UPDATE SKIP LOCKED + a lease: two drain replicas never hold one row.
+    report_uncertain_since is set in the same statement (kept if already set),
+    so a crash between Stripe's acceptance and our acknowledgement still leaves
+    a durable record that this row may be billed. Rows with an open uncertain
+    attempt go first — they have a deadline — then never-tried rows oldest
+    first, then rows Stripe refused before.
+    """
+    return await conn.fetchrow(
+        """
+        WITH picked AS (
+            SELECT id, report_uncertain_since AS prior_uncertain_since
+              FROM billing_usage_events
+             WHERE tenant_id = $1::uuid AND """ + _IN_PLAY + """
+               AND metric = ANY($2::text[]) AND """ + BILLABLE_PREDICATE + """
+               AND (report_claimed_until IS NULL OR report_claimed_until < now())
+               AND occurred_at > now() - make_interval(days => $3)
+               AND (report_uncertain_since IS NULL
+                    OR report_uncertain_since > now() - make_interval(hours => $4))
+               AND NOT (id = ANY($5::uuid[]))
+             ORDER BY (report_uncertain_since IS NULL), (report_attempts > 0), occurred_at
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED
+        )
+        UPDATE billing_usage_events u
+           SET report_claimed_until = now() + make_interval(secs => $6),
+               report_attempts = u.report_attempts + 1,
+               report_uncertain_since = COALESCE(u.report_uncertain_since, now()),
+               updated_at = now()
+          FROM picked
+         WHERE u.id = picked.id
+        RETURNING u.id, u.metric, u.quantity, u.occurred_at, u.idempotency_key,
+                  picked.prior_uncertain_since
+        """,
+        tenant_id, sorted(_STRIPE_REPORTED), REPORT_EXPIRY_DAYS, REPORT_RESEND_WINDOW_HOURS,
+        skip, REPORT_CLAIM_LEASE_SECONDS,
+    )
+
+
+async def _aging_count(conn: Any, tenant_id: str) -> int:
+    return int(await conn.fetchval(
+        "SELECT count(*) FROM billing_usage_events WHERE tenant_id = $1::uuid AND "
+        + _IN_PLAY + " AND metric = ANY($2::text[]) AND " + BILLABLE_PREDICATE
+        + " AND occurred_at <= now() - make_interval(days => $3)",
+        tenant_id, sorted(_STRIPE_REPORTED), REPORT_AGING_ALERT_DAYS,
+    ) or 0)
+
+
+async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict[str, Any]:
+    """Push unreported usage to Stripe's meter, at most once per event.
+
+    Each row carries its own ``identifier`` (its UNIQUE idempotency key), and
+    each send is claimed and recorded first (``_claim_next_report``). A row
+    whose send had an unknown outcome is resent only inside Stripe's
+    de-duplication window, then quarantined for a person (24.5). Rows older
+    than Stripe accepts are quarantined instead of blocking the queue (24.6).
 
     Every statement filters ``tenant_id`` explicitly rather than leaning on RLS.
     The sweeper below runs this under a platform-admin context (the same posture
@@ -337,30 +466,25 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
         # bills the customer a second time for usage already metered (OUT-1).
         return {"state": "recovery_mode", "reported": 0}
 
+    tenant_id = str(ctx.tenant_id)
+    async with tenant_tx(ctx) as conn:
+        quarantined = await _quarantine_unreportable(conn, tenant_id)
+
     customer_id = await _stripe_customer_for(ctx)
     if not customer_id:
         # Honest degradation: a tenant with no Stripe customer has nothing to
         # meter against. The rows stay unreported rather than being dropped.
-        return {"state": "no_customer", "reported": 0}
-
-    async with tenant_tx(ctx) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id,metric,quantity,occurred_at,idempotency_key
-              FROM billing_usage_events
-             WHERE tenant_id=$3::uuid
-               AND reported_at IS NULL AND metric = ANY($1::text[])
-               AND """ + BILLABLE_PREDICATE + """
-             ORDER BY occurred_at ASC
-             LIMIT $2
-            """,
-            sorted(_STRIPE_REPORTED),
-            limit,
-            ctx.tenant_id,
-        )
+        return {"state": "no_customer", "reported": 0, "quarantined": quarantined}
 
     reported = 0
-    for row in rows:
+    seen: list[str] = []
+    for _ in range(max(0, int(limit))):
+        async with tenant_tx(ctx) as conn:
+            row = await _claim_next_report(conn, tenant_id, seen)
+        if row is None:
+            break
+        seen.append(str(row["id"]))
+        identifier = str(row["idempotency_key"])[:100]
         try:
             event = stripe.billing.MeterEvent.create(
                 event_name=STRIPE_METER_EVENT_NAME,
@@ -368,35 +492,82 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
                     "stripe_customer_id": customer_id,
                     "value": str(row["quantity"]),
                 },
-                identifier=str(row["idempotency_key"])[:100],
+                identifier=identifier,
                 timestamp=int(row["occurred_at"].timestamp()),
             )
+            event_id = getattr(event, "identifier", None) or identifier
+        except _REFUSED as exc:
+            if getattr(exc, "code", None) == _DUPLICATE_EVENT:
+                # Stripe already holds this identifier: an earlier attempt landed.
+                event_id = identifier
+                logger.info("Usage %s was already on the Stripe meter", row["id"])
+            else:
+                # Refused, so not recorded: this attempt adds no uncertainty, but
+                # an earlier uncertain attempt's stays (a refusal of a resend does
+                # not prove the first send failed).
+                await _release_report(ctx, row, _error_text(exc), row["prior_uncertain_since"])
+                logger.warning("Usage report refused for %s: %s", row["id"], exc)
+                continue
+        except Exception as exc:  # noqa: BLE001 — the outcome is unknown; recorded, drain continues
+            await _release_report(ctx, row, _error_text(exc), keep_uncertain=True)
+            logger.warning("Usage report outcome unknown for %s: %s", row["id"], exc)
+            continue
+        try:
             async with tenant_tx(ctx) as conn:
                 await conn.execute(
                     """
                     UPDATE billing_usage_events
-                       SET reported_at=now(),stripe_event_id=$2,report_error=NULL
+                       SET reported_at=now(), stripe_event_id=$2, report_error=NULL,
+                           report_claimed_until=NULL, updated_at=now()
                      WHERE id=$1::uuid AND tenant_id=$3::uuid
                     """,
-                    row["id"],
-                    getattr(event, "identifier", None) or str(row["idempotency_key"])[:100],
-                    ctx.tenant_id,
+                    row["id"], event_id, ctx.tenant_id,
                 )
-            reported += 1
-        except Exception as exc:  # noqa: BLE001 — recorded on the row, drain continues
-            # One poisoned row must not block the queue behind it. The error is
-            # stamped so a stuck row is visible instead of silently retried forever.
-            async with tenant_tx(ctx) as conn:
-                await conn.execute(
-                    "UPDATE billing_usage_events SET report_error=$2"
-                    " WHERE id=$1::uuid AND tenant_id=$3::uuid",
-                    row["id"],
-                    (str(exc).strip() or exc.__class__.__name__)[:500],
-                    ctx.tenant_id,
-                )
-            logger.warning("Usage report failed for %s: %s", row["id"], exc)
+        except Exception as exc:  # noqa: BLE001
+            # Stripe has it and we could not say so. The row keeps its uncertain
+            # attempt; its lease lapses and the resend inside the window is
+            # de-duplicated by Stripe, or a person reconciles it after.
+            logger.warning("Usage %s reported but not acknowledged locally: %s", row["id"], exc)
+            continue
+        reported += 1
 
-    return {"state": "ok", "reported": reported, "considered": len(rows)}
+    async with tenant_tx(ctx) as conn:
+        aging = await _aging_count(conn, tenant_id)
+    if aging:
+        logger.warning(
+            "ORACLE_ALERT usage_meter_aging tenant=%s rows=%d older_than_days=%d"
+            " (Stripe refuses usage older than 35 days)",
+            tenant_id, aging, REPORT_AGING_ALERT_DAYS,
+        )
+    return {"state": "ok", "reported": reported, "considered": len(seen),
+            "quarantined": quarantined, "aging": aging}
+
+
+async def _release_report(ctx: TenantContext, row: Any, error: str,
+                          prior_uncertain_since: Any = None, *, keep_uncertain: bool = False) -> None:
+    """End a claim without a report: stamp the error and free the row.
+
+    keep_uncertain: the send may have landed, so report_uncertain_since (set
+    when the row was claimed) stays. Otherwise it goes back to what it was
+    before this claim. Best effort: if this write fails too, the lease lapses.
+    """
+    try:
+        async with tenant_tx(ctx) as conn:
+            if keep_uncertain:
+                await conn.execute(
+                    "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=NULL,"
+                    " updated_at=now() WHERE id=$1::uuid AND tenant_id=$3::uuid",
+                    row["id"], error, ctx.tenant_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=NULL,"
+                    " report_uncertain_since=$4, updated_at=now()"
+                    " WHERE id=$1::uuid AND tenant_id=$3::uuid",
+                    row["id"], error, ctx.tenant_id, prior_uncertain_since,
+                )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not release usage report claim %s", row["id"], exc_info=True)
 
 
 async def drain_all_tenants(
@@ -430,7 +601,7 @@ async def drain_all_tenants(
             """
             SELECT tenant_id, count(*)::int AS pending
               FROM billing_usage_events
-             WHERE reported_at IS NULL AND metric = ANY($1::text[])
+             WHERE """ + _IN_PLAY + """ AND metric = ANY($1::text[])
                AND """ + BILLABLE_PREDICATE + """
              GROUP BY tenant_id
              ORDER BY min(occurred_at) ASC
@@ -442,6 +613,8 @@ async def drain_all_tenants(
 
     reported = 0
     drained = 0
+    aging = 0
+    quarantined: dict[str, int] = {"expired": 0, "uncertain": 0}
     states: dict[str, int] = {}
     for row in rows:
         tenant_ctx = TenantContext(
@@ -458,10 +631,14 @@ async def drain_all_tenants(
         state = str(result.get("state") or "unknown")
         states[state] = states.get(state, 0) + 1
         reported += int(result.get("reported") or 0)
+        for kind, n in (result.get("quarantined") or {}).items():
+            quarantined[kind] = quarantined.get(kind, 0) + int(n or 0)
+        aging += int(result.get("aging") or 0)
         drained += 1
 
     logger.info(
-        "ORACLE_METRIC usage_meter_drain tenants=%d reported=%d", drained, reported
+        "ORACLE_METRIC usage_meter_drain tenants=%d reported=%d expired=%d uncertain=%d aging=%d",
+        drained, reported, quarantined["expired"], quarantined["uncertain"], aging,
     )
     return {
         "state": "ok",
@@ -469,6 +646,8 @@ async def drain_all_tenants(
         "tenants_pending": len(rows),
         "reported": reported,
         "by_state": states,
+        "quarantined": quarantined,
+        "aging": aging,
     }
 
 

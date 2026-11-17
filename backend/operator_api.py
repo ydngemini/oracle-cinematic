@@ -1209,16 +1209,24 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
                 "SELECT max(received_at) FROM stripe_webhook_events"), None)
             reportable = sorted(billing_usage._STRIPE_REPORTED)
             usage = await s.run("usage", lambda: conn.fetchrow(
-                "SELECT count(*)::int AS backlog, min(occurred_at) AS oldest, "
-                "       count(*) FILTER (WHERE report_error IS NOT NULL)::int AS erroring "
+                "SELECT count(*) FILTER (WHERE report_state IS NULL)::int AS backlog, "
+                "       min(occurred_at) FILTER (WHERE report_state IS NULL) AS oldest, "
+                "       count(*) FILTER (WHERE report_state IS NULL"
+                "                          AND report_error IS NOT NULL)::int AS erroring, "
+                # 24.5/24.6: rows the drain will not send again, for a person
+                "       count(*) FILTER (WHERE report_state = 'uncertain')::int AS uncertain, "
+                "       count(*) FILTER (WHERE report_state = 'expired')::int AS expired, "
+                "       count(*) FILTER (WHERE report_state IS NULL AND occurred_at"
+                "                          <= now() - make_interval(days => $2))::int AS aging "
                 "  FROM billing_usage_events "
                 " WHERE reported_at IS NULL AND metric = ANY($1::text[]) "
-                "   AND " + billing_usage.BILLABLE_PREDICATE, reportable), None)
+                "   AND " + billing_usage.BILLABLE_PREDICATE, reportable,
+                billing_usage.REPORT_AGING_ALERT_DAYS), None)
             usage_tenants = await s.run("usage_tenants", lambda: conn.fetch(
                 "SELECT u.tenant_id, t.name, count(*)::int AS backlog, min(u.occurred_at) AS oldest, "
                 "       count(*) FILTER (WHERE u.report_error IS NOT NULL)::int AS erroring "
                 "  FROM billing_usage_events u LEFT JOIN tenants t ON t.id = u.tenant_id "
-                " WHERE u.reported_at IS NULL AND u.metric = ANY($1::text[]) "
+                " WHERE u.reported_at IS NULL AND u.report_state IS NULL AND u.metric = ANY($1::text[]) "
                 "   AND " + billing_usage.billable_predicate("u") + " "
                 " GROUP BY u.tenant_id, t.name ORDER BY min(u.occurred_at) LIMIT 20", reportable), [])
     except HTTPException:
@@ -1255,6 +1263,7 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
 
     metering_on = billing_usage.metering_configured()
     backlog = _int((usage or {}).get("backlog")) if usage else 0
+    needs_person = sum(_int((usage or {}).get(k)) for k in ("uncertain", "expired", "aging")) if usage else 0
     webhook = billing.webhook_diagnostics()
     return {
         "duplicate_subscriptions": duplicate_subs,
@@ -1276,10 +1285,17 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
             "configured": metering_on,
             # With metering off, unreported rows are the design (history only),
             # not a backlog — saying "backlog" there would page someone for nothing.
-            "state": ("off" if not metering_on else "backlog" if backlog else "ok"),
+            # "attention" outranks "backlog": usage that may already be billed
+            # (uncertain), can no longer be billed (expired) or soon cannot
+            # (aging) waits on a person, not on the next drain (24.5, 24.6).
+            "state": ("off" if not metering_on else "attention" if needs_person
+                      else "backlog" if backlog else "ok"),
             "unreported": backlog,
             "oldest_unreported_at": _iso((usage or {}).get("oldest")) if usage else None,
             "erroring": _int((usage or {}).get("erroring")) if usage else 0,
+            "uncertain": _int((usage or {}).get("uncertain")) if usage else 0,
+            "expired": _int((usage or {}).get("expired")) if usage else 0,
+            "aging": _int((usage or {}).get("aging")) if usage else 0,
             "by_tenant": [{"tenant_id": str(u["tenant_id"]), "name": u["name"],
                            "unreported": _int(u["backlog"]), "erroring": _int(u["erroring"]),
                            "oldest_unreported_at": _iso(u["oldest"])} for u in usage_tenants],
