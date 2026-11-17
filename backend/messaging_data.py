@@ -1210,6 +1210,71 @@ async def record_outbound_message(
 
 
 
+async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, limit: int = 100) -> dict[str, int]:
+    """Rebuild the log row of a text Telnyx accepted but we never recorded
+    (external audit 25.5). Never re-sends anything.
+
+    The worker sends first and then writes the sms_messages row; a failure of
+    that write is logged and the command still succeeds with the provider's
+    message id, and a command reconciled at the provider ('confirmed at the
+    provider') never wrote one at all. Without the row the text has no
+    delivery status, no timeline entry and no first-response delivery: the
+    receipt webhook answers 503 and a carrier retry finds nothing to update.
+
+    Rebuilt from the command itself (approved draft, target, the staging
+    agent) with the sender the agent's line shows. record_outbound_message is
+    idempotent on (provider, provider_message_id), so a concurrent sweep or a
+    late original write cannot double it. A row whose sender cannot be found
+    is left for a person (counted, logged).
+    """
+    async with tenant_tx(_platform_context()) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ce.id, ce.tenant_id, ce.created_by, ce.target, ce.draft, ce.provider_reference,
+                   (SELECT r.voice_caller_id_e164 FROM telephony_routes r
+                     WHERE r.tenant_id = ce.tenant_id AND lower(r.agent_id) = lower(ce.created_by)
+                       AND r.voice_caller_id_e164 IS NOT NULL
+                     ORDER BY r.active DESC, r.updated_at DESC NULLS LAST LIMIT 1) AS sender
+              FROM command_executions ce
+             WHERE ce.command_type = 'SMS' AND ce.state = 'succeeded' AND ce.provider = 'telnyx'
+               AND ce.provider_reference IS NOT NULL
+               AND ce.updated_at < now() - interval '2 minutes'
+               AND ce.updated_at > now() - interval '30 days'
+               AND ($1::uuid IS NULL OR ce.tenant_id = $1)
+               AND NOT EXISTS (SELECT 1 FROM sms_messages m
+                                WHERE m.provider = 'telnyx' AND m.provider_message_id = ce.provider_reference)
+             ORDER BY ce.updated_at
+             LIMIT $2
+            """, only_tenant, limit)
+    counts = {"repaired": 0, "no_sender": 0, "failed": 0}
+    for row in rows:
+        target = _json_detail(row["target"])
+        draft = _json_detail(row["draft"])
+        content = draft.get("content") if isinstance(draft.get("content"), dict) else draft
+        if not row["sender"] or not target.get("phone"):
+            counts["no_sender"] += 1
+            logger.warning("sent text %s has no log row and no known sender; needs a person",
+                           row["provider_reference"])
+            continue
+        try:
+            await record_outbound_message(
+                tenant_id=str(row["tenant_id"]),
+                agent_id=str(row["created_by"]),
+                contact_id=str(target["contact_id"]) if target.get("contact_id") else None,
+                client_id=str(target["client_id"]) if target.get("client_id") else None,
+                provider="telnyx",
+                provider_message_id=str(row["provider_reference"]),
+                from_e164=str(row["sender"]),
+                to_e164=str(target["phone"]),
+                body=str(content.get("body") or ""),
+            )
+            counts["repaired"] += 1
+        except Exception:  # noqa: BLE001 - one row must not stop the sweep; retried next time
+            counts["failed"] += 1
+            logger.exception("log row for sent text %s not repaired", row["provider_reference"])
+    return counts
+
+
 async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,
                                  error_reason: Optional[str]) -> bool:
     """Monotonic status update. Returns False only when no such message row

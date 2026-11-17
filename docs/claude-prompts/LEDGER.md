@@ -3873,6 +3873,28 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-40 A text Telnyx accepted always gets its log row: the reconciliation sweep rebuilds a missing sms_messages row from the command, never by re-sending (external audit 25.5)
+```yaml
+id: L17-40
+status: tests_pass
+env: local
+evidence_shas: [04d43da]   # base; fix in the commit that adds this row
+files: [backend/messaging_data.py, backend/reconciliation.py, backend/tests/test_sms_row_repair_live.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api Telnyx SMS branch, messaging_data.record_outbound_message / record_delivery_update, reconciliation.run_sweep at 04d43da", result: "the worker sends, then writes sms_messages in a try/except that only logs; the command succeeds with provider_reference; a provider-confirmed reconcile writes no row; record_delivery_update returns False (webhook 503) for a row that never appears; nothing repairs it", date: 2026-11-16}
+  - {cmd: "red: test_sms_row_repair_live against 04d43da's messaging_data + reconciliation (live PostgreSQL)", result: "no repair path exists (AttributeError); the receipt for the sent text has no row (record_delivery_update False)", date: 2026-11-16}
+  - {cmd: "after: live test_sms_row_repair_live + test_reconciliation_live", result: "2 passed: two concurrent sweeps rebuild exactly one row (sender = the agent's line, body sealed, client timeline entry once); the provider adapter is patched to fail the test if reached (nothing re-sent); the carrier's retry then attaches (delivered); a command whose agent has no line is counted no_sender and left for a person", date: 2026-11-16}
+authz_checked: "the sweep reads commands in the platform context and writes through record_outbound_message (the same tenant-scoped brokerage context the worker uses); it only rebuilds rows for commands already 'succeeded' with a Telnyx message id."
+blockers:
+  - "Receipt-before-row still depends on the carrier retrying the webhook (503) after the next sweep (every 15 min, 2 min grace). A durable receipt inbox needs a migration and is planned with 24.4 (provider outcome inbox)."
+  - "The sender is the agent's line now (active route first). If the line changed after the send, the rebuilt row shows the current number; a command with no route is not rebuilt (no_sender, logged)."
+  - "Twilio-sent texts write no sms_messages row by design (only the Telnyx path logs to sms_messages); unchanged."
+  - "Customer-communication record change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [25.5]
+next_task: "24.4 durable provider outcome inbox (Plivo/Twilio call outcomes + early SMS receipts); 24.2 pre-bound Twilio correlation."
+updated: 2026-11-16
+```
+
 ### L18
 Billing, seats and analytics.
 
