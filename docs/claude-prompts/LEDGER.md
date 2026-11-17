@@ -3873,6 +3873,35 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-38 A data-subject request covers what is attached to the person's client: access returns it, deletion reports what went and what was kept unlinked (external audit 29.8 follow-up)
+```yaml
+id: L17-38
+status: tests_pass
+env: local
+evidence_shas: [8894bbf]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, backend/privacy_lifecycle.py, backend/object_storage.py, backend/tests/test_dsar_client_children_live.py, backend/tests/test_vault_delete_reaches_storage.py, backend/tests/test_subject_restore_directive_live.py]
+tests_run:
+  - {cmd: "FK children of clients at 8894bbf (pg_constraint)", result: "ON DELETE CASCADE, never discovered or returned by access: client_notes, client_tasks, client_activities, client_tags, buyer_profiles, showings, interaction_logs, contract_synthesis_artifacts, property_match_decisions, client_ai_state (no id), client_contact_index (hashes only). ON DELETE SET NULL, never returned and silently kept: command_executions, action_approvals (drafts carrying the message text)", date: 2026-11-16}
+  - {cmd: "red: test_dsar_client_children_live against 8894bbf's privacy_requests.py (live PostgreSQL)", result: "client_notes missing from the access records", date: 2026-11-16}
+  - {cmd: "after: live test_dsar_client_children_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "3 passed: access returns notes, tasks, activities, tags, showings, the AI state and the draft (text included); deletion removes the cascade children and reports removed_with_client, and the draft is kept with client_id NULL and reported as kept_unlinked {command_executions: 1}", date: 2026-11-16}
+  - {cmd: "flaky: test_subject_restore_directive_live read mine[0] in listing order (random op ids)", result: "fixed: entries picked by directive key (also in PR #95, where the glob runs it in CI)", date: 2026-11-16}
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; live test_dsar_client_children_live + test_privacy_lifecycle_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "4 passed. Review: the receipt counted contract artifacts as removed while their encrypted PDFs stayed in the vault with nothing referencing them -> their keys are collected before the delete and the PDFs deleted after it commits; the receipt reports contract_files {deleted, not_deleted} (+ a note when any are left). Test now covers a sealed interaction_logs row (decrypted), buyer_profiles, contract_synthesis_artifacts with its vault file, an action_approvals row and a draft linked by contact only", date: 2026-11-16}
+  - {cmd: "found while fixing: pytest tests/test_vault_delete_reaches_storage.py against 8894bbf's privacy_lifecycle.py + object_storage.py", result: "red (2): brokerage erasure imported `ContractVault`, which does not exist (the class is SovereignVault), and the default storage adapter BotoCompatibleStore had no delete_object, so EVERY vault deletion in a brokerage erasure failed (silently before #90; since #90 such an erasure can never succeed). Fixed: SovereignVault imported, BotoCompatibleStore.delete_object added -> 2 passed", date: 2026-11-16}
+authz_checked: "unchanged: owner-only, tenant_id-filtered under FORCE RLS; generic rows reuse privacy_export's column rules (sealed fields opened, hashes and raw ciphertext omitted); client_ai_state's input_fingerprint is not returned."
+blockers:
+  - {type: owner, note: "Drafts and approvals that named the person (command_executions.draft, action_approvals.draft_payload) survive a deletion, unlinked. Deleting or redacting them needs privacy_erase_subject_rows' allow-list extended (a migration) and a decision on keeping outbound-action records. Decide."}
+  - "Contract PDFs under contract_documents (clients/{client}/contracts/…) are not linked to clients by foreign key and are not covered here."
+  - "A crash between the deletion commit and the vault deletion orphans that person's contract PDFs (their keys are not stored durably); an artifact created between key collection and the delete is cascaded without its file. Re-review: APPROVE with these as low."
+  - "Legacy S3 backend only: brokerage erasure deletes contract_documents keys from the default bucket even if a row named another s3_bucket."
+  - "Access may include third-party details the person's records carry (a calendar draft's other attendees, a co-owner named in a note); the free-text caveat applies."
+  - "client_contact_index (keyed hashes only) is not returned; it goes with the client."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.8]
+decision_refs: []
+next_task: "Owner decision on drafts/approvals; then 24.x commands/callbacks."
+updated: 2026-11-16
+```
+
 #### L17-39 Releasing or rejecting a staged command is one transaction; commands stranded by the old split are repaired (external audit 24.1)
 ```yaml
 id: L17-39
@@ -3894,6 +3923,31 @@ blockers:
 audit_refs: [24.1]
 next_task: "24.4 / 25.5 durable provider outcome inbox; 24.2 pre-bound Twilio correlation."
 updated: 2026-11-16
+```
+
+#### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
+```yaml
+id: L17-42
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_realtime_entitlement_live.py, backend/tests/test_ai_budget_hosted_calls.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api._realtime_refusal and its three callers (ACS/Qwen media, Twilio, Plivo/ElevenLabs) at a1ca828", result: "admission = ai_budget.admission only (deploy halt, platform switch, brokerage AI pause, cap): no subscription and no tenants.lifecycle_state check, so a cancelled or suspended brokerage with active routes got a billable realtime session per inbound call", date: 2026-11-17}
+  - {cmd: "red: test_realtime_entitlement_live against a1ca828's commands_api (live PostgreSQL, ORACLE_BILLING_ENFORCED=1)", result: "a brokerage whose subscription is canceled was admitted (None)", date: 2026-11-17}
+  - {cmd: "red (route level): test_ai_budget_hosted_calls -k canceled/suspended/entitlement_unreadable against a1ca828's commands_api", result: "12 failed: all four media routes (ACS, Twilio, Plivo-Qwen, Plivo-ElevenLabs) opened the hosted model for a canceled, a suspended and an unreadable brokerage", date: 2026-11-17}
+  - {cmd: "after (revised per independent review): unit test_ai_budget_hosted_calls (126) + live test_realtime_entitlement_live", result: "unit 126 passed: on every media route a canceled (BROKERAGE_NOT_ENTITLED), suspended (BROKERAGE_NOT_OPEN) or unreadable (BROKERAGE_STATUS_UNAVAILABLE) brokerage opens no model, hears the refusal line, the call ends, the code is logged and no phone number is; live 1 passed against real subscriptions/tenants rows read in the brokerage's own context", date: 2026-11-17}
+authz_checked: "billing.entitlement_refusal is read in the call's brokerage context on the app pool (as require_active_subscription reads it; RLS admits the brokerage's own subscriptions/tenants row), not the small platform pool; the entitlement and budget reads share one 5 s deadline; any failure refuses."
+blockers:
+  - "What the caller hears is each route's existing refusal (the realtime bridge is not opened and the call is ended/refused as for a budget refusal); no new announcement or forwarding option (the audit's optional 'low-cost carrier announcement or safe forwarding' is not built)."
+  - "With ORACLE_BILLING_ENFORCED off (dev, load test) only the lifecycle state is checked, as everywhere else."
+  - "The gate is at the media websocket (where the paid model opens), not the inbound webhook: plivo_inbound_webhook still resolves the route, runs prepare_inbound_call and saves call state for a suspended/closing/erasing brokerage before the media route refuses (writes a call record and the caller's number into a brokerage being erased)."
+  - "Turn-based paid voice replies (Twilio /webhooks/twilio/speech, /webhooks/custom-call, ACS speech recognized -> _generate_voice_reply through the gateway) check the AI budget only, not entitlement: separate follow-up."
+  - "ACS inbound calls are stamped with the platform tenant: with billing enforced they now need that tenant to hold an entitled subscription (staging has a comp row for the owner tenant); ACS is dormant."
+  - "Spend/billing control change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [21.4]
+next_task: "entitlement on turn-based voice replies and on the inbound webhook (21.4 follow-up); 24.3 Twilio call status via record_call_outcome."
+updated: 2026-11-17
 ```
 
 ### L18
