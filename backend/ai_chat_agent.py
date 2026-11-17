@@ -39,6 +39,7 @@ from llm_gateway import (
 )
 from tenancy import Role, TenantContext
 import ai_budget
+import billing
 import neoh_persona
 import frame_constraints
 import semantic_turn
@@ -117,6 +118,9 @@ FIREWORKS_TIMEOUT = float(os.getenv("ORACLE_FIREWORKS_TIMEOUT", "120") or 120)
 VOICE_REPLY_BUDGET_SECONDS = float(
     os.getenv("ORACLE_VOICE_REPLY_BUDGET_SECONDS", "8") or 8
 )
+# The brokerage's entitlement is read first, inside that same budget, and
+# never takes more than this of it (a slow database refuses, never stalls).
+VOICE_ENTITLEMENT_SECONDS = 2.0
 FIREWORKS_ENABLED = bool(FIREWORKS_API_KEY) and (
     AI_PROVIDER == "fireworks"
     or os.getenv("ORACLE_AI_FIREWORKS_FALLBACK", "0").strip().lower()
@@ -1930,11 +1934,23 @@ async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: 
         raise SpendUnavailable("unknown", ai_budget.CODES["unknown"],
                                "This call's brokerage is not known, so no model was asked.")
     ctx = TenantContext(agent_id=_VOICE_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    # Entitlement every turn (external audit 21.4): the AI budget says nothing
+    # about whether the brokerage still pays or is open. A cancelled, suspended
+    # or closing brokerage whose phone routes were left active got a paid
+    # model reply on every spoken turn. Read within the turn's own budget (the
+    # reply below gets what is left), and refused — never the stall line —
+    # when it says no or cannot be read.
+    started = asyncio.get_running_loop().time()
+    refused = await billing.call_entitlement_refusal(
+        ctx, timeout=min(VOICE_ENTITLEMENT_SECONDS, VOICE_REPLY_BUDGET_SECONDS))
+    if refused is not None:
+        raise refused
+    remaining = max(0.5, VOICE_REPLY_BUDGET_SECONDS - (asyncio.get_running_loop().time() - started))
     async with ai_budget.spending(ctx, "voice", settles_in_background=True):
         if not _gateway_chat_providers():
             # No gateway on this deployment: the original ladder still answers
             # callers rather than leaving them with a stall line on every turn.
-            return await _voice_reply_direct(caller_id, speech_text)
+            return await _voice_reply_direct(caller_id, speech_text, budget=remaining)
 
         import llm_gateway
 
@@ -1952,9 +1968,9 @@ async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: 
                     system=prompt,
                     max_tokens=FIREWORKS_MAX_TOKENS,
                     temperature=0.3,
-                    timeout=VOICE_REPLY_BUDGET_SECONDS,
+                    timeout=remaining,
                 ),
-                VOICE_REPLY_BUDGET_SECONDS,
+                remaining,
             )
         except SpendRefused:
             raise
@@ -1973,7 +1989,7 @@ async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: 
     return reply.strip()[:300] or _VOICE_STALL_LINE
 
 
-async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
+async def _voice_reply_direct(caller_id: str, speech_text: str, *, budget: Optional[float] = None) -> str:
     """Compose the spoken reply for a live phone turn.
 
     Fireworks first: Foundry is unreachable on this deployment, and its failure
@@ -1998,7 +2014,9 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
     """
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + VOICE_REPLY_BUDGET_SECONDS
+    # `budget`: what is left of the turn after the entitlement read (21.4).
+    turn_budget = VOICE_REPLY_BUDGET_SECONDS if budget is None else budget
+    deadline = loop.time() + turn_budget
 
     def _remaining() -> float:
         return deadline - loop.time()
@@ -2038,7 +2056,7 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
             raise
         except asyncio.TimeoutError:
             logger.warning(
-                "Fireworks voice reply exceeded the %.1fs live-call budget", VOICE_REPLY_BUDGET_SECONDS
+                "Fireworks voice reply exceeded the %.1fs live-call budget", turn_budget
             )
         except Exception as fireworks_error:  # noqa: BLE001
             logger.warning("Fireworks voice reply failed: %s", fireworks_error)

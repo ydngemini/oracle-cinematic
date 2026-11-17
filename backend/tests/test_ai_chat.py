@@ -820,7 +820,10 @@ def test_voice_reply_gives_the_gateway_the_whole_call_budget(monkeypatch):
     reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?", tenant_id=_VOICE_TENANT))
 
     assert reply == "Sure, I can help with that."
-    assert captured["timeout"] == ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+    # One budget for the whole turn: what the entitlement read (21.4) used
+    # comes out of it, so the gateway gets at most the budget, never more.
+    budget = ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+    assert budget - 0.5 <= captured["timeout"] <= budget
     # The latency ladder, not the analysis one — a caller is on the line.
     assert captured["task"] == "fast"
 
@@ -870,7 +873,7 @@ def test_without_a_gateway_the_original_ladder_still_answers_callers(monkeypatch
     with a stall line — the pre-gateway ladder is kept for exactly that."""
     called = {}
 
-    async def _direct(caller_id, speech_text):
+    async def _direct(caller_id, speech_text, *, budget=None):
         called["used"] = True
         return "answered by the direct path"
 

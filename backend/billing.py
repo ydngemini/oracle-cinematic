@@ -150,6 +150,35 @@ async def require_active_subscription(
     return ctx
 
 
+#: Refusal codes for a phone call's paid model (external audit 21.4). A call
+#: hears the same refusal line for each; operators tell them apart in logs.
+CALL_NOT_ENTITLED_CODE = "BROKERAGE_NOT_ENTITLED"      # subscription lapsed (402)
+CALL_NOT_OPEN_CODE = "BROKERAGE_NOT_OPEN"              # suspended / closing / erasing (423)
+CALL_ENTITLEMENT_UNKNOWN_CODE = "BROKERAGE_STATUS_UNAVAILABLE"
+
+
+async def call_entitlement_refusal(ctx: TenantContext, *, timeout: float):
+    """The refusal (llm_gateway.SpendRefused) that stops a paid model on a
+    phone call for ctx's brokerage, or None when it may answer.
+
+    One reading (entitlement_refusal) for every phone path: the realtime
+    bridges at admission and each turn-based spoken reply. Bounded by
+    `timeout` because a caller is waiting on the line; a status that cannot be
+    read in that time, or at all, is refused as unknown, never a pass."""
+    from llm_gateway import SpendRefused, SpendUnavailable
+
+    try:
+        entitlement = await asyncio.wait_for(entitlement_refusal(ctx), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - timeout, 503 or DB error: unknown is a refusal
+        logger.warning("Paid call model held: entitlement could not be read (%s)", type(exc).__name__)
+        return SpendUnavailable("unknown", CALL_ENTITLEMENT_UNKNOWN_CODE,
+                                "This brokerage's account status could not be read, so no model was asked.")
+    if entitlement is None:
+        return None
+    code = CALL_NOT_OPEN_CODE if entitlement[0] == 423 else CALL_NOT_ENTITLED_CODE
+    return SpendRefused("not_entitled", code, entitlement[1])
+
+
 class NotEntitled(RuntimeError):
     """A worker refused to send for a tenant that is no longer entitled.
 

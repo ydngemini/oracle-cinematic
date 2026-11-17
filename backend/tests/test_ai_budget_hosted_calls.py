@@ -583,6 +583,8 @@ def _twilio_speech(monkeypatch, *, state, reply):
 
     async def generate(_caller_id, _speech, *, tenant_id):
         asked.append(tenant_id)
+        if callable(reply):   # the real reply, gated by the brokerage's entitlement
+            return await reply(_caller_id, _speech, tenant_id=tenant_id)
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -644,6 +646,8 @@ def _custom_call(monkeypatch, *, tenant, reply):
 
     async def generate(caller_id, _speech, *, tenant_id):
         asked.append((caller_id, tenant_id))
+        if callable(reply):   # the real reply, gated by the brokerage's entitlement
+            return await reply(caller_id, _speech, tenant_id=tenant_id)
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -706,6 +710,160 @@ def test_an_acs_turn_refused_by_the_budget_says_so_and_ends_the_call(monkeypatch
     assert asked == [(CALLER, TENANT)]
     assert played == [(ai_chat_agent.VOICE_REFUSED_LINE, "farewell")]
     assert saved[-1]["stage"] == "ending"
+
+
+# ── turn-based phone replies: the brokerage must still pay and be open (21.4) ──
+#
+# The Twilio <Gather> turn, the custom-call webhook and ACS speech recognition
+# each ask _generate_voice_reply for a paid model reply. It read only the AI
+# budget: a cancelled, suspended or closing brokerage whose phone routes were
+# left active got a model reply on every spoken turn.
+
+_REAL_VOICE_REPLY = ai_chat_agent._generate_voice_reply
+
+
+def _entitlement(monkeypatch, stop):
+    import billing
+
+    async def entitlement(_ctx):
+        if stop == "unreadable":
+            raise ConnectionError("billing status unreadable")
+        if stop == "slow":
+            await asyncio.sleep(30)
+        return {"canceled": (402, "subscription required"),
+                "suspended": (423, "This brokerage is closing")}.get(stop)
+
+    monkeypatch.setattr(billing, "entitlement_refusal", entitlement)
+
+
+_TURN_STOPS = [("canceled", "BROKERAGE_NOT_ENTITLED"), ("suspended", "BROKERAGE_NOT_OPEN"),
+               ("unreadable", "BROKERAGE_STATUS_UNAVAILABLE"), ("slow", "BROKERAGE_STATUS_UNAVAILABLE")]
+
+
+@pytest.mark.parametrize("stop,code", _TURN_STOPS)
+def test_a_voice_reply_for_a_brokerage_that_cannot_spend_is_refused_before_any_model(
+        monkeypatch, stop, code):
+    called, held = [], []
+
+    async def complete(_prompt, **_kwargs):
+        called.append(1)
+        return "answer"
+
+    real_spending = ai_budget.spending
+
+    def spending(*a, **k):
+        held.append(1)
+        return real_spending(*a, **k)
+
+    _gateway_voice(monkeypatch, complete)
+    monkeypatch.setattr(ai_budget, "spending", spending)
+    monkeypatch.setattr(ai_chat_agent, "VOICE_ENTITLEMENT_SECONDS", 0.2)
+    _entitlement(monkeypatch, stop)
+    with pytest.raises(SpendRefused) as refused:
+        asyncio.run(ai_chat_agent._generate_voice_reply(CALLER, "hello?", tenant_id=TENANT))
+    assert refused.value.code == code
+    assert called == [] and held == [], "the model was asked (or budget held) for a brokerage that cannot spend"
+
+
+def test_a_voice_reply_for_an_entitled_open_brokerage_is_answered_within_one_budget(monkeypatch):
+    seen = {}
+
+    async def complete(_prompt, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        return "Happy to help."
+
+    _gateway_voice(monkeypatch, complete)
+    _entitlement(monkeypatch, "open")
+    assert asyncio.run(ai_chat_agent._generate_voice_reply(CALLER, "hello?", tenant_id=TENANT)) == "Happy to help."
+    # The entitlement read comes out of the turn's budget, not on top of it.
+    assert seen["timeout"] <= ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+
+
+@pytest.mark.parametrize("path", ["gateway", "direct"])
+def test_the_entitlement_read_comes_out_of_the_turns_budget(monkeypatch, path):
+    import billing
+
+    seen = {}
+
+    async def slow_but_open(_ctx):
+        await asyncio.sleep(1.0)
+        return None
+
+    monkeypatch.setattr(billing, "entitlement_refusal", slow_but_open)
+    budget = ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+    if path == "gateway":
+        async def complete(_prompt, **kwargs):
+            seen["budget"] = kwargs["timeout"]
+            return "Happy to help."
+
+        _gateway_voice(monkeypatch, complete)
+    else:
+        monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [])
+
+        async def direct(_caller, _speech, *, budget=None):
+            seen["budget"] = budget
+            return "Happy to help."
+
+        monkeypatch.setattr(ai_chat_agent, "_voice_reply_direct", direct)
+    asyncio.run(ai_chat_agent._generate_voice_reply(CALLER, "hello?", tenant_id=TENANT))
+    # One second spent reading the entitlement is one second less for the reply.
+    assert seen["budget"] is not None and seen["budget"] <= budget - 0.9
+
+
+@pytest.mark.parametrize("stop,code", _TURN_STOPS[:3])
+def test_a_twilio_turn_for_a_brokerage_that_cannot_spend_says_the_refusal_and_ends(monkeypatch, stop, code):
+    _entitlement(monkeypatch, stop)
+    _gateway_voice(monkeypatch, _never_asked)
+    twiml, asked, spoken = _twilio_speech(monkeypatch, state={"tenant_id": TENANT}, reply=_REAL_VOICE_REPLY)
+    assert asked == [TENANT]
+    assert ai_chat_agent.VOICE_REFUSED_LINE in twiml and "<Hangup/>" in twiml
+    assert spoken == []
+
+
+@pytest.mark.parametrize("stop,code", _TURN_STOPS[:3])
+def test_a_custom_call_turn_for_a_brokerage_that_cannot_spend_says_the_refusal_and_ends(monkeypatch, stop, code):
+    _entitlement(monkeypatch, stop)
+    _gateway_voice(monkeypatch, _never_asked)
+    out, asked = _custom_call(monkeypatch, tenant=TENANT, reply=_REAL_VOICE_REPLY)
+    assert asked == [(CALLER, TENANT)]
+    assert out["text"] == ai_chat_agent.VOICE_REFUSED_LINE
+    assert out["end_call"] is True and out["code"] == code
+
+
+@pytest.mark.parametrize("stop,code", _TURN_STOPS[:3])
+def test_an_acs_turn_for_a_brokerage_that_cannot_spend_says_the_refusal_and_ends(monkeypatch, stop, code):
+    import acs_call_handler
+
+    _entitlement(monkeypatch, stop)
+    _gateway_voice(monkeypatch, _never_asked)
+    state = {"tenant_id": TENANT, "caller": CALLER, "turns": 0, "stage": "listening"}
+
+    @asynccontextmanager
+    async def lock(_cid):
+        yield
+
+    saved, played = [], []
+
+    async def load(_cid):
+        return dict(state)
+
+    async def save(_cid, value):
+        saved.append(dict(value))
+
+    async def play(_cid, text, *, operation_context, state=None):
+        played.append((text, operation_context))
+
+    monkeypatch.setattr(acs_call_handler, "_call_lock", lock)
+    monkeypatch.setattr(acs_call_handler, "_load_call_state", load)
+    monkeypatch.setattr(acs_call_handler, "_save_call_state", save)
+    monkeypatch.setattr(acs_call_handler, "_play_text", play)
+    asyncio.run(acs_call_handler.handle_speech_recognized("cid-1", "hello"))
+    assert played == [(ai_chat_agent.VOICE_REFUSED_LINE, "farewell")]
+    assert saved[-1]["stage"] == "ending"
+
+
+async def _never_asked(_prompt, **_kwargs):
+    raise AssertionError("a paid model was asked for a brokerage that cannot spend")
 
 
 # ── realtime phone calls: admitted before any bridge opens ────────────────────
