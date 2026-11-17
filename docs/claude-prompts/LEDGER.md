@@ -4059,6 +4059,34 @@ next_task: "24.2 pre-bound Twilio correlation (state before the create call; cal
 updated: 2026-11-17
 ```
 
+#### L17-45 An approved Twilio call is managed from before Twilio is asked to place it (external audit 24.2)
+```yaml
+id: L17-45
+status: tests_pass
+env: local
+evidence_shas: [2fe9cee]   # base (24.3 branch, L17-44); fix in the commit that adds this row
+files: [backend/twilio_call_handler.py, backend/command_providers.py, backend/commands_api.py, backend/tests/test_twilio_prebound_correlation.py, backend/tests/test_twilio_prebound_correlation_live.py, backend/tests/test_twilio_call_outcome.py, backend/tests/test_outbound_verified_caller_id.py, backend/tests/test_voice_rules.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the worker's Twilio branch, place_twilio_call, twilio_webhook, twilio_status_webhook and twilio_call_handler at 2fe9cee", result: "call state was keyed on the CallSid and written only after calls.create returned; the answer webhook waited at most 20 x 250 ms for it, then answered 'This call cannot be connected safely' and hung up on the approved call", date: 2026-11-17}
+  - {cmd: "red: unit test_twilio_prebound_correlation against 2fe9cee's commands_api.py, command_providers.py, twilio_call_handler.py", result: "15 failed", date: 2026-11-17}
+  - {cmd: "after: unit test_twilio_prebound_correlation (15) + test_twilio_call_outcome + test_outbound_verified_caller_id + test_twilio_qwen_realtime + test_killer_demo_paths", result: "all pass", date: 2026-11-17}
+  - {cmd: "full suite at 41855b9", result: "2 failed (test_voice_rules outbound disclosure: its request fake had no url/query, and the resolver rejected its short CallSid before the patched loader), 6716 passed", date: 2026-11-17}
+  - {cmd: "independent review (REQUEST_CHANGES: no uncertain-submission test and no link from an orphan outcome to its command; custom-call fallback pre-empted by the correlation write; worker could reset or abort a call an early answer already bound; tests on fakes) -> the correlation state carries command_id and an early answer or status puts the CallSid on an executing/reconciliation_required command (reconciliation then asks Twilio by CallSid); an invalid Twilio account is a ProviderConfigurationError (fallback runs); the worker writes the CallSid state NX and aborts only a call nothing manages; a lost reference falls back to the bounded wait; real Starlette request test; worker-driven live test test_twilio_prebound_correlation_live", result: "live red on 41855b9 (KeyError 'via': the worker overwrote the early-bound state); full suite at f1cb55e 6722 passed", date: 2026-11-17}
+  - {cmd: "independent re-review APPROVE (conditional on this ledger row) -> live case (d): create times out with no answer, row already reconciliation_required, a no-answer status alone links the CallSid and the sweep confirms it; log text fixed", result: "live 2 pass", date: 2026-11-17}
+authz_checked: "The correlation is a server-generated UUID stored with the brokerage (tenant UUID-validated) and account before the call; it rides in the answer and status URL query, which Twilio signs, and both webhooks now validate the signature over path + query (a swapped reference is refused). An early answer binds the CallSid to that state with SET NX and the worker's own CallSid write is NX too (neither overwrites the other); the CallSid is recorded on the command only for that state's own command_id and brokerage, only while it is executing/reconciliation_required with no provider reference; a reference that is unknown, malformed or not outbound-shaped is still 'unmanaged'."
+blockers:
+  - "Same design as Plivo's neoh_ref (plivo_call_handler.PLIVO_CORRELATION_PARAM). The status callback keeps its retry override in the unsigned fragment after the query."
+  - "Submission uncertain (create timed out after Twilio placed the call): the call is answered, the answer or the status puts the CallSid on the command, and the reconciliation sweep confirms it at Twilio (succeeded; busy/no-answer count as placed). A reconciled call still gets no live_call_sessions row (pre-existing for every reconciled call), so its stored outcome stays unmatched and the sweep reports it after 60 minutes (24.4). If neither webhook arrives within the reference's 1 h TTL the command stays unknown as before. A later answer of the same call repeats the (no-op) link UPDATE."
+  - "A definitely rejected create leaves the correlation state until its 1 h TTL (it names no CallSid, so nothing can bind it)."
+  - "Calls placed before this change carry no reference: the old bounded wait still applies to them."
+  - "No database change; Redis keys twilio:call_ref:<uuid> (1 h TTL)."
+  - "Customer-contact change: independent review + owner approval before merge. Not deployed (C4.4). Stacked on L17-44 (PR #107)."
+audit_refs: [24.2]
+decision_refs: []
+next_task: "24.5/24.6; 25.1/25.2."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 

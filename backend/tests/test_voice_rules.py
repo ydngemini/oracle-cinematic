@@ -14,6 +14,7 @@ import html
 import re
 
 import pytest
+from types import SimpleNamespace
 
 from outreach_compliance import AI_VOICE_DISCLOSURE
 
@@ -52,6 +53,9 @@ def test_the_outbound_twilio_call_opens_with_the_disclosure(monkeypatch, qwen):
     import voice_tts
 
     class _Request:
+        url = SimpleNamespace(query="")
+        query_params: dict = {}
+
         async def form(self):
             return {"CallSid": "CA123", "To": "+13025550100"}
 

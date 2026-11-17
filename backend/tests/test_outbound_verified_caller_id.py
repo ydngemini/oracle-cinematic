@@ -209,7 +209,7 @@ def patched_webhook(monkeypatch):
             outcomes.append((call_sid, status))
         return 1
 
-    async def fake_brokerage(_sid):
+    async def fake_brokerage(_sid, _ref=""):
         return "brokerage-1"
 
     async def fake_cleanup(call_sid: str) -> None:

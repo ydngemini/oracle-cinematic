@@ -123,12 +123,17 @@ async def initialize_twilio_call_state(
     *,
     tenant_id: str,
     account_sid: str,
+    correlation: str = "",
+    keep_existing: bool = False,
 ) -> dict[str, Any]:
+    """`keep_existing`: an early answer may already have bound this CallSid
+    from the correlation (24.2) and opened the media socket; never reset it."""
     if not _CALL_SID_RE.fullmatch(call_sid or ""):
         raise ValueError("Twilio call SID is invalid")
     if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
         raise ValueError("Twilio account SID is invalid")
     state = {
+        **({"correlation": correlation} if correlation else {}),
         "tenant_id": str(tenant_id),
         "callee": str(callee_number),
         "account_sid": account_sid,
@@ -137,8 +142,122 @@ async def initialize_twilio_call_state(
         "created_at": time.time(),
         "qwen_realtime_enabled": twilio_qwen_enabled(),
     }
+    if keep_existing:
+        redis = await _get_redis()
+        state["updated_at"] = time.time()
+        written = await redis.set(_state_key(call_sid), json.dumps(state, separators=(",", ":"), sort_keys=True),
+                                  ex=_STATE_TTL_SECONDS, nx=True)
+        if not written:
+            return await load_twilio_call_state(call_sid) or state
+        return state
     await _save_call_state(call_sid, state)
     return state
+
+
+#: Neoh's own reference for an outbound call, carried in the answer and status
+#: URLs and stored BEFORE Twilio is asked to place the call (external audit
+#: 24.2). Twilio signs the full URL, query included, so it cannot be forged
+#: onto a webhook.
+TWILIO_CORRELATION_PARAM = "neoh_ref"
+_CORRELATION_KEY_PREFIX = "twilio:call_ref:"
+
+
+def _correlation_key(correlation: str) -> Optional[str]:
+    try:
+        return f"{_CORRELATION_KEY_PREFIX}{uuid.UUID(str(correlation))}"
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def initialize_outbound_twilio_correlation(
+    correlation: str,
+    callee_number: str,
+    *,
+    tenant_id: str,
+    account_sid: str,
+    command_id: str = "",
+) -> dict[str, Any]:
+    """The call's state before the call exists: a webhook that beats the
+    worker's CallSid write (a slow create response, a paused worker, or a
+    create that timed out after Twilio placed the call) finds it by
+    correlation instead of hanging up. `command_id` lets that webhook record
+    the CallSid on the command, so an uncertain submission can be reconciled."""
+    key = _correlation_key(correlation)
+    if key is None:
+        raise ValueError("Twilio correlation must be a UUID")
+    if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
+        raise ValueError("Twilio account SID is invalid")
+    state = {
+        "tenant_id": _require_uuid(tenant_id, "tenant_id"),
+        "callee": str(callee_number),
+        "account_sid": account_sid,
+        "direction": "outbound",
+        "stage": "submitting",
+        "correlation": str(uuid.UUID(str(correlation))),
+        **({"command_id": _require_uuid(command_id, "command_id")} if command_id else {}),
+        "created_at": time.time(),
+        "qwen_realtime_enabled": twilio_qwen_enabled(),
+    }
+    redis = await _get_redis()
+    state["updated_at"] = time.time()
+    await redis.set(key, json.dumps(state, separators=(",", ":"), sort_keys=True),
+                    ex=_STATE_TTL_SECONDS)
+    return state
+
+
+async def load_twilio_correlation(correlation: str) -> Optional[dict[str, Any]]:
+    key = _correlation_key(correlation)
+    if key is None:
+        return None
+    raw = await (await _get_redis()).get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        state = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("direction") != "outbound":
+        return None
+    return state
+
+
+async def resolve_outbound_twilio_call_state(
+    call_sid: str,
+    correlation: str = "",
+    *,
+    wait_for_initialization: bool = False,
+) -> Optional[dict[str, Any]]:
+    """The outbound call's state by CallSid, else by the signed correlation —
+    then bound to the CallSid so the media socket and later webhooks find it.
+
+    With a correlation the CallSid is read once (no wait): the correlation
+    state exists from before the call. Without one (a call placed before this
+    change) the old bounded wait applies.
+    """
+    has_ref = _correlation_key(correlation) is not None and bool(_CALL_SID_RE.fullmatch(call_sid or ""))
+    state = await load_twilio_call_state(
+        call_sid, wait_for_initialization=wait_for_initialization and not has_ref)
+    if state is not None or not has_ref:
+        return state
+    pending = await load_twilio_correlation(correlation)
+    if pending is None:
+        # The reference is unknown here (expired, or a store that lost it):
+        # fall back to the old bounded wait for the worker's own write.
+        return await load_twilio_call_state(call_sid, wait_for_initialization=wait_for_initialization)
+    # SET NX: if the worker bound the CallSid meanwhile, keep its state.
+    bound = {**pending, "stage": "queued", "via": "correlation", "updated_at": time.time()}
+    redis = await _get_redis()
+    await redis.set(_state_key(call_sid), json.dumps(bound, separators=(",", ":"), sort_keys=True),
+                    ex=_STATE_TTL_SECONDS, nx=True)
+    return await load_twilio_call_state(call_sid) or bound
+
+
+async def cleanup_twilio_correlation(correlation: str) -> None:
+    key = _correlation_key(correlation)
+    if key is not None:
+        await (await _get_redis()).delete(key)
 
 
 def _require_uuid(value: str, label: str) -> str:

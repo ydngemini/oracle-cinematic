@@ -48,7 +48,7 @@ def hook(monkeypatch):
         seen.accepted.append((provider, call_sid, status, duration, tenant_id))
         return 1
 
-    async def brokerage(_sid):
+    async def brokerage(_sid, _ref=""):
         return seen.brokerage
 
     async def cleanup(call_sid):
