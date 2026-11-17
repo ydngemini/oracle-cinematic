@@ -61,7 +61,7 @@ async def _scenario(monkeypatch):
         await admin.execute("UPDATE tenants SET lifecycle_state='suspended' WHERE id=$1", T)
         await admin.execute("SET session_replication_role = origin")
         refused = await commands_api._realtime_refusal(T)
-        assert refused is not None and refused.code == commands_api.REALTIME_NOT_ENTITLED_CODE  # paid, but suspended
+        assert refused is not None and refused.code == commands_api.REALTIME_NOT_OPEN_CODE  # paid, but suspended
 
         # Unreadable status: refused, never a pass.
         import billing
@@ -71,7 +71,7 @@ async def _scenario(monkeypatch):
 
         monkeypatch.setattr(billing, "entitlement_refusal", broken)
         refused = await commands_api._realtime_refusal(T)
-        assert refused is not None and refused.code == ai_budget.CODES["unknown"]
+        assert refused is not None and refused.code == commands_api.REALTIME_ENTITLEMENT_UNKNOWN_CODE
         assert admitted_by_budget == [T]          # the budget was asked only for the admitted call
     finally:
         await admin.execute("SET session_replication_role = replica")

@@ -2383,7 +2383,9 @@ _REALTIME_ADMISSION_SECONDS = 5.0
 _REALTIME_ACTOR = "voice-realtime"
 #: The refusal code when a lapsed subscription or a suspended/closing
 #: brokerage stops a realtime bridge (21.4); logged with the provider call id.
-REALTIME_NOT_ENTITLED_CODE = "BROKERAGE_NOT_ENTITLED"
+REALTIME_NOT_ENTITLED_CODE = "BROKERAGE_NOT_ENTITLED"      # subscription lapsed (402)
+REALTIME_NOT_OPEN_CODE = "BROKERAGE_NOT_OPEN"              # suspended / closing / erasing (423)
+REALTIME_ENTITLEMENT_UNKNOWN_CODE = "BROKERAGE_STATUS_UNAVAILABLE"
 
 
 async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
@@ -2405,21 +2407,25 @@ async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
     # Entitlement first (external audit 21.4): the AI budget says nothing about
     # whether the brokerage still pays or is open. A cancelled subscription or
     # a suspended / closing brokerage whose phone routes were left active used
-    # to get a paid realtime model on every inbound call. Read as the
-    # platform for this tenant, as the send workers read it (C3.4); a status
-    # that cannot be read in time is refused, never a pass.
+    # to get a paid realtime model on every inbound call. Read in the call's
+    # own brokerage context (the app pool, as require_active_subscription
+    # reads it) and within ONE deadline shared with the budget read, so a slow
+    # database costs the caller at most _REALTIME_ADMISSION_SECONDS of silence.
+    # A status that cannot be read in time is refused, never a pass.
+    deadline = asyncio.get_running_loop().time() + _REALTIME_ADMISSION_SECONDS
     try:
-        entitlement = await asyncio.wait_for(
-            billing.entitlement_refusal(TenantContext(agent_id=_REALTIME_ACTOR, tenant_id=str(tenant_id),
-                                                      role=Role.PLATFORM_ADMIN)),
-            timeout=_REALTIME_ADMISSION_SECONDS)
+        entitlement = await asyncio.wait_for(billing.entitlement_refusal(ctx),
+                                             timeout=_REALTIME_ADMISSION_SECONDS)
     except Exception as exc:  # noqa: BLE001 - timeout, 503 or DB error: unknown is a refusal
         logger.warning("Realtime call held: entitlement could not be read (%s)", type(exc).__name__)
-        return ai_budget.refusal("unknown", ctx)
+        return SpendUnavailable("unknown", REALTIME_ENTITLEMENT_UNKNOWN_CODE,
+                                "This brokerage's account status could not be read, so no model was asked.")
     if entitlement is not None:
-        return SpendRefused("not_entitled", REALTIME_NOT_ENTITLED_CODE, entitlement[1])
+        code = REALTIME_NOT_OPEN_CODE if entitlement[0] == 423 else REALTIME_NOT_ENTITLED_CODE
+        return SpendRefused("not_entitled", code, entitlement[1])
     try:
-        await asyncio.wait_for(ai_budget.admission(ctx), timeout=_REALTIME_ADMISSION_SECONDS)
+        await asyncio.wait_for(ai_budget.admission(ctx),
+                               timeout=max(0.0, deadline - asyncio.get_running_loop().time()))
     except SpendRefused as refused:
         return refused
     except asyncio.TimeoutError:
