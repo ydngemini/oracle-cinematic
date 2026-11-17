@@ -3950,6 +3950,33 @@ next_task: "24.4 durable provider outcome inbox (Plivo/Twilio call outcomes + ea
 updated: 2026-11-16
 ```
 
+#### L17-41 A carrier call outcome that arrives before its call session is stored and applied later, never acknowledged into oblivion (migration 0174; external audit 24.4)
+```yaml
+id: L17-41
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0174_provider_call_outcomes.sql, backend/commands_api.py, backend/telephony_api.py, backend/reconciliation.py, backend/privacy_data_map.py, backend/tests/test_call_outcome_inbox_live.py, backend/tests/test_plivo_outbound_webhooks.py, backend/tests/test_killer_demo_paths.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read telephony_api.plivo_outbound_status, commands_api.record_call_outcome and the worker's live_call_sessions insert at a1ca828", result: "the session row is written only after the provider ack; an earlier verified callback runs record_call_outcome against no row (zero-row updates, no timeline, no lead_engaged meter), answers 204 and cleans up the call state; nothing can replay it", date: 2026-11-17}
+  - {cmd: "after (revised per independent review): run_migrations (0174) + live test_call_outcome_inbox_live + test_reconciliation_live; unit test_plivo_outbound_webhooks + test_killer_demo_paths", result: "live 2 passed: an early 'completed' is stored (a retry adds no row); once the session exists the worker, a webhook retry and the sweep racing apply it exactly once (one timeline entry, 0:42); a callback that beat the provider ack (stored under Neoh's correlation with the carrier ids as aliases) applies to the session written under the request id via the worker's hook; an outcome for an existing session applies at once; the tenant-confined sweep has nothing left; expiry reports never-matched rows. unit 59 passed incl. the pre-ack route test: aliases carry RequestUUID/CallUUID/correlation and the call state is NOT cleaned up before the reference is recorded", date: 2026-11-17}
+authz_checked: "each outcome is bound to the brokerage whose call state verified the callback's Plivo signature (tenant_id, FK ON DELETE CASCADE) and applies only to a session of that brokerage, so ids a brokerage signs for its own Plivo account (CallUUID/RequestUUID/neoh_ref aliases) cannot reach another brokerage's session (live test: an intruder tenant's outcome naming this brokerage's call ids stays unapplied). Tenant table: RLS + FORCE with the standard tenant-isolation policy; rls_security_review.sql PASS. Applying goes through the unchanged record_call_outcome."
+blockers:
+  - "Plivo only. Twilio's outbound status webhook still does not call record_call_outcome at all (24.3, separate); the table already accepts provider 'twilio' for it."
+  - "Early SMS delivery receipts (25.5 follow-up) are not covered by this table."
+  - "An outcome whose session is never written (the provider ack could not be persisted -> reconciliation; or a reconcile-confirmed command, which gets no session) waits 30 days and is deleted unapplied; the sweep logs outcomes unmatched after 60 min and counts never-matched expiries."
+  - "Applying runs the unchanged record_call_outcome: only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
+  - "Session start/end and first-response times use the apply time, not the carrier's arrival time (an outcome applied by the sweep can be up to 15 min late)."
+  - "Terminal-status cleanup of the Redis call state is skipped until the worker has recorded the provider reference (the state then expires by TTL); before, a callback that beat the ack deleted it and the worker failed the command into reconciliation."
+  - "0174 also adds idx_live_call_sessions_provider_call_id (sessions are now looked up by provider call id on every webhook, worker hook and sweep)."
+  - "Each row is applied under a 2-minute lease (claimed_until) taken in its own short transaction, with no connection held across record_call_outcome; a crashed applier's lease lapses and the row is re-applied (idempotent except a possible repeated timeline entry). Two rows for one status under different keys (a redelivery straddling the ack) can, rarely, add a duplicate timeline entry."
+  - "The worker hook is exercised only through apply_pending_call_outcomes in tests (the sweep is the backstop if it were removed)."
+  - "Migration 0174: run as doadmin (non-superuser) on staging/prod — CREATE TABLE + GRANT to oracle_app only, no functions or SET clauses."
+  - "Call-outcome / metering change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.4]
+next_task: "24.3 Twilio call status through record_call_outcome + this inbox; 24.2 pre-bound Twilio correlation."
+```
+
 #### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
 ```yaml
 id: L17-42

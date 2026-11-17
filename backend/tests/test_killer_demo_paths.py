@@ -380,7 +380,8 @@ def test_plivo_outbound_status_records_the_outcome():
     import telephony_api
 
     src = inspect.getsource(telephony_api.plivo_outbound_status)
-    assert src.index("validate_plivo_signature(") < src.index("record_call_outcome(")
+    # Stored then applied through accept_call_outcome (24.4), only after the signature.
+    assert src.index("validate_plivo_signature(") < src.index("accept_call_outcome(")
 
 
 # ── buyer matching for the brokerage's OWN property ────────────────────────

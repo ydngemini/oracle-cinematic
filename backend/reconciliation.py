@@ -15,6 +15,8 @@ waiting for a human:
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
+* carrier call outcomes that arrived before their call session (24.4) →
+  applied once the session exists; kept 30 days
 * texts Telnyx accepted with no sms_messages row → the row rebuilt from the
   command (never re-sent), so receipts, timeline and delivery can attach (25.5)
 * delivered speed-to-lead responses with no lead_engaged row → re-metered (BILL-001)
@@ -191,6 +193,15 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.exception("stranded-release reconciliation failed")
         out["stranded_releases"] = f"failed: {type(exc).__name__}"
+    from commands_api import apply_pending_call_outcomes, expire_call_outcomes  # 24.4
+
+    try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
+        out["call_outcomes_applied"] = await apply_pending_call_outcomes(only_tenant=only_tenant)
+        if only_tenant is None:   # platform rows: expiry and the unmatched report are global
+            out["call_outcomes"] = await expire_call_outcomes()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("call outcome inbox step failed")
+        out["call_outcomes_applied"] = f"failed: {type(exc).__name__}"
     out["commands"] = await _reconcile_commands(only_tenant)
     from messaging_data import repair_missing_outbound_rows  # 25.5
 

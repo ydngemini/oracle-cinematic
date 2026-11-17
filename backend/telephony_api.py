@@ -1761,8 +1761,9 @@ async def plivo_outbound_status(request: Request) -> Response:
         request, form, PLIVO_OUTBOUND_STATUS_PATH,
         tokens=await _outbound_plivo_tokens(state),
     )
-    # The carrier's own word on the call, recorded where the agent looks.
-    from commands_api import record_call_outcome
+    # The carrier's own word on the call, recorded where the agent looks
+    # (stored, then applied through record_call_outcome).
+    from commands_api import accept_call_outcome
 
     try:
         duration = int(str(form.get("Duration") or form.get("BillDuration") or "").strip() or -1)
@@ -1771,9 +1772,17 @@ async def plivo_outbound_status(request: Request) -> Response:
     try:
         # live_call_sessions knows the call by the id placing it returned:
         # Plivo's request id.
-        await record_call_outcome(state.get("reference") or state.get("request_uuid")
+        # Stored durably first (24.4): an outcome that beats the worker's
+        # session row waits in provider_call_outcomes instead of updating
+        # nothing and being acknowledged into oblivion. Every id this callback
+        # knows is kept: before the provider ack the state holds only the
+        # correlation, while the session is written under the reference.
+        await accept_call_outcome("plivo", state.get("reference") or state.get("request_uuid")
                                   or request_uuid or call_uuid,
-                                  call_status, duration if duration >= 0 else None)
+                                  call_status, duration if duration >= 0 else None,
+                                  tenant_id=str(state.get("tenant_id") or ""),
+                                  aliases=[call_uuid, request_uuid, correlation,
+                                           str(state.get("reference") or "")])
     except Exception:  # noqa: BLE001 — answered below, never swallowed
         # RUN-05: this used to log, clean up the call state and answer 204, so
         # the outcome — including the only lead_engaged meter of a
@@ -1784,7 +1793,11 @@ async def plivo_outbound_status(request: Request) -> Response:
         logger.error("Plivo outbound call outcome NOT recorded; state kept for a retry: uuid=%s",
                      call_uuid, exc_info=True)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
-    if call_status in _PLIVO_TERMINAL_STATUSES:
+    # Before the worker has recorded the provider's reference (a callback that
+    # beat the ack) the worker still needs this state: deleting it made the
+    # worker fail the command into reconciliation and never write the session
+    # (24.4 review). Its TTL ends it instead.
+    if call_status in _PLIVO_TERMINAL_STATUSES and state.get("reference"):
         try:
             await cleanup_plivo_call(call_uuid)
             for alias in {request_uuid, correlation, str(state.get("reference") or "")}:
