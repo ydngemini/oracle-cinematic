@@ -9,6 +9,9 @@ provider's own records, bounds every retry, and leaves the rest visibly
 waiting for a human:
 
 * commands stuck in `executing` (a worker died mid-submission) → reconciliation
+* commands still `awaiting_approval` behind an approval already decided (a
+  release that failed before the single-transaction fix, 24.1) → queued if the
+  approval is in date, failed if it expired since, cancelled if rejected
 * commands in `reconciliation_required` with a provider id → asked at the
   provider, at most RECONCILE_MAX_ATTEMPTS times
 * email_outbox rows still `queued` → delivery re-enqueued (claim prevents dups)
@@ -23,7 +26,9 @@ waiting for a human:
   numbers released
 
 Every query is bounded (LIMIT) and every provider call has a timeout.
-Nothing here sends a message, places a call or charges anyone.
+Nothing here sends a message, places a call or charges anyone. (A stranded
+command a person approved is put on the queue; the worker still runs every
+compliance and entitlement gate before any provider call.)
 """
 
 from __future__ import annotations
@@ -177,6 +182,13 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     if recovery_mode.is_recovery_mode():
         out["provider_checks"] = "skipped: recovery mode"
         return out
+    from commands_api import reconcile_stranded_releases  # 24.1; queues work, so not in recovery mode
+
+    try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
+        out["stranded_releases"] = await reconcile_stranded_releases(only_tenant)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("stranded-release reconciliation failed")
+        out["stranded_releases"] = f"failed: {type(exc).__name__}"
     out["commands"] = await _reconcile_commands(only_tenant)
     out["purchases"] = await _reconcile_purchases(only_tenant)
     import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)
