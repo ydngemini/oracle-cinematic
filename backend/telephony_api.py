@@ -1780,6 +1780,7 @@ async def plivo_outbound_status(request: Request) -> Response:
         await accept_call_outcome("plivo", state.get("reference") or state.get("request_uuid")
                                   or request_uuid or call_uuid,
                                   call_status, duration if duration >= 0 else None,
+                                  tenant_id=str(state.get("tenant_id") or ""),
                                   aliases=[call_uuid, request_uuid, correlation,
                                            str(state.get("reference") or "")])
     except Exception:  # noqa: BLE001 — answered below, never swallowed

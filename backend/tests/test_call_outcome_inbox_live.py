@@ -59,8 +59,8 @@ async def _scenario():
                     f"call-{s}-{key}", owner, call_id if key == "a" else other))
 
         # The carrier's 'completed' beats the session row: stored, nothing applied yet.
-        assert await commands_api.accept_call_outcome("plivo", call_id, "completed", 42) == 0
-        assert await commands_api.accept_call_outcome("plivo", call_id, "completed", 42) == 0   # a retry: one row
+        assert await commands_api.accept_call_outcome("plivo", call_id, "completed", 42, tenant_id=T) == 0
+        assert await commands_api.accept_call_outcome("plivo", call_id, "completed", 42, tenant_id=T) == 0   # a retry: one row
         assert await admin.fetchval("SELECT count(*) FROM provider_call_outcomes WHERE provider_call_id=$1 "
                                     "AND applied_at IS NULL", call_id) == 1
         # Before the fix this is all that happened: nothing to update.
@@ -95,15 +95,28 @@ async def _scenario():
         # correlation and the carrier's ids; the session is written under the
         # request id. It still applies — the worker's own hook finds it.
         correlation, carrier_call = str(uuid.uuid4()), str(uuid.uuid4())
-        assert await commands_api.accept_call_outcome(
-            "plivo", correlation, "busy", aliases=[carrier_call, other, correlation]) == 0
+        assert await commands_api.accept_call_outcome("plivo", correlation, "busy", aliases=[carrier_call, other, correlation], tenant_id=T) == 0
         await make_session(commands[1], other)
         assert await commands_api.apply_pending_call_outcomes([other]) == 1          # the worker's hook
         assert await admin.fetchval("SELECT outcome FROM live_call_sessions WHERE provider_call_id=$1",
                                     other) == "busy"
 
+        # Another brokerage's signed callback naming this brokerage's call id
+        # (as an alias it chose) never reaches this session.
+        intruder = str(uuid.uuid4())
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,$3)", intruder,
+                            f"intruder-{s}", f"I {s}")
+        try:
+            assert await commands_api.accept_call_outcome("plivo", f"x-{s}", "completed", 9,
+                                                          aliases=[other, call_id], tenant_id=intruder) == 0
+            assert await commands_api.apply_pending_call_outcomes() >= 0
+            assert await admin.fetchval("SELECT applied_at FROM provider_call_outcomes WHERE provider_call_id=$1",
+                                        f"x-{s}") is None
+        finally:
+            await admin.execute("DELETE FROM tenants WHERE id=$1", intruder)   # cascades its outcome
+
         # An outcome for a session that already exists is applied at once.
-        assert await commands_api.accept_call_outcome("plivo", other, "completed", 0) == 1
+        assert await commands_api.accept_call_outcome("plivo", other, "completed", 0, tenant_id=T) == 1
 
         # The sweep, confined to this brokerage, has nothing left.
         swept = await reconciliation.run_sweep(only_tenant=T)
@@ -114,7 +127,7 @@ async def _scenario():
             [call_id, other, correlation]) == 0
 
         # Old rows expire; ones that never matched are reported as such.
-        await commands_api.accept_call_outcome("plivo", f"lost-{s}", "completed", 5)
+        await commands_api.accept_call_outcome("plivo", f"lost-{s}", "completed", 5, tenant_id=T)
         await admin.execute("UPDATE provider_call_outcomes SET received_at = now() - interval '31 days' "
                             "WHERE provider_call_id = ANY($1::text[])", [call_id, other, correlation, f"lost-{s}"])
         expired = await commands_api.expire_call_outcomes()

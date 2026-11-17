@@ -2775,7 +2775,7 @@ CALL_OUTCOME_UNMATCHED_MINUTES = 60
 
 
 async def accept_call_outcome(provider: str, provider_call_id: str, call_status: str,
-                              duration_seconds: Optional[int] = None, *,
+                              duration_seconds: Optional[int] = None, *, tenant_id: str,
                               aliases: Sequence[str] = ()) -> int:
     """A verified carrier call outcome, made durable BEFORE the carrier is
     acknowledged, then applied if its call session exists (external audit 24.4).
@@ -2788,26 +2788,30 @@ async def accept_call_outcome(provider: str, provider_call_id: str, call_status:
     session written under any of them, when the worker writes it
     (apply_pending_call_outcomes) or by the reconciliation sweep.
 
+    `tenant_id` is the brokerage whose call state verified the callback's
+    signature: the outcome applies only to that brokerage's session, so ids a
+    brokerage signs for its own Plivo account cannot reach another's.
+
     Raises if the outcome cannot be stored, or if a matched outcome's session
     update fails, so the route answers 503 and the carrier retries. Returns
     how many outcomes were applied now (0: waiting for the session).
     """
     status_value = (call_status or "").strip().lower()
-    if not provider_call_id or not status_value:
+    if not provider_call_id or not status_value or not tenant_id:
         return 0
     known = sorted({str(a)[:128] for a in (provider_call_id, *aliases) if a})[:8]
     async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
         await conn.execute(
             """
             INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds,
-                                                call_aliases)
-            VALUES ($1, $2, $3, $4, $5::text[])
+                                                call_aliases, tenant_id)
+            VALUES ($1, $2, $3, $4, $5::text[], $6::uuid)
             ON CONFLICT (provider, provider_call_id, call_status) DO UPDATE
                SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds),
                    call_aliases = (SELECT array_agg(DISTINCT a) FROM unnest(
                        provider_call_outcomes.call_aliases || EXCLUDED.call_aliases) a)
             """,
-            provider, provider_call_id[:128], status_value[:40], duration_seconds, known)
+            provider, provider_call_id[:128], status_value[:40], duration_seconds, known, str(tenant_id))
     return await apply_pending_call_outcomes(known, raise_errors=True)
 
 
@@ -2818,10 +2822,14 @@ async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, 
 
     For one call (`call_ids`: the webhook, the worker) or, with none, every
     pending outcome (the reconciliation sweep; `only_tenant` confines it to
-    sessions of one brokerage). Each row is claimed FOR UPDATE SKIP LOCKED and
-    marked applied in the same transaction as it is applied, so a webhook, the
-    worker and the sweep racing apply it exactly once; a failure rolls the
-    claim back and the row stays pending.
+    one brokerage). A row matches only a session of its own brokerage.
+
+    Each row is taken under a short lease (claimed_until) in its own brief
+    transaction, applied with no connection held, then marked applied: a
+    webhook, the worker and the sweep racing apply it once, and a burst of
+    callbacks cannot pin two pool connections each. A failure releases the
+    lease; a crashed applier's lease lapses and the row is applied again
+    (record_call_outcome is idempotent bar a possible repeated timeline entry).
     """
     ids = [str(c) for c in (call_ids or []) if c] or None
     async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
@@ -2831,10 +2839,12 @@ async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, 
               FROM provider_call_outcomes o
              WHERE o.applied_at IS NULL
                AND ($1::text[] IS NULL OR o.provider_call_id = ANY($1) OR o.call_aliases && $1)
+               AND (o.claimed_until IS NULL OR o.claimed_until < now())
+               AND ($3::uuid IS NULL OR o.tenant_id = $3)
                AND EXISTS (SELECT 1 FROM live_call_sessions s
-                            WHERE (s.provider_call_id = o.provider_call_id
-                                   OR s.provider_call_id = ANY(o.call_aliases))
-                              AND ($3::uuid IS NULL OR s.tenant_id = $3))
+                            WHERE s.tenant_id = o.tenant_id
+                              AND (s.provider_call_id = o.provider_call_id
+                                   OR s.provider_call_id = ANY(o.call_aliases)))
              ORDER BY o.id
              LIMIT $2
             """, ids, limit, only_tenant)
@@ -2843,27 +2853,45 @@ async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, 
         try:
             async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
                 claimed = await conn.fetchrow(
-                    "SELECT id, provider_call_id, call_aliases, call_status, duration_seconds "
-                    "FROM provider_call_outcomes WHERE id=$1 AND applied_at IS NULL FOR UPDATE SKIP LOCKED",
-                    row["id"])
-                if claimed is None:
-                    continue          # applied, or being applied, by someone else
-                session_call_id = await conn.fetchval(
-                    "SELECT provider_call_id FROM live_call_sessions WHERE provider_call_id = $1 "
-                    "OR provider_call_id = ANY($2::text[]) LIMIT 1",
-                    claimed["provider_call_id"], list(claimed["call_aliases"] or []))
-                if session_call_id is None:
-                    continue
-                # record_call_outcome writes through its own connections; this
-                # transaction holds the claim until it returns.
-                await record_call_outcome(session_call_id, claimed["call_status"], claimed["duration_seconds"])
-                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now() WHERE id=$1", claimed["id"])
+                    """
+                    UPDATE provider_call_outcomes o SET claimed_until = now() + interval '2 minutes'
+                     WHERE o.id = $1 AND o.applied_at IS NULL
+                       AND (o.claimed_until IS NULL OR o.claimed_until < now())
+                    RETURNING o.id, o.tenant_id, o.call_status, o.duration_seconds,
+                              (SELECT s.provider_call_id FROM live_call_sessions s
+                                WHERE s.tenant_id = o.tenant_id
+                                  AND (s.provider_call_id = o.provider_call_id
+                                       OR s.provider_call_id = ANY(o.call_aliases))
+                                LIMIT 1) AS session_call_id
+                    """, row["id"])
+            if claimed is None:
+                continue          # applied, or being applied, by someone else
+            if claimed["session_call_id"] is None:
+                await _release_call_outcome(claimed["id"])
+                continue
+            try:
+                await record_call_outcome(claimed["session_call_id"], claimed["call_status"],
+                                          claimed["duration_seconds"])
+            except Exception:
+                await _release_call_outcome(claimed["id"])
+                raise
+            async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now(), claimed_until=NULL "
+                                   "WHERE id=$1", claimed["id"])
             applied += 1
         except Exception:  # noqa: BLE001 - kept pending; the next applier tries again
             if raise_errors:
                 raise
             logger.warning("call outcome %s not applied; kept", row["id"], exc_info=True)
     return applied
+
+
+async def _release_call_outcome(outcome_id: int) -> None:
+    try:
+        async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+            await conn.execute("UPDATE provider_call_outcomes SET claimed_until=NULL WHERE id=$1", outcome_id)
+    except Exception:  # noqa: BLE001 - the lease lapses on its own
+        logger.warning("call outcome %s lease not released", outcome_id, exc_info=True)
 
 
 async def expire_call_outcomes() -> dict[str, int]:

@@ -425,8 +425,8 @@ def test_an_outcome_that_beats_the_provider_ack_is_kept_under_every_id_and_the_s
 
     seen = {}
 
-    async def accept(provider, ref, status, duration, *, aliases=()):
-        seen.update(provider=provider, ref=ref, status=status, aliases=set(aliases))
+    async def accept(provider, ref, status, duration, *, tenant_id, aliases=()):
+        seen.update(provider=provider, ref=ref, status=status, aliases=set(aliases), tenant=tenant_id)
         return 0
 
     async def by_correlation(uuid, request_uuid="", correlation="", wait_for_initialization=False):
@@ -441,4 +441,5 @@ def test_an_outcome_that_beats_the_provider_ack_is_kept_under_every_id_and_the_s
     r = client.post(path, data=params, headers=_sign(path, params, PLATFORM_TOKEN))
     assert r.status_code == 204
     assert seen["ref"] == CORRELATION and {REQUEST, UUID, CORRELATION} <= seen["aliases"]
+    assert seen["tenant"] == TENANT, "the outcome is tied to the brokerage whose state verified it"
     assert client.cleaned == [], "the worker still needs the call state"
