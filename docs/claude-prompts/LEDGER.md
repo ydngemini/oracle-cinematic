@@ -3902,6 +3902,31 @@ next_task: "Owner decision on drafts/approvals; then 24.x commands/callbacks."
 updated: 2026-11-16
 ```
 
+#### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
+```yaml
+id: L17-42
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_realtime_entitlement_live.py, backend/tests/test_ai_budget_hosted_calls.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api._realtime_refusal and its three callers (ACS/Qwen media, Twilio, Plivo/ElevenLabs) at a1ca828", result: "admission = ai_budget.admission only (deploy halt, platform switch, brokerage AI pause, cap): no subscription and no tenants.lifecycle_state check, so a cancelled or suspended brokerage with active routes got a billable realtime session per inbound call", date: 2026-11-17}
+  - {cmd: "red: test_realtime_entitlement_live against a1ca828's commands_api (live PostgreSQL, ORACLE_BILLING_ENFORCED=1)", result: "a brokerage whose subscription is canceled was admitted (None)", date: 2026-11-17}
+  - {cmd: "red (route level): test_ai_budget_hosted_calls -k canceled/suspended/entitlement_unreadable against a1ca828's commands_api", result: "12 failed: all four media routes (ACS, Twilio, Plivo-Qwen, Plivo-ElevenLabs) opened the hosted model for a canceled, a suspended and an unreadable brokerage", date: 2026-11-17}
+  - {cmd: "after (revised per independent review): unit test_ai_budget_hosted_calls (126) + live test_realtime_entitlement_live", result: "unit 126 passed: on every media route a canceled (BROKERAGE_NOT_ENTITLED), suspended (BROKERAGE_NOT_OPEN) or unreadable (BROKERAGE_STATUS_UNAVAILABLE) brokerage opens no model, hears the refusal line, the call ends, the code is logged and no phone number is; live 1 passed against real subscriptions/tenants rows read in the brokerage's own context", date: 2026-11-17}
+authz_checked: "billing.entitlement_refusal is read in the call's brokerage context on the app pool (as require_active_subscription reads it; RLS admits the brokerage's own subscriptions/tenants row), not the small platform pool; the entitlement and budget reads share one 5 s deadline; any failure refuses."
+blockers:
+  - "What the caller hears is each route's existing refusal (the realtime bridge is not opened and the call is ended/refused as for a budget refusal); no new announcement or forwarding option (the audit's optional 'low-cost carrier announcement or safe forwarding' is not built)."
+  - "With ORACLE_BILLING_ENFORCED off (dev, load test) only the lifecycle state is checked, as everywhere else."
+  - "The gate is at the media websocket (where the paid model opens), not the inbound webhook: plivo_inbound_webhook still resolves the route, runs prepare_inbound_call and saves call state for a suspended/closing/erasing brokerage before the media route refuses (writes a call record and the caller's number into a brokerage being erased)."
+  - "Turn-based paid voice replies (Twilio /webhooks/twilio/speech, /webhooks/custom-call, ACS speech recognized -> _generate_voice_reply through the gateway) check the AI budget only, not entitlement: separate follow-up."
+  - "ACS inbound calls are stamped with the platform tenant: with billing enforced they now need that tenant to hold an entitled subscription (staging has a comp row for the owner tenant); ACS is dormant."
+  - "Spend/billing control change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [21.4]
+next_task: "entitlement on turn-based voice replies and on the inbound webhook (21.4 follow-up); 24.3 Twilio call status via record_call_outcome."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 

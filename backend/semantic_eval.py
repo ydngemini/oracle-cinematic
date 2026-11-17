@@ -224,6 +224,10 @@ class _Tally:
     intent_ok: int = 0
     exact_n: int = 0
     exact_ok: int = 0
+    intent_all_n: int = 0
+    intent_all_ok: int = 0
+    exact_all_n: int = 0
+    exact_all_ok: int = 0
     tp: int = 0
     fp: int = 0
     fn: int = 0
@@ -256,15 +260,22 @@ class _Tally:
             self.unauthorized_ids.append(o.case.id)
         if not model:
             return
+        goals = o.case.expect.get("goals")
+        # Over every case (parsed or not): an abstention has no frame, so it
+        # is never counted right (NQ-13).
+        self.exact_all_n += 1
+        if goals is not None:
+            self.intent_all_n += 1
         if o.frame is None:
             return
         self.parsed += 1
-        goals = o.case.expect.get("goals")
         if goals is not None:
             self.intent_n += 1
             self.intent_ok += int(_goal_set(o.frame) == set(goals))
+            self.intent_all_ok += int(_goal_set(o.frame) == set(goals))
         self.exact_n += 1
         self.exact_ok += int(set(o.frame_kinds) == expected)
+        self.exact_all_ok += int(set(o.frame_kinds) == expected)
         self.tp += len(set(o.frame_kinds) & expected)
         self.fp += len(set(o.frame_kinds) - expected)
         self.fn += len(expected - set(o.frame_kinds))
@@ -296,6 +307,8 @@ class _Tally:
                 "abstention_rate": rate(self.n - self.parsed, self.n),
                 "intent_accuracy": rate(self.intent_ok, self.intent_n),
                 "constraint_exact": rate(self.exact_ok, self.exact_n),
+                "intent_accuracy_all": rate(self.intent_all_ok, self.intent_all_n),
+                "constraint_exact_all": rate(self.exact_all_ok, self.exact_all_n),
                 "constraint_precision": rate(self.tp, self.tp + self.fp),
                 "constraint_recall": rate(self.tp, self.tp + self.fn),
                 "clarification_rate": rate(self.clarify, self.parsed),

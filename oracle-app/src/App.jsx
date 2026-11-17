@@ -10,6 +10,7 @@ import { NetworkProvider } from './context/NetworkContext';
 import { apiPost } from './lib/apiClient';
 import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
+import RouteFallback from './components/RouteFallback';
 // A published site is the one page anonymous visitors load; keep it its own chunk.
 const PublicSite = lazy(() => import('./components/PublicSite'));
 import { endSessionLocally } from './lib/endSessionLocally.js';
@@ -115,24 +116,24 @@ function App() {
   const isAcceptInviteRoute = window.location.pathname === '/accept-invite';
   if (isReelRoute) return <ReelExperience />;
   if (isSitePreviewRoute) return <SitePreview />;
-  if (isPublicSiteRoute) return <Suspense fallback={null}><PublicSite /></Suspense>;
+  if (isPublicSiteRoute) return <Suspense fallback={<RouteFallback />}><PublicSite /></Suspense>;
   if (isPropertyUploadRoute) {
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteFallback />}>
         <PropertyUploadPage />
       </Suspense>
     );
   }
   if (isSecureDossierRoute) {
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteFallback />}>
         <SecureDossierPage />
       </Suspense>
     );
   }
   if (isAcceptInviteRoute) {
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteFallback />}>
         <AcceptInvitePage />
       </Suspense>
     );
