@@ -268,6 +268,12 @@ async def resolve_inbound_route(
                                 WHERE u.tenant_id = telephony_routes.tenant_id
                                   AND lower(u.agent_id) = lower(telephony_routes.agent_id)
                                   AND u.is_active)
+                   -- Only for an open brokerage (external audit 21.4): a
+                   -- suspended, closing or erasing brokerage's line answers
+                   -- nothing and writes no call, contact or state for it.
+                   AND EXISTS (SELECT 1 FROM tenants b
+                                WHERE b.id = telephony_routes.tenant_id
+                                  AND b.lifecycle_state = 'active')
                  LIMIT 1
                 """,
                 endpoint_uuid,
@@ -290,6 +296,12 @@ async def resolve_inbound_route(
                                 WHERE u.tenant_id = telephony_routes.tenant_id
                                   AND lower(u.agent_id) = lower(telephony_routes.agent_id)
                                   AND u.is_active)
+                   -- Only for an open brokerage (external audit 21.4): a
+                   -- suspended, closing or erasing brokerage's line answers
+                   -- nothing and writes no call, contact or state for it.
+                   AND EXISTS (SELECT 1 FROM tenants b
+                                WHERE b.id = telephony_routes.tenant_id
+                                  AND b.lifecycle_state = 'active')
                  LIMIT 1
                 """,
                 endpoint_uuid,

@@ -2383,9 +2383,9 @@ _REALTIME_ADMISSION_SECONDS = 5.0
 _REALTIME_ACTOR = "voice-realtime"
 #: The refusal code when a lapsed subscription or a suspended/closing
 #: brokerage stops a realtime bridge (21.4); logged with the provider call id.
-REALTIME_NOT_ENTITLED_CODE = "BROKERAGE_NOT_ENTITLED"      # subscription lapsed (402)
-REALTIME_NOT_OPEN_CODE = "BROKERAGE_NOT_OPEN"              # suspended / closing / erasing (423)
-REALTIME_ENTITLEMENT_UNKNOWN_CODE = "BROKERAGE_STATUS_UNAVAILABLE"
+REALTIME_NOT_ENTITLED_CODE = billing.CALL_NOT_ENTITLED_CODE          # subscription lapsed (402)
+REALTIME_NOT_OPEN_CODE = billing.CALL_NOT_OPEN_CODE                  # suspended / closing / erasing (423)
+REALTIME_ENTITLEMENT_UNKNOWN_CODE = billing.CALL_ENTITLEMENT_UNKNOWN_CODE
 
 
 async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
@@ -2413,16 +2413,9 @@ async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
     # database costs the caller at most _REALTIME_ADMISSION_SECONDS of silence.
     # A status that cannot be read in time is refused, never a pass.
     deadline = asyncio.get_running_loop().time() + _REALTIME_ADMISSION_SECONDS
-    try:
-        entitlement = await asyncio.wait_for(billing.entitlement_refusal(ctx),
-                                             timeout=_REALTIME_ADMISSION_SECONDS)
-    except Exception as exc:  # noqa: BLE001 - timeout, 503 or DB error: unknown is a refusal
-        logger.warning("Realtime call held: entitlement could not be read (%s)", type(exc).__name__)
-        return SpendUnavailable("unknown", REALTIME_ENTITLEMENT_UNKNOWN_CODE,
-                                "This brokerage's account status could not be read, so no model was asked.")
-    if entitlement is not None:
-        code = REALTIME_NOT_OPEN_CODE if entitlement[0] == 423 else REALTIME_NOT_ENTITLED_CODE
-        return SpendRefused("not_entitled", code, entitlement[1])
+    refused = await billing.call_entitlement_refusal(ctx, timeout=_REALTIME_ADMISSION_SECONDS)
+    if refused is not None:
+        return refused
     try:
         await asyncio.wait_for(ai_budget.admission(ctx),
                                timeout=max(0.0, deadline - asyncio.get_running_loop().time()))
