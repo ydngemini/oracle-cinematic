@@ -3873,6 +3873,35 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-38 A data-subject request covers what is attached to the person's client: access returns it, deletion reports what went and what was kept unlinked (external audit 29.8 follow-up)
+```yaml
+id: L17-38
+status: tests_pass
+env: local
+evidence_shas: [8894bbf]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, backend/privacy_lifecycle.py, backend/object_storage.py, backend/tests/test_dsar_client_children_live.py, backend/tests/test_vault_delete_reaches_storage.py, backend/tests/test_subject_restore_directive_live.py]
+tests_run:
+  - {cmd: "FK children of clients at 8894bbf (pg_constraint)", result: "ON DELETE CASCADE, never discovered or returned by access: client_notes, client_tasks, client_activities, client_tags, buyer_profiles, showings, interaction_logs, contract_synthesis_artifacts, property_match_decisions, client_ai_state (no id), client_contact_index (hashes only). ON DELETE SET NULL, never returned and silently kept: command_executions, action_approvals (drafts carrying the message text)", date: 2026-11-16}
+  - {cmd: "red: test_dsar_client_children_live against 8894bbf's privacy_requests.py (live PostgreSQL)", result: "client_notes missing from the access records", date: 2026-11-16}
+  - {cmd: "after: live test_dsar_client_children_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "3 passed: access returns notes, tasks, activities, tags, showings, the AI state and the draft (text included); deletion removes the cascade children and reports removed_with_client, and the draft is kept with client_id NULL and reported as kept_unlinked {command_executions: 1}", date: 2026-11-16}
+  - {cmd: "flaky: test_subject_restore_directive_live read mine[0] in listing order (random op ids)", result: "fixed: entries picked by directive key (also in PR #95, where the glob runs it in CI)", date: 2026-11-16}
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; live test_dsar_client_children_live + test_privacy_lifecycle_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "4 passed. Review: the receipt counted contract artifacts as removed while their encrypted PDFs stayed in the vault with nothing referencing them -> their keys are collected before the delete and the PDFs deleted after it commits; the receipt reports contract_files {deleted, not_deleted} (+ a note when any are left). Test now covers a sealed interaction_logs row (decrypted), buyer_profiles, contract_synthesis_artifacts with its vault file, an action_approvals row and a draft linked by contact only", date: 2026-11-16}
+  - {cmd: "found while fixing: pytest tests/test_vault_delete_reaches_storage.py against 8894bbf's privacy_lifecycle.py + object_storage.py", result: "red (2): brokerage erasure imported `ContractVault`, which does not exist (the class is SovereignVault), and the default storage adapter BotoCompatibleStore had no delete_object, so EVERY vault deletion in a brokerage erasure failed (silently before #90; since #90 such an erasure can never succeed). Fixed: SovereignVault imported, BotoCompatibleStore.delete_object added -> 2 passed", date: 2026-11-16}
+authz_checked: "unchanged: owner-only, tenant_id-filtered under FORCE RLS; generic rows reuse privacy_export's column rules (sealed fields opened, hashes and raw ciphertext omitted); client_ai_state's input_fingerprint is not returned."
+blockers:
+  - {type: owner, note: "Drafts and approvals that named the person (command_executions.draft, action_approvals.draft_payload) survive a deletion, unlinked. Deleting or redacting them needs privacy_erase_subject_rows' allow-list extended (a migration) and a decision on keeping outbound-action records. Decide."}
+  - "Contract PDFs under contract_documents (clients/{client}/contracts/…) are not linked to clients by foreign key and are not covered here."
+  - "A crash between the deletion commit and the vault deletion orphans that person's contract PDFs (their keys are not stored durably); an artifact created between key collection and the delete is cascaded without its file. Re-review: APPROVE with these as low."
+  - "Legacy S3 backend only: brokerage erasure deletes contract_documents keys from the default bucket even if a row named another s3_bucket."
+  - "Access may include third-party details the person's records carry (a calendar draft's other attendees, a co-owner named in a note); the free-text caveat applies."
+  - "client_contact_index (keyed hashes only) is not returned; it goes with the client."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.8]
+decision_refs: []
+next_task: "Owner decision on drafts/approvals; then 24.x commands/callbacks."
+updated: 2026-11-16
+```
+
 #### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
 ```yaml
 id: L17-42
