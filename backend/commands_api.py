@@ -2381,6 +2381,9 @@ _REALTIME_ADMISSION_SECONDS = 5.0
 #: Who a realtime call's admission is read as: the call's brokerage, as a
 #: service actor (as a phone-call reply is, ai_chat_agent._VOICE_ACTOR).
 _REALTIME_ACTOR = "voice-realtime"
+#: The refusal code when a lapsed subscription or a suspended/closing
+#: brokerage stops a realtime bridge (21.4); logged with the provider call id.
+REALTIME_NOT_ENTITLED_CODE = "BROKERAGE_NOT_ENTITLED"
 
 
 async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
@@ -2399,6 +2402,22 @@ async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
         return SpendUnavailable("unknown", ai_budget.CODES["unknown"],
                                 "This call's brokerage is not known, so no model was asked.")
     ctx = TenantContext(agent_id=_REALTIME_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    # Entitlement first (external audit 21.4): the AI budget says nothing about
+    # whether the brokerage still pays or is open. A cancelled subscription or
+    # a suspended / closing brokerage whose phone routes were left active used
+    # to get a paid realtime model on every inbound call. Read as the
+    # platform for this tenant, as the send workers read it (C3.4); a status
+    # that cannot be read in time is refused, never a pass.
+    try:
+        entitlement = await asyncio.wait_for(
+            billing.entitlement_refusal(TenantContext(agent_id=_REALTIME_ACTOR, tenant_id=str(tenant_id),
+                                                      role=Role.PLATFORM_ADMIN)),
+            timeout=_REALTIME_ADMISSION_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - timeout, 503 or DB error: unknown is a refusal
+        logger.warning("Realtime call held: entitlement could not be read (%s)", type(exc).__name__)
+        return ai_budget.refusal("unknown", ctx)
+    if entitlement is not None:
+        return SpendRefused("not_entitled", REALTIME_NOT_ENTITLED_CODE, entitlement[1])
     try:
         await asyncio.wait_for(ai_budget.admission(ctx), timeout=_REALTIME_ADMISSION_SECONDS)
     except SpendRefused as refused:

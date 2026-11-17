@@ -3873,6 +3873,28 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
+```yaml
+id: L17-42
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_realtime_entitlement_live.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api._realtime_refusal and its three callers (ACS/Qwen media, Twilio, Plivo/ElevenLabs) at a1ca828", result: "admission = ai_budget.admission only (deploy halt, platform switch, brokerage AI pause, cap): no subscription and no tenants.lifecycle_state check, so a cancelled or suspended brokerage with active routes got a billable realtime session per inbound call", date: 2026-11-17}
+  - {cmd: "red: test_realtime_entitlement_live against a1ca828's commands_api (live PostgreSQL, ORACLE_BILLING_ENFORCED=1)", result: "a brokerage whose subscription is canceled was admitted (None)", date: 2026-11-17}
+  - {cmd: "after: live test_realtime_entitlement_live", result: "1 passed: active subscription + open brokerage admitted; canceled subscription refused (BROKERAGE_NOT_ENTITLED); paid but suspended refused; an unreadable entitlement refused as unknown; the AI budget is asked only for the admitted call", date: 2026-11-17}
+authz_checked: "billing.entitlement_refusal is read as the platform scoped to the call's tenant (as the send workers read it, C3.4) with the same 5 s bound as the budget read; any failure refuses."
+blockers:
+  - "What the caller hears is each route's existing refusal (the realtime bridge is not opened and the call is ended/refused as for a budget refusal); no new announcement or forwarding option (the audit's optional 'low-cost carrier announcement or safe forwarding' is not built)."
+  - "With ORACLE_BILLING_ENFORCED off (dev, load test) only the lifecycle state is checked, as everywhere else."
+  - "Inbound route resolution itself is unchanged: a suspended brokerage's routes still resolve; only the paid model is refused."
+  - "Spend/billing control change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [21.4]
+next_task: "24.3 Twilio call status via record_call_outcome; 24.2 pre-bound Twilio correlation."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 
