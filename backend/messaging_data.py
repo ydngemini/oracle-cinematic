@@ -1161,7 +1161,9 @@ async def record_outbound_message(
     from_e164: str,
     to_e164: str,
     body: str,
-) -> None:
+) -> bool:
+    """Log an outbound text; True if this call inserted the row (False: it
+    already existed — the insert is idempotent on the provider message id)."""
     ctx = _tenant_context(tenant_id, agent_id)
     # The approved draft was already cleaned (stage_command); this guards the
     # log row against any other caller.
@@ -1206,8 +1208,120 @@ async def record_outbound_message(
                 row["id"],
                 activity["id"],
             )
+    return row is not None
 
 
+
+
+REPAIR_RECHECK_HOURS = 24
+
+
+async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, limit: int = 100) -> dict[str, int]:
+    """Rebuild the log row of a text Telnyx accepted but we never recorded
+    (external audit 25.5). Never re-sends anything.
+
+    The worker sends first and then writes the sms_messages row; a failure of
+    that write was only logged, and the command still succeeded with the
+    provider's message id. Without the row the text has no delivery status, no
+    timeline entry and no first-response delivery, and the receipt webhook
+    answers 503 for a row that would never appear.
+
+    Rebuilt from the command itself (approved draft, target, the staging
+    agent). The sender is the number the send actually used, from the job's
+    provider result; failing that, the agent's line. record_outbound_message
+    is idempotent on (provider, provider_message_id), so a concurrent sweep or
+    the worker's late write cannot double it.
+
+    Never rebuilt: a text to someone erased by a deletion request (their
+    tombstone matches the number, or the client/contact it named is gone) —
+    the erasure deleted that row on purpose. Rows that cannot be rebuilt are
+    marked (reconcile_checked_at) and looked at again only after
+    REPAIR_RECHECK_HOURS, so they cannot crowd out newer ones.
+    """
+    from privacy_lifecycle import contact_hmac
+
+    async with tenant_tx(_platform_context()) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ce.id, ce.tenant_id, ce.created_by, ce.target, ce.draft, ce.provider_reference,
+                   COALESCE(
+                     NULLIF(j.result->'detail'->>'from', ''),
+                     (SELECT r.voice_caller_id_e164 FROM telephony_routes r
+                       WHERE r.tenant_id = ce.tenant_id AND r.agent_id = ce.created_by
+                         AND r.voice_caller_id_e164 IS NOT NULL
+                       ORDER BY r.active DESC, r.updated_at DESC NULLS LAST LIMIT 1)) AS sender,
+                   (NULLIF(ce.target->>'client_id', '') IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM clients c WHERE c.tenant_id = ce.tenant_id
+                          AND c.id::text = lower(ce.target->>'client_id')))
+                   OR (NULLIF(ce.target->>'contact_id', '') IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM agent_contacts a WHERE a.tenant_id = ce.tenant_id
+                          AND a.id::text = lower(ce.target->>'contact_id'))) AS record_gone
+              FROM command_executions ce
+              LEFT JOIN automation_jobs j ON j.id = ce.job_id AND j.tenant_id = ce.tenant_id
+             WHERE ce.command_type = 'SMS' AND ce.state = 'succeeded' AND ce.provider = 'telnyx'
+               AND ce.provider_reference IS NOT NULL
+               -- the SEND time: updated_at moves with every write (set_updated_at
+               -- trigger), including this repair's own set-aside mark
+               AND COALESCE(ce.provider_submitted_at, ce.created_at) < now() - interval '2 minutes'
+               AND COALESCE(ce.provider_submitted_at, ce.created_at) > now() - interval '30 days'
+               AND (ce.reconcile_checked_at IS NULL
+                    OR ce.reconcile_checked_at < now() - make_interval(hours => $3))
+               AND ($1::uuid IS NULL OR ce.tenant_id = $1)
+               AND NOT EXISTS (SELECT 1 FROM sms_messages m
+                                WHERE m.provider = 'telnyx' AND m.provider_message_id = ce.provider_reference)
+             ORDER BY ce.reconcile_checked_at NULLS FIRST, COALESCE(ce.provider_submitted_at, ce.created_at)
+             LIMIT $2
+            """, only_tenant, limit, REPAIR_RECHECK_HOURS)
+    counts = {"repaired": 0, "erased": 0, "no_sender": 0, "failed": 0}
+
+    async def set_aside(command_id) -> None:
+        async with tenant_tx(_platform_context()) as conn:
+            await conn.execute("UPDATE command_executions SET reconcile_checked_at=now() WHERE id=$1",
+                               command_id)
+
+    for row in rows:
+        try:
+            target = _json_detail(row["target"])
+            draft = _json_detail(row["draft"])
+            content = draft.get("content") if isinstance(draft.get("content"), dict) else draft
+            phone = str(target.get("phone") or "")
+            tenant_id = str(row["tenant_id"])
+            erased = bool(row["record_gone"])
+            if phone and not erased:
+                async with tenant_tx(_platform_context()) as conn:
+                    erased = bool(await conn.fetchval(
+                        "SELECT 1 FROM suppression_tombstones WHERE tenant_id=$1::uuid AND contact_hmac=$2 "
+                        "AND reason='erased_by_request'", tenant_id, contact_hmac(tenant_id, phone)))
+            if erased:
+                counts["erased"] += 1
+                await set_aside(row["id"])
+                continue
+            if not row["sender"] or not phone:
+                counts["no_sender"] += 1
+                logger.warning("sent text %s has no log row and no known sender; needs a person",
+                               row["provider_reference"])
+                await set_aside(row["id"])
+                continue
+            inserted = await record_outbound_message(
+                tenant_id=tenant_id,
+                agent_id=str(row["created_by"]),
+                contact_id=str(target["contact_id"]) if target.get("contact_id") else None,
+                client_id=str(target["client_id"]) if target.get("client_id") else None,
+                provider="telnyx",
+                provider_message_id=str(row["provider_reference"]),
+                from_e164=str(row["sender"]),
+                to_e164=phone,
+                body=str(content.get("body") or ""),
+            )
+            counts["repaired"] += int(inserted)
+        except Exception:  # noqa: BLE001 - one row must not stop the sweep
+            counts["failed"] += 1
+            logger.exception("log row for sent text %s not repaired", row["provider_reference"])
+            try:
+                await set_aside(row["id"])
+            except Exception:  # noqa: BLE001
+                pass
+    return counts
 
 
 async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,

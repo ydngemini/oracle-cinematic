@@ -921,6 +921,10 @@ def _refusal_was_said(route, said):
     ("unreadable", "AI_BUDGET_UNAVAILABLE"),
     ("no_brokerage", "AI_BUDGET_UNAVAILABLE"),
     ("state_unreadable", "AI_BUDGET_UNAVAILABLE"),
+    # 21.4: the subscription and the brokerage's lifecycle, not only the AI budget
+    ("canceled", "BROKERAGE_NOT_ENTITLED"),
+    ("suspended", "BROKERAGE_NOT_OPEN"),
+    ("entitlement_unreadable", "BROKERAGE_STATUS_UNAVAILABLE"),
 ])
 def test_a_realtime_call_the_brokerage_cannot_spend_on_never_opens_its_model(
         monkeypatch, controls, caplog, route, stop, code):
@@ -944,6 +948,15 @@ def test_a_realtime_call_the_brokerage_cannot_spend_on_never_opens_its_model(
         state = {"caller": CALLER, "stage": "greeting"}
     elif stop == "state_unreadable":
         state = ConnectionError("redis down")
+    elif stop in ("canceled", "suspended", "entitlement_unreadable"):
+        import billing
+
+        async def entitlement(_ctx):
+            if stop == "entitlement_unreadable":
+                raise ConnectionError("billing status unreadable")
+            return (402, "subscription required") if stop == "canceled" else (423, "This brokerage is closing")
+
+        monkeypatch.setattr(billing, "entitlement_refusal", entitlement)
     opened: list = []
     caplog.set_level("INFO")
     run, socket, said = _MEDIA_ROUTES[route](monkeypatch, state, opened)
