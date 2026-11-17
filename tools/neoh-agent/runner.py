@@ -145,6 +145,22 @@ def engineering_prompt(args, sha: str, path: Path) -> str:
     )
     if args.mode == "audit":
         prompt += "READ-ONLY inspection. Do not edit anything. "
+    elif os.environ.get("NEOH_ALLOWED_PATHS"):
+        # Owner audit-queue item: the supervisor owns the plan, the scope gate
+        # and the ledger. The generic instructions below (write plan.json,
+        # update the ledger) contradict the item and are blocked by the path
+        # guard; an agent that obeys them stops before doing the work.
+        prompt += (
+            "This is an owner audit-queue item. Follow the Task below exactly: "
+            "write the regression test it names first, then the smallest fix. "
+            "Edit ONLY files under these allowed paths: "
+            + ", ".join(json.loads(os.environ["NEOH_ALLOWED_PATHS"])) + ". "
+            "Do NOT write .neoh-agent-state/plan.json and do NOT edit LEDGER.md or "
+            "any docs: the supervisor records the plan and the evidence. "
+            "Never weaken, skip or delete an existing test. "
+            "Engineering quality bar: handle failures and cancellation deliberately, "
+            "preserve backward compatibility, keep behavior deterministic. "
+        )
     else:
         prompt += (
             "Implement ONE narrowly scoped change and add regression tests. "

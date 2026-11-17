@@ -95,19 +95,36 @@ def write_evidence(exec_id: str, data: dict) -> Path:
     return path
 
 
-def archive_and_remove(path: Path, name: str, floors: dict, retained_max: int) -> str:
-    """Patch (tracked + untracked, via a scratch index) + log, apply-checked
-    against HEAD BEFORE removal, on SYPHER_CORE2 (same partition: net frees)."""
+def archive_and_remove(path: Path, name: str, floors: dict, retained_max: int,
+                       start: str | None = None) -> str:
+    """Patch (committed + tracked + untracked, via a scratch index) + log,
+    apply-checked against the cycle's START BEFORE removal, on SYPHER_CORE2
+    (same partition: net frees).
+
+    `start` is the cycle branch (supervisor + fresh main). autobuild commits
+    the agent's work beyond it; diffing against HEAD saw "no changes" and the
+    worktree was removed with a finished, verified commit left unreferenced
+    (NQ-09 and NQ-17, 2026-11-16). Committed work is also pinned under
+    refs/neoh-salvage/<name> so gc can never take it."""
     destination = ARCHIVE / name
     destination.mkdir(parents=True, exist_ok=True)
     head = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True,
                           text=True, timeout=30).stdout.strip()
+    base = head
+    if start:
+        resolved = subprocess.run(["git", "-C", str(path), "rev-parse", "--verify", "-q", start + "^{commit}"],
+                                  capture_output=True, text=True, timeout=30).stdout.strip()
+        if resolved:
+            base = resolved
+    if base != head:
+        subprocess.run(["git", "-C", str(ROOT), "update-ref", f"refs/neoh-salvage/{name}", head],
+                       check=True, capture_output=True, timeout=30)
     with tempfile.TemporaryDirectory(dir=STATE_DIR) as scratch:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
         for argv in (["read-tree", "HEAD"], ["add", "-A"]):
             subprocess.run(["git", "-C", str(path), *argv], env=env, check=True,
                            capture_output=True, timeout=120)
-        patch = subprocess.run(["git", "-C", str(path), "diff", "--cached", "--binary", "HEAD"],
+        patch = subprocess.run(["git", "-C", str(path), "diff", "--cached", "--binary", base],
                                env=env, check=True, capture_output=True, timeout=120).stdout
         if not patch.strip():
             # A cycle that changed nothing (e.g. stopped at a red baseline):
@@ -118,7 +135,7 @@ def archive_and_remove(path: Path, name: str, floors: dict, retained_max: int) -
             return f"{name}: no changes to archive; worktree removed"
         (destination / f"{name}.patch").write_bytes(patch)
         check_env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "check")}
-        subprocess.run(["git", "-C", str(ROOT), "read-tree", head], env=check_env, check=True,
+        subprocess.run(["git", "-C", str(ROOT), "read-tree", base], env=check_env, check=True,
                        capture_output=True, timeout=60)
         applies = subprocess.run(["git", "-C", str(ROOT), "apply", "--cached", "--check",
                                   str(destination / f"{name}.patch")], env=check_env,
@@ -129,7 +146,7 @@ def archive_and_remove(path: Path, name: str, floors: dict, retained_max: int) -
     leaked = re.search(rb"(sk-ant-|sk_live_|ghp_|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY)",
                        patch)
     with open(ARCHIVE / "INDEX.tsv", "a", encoding="utf-8") as index:
-        index.write(f"{name}\thead={head}\tpatch_bytes={len(patch)}\t"
+        index.write(f"{name}\thead={head}\tbase={base}\tpatch_bytes={len(patch)}\t"
                     f"secret_hits={1 if leaked else 0}\t{'apply_check_ok' if applies else 'APPLY_CHECK_FAILED'}\n")
     if not applies or leaked:
         return f"kept {path}: archive {'did not apply' if not applies else 'matched a secret pattern'}"
@@ -225,6 +242,23 @@ def completion_pass(items: dict, store: claims_mod.ClaimStore, main_sha: str) ->
     return notes
 
 
+# Noah's GitHub App installation token lives one hour and is minted on the
+# host (launch.py), which the sandbox cannot reach. Before each cycle the
+# supervisor exits with this code once the token is older than the refresh
+# age; launch.py mints a fresh one and starts it again. A cycle therefore
+# starts with >= 45 minutes of token life (pushes failed with "Authentication
+# failed" an hour after start, 2026-11-16).
+EXIT_REFRESH_TOKEN = 75
+
+
+def token_needs_refresh(now: float | None = None) -> bool:
+    minted = os.environ.get("NEOH_TOKEN_MINTED_AT", "")
+    if not minted:
+        return False
+    limit = float(os.environ.get("NEOH_TOKEN_REFRESH_SECONDS", "900"))
+    return (now if now is not None else time.time()) - float(minted) > limit
+
+
 def supervise_queue(args) -> int:
     continuous.ensure_supervisor_checkout()
     lock = continuous.acquire_lock()
@@ -232,6 +266,10 @@ def supervise_queue(args) -> int:
         state = continuous.read_state()
         store = claims_mod.ClaimStore(STATE_DIR)
         while not continuous.STOP:
+            if token_needs_refresh():
+                print("[queue] GitHub token is due for refresh; exiting for the host to mint a new one",
+                      flush=True)
+                return EXIT_REFRESH_TOKEN
             try:
                 policy = audit_queue.load_policy(owner_file("noah-policy.json"))
                 queue = audit_queue.load_queue(owner_file("audit-queue.json"))
@@ -314,8 +352,10 @@ def supervise_queue(args) -> int:
             sig = failures.signature(kind, log_text)
             entry = store.replay().get(chosen["id"], {})
             infra_attempts = sum(1 for h in entry.get("history", []) if h.get("reason") == "infrastructure")
+            conflict_attempts = sum(1 for h in entry.get("history", []) if h.get("reason") == "conflict")
             verdict, delay = failures.decide(kind, sig, entry.get("signatures", []), infra_attempts,
-                                             chosen["escalate_after"], chosen["retry"]["max"])
+                                             chosen["escalate_after"], chosen["retry"]["max"],
+                                             conflict_attempts=conflict_attempts)
             final = {"done": "REVIEW_REQUIRED", "retry": "RETRYABLE", "escalate": "ESCALATED",
                      "fail": "FAILED", "halt": "BLOCKED"}[verdict]
             if kind == "not_reproduced":
@@ -327,7 +367,8 @@ def supervise_queue(args) -> int:
             disposition = ""
             if code != 0 and worktree.exists():
                 disposition = archive_and_remove(worktree, exec_id, policy["disk_floors"],
-                                                 policy["max_retained_failed_worktrees"])
+                                                 policy["max_retained_failed_worktrees"],
+                                                 start="supervisor/neoh-" + exec_id)
             elif worktree.exists():
                 subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(worktree)],
                                capture_output=True, timeout=120)

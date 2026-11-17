@@ -98,6 +98,21 @@ class NeohAgentGuardTests(unittest.TestCase):
         self.assertIn("Engineering quality bar", build)
         self.assertIn("contract-first design", build)
 
+    def test_a_queue_item_prompt_does_not_ask_for_blocked_files(self):
+        # NQ-09 (2026-11-16): the generic prompt said "write plan.json" and
+        # "update the ledger"; the path guard blocks both, and the agent
+        # stopped its first session instead of fixing the bug.
+        from argparse import Namespace
+        import json
+        allowed = ["backend/x.py", "backend/tests/test_x.py"]
+        with patch.dict(runner.os.environ, {"NEOH_ALLOWED_PATHS": json.dumps(allowed)}):
+            prompt = runner.engineering_prompt(
+                Namespace(mode="build", category="09", task="fix one bug"), "abc", runner.prompt_path("09"))
+        self.assertNotIn("write .neoh-agent-state/plan.json with", prompt)
+        self.assertNotIn("implemented_untested", prompt)
+        self.assertIn("Do NOT write .neoh-agent-state/plan.json", prompt)
+        self.assertIn("backend/x.py, backend/tests/test_x.py", prompt)
+
     def test_email_answers_are_scoped_and_not_authority(self):
         from argparse import Namespace
         import json
