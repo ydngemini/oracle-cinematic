@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useOracleState, useOracleDispatch, ACTIONS } from '../state';
 import { apiPost } from '../lib/apiClient';
 import styles from './OnboardingGate.module.css';
@@ -19,6 +19,7 @@ const VOLUME_TARGETS = [
 
 const ZIP_RE = /^\d{5}$/;
 const DISMISS_KEY = 'oracle_onboarding_dismissed';
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function parseZips(raw) {
   return [...new Set(raw.split(/[,\s]+/).filter(Boolean))];
@@ -41,6 +42,19 @@ export function OnboardingGate() {
   // Gate only when memory restored AND the operator has no strike zones yet —
   // a DB-less dev run (memorySync false) is never nagged.
   const visible = memorySync && targetMarkets.length === 0 && !dismissed;
+
+  const panelRef = useRef(null);
+
+  // Move focus into the dialog on open and hand it back on close.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const previous = document.activeElement;
+    panelRef.current?.querySelector(FOCUSABLE)?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [visible]);
+
   if (!visible) return null;
 
   const zips = parseZips(zipInput);
@@ -72,9 +86,39 @@ export function OnboardingGate() {
     }
   };
 
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      dismiss();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const root = panelRef.current;
+    const focusable = [...(root?.querySelectorAll(FOCUSABLE) ?? [])];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
-    <div className={styles.backdrop} role="dialog" aria-modal="true" aria-label="Agent onboarding">
-      <div className={styles.panel}>
+    <div
+      className={styles.backdrop}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Agent onboarding"
+      onKeyDown={onKeyDown}
+    >
+      <div className={styles.panel} ref={panelRef}>
         <header className={styles.chrome}>
           <span className={styles.kicker}>Agent Profiling</span>
           <span className={styles.progress}>0{step} / 03</span>
