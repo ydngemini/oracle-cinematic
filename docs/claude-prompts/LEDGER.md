@@ -4059,6 +4059,31 @@ next_task: "24.2 pre-bound Twilio correlation (state before the create call; cal
 updated: 2026-11-17
 ```
 
+#### L17-45 An approved Twilio call is managed from before Twilio is asked to place it (external audit 24.2)
+```yaml
+id: L17-45
+status: tests_pass
+env: local
+evidence_shas: [2fe9cee]   # base (24.3 branch, L17-44); fix in the commit that adds this row
+files: [backend/twilio_call_handler.py, backend/command_providers.py, backend/commands_api.py, backend/tests/test_twilio_prebound_correlation.py, backend/tests/test_twilio_call_outcome.py, backend/tests/test_outbound_verified_caller_id.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the worker's Twilio branch, place_twilio_call, twilio_webhook, twilio_status_webhook and twilio_call_handler at 2fe9cee", result: "call state was keyed on the CallSid and written only after calls.create returned; the answer webhook waited at most 20 x 250 ms for it, then answered 'This call cannot be connected safely' and hung up on the approved call", date: 2026-11-17}
+  - {cmd: "red: unit test_twilio_prebound_correlation against 2fe9cee's commands_api.py, command_providers.py, twilio_call_handler.py", result: "15 failed", date: 2026-11-17}
+  - {cmd: "after: unit test_twilio_prebound_correlation (15) + test_twilio_call_outcome + test_outbound_verified_caller_id + test_twilio_qwen_realtime + test_killer_demo_paths", result: "all pass", date: 2026-11-17}
+authz_checked: "The correlation is a server-generated UUID stored with the brokerage (tenant UUID-validated) and account before the call; it rides in the answer and status URL query, which Twilio signs, and both webhooks now validate the signature over path + query (a swapped reference is refused). An early answer binds the CallSid to that state with SET NX (never overwriting the worker's own); a reference that is unknown, malformed or not outbound-shaped is still 'unmanaged'."
+blockers:
+  - "Same design as Plivo's neoh_ref (plivo_call_handler.PLIVO_CORRELATION_PARAM). The status callback keeps its retry override in the unsigned fragment after the query."
+  - "Submission uncertain (create timed out): the correlation state stays, so if the call did ring it is answered and its status is attributed; the command is still reconciliation_required and writes no session, so its stored outcome stays unmatched and the reconciliation sweep reports it after 60 minutes (24.4)."
+  - "A definitely rejected create leaves the correlation state until its 1 h TTL (it names no CallSid, so nothing can bind it)."
+  - "Calls placed before this change carry no reference: the old bounded wait still applies to them."
+  - "No database change; Redis keys twilio:call_ref:<uuid> (1 h TTL)."
+  - "Customer-contact change: independent review + owner approval before merge. Not deployed (C4.4). Stacked on L17-44 (PR #107)."
+audit_refs: [24.2]
+decision_refs: []
+next_task: "24.5/24.6; 25.1/25.2."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 

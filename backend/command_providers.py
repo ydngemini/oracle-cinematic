@@ -382,6 +382,7 @@ async def place_twilio_call(
     draft: Mapping[str, Any],
     *,
     credentials: Optional[Mapping[str, Any]] = None,
+    correlation: str = "",
 ) -> ProviderResult:
     recovery_mode.guard(
         "place a phone call",
@@ -401,8 +402,12 @@ async def place_twilio_call(
     )
     to_number = str((draft.get("target") or {}).get("phone") or "").strip()
     callback_base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
+    # Neoh's pre-submission reference (24.2), in the query both webhooks are
+    # signed over; the retry override stays last, in the unsigned fragment.
+    ref_query = f"neoh_ref={urllib.parse.quote(correlation)}" if correlation else ""
     status_callback = (
-        f"{callback_base}/api/commands/webhooks/twilio/status{TWILIO_STATUS_RETRY}"
+        f"{callback_base}/api/commands/webhooks/twilio/status"
+        f"{'?' + ref_query if ref_query else ''}{TWILIO_STATUS_RETRY}"
         if callback_base
         else ""
     )
@@ -413,6 +418,8 @@ async def place_twilio_call(
     twiml_url = os.getenv("ORACLE_TWILIO_TWIML_URL", "") or (
         f"{callback_base}/api/commands/webhooks/twilio" if callback_base else ""
     )
+    if twiml_url and ref_query:
+        twiml_url = f"{twiml_url}{'&' if '?' in twiml_url else '?'}{ref_query}"
     account_tier = os.getenv("ORACLE_TWILIO_ACCOUNT_TIER", "").strip().lower()
 
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
