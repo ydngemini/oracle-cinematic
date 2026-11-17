@@ -46,6 +46,17 @@ _SUBJECT_TABLES = frozenset({t for t, _ in _DEPENDENTS} | {
     "sms_messages", "inbound_voice_calls", "email_outbox", "outreach_attempt_log",
     "outreach_consent", "outreach_suppression", "clients", "agent_contacts"})
 
+# Records attached to a client that go with it (ON DELETE CASCADE): returned
+# by an access request, removed with the client by a deletion (external audit
+# 29.8 follow-up: they were neither discovered nor returned).
+_CLIENT_CHILDREN = ("client_notes", "client_tasks", "client_activities", "client_tags",
+                    "buyer_profiles", "showings", "interaction_logs",
+                    "contract_synthesis_artifacts", "property_match_decisions")
+
+# Records that name the person but are only unlinked by a deletion (ON DELETE
+# SET NULL): returned by access, and reported as kept by a deletion.
+_KEPT_UNLINKED = ("command_executions", "action_approvals")
+
 # Broker records that name the person and are never deleted by a request.
 _RETAINED = (
     ("transactions", "client_id = ANY($2::uuid[])"),
@@ -135,6 +146,13 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
     for table, where in _DEPENDENTS:
         found[table] = [r[0] for r in await conn.fetch(*_bind_used(
             f"SELECT id FROM {table} WHERE tenant_id=$1 AND ({where})", (tenant_id, clients, contacts)))]
+    for table in _CLIENT_CHILDREN:
+        found[table] = [r[0] for r in await conn.fetch(
+            f"SELECT id FROM {table} WHERE tenant_id=$1 AND client_id = ANY($2::uuid[])", tenant_id, clients)]
+    for table in _KEPT_UNLINKED:
+        found[table] = [r[0] for r in await conn.fetch(
+            f"SELECT id FROM {table} WHERE tenant_id=$1 "
+            "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))", tenant_id, clients, contacts)]
     retained = {}
     for table, where in _RETAINED:
         n = await conn.fetchval(*_bind_used(f"SELECT count(*) FROM {table} WHERE tenant_id=$1 AND ({where})",
@@ -285,6 +303,12 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
         "ids": {t: [str(i) for i in ids] for t, ids in found["ids"].items() if ids},
         "tombstones": sorted(contact_hmac(ctx.tenant_id, c) for c in found["identifiers"]),
     }
+    # Contract PDFs live in the vault, referenced only by these rows, which the
+    # deletion cascades away: collect their keys first (review of 29.8b).
+    async with tenant_tx(ctx) as conn:
+        vault_keys = [r[0] for r in await conn.fetch(
+            "SELECT s3_key FROM contract_synthesis_artifacts WHERE tenant_id=$1 AND id = ANY($2::uuid[]) "
+            "AND s3_key IS NOT NULL", ctx.tenant_id, found["ids"].get("contract_synthesis_artifacts") or [])]
     key = await asyncio.to_thread(_write_subject_directive, op_id, directive)
     if key is None:
         async with tenant_tx(ctx) as conn:
@@ -306,7 +330,18 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     # Only a committed directive is ever re-applied (review): a pending one
     # may belong to a deletion that never happened.
     committed = await asyncio.to_thread(_write_subject_directive, op_id, {**directive, "state": "committed"})
+    files_deleted, files_left = (await asyncio.to_thread(_delete_vault_objects, vault_keys)) if vault_keys else (0, 0)
+    kept_unlinked = {t: len(found["ids"].get(t) or []) for t in _KEPT_UNLINKED if found["ids"].get(t)}
+    removed_with_client = {t: len(found["ids"].get(t) or []) for t in _CLIENT_CHILDREN if found["ids"].get(t)}
     receipt = {"operation_id": op_id, "deleted": deleted, "opt_out_kept_as_keyed_hash": True,
+               "removed_with_client": removed_with_client,
+               # Said, not hidden: drafts and approvals that named the person
+               # stay as the brokerage's action records, no longer linked.
+               "kept_unlinked": kept_unlinked,
+               **({"contract_files": {"deleted": files_deleted, "not_deleted": files_left,
+                                      **({"note": "These encrypted contract files could not be removed from "
+                                                  "the contract vault; Neoh support must delete them."}
+                                         if files_left else {})}} if vault_keys else {}),
                "caveat": caveat, "restore_directive": key,
                "restore_directive_state": "committed" if committed else "pending_review",
                "backups": ("Copies remain in encrypted database backups for up to 7 days. If one is "
@@ -359,6 +394,28 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
             deleted[table] = int(await conn.fetchval(
                 "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
     return deleted
+
+
+def _delete_vault_objects(keys: list[str]) -> tuple[int, int]:
+    """(deleted, not deleted) for contract PDFs in the vault. Never raises:
+    the receipt reports what is left."""
+    import logging
+
+    try:
+        from contract_vault import SovereignVault as ContractVault
+
+        vault = ContractVault()
+    except Exception:  # noqa: BLE001 - vault not configured: everything is left, and said
+        logging.getLogger(__name__).warning("contract vault unavailable; %d file(s) left", len(keys))
+        return 0, len(keys)
+    deleted = left = 0
+    for k in keys:
+        try:
+            vault.s3_client.delete_object(Bucket=vault.bucket_name, Key=k)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            left += 1
+    return deleted, left
 
 
 SUBJECT_DIRECTIVES = "privacy/subject-erasure-directives/"
@@ -620,6 +677,15 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
             "pgp_sym_decrypt(summary_ciphertext, $3) END AS summary FROM inbound_voice_calls "
             "WHERE tenant_id=$1 AND id = ANY($2::uuid[])", tenant_id, ids["inbound_voice_calls"], key)
         out["inbound_voice_calls"] = [json.loads(json.dumps(dict(r), default=str)) for r in rows]
+    if ids.get("clients"):
+        # The AI's summary and scoring of the person, keyed by client (no id).
+        rows = await conn.fetch(
+            "SELECT client_id, enabled, status, score_breakdown, normalized_preferences, summary, "
+            "next_actions, data_gaps, evidence, property_candidates, model_id, last_evaluated_at, "
+            "created_at, updated_at FROM client_ai_state WHERE tenant_id=$1 AND client_id = ANY($2::uuid[])",
+            tenant_id, ids["clients"])
+        if rows:
+            out["client_ai_state"] = [json.loads(json.dumps(dict(r), default=str)) for r in rows]
     for table, table_ids in ids.items():
         if table_ids and table not in out:
             out[table] = await _generic_rows(conn, tenant_id, table, table_ids, key)

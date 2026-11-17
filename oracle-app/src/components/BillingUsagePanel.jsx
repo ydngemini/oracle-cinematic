@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './AdminOpsTab.module.css';
 import { friendlyError } from '../lib/errorMessages';
@@ -33,15 +33,25 @@ export default function BillingUsagePanel() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
+  const requestId = useRef(0);
+
   const load = useCallback(() => {
+    // Only the latest request may write state; a slower, superseded one is dropped.
+    const id = ++requestId.current;
     setError('');
     return crmGet(`/api/billing/usage?days=${days}`).then(
-      (payload) => setData(payload || null),
-      (reason) => setError(
-        reason?.status === 403
-          ? 'Only a broker owner can see billing usage.'
-          : friendlyError(reason, { fallback: 'Usage could not be read.' }),
-      ),
+      (payload) => {
+        if (id !== requestId.current) return;
+        setData(payload || null);
+      },
+      (reason) => {
+        if (id !== requestId.current) return;
+        setError(
+          reason?.status === 403
+            ? 'Only a broker owner can see billing usage.'
+            : friendlyError(reason, { fallback: 'Usage could not be read.' }),
+        );
+      },
     );
   }, [days]);
 

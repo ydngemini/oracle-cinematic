@@ -156,60 +156,99 @@ async def decide_approval(
     the single most valuable signal the platform produces. An edit that hashes
     to the draft is recorded as a plain acceptance.
     """
+    async with tenant_tx(ctx) as conn:
+        row, existing = await decide_approval_in_tx(
+            conn, ctx, approval_id, decision=decision, reason=reason,
+            expected_action_type=expected_action_type)
+    return await record_approval_decision(ctx, approval_id, row, existing, edited_payload=edited_payload,
+                                          reason=validate_approval_reason(reason))
+
+
+async def decide_approval_in_tx(
+    conn: Any,
+    ctx: TenantContext,
+    approval_id: str,
+    *,
+    decision: str,
+    reason: str,
+    expected_action_type: Optional[str] = None,
+) -> tuple[Any, Any]:
+    """The decision itself, inside the CALLER's transaction: lock, authorise,
+    and write the status. Returns (decided row, row before the decision).
+
+    A caller that must act on the decision atomically — release_command
+    queues the job and moves the command in the same transaction (external
+    audit 24.1) — calls this and then ``record_approval_decision`` after its
+    commit. Everyone else uses ``decide_approval``.
+    """
     if decision not in {"approved", "rejected"}:
         raise ValueError("decision must be approved or rejected")
     reason = validate_approval_reason(reason)
-    async with tenant_tx(ctx) as conn:
-        existing = await conn.fetchrow(
-            "SELECT * FROM action_approvals WHERE id=$1::uuid FOR UPDATE",
+    existing = await conn.fetchrow(
+        "SELECT * FROM action_approvals WHERE id=$1::uuid FOR UPDATE",
+        approval_id,
+    )
+    if existing is None:
+        raise LookupError("approval not found")
+    # A route that decides one kind of approval decides only that kind:
+    # the bidding-message route used to approve ANY approval id it was
+    # given, including a site publish the caller had requested themselves.
+    if expected_action_type is not None and existing["action_type"] != expected_action_type:
+        raise LookupError("approval not found")
+    if existing["risk_class"] != ActionRisk.ROLE_OVERRIDE.value:
+        _require_decider(ctx, existing)
+    if existing["risk_class"] == ActionRisk.ROLE_OVERRIDE.value:
+        require_role(ctx, Role.BROKER_OWNER)
+        # Case-folded deliberately. agent_id is matched with lower() at
+        # login, so one account has many spellings; comparing them exactly
+        # here let a single broker request under one spelling and approve
+        # under another, which is the whole control defeated. The JWT now
+        # carries the canonical spelling too — this is the second lock, not
+        # the only one, because it is the line the guarantee lives on.
+        if _same_agent(existing["requested_by"], ctx.agent_id):
+            raise ValueError("role overrides require a different approving broker")
+    if existing["status"] != "pending":
+        raise ValueError(f"approval is already {existing['status']}")
+    if existing["expires_at"] <= datetime.now(timezone.utc):
+        row = await conn.fetchrow(
+            """
+            UPDATE action_approvals
+               SET status='expired', decided_by=$2, decided_at=now(), reason=$3
+             WHERE id=$1::uuid
+            RETURNING *
+            """,
             approval_id,
+            ctx.agent_id,
+            reason,
         )
-        if existing is None:
-            raise LookupError("approval not found")
-        # A route that decides one kind of approval decides only that kind:
-        # the bidding-message route used to approve ANY approval id it was
-        # given, including a site publish the caller had requested themselves.
-        if expected_action_type is not None and existing["action_type"] != expected_action_type:
-            raise LookupError("approval not found")
-        if existing["risk_class"] != ActionRisk.ROLE_OVERRIDE.value:
-            _require_decider(ctx, existing)
-        if existing["risk_class"] == ActionRisk.ROLE_OVERRIDE.value:
-            require_role(ctx, Role.BROKER_OWNER)
-            # Case-folded deliberately. agent_id is matched with lower() at
-            # login, so one account has many spellings; comparing them exactly
-            # here let a single broker request under one spelling and approve
-            # under another, which is the whole control defeated. The JWT now
-            # carries the canonical spelling too — this is the second lock, not
-            # the only one, because it is the line the guarantee lives on.
-            if _same_agent(existing["requested_by"], ctx.agent_id):
-                raise ValueError("role overrides require a different approving broker")
-        if existing["status"] != "pending":
-            raise ValueError(f"approval is already {existing['status']}")
-        if existing["expires_at"] <= datetime.now(timezone.utc):
-            row = await conn.fetchrow(
-                """
-                UPDATE action_approvals
-                   SET status='expired', decided_by=$2, decided_at=now(), reason=$3
-                 WHERE id=$1::uuid
-                RETURNING *
-                """,
-                approval_id,
-                ctx.agent_id,
-                reason,
-            )
-        else:
-            row = await conn.fetchrow(
-                """
-                UPDATE action_approvals
-                   SET status=$2, decided_by=$3, decided_at=now(), reason=$4
-                 WHERE id=$1::uuid
-                RETURNING *
-                """,
-                approval_id,
-                decision,
-                ctx.agent_id,
-                reason,
-            )
+    else:
+        row = await conn.fetchrow(
+            """
+            UPDATE action_approvals
+               SET status=$2, decided_by=$3, decided_at=now(), reason=$4
+             WHERE id=$1::uuid
+            RETURNING *
+            """,
+            approval_id,
+            decision,
+            ctx.agent_id,
+            reason,
+        )
+    return row, existing
+
+
+async def record_approval_decision(
+    ctx: TenantContext,
+    approval_id: str,
+    row: Any,
+    existing: Any,
+    *,
+    edited_payload: Optional[Mapping[str, Any]] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """After the decision has COMMITTED: audit it and capture it as training
+    signal. Returns the approval as the API reports it. `reason` defaults to
+    the one stored on the decided row."""
     approval = approval_dict(row)
     await ledger.record(
         category=AuditCategory.ADMIN_ACTION
@@ -219,7 +258,8 @@ async def decide_approval(
         tenant_id=ctx.tenant_id,
         user_id=ctx.agent_id,
         target_id=approval_id,
-        metadata={"reason": reason, "risk_class": existing["risk_class"]},
+        metadata={"reason": reason if reason is not None else row["reason"],
+                  "risk_class": existing["risk_class"]},
     )
 
     # Capture the judgement as training signal. This runs after the decision is

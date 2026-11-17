@@ -154,6 +154,31 @@ async def enqueue_job(
     Returns ``(job, created)``.  Approval validation and insertion share the
     same tenant-scoped transaction, closing the approve-then-edit race.
     """
+    async with dbc.tenant_tx(ctx) as conn:
+        return await enqueue_job_in_tx(
+            conn, ctx, job_type=job_type, payload=payload, idempotency_key=idempotency_key,
+            created_by=created_by, queue_name=queue_name, priority=priority,
+            max_attempts=max_attempts, scheduled_at=scheduled_at, risk=risk, approval_id=approval_id)
+
+
+async def enqueue_job_in_tx(
+    conn: Any,
+    ctx: TenantContext,
+    *,
+    job_type: str,
+    payload: Mapping[str, Any],
+    idempotency_key: str,
+    created_by: Optional[str] = None,
+    queue_name: str = "default",
+    priority: int = 50,
+    max_attempts: int = 5,
+    scheduled_at: Optional[datetime] = None,
+    risk: ActionRisk = ActionRisk.READ_ONLY,
+    approval_id: Optional[str] = None,
+) -> tuple[dict[str, Any], bool]:
+    """``enqueue_job`` inside the CALLER's transaction, so a job and the state
+    that justifies it commit together (release_command, external audit 24.1).
+    """
     if not job_type or len(job_type) > 120:
         raise ValueError("job_type is required and must be <= 120 characters")
     if not idempotency_key or len(idempotency_key) > 240:
@@ -166,64 +191,63 @@ async def enqueue_job(
     body = dict(payload)
     body_hash = payload_hash(body)
     initial_state = "queued"
-    async with dbc.tenant_tx(ctx) as conn:
-        if requires_approval(risk):
-            if not approval_id:
-                raise JobApprovalError(f"{risk.value} jobs require approval")
-            approval = await conn.fetchrow(
-                """
-                SELECT id, status, payload_hash, expires_at
-                FROM action_approvals
-                WHERE id = $1::uuid AND tenant_id = $2::uuid
-                FOR SHARE
-                """,
-                approval_id,
-                ctx.tenant_id,
-            )
-            if not approval:
-                raise JobApprovalError("approval was not found")
-            if approval["status"] != "approved":
-                raise JobApprovalError("approval is not approved")
-            if approval["expires_at"] <= datetime.now(timezone.utc):
-                raise JobApprovalError("approval has expired")
-            if approval["payload_hash"] != body_hash:
-                raise JobApprovalError("approved payload no longer matches the job payload")
-
-        row = await conn.fetchrow(
+    if requires_approval(risk):
+        if not approval_id:
+            raise JobApprovalError(f"{risk.value} jobs require approval")
+        approval = await conn.fetchrow(
             """
-            INSERT INTO automation_jobs (
-                tenant_id, job_type, queue_name, state, risk_class, payload,
-                priority, scheduled_at, max_attempts, idempotency_key,
-                approval_id, created_by
-            ) VALUES (
-                $1::uuid, $2, $3, $4, $5, $6::jsonb,
-                $7, COALESCE($8, now()), $9, $10, $11::uuid, $12
-            )
-            ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
-            RETURNING *
+            SELECT id, status, payload_hash, expires_at
+            FROM action_approvals
+            WHERE id = $1::uuid AND tenant_id = $2::uuid
+            FOR SHARE
             """,
-            ctx.tenant_id,
-            job_type,
-            queue_name,
-            initial_state,
-            risk.value,
-            canonical_json(body),
-            priority,
-            scheduled_at,
-            max_attempts,
-            idempotency_key,
             approval_id,
-            created_by or ctx.agent_id,
+            ctx.tenant_id,
         )
-        created = row is not None
-        if row is None:
-            row = await conn.fetchrow(
-                "SELECT * FROM automation_jobs WHERE tenant_id=$1::uuid AND idempotency_key=$2",
-                ctx.tenant_id,
-                idempotency_key,
-            )
-        if row is None:  # defensive: deleted concurrently by a privileged maintenance role
-            raise RuntimeError("idempotent job disappeared during enqueue")
+        if not approval:
+            raise JobApprovalError("approval was not found")
+        if approval["status"] != "approved":
+            raise JobApprovalError("approval is not approved")
+        if approval["expires_at"] <= datetime.now(timezone.utc):
+            raise JobApprovalError("approval has expired")
+        if approval["payload_hash"] != body_hash:
+            raise JobApprovalError("approved payload no longer matches the job payload")
+
+    row = await conn.fetchrow(
+        """
+        INSERT INTO automation_jobs (
+            tenant_id, job_type, queue_name, state, risk_class, payload,
+            priority, scheduled_at, max_attempts, idempotency_key,
+            approval_id, created_by
+        ) VALUES (
+            $1::uuid, $2, $3, $4, $5, $6::jsonb,
+            $7, COALESCE($8, now()), $9, $10, $11::uuid, $12
+        )
+        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+        RETURNING *
+        """,
+        ctx.tenant_id,
+        job_type,
+        queue_name,
+        initial_state,
+        risk.value,
+        canonical_json(body),
+        priority,
+        scheduled_at,
+        max_attempts,
+        idempotency_key,
+        approval_id,
+        created_by or ctx.agent_id,
+    )
+    created = row is not None
+    if row is None:
+        row = await conn.fetchrow(
+            "SELECT * FROM automation_jobs WHERE tenant_id=$1::uuid AND idempotency_key=$2",
+            ctx.tenant_id,
+            idempotency_key,
+        )
+    if row is None:  # defensive: deleted concurrently by a privileged maintenance role
+        raise RuntimeError("idempotent job disappeared during enqueue")
     return _row_dict(row), created
 
 
