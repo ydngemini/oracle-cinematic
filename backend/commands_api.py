@@ -3976,7 +3976,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                                 credentials=twilio_credentials,
                             )
                             raise
-                        logger.warning("Twilio call %s already managed; state write retried later",
+                        logger.warning("Twilio call %s already managed by its early-bound state; worker state write skipped",
                                        provider_result.reference, exc_info=True)
                 except ProviderConfigurationError:
                     if not os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():

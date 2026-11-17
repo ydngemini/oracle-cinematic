@@ -207,6 +207,28 @@ async def _scenario(monkeypatch):
         assert asked == [sid2]                                            # asked at Twilio by its CallSid
         assert (await row(second))["state"] == "succeeded"
 
+        # 4. The create times out and nobody answers: the row is already
+        # reconciliation_required when the no-answer status arrives, and that
+        # status alone links the CallSid for the sweep.
+        sid3 = "CA" + secrets.token_hex(16)
+
+        async def timed_out_unanswered(draft, *, credentials=None, correlation=""):
+            seen["correlation3"] = correlation
+            raise command_providers.ProviderRequestError("Twilio call request timed out")
+
+        monkeypatch.setattr(ca, "place_twilio_call", timed_out_unanswered)
+        fourth = await command("unanswered")
+        assert (await run(fourth))["status"] == "reconciliation_required"
+        assert tuple(await row(fourth)) == ("reconciliation_required", "pending", None)
+        status = await ca.twilio_status_webhook(_Request(
+            {"CallSid": sid3, "CallStatus": "no-answer"}, f"neoh_ref={seen['correlation3']}"))
+        assert status.status_code == 204
+        assert tuple(await row(fourth)) == ("reconciliation_required", "twilio", sid3)
+        asked.clear()
+        await admin.execute("UPDATE command_executions SET reconcile_checked_at=NULL WHERE id=$1::uuid", fourth)
+        await reconciliation._reconcile_commands(only_tenant=T)
+        assert asked == [sid3] and (await row(fourth))["state"] == "succeeded"
+
         # 3. No usable Twilio account, custom call URL configured: the fallback runs.
         monkeypatch.delenv("TWILIO_ACCOUNT_SID")
         monkeypatch.setenv("ORACLE_CUSTOM_CALL_API_URL", "https://calls.example.test/place")
