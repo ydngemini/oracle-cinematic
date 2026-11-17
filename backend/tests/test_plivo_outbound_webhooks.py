@@ -105,8 +105,10 @@ def client(monkeypatch):
     monkeypatch.setenv("PLIVO_AUTH_TOKEN", PLATFORM_TOKEN)
     monkeypatch.delenv("PLIVO_AUTH_TOKEN_PREVIOUS", raising=False)
 
+    # A placed call's state after the provider ack (record_outbound_plivo_reference).
     state = {"value": {"tenant_id": TENANT, "account_id": "MAPLATFORM",
-                        "direction": "outbound", "qwen_realtime_enabled": False}}
+                       "direction": "outbound", "qwen_realtime_enabled": False,
+                       "reference": UUID}}
     cleaned: list[str] = []
 
     async def fake_load(uuid, wait_for_initialization=False):
@@ -123,7 +125,7 @@ def client(monkeypatch):
     monkeypatch.setattr(plivo_call_handler, "plivo_qwen_enabled", lambda s=None: False)
     monkeypatch.setattr(telephony_api, "_plivo_credentials", fake_creds)
 
-    async def outcome_recorded(provider, ref, status, duration):
+    async def outcome_recorded(provider, ref, status, duration, **_kw):
         return None  # the outcome write succeeds unless a test says otherwise (RUN-05)
 
     import commands_api
@@ -175,7 +177,7 @@ def _outcome(monkeypatch, *results):
 
     calls = []
 
-    async def record(provider, ref, status, duration):
+    async def record(provider, ref, status, duration, **_kw):
         calls.append((ref, status))
         result = results[min(len(calls), len(results)) - 1]
         if isinstance(result, Exception):
@@ -338,7 +340,9 @@ def test_answer_resolves_a_call_by_neohs_own_reference(client, monkeypatch):
     bound = []
 
     async def only_correlation(uuid, wait_for_initialization=False):
-        return client.state_box["value"] if uuid == CORRELATION else None
+        # no id from Plivo yet: the state has no recorded reference
+        state = {k: v for k, v in client.state_box["value"].items() if k != "reference"}
+        return state if uuid == CORRELATION else None
 
     async def fake_bind(uuid, state):
         bound.append((uuid, state.get("request_uuid")))
@@ -374,7 +378,7 @@ def test_status_reports_the_outcome_under_the_commands_reference(client, monkeyp
             return {**client.state_box["value"], "reference": CORRELATION}
         return None
 
-    async def fake_record(provider, ref, status, duration):
+    async def fake_record(provider, ref, status, duration, **_kw):
         recorded.append((ref, status))
 
     import commands_api
@@ -410,3 +414,31 @@ def test_the_reference_is_recorded_and_aliased(monkeypatch):
     store.clear(); store.update(store2)
     asyncio.run(plivo_call_handler.record_outbound_plivo_reference(CORRELATION, CORRELATION))
     assert list(store) == [CORRELATION] and store[CORRELATION]["reference"] == CORRELATION
+
+
+def test_an_outcome_that_beats_the_provider_ack_is_kept_under_every_id_and_the_state_survives(client, monkeypatch):
+    """24.4 review: before the worker records Plivo's reference the state knows
+    only Neoh's correlation. The outcome must carry the carrier's RequestUUID
+    (the id the session will be written under), and the state must NOT be
+    cleaned up — the worker still needs it to record the reference."""
+    import commands_api
+
+    seen = {}
+
+    async def accept(provider, ref, status, duration, *, aliases=()):
+        seen.update(provider=provider, ref=ref, status=status, aliases=set(aliases))
+        return 0
+
+    async def by_correlation(uuid, request_uuid="", correlation="", wait_for_initialization=False):
+        # what resolve_outbound_plivo_call_state returns from the correlation key before the ack
+        state = {k: v for k, v in client.state_box["value"].items() if k != "reference"}
+        return {**state, "request_uuid": correlation}
+
+    monkeypatch.setattr(commands_api, "accept_call_outcome", accept)
+    monkeypatch.setattr(plivo_call_handler, "resolve_outbound_plivo_call_state", by_correlation)
+    path = f"{STATUS}?neoh_ref={CORRELATION}"
+    params = {"CallUUID": UUID, "RequestUUID": REQUEST, "CallStatus": "busy"}
+    r = client.post(path, data=params, headers=_sign(path, params, PLATFORM_TOKEN))
+    assert r.status_code == 204
+    assert seen["ref"] == CORRELATION and {REQUEST, UUID, CORRELATION} <= seen["aliases"]
+    assert client.cleaned == [], "the worker still needs the call state"

@@ -182,8 +182,9 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     from commands_api import apply_pending_call_outcomes, expire_call_outcomes  # 24.4
 
     try:  # a failure here must not skip the steps below (spoken-STOP replay among them)
-        out["call_outcomes_applied"] = await apply_pending_call_outcomes()
-        out["call_outcomes_expired"] = await expire_call_outcomes()
+        out["call_outcomes_applied"] = await apply_pending_call_outcomes(only_tenant=only_tenant)
+        if only_tenant is None:   # platform rows: expiry and the unmatched report are global
+            out["call_outcomes"] = await expire_call_outcomes()
     except Exception as exc:  # noqa: BLE001
         log.exception("call outcome inbox step failed")
         out["call_outcomes_applied"] = f"failed: {type(exc).__name__}"

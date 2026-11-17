@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Mapping, Optional, TYPE_CHECKING
+from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -2769,81 +2769,122 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
 
 
 CALL_OUTCOME_KEEP_DAYS = 30
+#: An outcome still unmatched after this long is reported by the sweep (A02:
+#: a failure is reported as one, not left to expire silently).
+CALL_OUTCOME_UNMATCHED_MINUTES = 60
 
 
 async def accept_call_outcome(provider: str, provider_call_id: str, call_status: str,
-                              duration_seconds: Optional[int] = None) -> int:
+                              duration_seconds: Optional[int] = None, *,
+                              aliases: Sequence[str] = ()) -> int:
     """A verified carrier call outcome, made durable BEFORE the carrier is
     acknowledged, then applied if its call session exists (external audit 24.4).
 
     The worker writes live_call_sessions only after the provider acknowledges
-    the call, so a status callback can arrive first. record_call_outcome then
-    updated nothing, the route answered 204 and the outcome was lost. Now it
-    waits in provider_call_outcomes and is applied when the worker creates
-    the session (apply_pending_call_outcomes) or by the reconciliation sweep.
+    the call, so a status callback can arrive first — even before the
+    worker has recorded the provider's reference, when the callback knows
+    the call only by the pre-submission correlation and the carrier's own ids.
+    Every id it knows is kept (`aliases`), and the outcome applies to the
+    session written under any of them, when the worker writes it
+    (apply_pending_call_outcomes) or by the reconciliation sweep.
 
-    Raises if the outcome cannot be stored or a matched outcome cannot be
-    applied, so the route answers 503 and the carrier retries. Returns how
-    many outcomes were applied now (0: waiting for the session).
+    Raises if the outcome cannot be stored, or if a matched outcome's session
+    update fails, so the route answers 503 and the carrier retries. Returns
+    how many outcomes were applied now (0: waiting for the session).
     """
     status_value = (call_status or "").strip().lower()
     if not provider_call_id or not status_value:
         return 0
+    known = sorted({str(a)[:128] for a in (provider_call_id, *aliases) if a})[:8]
     async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
         await conn.execute(
             """
-            INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds,
+                                                call_aliases)
+            VALUES ($1, $2, $3, $4, $5::text[])
             ON CONFLICT (provider, provider_call_id, call_status) DO UPDATE
-               SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds)
+               SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds),
+                   call_aliases = (SELECT array_agg(DISTINCT a) FROM unnest(
+                       provider_call_outcomes.call_aliases || EXCLUDED.call_aliases) a)
             """,
-            provider, provider_call_id[:128], status_value[:40], duration_seconds)
-    return await apply_pending_call_outcomes(provider_call_id[:128], raise_errors=True)
+            provider, provider_call_id[:128], status_value[:40], duration_seconds, known)
+    return await apply_pending_call_outcomes(known, raise_errors=True)
 
 
-async def apply_pending_call_outcomes(provider_call_id: Optional[str] = None, *, limit: int = 200,
-                                      raise_errors: bool = False) -> int:
-    """Apply stored outcomes whose call session now exists, oldest first, each
-    once (applied_at). For one call (the webhook, the worker) or, with no id,
-    every pending outcome (the reconciliation sweep). record_call_outcome is
-    idempotent, so two appliers racing record an outcome once."""
+async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, *, limit: int = 200,
+                                      raise_errors: bool = False,
+                                      only_tenant: Optional[str] = None) -> int:
+    """Apply stored outcomes whose call session now exists, oldest first.
+
+    For one call (`call_ids`: the webhook, the worker) or, with none, every
+    pending outcome (the reconciliation sweep; `only_tenant` confines it to
+    sessions of one brokerage). Each row is claimed FOR UPDATE SKIP LOCKED and
+    marked applied in the same transaction as it is applied, so a webhook, the
+    worker and the sweep racing apply it exactly once; a failure rolls the
+    claim back and the row stays pending.
+    """
+    ids = [str(c) for c in (call_ids or []) if c] or None
     async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
         rows = await conn.fetch(
             """
-            SELECT o.id, o.provider_call_id, o.call_status, o.duration_seconds
+            SELECT o.id
               FROM provider_call_outcomes o
              WHERE o.applied_at IS NULL
-               AND ($1::text IS NULL OR o.provider_call_id = $1)
-               AND EXISTS (SELECT 1 FROM live_call_sessions s WHERE s.provider_call_id = o.provider_call_id)
+               AND ($1::text[] IS NULL OR o.provider_call_id = ANY($1) OR o.call_aliases && $1)
+               AND EXISTS (SELECT 1 FROM live_call_sessions s
+                            WHERE (s.provider_call_id = o.provider_call_id
+                                   OR s.provider_call_id = ANY(o.call_aliases))
+                              AND ($3::uuid IS NULL OR s.tenant_id = $3))
              ORDER BY o.id
              LIMIT $2
-            """, provider_call_id, limit)
+            """, ids, limit, only_tenant)
     applied = 0
     for row in rows:
         try:
-            await record_call_outcome(row["provider_call_id"], row["call_status"], row["duration_seconds"])
             async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
-                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now() WHERE id=$1", row["id"])
+                claimed = await conn.fetchrow(
+                    "SELECT id, provider_call_id, call_aliases, call_status, duration_seconds "
+                    "FROM provider_call_outcomes WHERE id=$1 AND applied_at IS NULL FOR UPDATE SKIP LOCKED",
+                    row["id"])
+                if claimed is None:
+                    continue          # applied, or being applied, by someone else
+                session_call_id = await conn.fetchval(
+                    "SELECT provider_call_id FROM live_call_sessions WHERE provider_call_id = $1 "
+                    "OR provider_call_id = ANY($2::text[]) LIMIT 1",
+                    claimed["provider_call_id"], list(claimed["call_aliases"] or []))
+                if session_call_id is None:
+                    continue
+                # record_call_outcome writes through its own connections; this
+                # transaction holds the claim until it returns.
+                await record_call_outcome(session_call_id, claimed["call_status"], claimed["duration_seconds"])
+                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now() WHERE id=$1", claimed["id"])
             applied += 1
         except Exception:  # noqa: BLE001 - kept pending; the next applier tries again
             if raise_errors:
                 raise
-            logger.warning("call outcome %s for %s not applied; kept", row["id"], row["provider_call_id"],
-                           exc_info=True)
+            logger.warning("call outcome %s not applied; kept", row["id"], exc_info=True)
     return applied
 
 
-async def expire_call_outcomes() -> int:
-    """Applied outcomes, and ones no session ever claimed, are deleted after
-    CALL_OUTCOME_KEEP_DAYS (they hold a call id and a status, nothing else)."""
+async def expire_call_outcomes() -> dict[str, int]:
+    """Outcomes are deleted after CALL_OUTCOME_KEEP_DAYS (a call id, aliases
+    and a status, nothing else). Ones no session ever claimed are counted and
+    logged as such; `unmatched` counts those pending past
+    CALL_OUTCOME_UNMATCHED_MINUTES now, so the sweep reports them."""
     async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
-        result = await conn.execute(
-            "DELETE FROM provider_call_outcomes WHERE received_at < now() - make_interval(days => $1)",
-            CALL_OUTCOME_KEEP_DAYS)
-    try:
-        return int(str(result).rsplit(" ", 1)[-1])
-    except (ValueError, IndexError):
-        return 0
+        gone = await conn.fetch(
+            "DELETE FROM provider_call_outcomes WHERE received_at < now() - make_interval(days => $1) "
+            "RETURNING applied_at IS NOT NULL AS applied", CALL_OUTCOME_KEEP_DAYS)
+        unmatched = await conn.fetchval(
+            "SELECT count(*) FROM provider_call_outcomes WHERE applied_at IS NULL "
+            "AND received_at < now() - make_interval(mins => $1)", CALL_OUTCOME_UNMATCHED_MINUTES)
+    never = sum(1 for g in gone if not g["applied"])
+    if never:
+        logger.warning("%d carrier call outcome(s) expired without ever matching a call session", never)
+    if unmatched:
+        logger.warning("%d carrier call outcome(s) unmatched for over %d minutes",
+                       unmatched, CALL_OUTCOME_UNMATCHED_MINUTES)
+    return {"expired_applied": len(gone) - never, "expired_unmatched": never, "unmatched": int(unmatched)}
 
 
 #: Who wrote a note the AI took on a call — never the agent's own id: the agent
@@ -3746,7 +3787,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     if command_type is CommandType.CALL and provider_result.reference:
         # A carrier status that beat the session row has been waiting (24.4).
         try:
-            await apply_pending_call_outcomes(str(provider_result.reference))
+            await apply_pending_call_outcomes([str(provider_result.reference)])
         except Exception:  # noqa: BLE001 - the sweep applies it later
             logger.warning("waiting call outcomes not applied for %s", provider_result.reference, exc_info=True)
     # The acknowledgement above is the one write that must not be lost. What

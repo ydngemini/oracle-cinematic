@@ -63,7 +63,6 @@ async def _scenario():
         assert await commands_api.accept_call_outcome("plivo", call_id, "completed", 42) == 0   # a retry: one row
         assert await admin.fetchval("SELECT count(*) FROM provider_call_outcomes WHERE provider_call_id=$1 "
                                     "AND applied_at IS NULL", call_id) == 1
-
         # Before the fix this is all that happened: nothing to update.
         assert await admin.fetchval("SELECT count(*) FROM live_call_sessions WHERE provider_call_id=$1",
                                     call_id) == 0
@@ -75,37 +74,54 @@ async def _scenario():
                 "'awaiting_explicit_live_transcription_consent','pending',$4,$5)",
                 T, command_id, client, provider_call_id, owner)
 
-        # The worker writes the session, then applies what was waiting.
+        async def timeline(provider_call_id):
+            return await admin.fetch("SELECT summary FROM client_activities WHERE tenant_id=$1 "
+                                     "AND meta->>'provider_call_id' = $2", uuid.UUID(T), provider_call_id)
+
+        # The worker writes the session; the worker, the webhook's retry and the
+        # sweep then race to apply it: exactly once, one timeline entry.
         await make_session(commands[0], call_id)
-        assert await commands_api.apply_pending_call_outcomes(call_id) == 1
+        raced = await asyncio.gather(commands_api.apply_pending_call_outcomes([call_id]),
+                                     commands_api.apply_pending_call_outcomes([call_id]),
+                                     commands_api.apply_pending_call_outcomes(only_tenant=T))
+        assert sum(raced) == 1
         session = await admin.fetchrow("SELECT ended_at, outcome FROM live_call_sessions WHERE provider_call_id=$1",
                                        call_id)
         assert session["ended_at"] is not None and session["outcome"] == "completed"
-        timeline = await admin.fetch("SELECT summary, meta FROM client_activities WHERE tenant_id=$1 "
-                                     "AND meta->>'provider_call_id' = $2", uuid.UUID(T), call_id)
-        assert len(timeline) == 1 and "0:42" in timeline[0]["summary"]
-        assert await commands_api.apply_pending_call_outcomes(call_id) == 0          # applied once
+        rows = await timeline(call_id)
+        assert len(rows) == 1 and "0:42" in rows[0]["summary"]
 
-        # A second call: two early statuses, applied in arrival order by the sweep.
-        await commands_api.accept_call_outcome("plivo", other, "in-progress")
-        await commands_api.accept_call_outcome("plivo", other, "no-answer")
+        # A callback that beats the provider ack knows the call by Neoh's
+        # correlation and the carrier's ids; the session is written under the
+        # request id. It still applies — the worker's own hook finds it.
+        correlation, carrier_call = str(uuid.uuid4()), str(uuid.uuid4())
+        assert await commands_api.accept_call_outcome(
+            "plivo", correlation, "busy", aliases=[carrier_call, other, correlation]) == 0
         await make_session(commands[1], other)
-        swept = await reconciliation.run_sweep(only_tenant=T)
-        assert swept["call_outcomes_applied"] >= 2
+        assert await commands_api.apply_pending_call_outcomes([other]) == 1          # the worker's hook
         assert await admin.fetchval("SELECT outcome FROM live_call_sessions WHERE provider_call_id=$1",
-                                    other) == "no-answer"
-        assert await admin.fetchval("SELECT count(*) FROM provider_call_outcomes WHERE provider_call_id = "
-                                    "ANY($1::text[]) AND applied_at IS NULL", [call_id, other]) == 0
+                                    other) == "busy"
 
-        # The app role may use the table (grants), and old rows expire.
+        # An outcome for a session that already exists is applied at once.
+        assert await commands_api.accept_call_outcome("plivo", other, "completed", 0) == 1
+
+        # The sweep, confined to this brokerage, has nothing left.
+        swept = await reconciliation.run_sweep(only_tenant=T)
+        assert swept["call_outcomes_applied"] == 0
+        assert await admin.fetchval(
+            "SELECT count(*) FROM provider_call_outcomes WHERE applied_at IS NULL "
+            "AND (provider_call_id = ANY($1::text[]) OR call_aliases && $1::text[])",
+            [call_id, other, correlation]) == 0
+
+        # Old rows expire; ones that never matched are reported as such.
+        await commands_api.accept_call_outcome("plivo", f"lost-{s}", "completed", 5)
         await admin.execute("UPDATE provider_call_outcomes SET received_at = now() - interval '31 days' "
-                            "WHERE provider_call_id = ANY($1::text[])", [call_id, other])
-        assert await commands_api.expire_call_outcomes() >= 3
-        assert await admin.fetchval("SELECT count(*) FROM provider_call_outcomes WHERE provider_call_id = "
-                                    "ANY($1::text[])", [call_id, other]) == 0
+                            "WHERE provider_call_id = ANY($1::text[])", [call_id, other, correlation, f"lost-{s}"])
+        expired = await commands_api.expire_call_outcomes()
+        assert expired["expired_applied"] >= 3 and expired["expired_unmatched"] >= 1
     finally:
-        await admin.execute("DELETE FROM provider_call_outcomes WHERE provider_call_id = ANY($1::text[])",
-                            [call_id, other])
+        await admin.execute("DELETE FROM provider_call_outcomes WHERE provider_call_id = ANY($1::text[]) "
+                            "OR call_aliases && $1::text[]", [call_id, other, f"lost-{s}"])
         await admin.execute("SET session_replication_role = replica")
         try:
             for table in await admin.fetch(

@@ -21,6 +21,11 @@ CREATE TABLE IF NOT EXISTS provider_call_outcomes (
     provider          text NOT NULL CHECK (provider IN ('plivo', 'twilio')),
     provider_call_id  text NOT NULL CHECK (length(provider_call_id) BETWEEN 1 AND 128),
     call_status       text NOT NULL CHECK (length(call_status) BETWEEN 1 AND 40),
+    -- every id the callback knew the call by (CallUUID, RequestUUID, the
+    -- pre-submission correlation, the recorded reference): a callback that
+    -- beats the provider ack knows only the correlation and the carrier ids,
+    -- while the session is written under the provider reference
+    call_aliases      text[] NOT NULL DEFAULT '{}' CHECK (cardinality(call_aliases) <= 8),
     duration_seconds  integer CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
     received_at       timestamptz NOT NULL DEFAULT now(),
     applied_at        timestamptz,
@@ -32,6 +37,11 @@ CREATE TABLE IF NOT EXISTS provider_call_outcomes (
 -- only pending rows.
 CREATE INDEX IF NOT EXISTS idx_provider_call_outcomes_pending
     ON provider_call_outcomes (provider_call_id) WHERE applied_at IS NULL;
+
+-- Matching an outcome to its session looks sessions up by provider call id
+-- (the webhook, the worker and the sweep all do): it had no index.
+CREATE INDEX IF NOT EXISTS idx_live_call_sessions_provider_call_id
+    ON live_call_sessions (provider_call_id) WHERE provider_call_id IS NOT NULL;
 
 COMMENT ON TABLE provider_call_outcomes IS
     'Verified carrier call outcomes kept until their live_call_sessions row exists (0174, audit 24.4).';
