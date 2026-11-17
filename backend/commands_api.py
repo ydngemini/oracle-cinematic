@@ -3931,12 +3931,18 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     # once the create call returns: a slow response or a paused
                     # worker hung up on an approved call as "unmanaged".
                     twilio_correlation = str(uuid.uuid4())
-                    await initialize_outbound_twilio_correlation(
-                        twilio_correlation,
-                        str(target.get("phone") or ""),
-                        tenant_id=ctx.tenant_id,
-                        account_sid=account_sid,
-                    )
+                    try:
+                        await initialize_outbound_twilio_correlation(
+                            twilio_correlation,
+                            str(target.get("phone") or ""),
+                            tenant_id=ctx.tenant_id,
+                            account_sid=account_sid,
+                            command_id=command_id,
+                        )
+                    except ValueError as exc:
+                        # No usable Twilio account: a configuration error, so
+                        # the custom call fallback below still applies.
+                        raise ProviderConfigurationError(f"Twilio is not configured: {exc}") from exc
                     # From here a call may exist at Twilio even if no answer
                     # comes back: a timeout or dropped response must become
                     # reconciliation_required, never a clean "failed" that the
@@ -3953,13 +3959,25 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                             tenant_id=ctx.tenant_id,
                             account_sid=account_sid,
                             correlation=twilio_correlation,
+                            keep_existing=True,
                         )
                     except Exception:
-                        await abort_twilio_call(
-                            provider_result.reference,
-                            credentials=twilio_credentials,
-                        )
-                        raise
+                        # An early answer may already manage this call under
+                        # its CallSid (24.2): hang up only a call nothing manages.
+                        from twilio_call_handler import load_twilio_call_state
+
+                        try:
+                            managed = await load_twilio_call_state(provider_result.reference)
+                        except Exception:  # noqa: BLE001
+                            managed = None
+                        if managed is None:
+                            await abort_twilio_call(
+                                provider_result.reference,
+                                credentials=twilio_credentials,
+                            )
+                            raise
+                        logger.warning("Twilio call %s already managed; state write retried later",
+                                       provider_result.reference, exc_info=True)
                 except ProviderConfigurationError:
                     if not os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
                         raise
@@ -4137,6 +4155,8 @@ async def twilio_webhook(request: Request):
         _twilio_correlation(request),
         wait_for_initialization=True,
     )
+    if state is not None and state.get("via") == "correlation":
+        await _record_twilio_call_on_command(state, call_sid)
     if state is None:
         logger.error("Rejecting unmanaged Twilio call: sid=%s", call_sid)
         twiml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -4230,6 +4250,25 @@ _TWILIO_OUTCOME_STATUSES = frozenset({"in-progress", "answered", "completed", "b
 _TWILIO_TERMINAL_STATUSES = frozenset({"completed", "busy", "failed", "no-answer", "canceled"})
 
 
+async def _record_twilio_call_on_command(state: Mapping[str, Any], call_sid: str) -> None:
+    """A call found through its pre-submission correlation (24.2): put its
+    CallSid on the command if the worker has not, so a submission that timed
+    out after Twilio placed the call can be confirmed by the reconciliation
+    sweep (_ask_provider) instead of staying unknown. Best effort."""
+    command_id, tenant = state.get("command_id"), state.get("tenant_id")
+    if not (command_id and tenant and call_sid):
+        return
+    try:
+        async with tenant_tx(_call_platform_ctx("twilio-correlation")) as conn:
+            await conn.execute(
+                "UPDATE command_executions SET provider = 'twilio', provider_reference = $3, updated_at = now() "
+                "WHERE id = $1::uuid AND tenant_id = $2::uuid AND command_type = 'CALL' "
+                "AND provider_reference IS NULL AND state IN ('executing', 'reconciliation_required')",
+                str(command_id), str(tenant), call_sid)
+    except Exception:  # noqa: BLE001 - the call itself is managed; this is the audit trail
+        logger.warning("CallSid %s not recorded on command %s", call_sid, command_id, exc_info=True)
+
+
 async def _twilio_call_brokerage(call_sid: str, correlation: str = "") -> str:
     """The brokerage whose outbound Twilio call this is: from the call state the
     worker wrote, else from the call session recorded with it. '' when
@@ -4242,6 +4281,8 @@ async def _twilio_call_brokerage(call_sid: str, correlation: str = "") -> str:
             # The worker has not recorded the CallSid yet (24.2): the signed
             # correlation names the call's brokerage from before it existed.
             state = await load_twilio_correlation(correlation)
+            if state:
+                await _record_twilio_call_on_command(state, call_sid)
     except Exception:  # noqa: BLE001 - the command row below still knows
         logger.warning("Twilio call state unreadable for %s; using the command record", call_sid,
                        exc_info=True)

@@ -124,7 +124,10 @@ async def initialize_twilio_call_state(
     tenant_id: str,
     account_sid: str,
     correlation: str = "",
+    keep_existing: bool = False,
 ) -> dict[str, Any]:
+    """`keep_existing`: an early answer may already have bound this CallSid
+    from the correlation (24.2) and opened the media socket; never reset it."""
     if not _CALL_SID_RE.fullmatch(call_sid or ""):
         raise ValueError("Twilio call SID is invalid")
     if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
@@ -139,6 +142,14 @@ async def initialize_twilio_call_state(
         "created_at": time.time(),
         "qwen_realtime_enabled": twilio_qwen_enabled(),
     }
+    if keep_existing:
+        redis = await _get_redis()
+        state["updated_at"] = time.time()
+        written = await redis.set(_state_key(call_sid), json.dumps(state, separators=(",", ":"), sort_keys=True),
+                                  ex=_STATE_TTL_SECONDS, nx=True)
+        if not written:
+            return await load_twilio_call_state(call_sid) or state
+        return state
     await _save_call_state(call_sid, state)
     return state
 
@@ -164,10 +175,13 @@ async def initialize_outbound_twilio_correlation(
     *,
     tenant_id: str,
     account_sid: str,
+    command_id: str = "",
 ) -> dict[str, Any]:
     """The call's state before the call exists: a webhook that beats the
-    create-call response (Twilio can request the answer URL before the API
-    returns the CallSid) finds it by correlation instead of hanging up."""
+    worker's CallSid write (a slow create response, a paused worker, or a
+    create that timed out after Twilio placed the call) finds it by
+    correlation instead of hanging up. `command_id` lets that webhook record
+    the CallSid on the command, so an uncertain submission can be reconciled."""
     key = _correlation_key(correlation)
     if key is None:
         raise ValueError("Twilio correlation must be a UUID")
@@ -180,6 +194,7 @@ async def initialize_outbound_twilio_correlation(
         "direction": "outbound",
         "stage": "submitting",
         "correlation": str(uuid.UUID(str(correlation))),
+        **({"command_id": _require_uuid(command_id, "command_id")} if command_id else {}),
         "created_at": time.time(),
         "qwen_realtime_enabled": twilio_qwen_enabled(),
     }
@@ -221,18 +236,18 @@ async def resolve_outbound_twilio_call_state(
     state exists from before the call. Without one (a call placed before this
     change) the old bounded wait applies.
     """
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
-        return None
-    has_ref = _correlation_key(correlation) is not None
+    has_ref = _correlation_key(correlation) is not None and bool(_CALL_SID_RE.fullmatch(call_sid or ""))
     state = await load_twilio_call_state(
         call_sid, wait_for_initialization=wait_for_initialization and not has_ref)
     if state is not None or not has_ref:
         return state
     pending = await load_twilio_correlation(correlation)
     if pending is None:
-        return None
+        # The reference is unknown here (expired, or a store that lost it):
+        # fall back to the old bounded wait for the worker's own write.
+        return await load_twilio_call_state(call_sid, wait_for_initialization=wait_for_initialization)
     # SET NX: if the worker bound the CallSid meanwhile, keep its state.
-    bound = {**pending, "stage": "queued", "updated_at": time.time()}
+    bound = {**pending, "stage": "queued", "via": "correlation", "updated_at": time.time()}
     redis = await _get_redis()
     await redis.set(_state_key(call_sid), json.dumps(bound, separators=(",", ":"), sort_keys=True),
                     ex=_STATE_TTL_SECONDS, nx=True)

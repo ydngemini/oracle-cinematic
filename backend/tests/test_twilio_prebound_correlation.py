@@ -263,3 +263,59 @@ def test_the_status_route_stores_with_the_reference_and_cleans_it_up(redis, monk
     assert response.status_code == 204
     assert stored == [(SID, "completed", TENANT, [correlation])]
     assert tch._correlation_key(correlation) not in redis.values
+
+
+# ── review follow-ups ────────────────────────────────────────────────────
+
+
+def _starlette_request(path, query):
+    from starlette.requests import Request
+
+    return Request({"type": "http", "method": "POST", "path": path, "query_string": query.encode(),
+                    "headers": [(b"host", b"internal.invalid")], "scheme": "https",
+                    "server": ("internal.invalid", 443)})
+
+
+def test_the_signed_suffix_is_the_raw_query_starlette_received():
+    ref = str(uuid.uuid4())
+    request = _starlette_request("/api/commands/webhooks/twilio", f"a=1&neoh_ref={ref}")
+    assert ca._twilio_signed_suffix(request, "/api/commands/webhooks/twilio") == \
+        f"/api/commands/webhooks/twilio?a=1&neoh_ref={ref}"
+    assert ca._twilio_correlation(request) == ref
+    bare = _starlette_request("/api/commands/webhooks/twilio", "")
+    assert ca._twilio_signed_suffix(bare, "/api/commands/webhooks/twilio") == "/api/commands/webhooks/twilio"
+
+
+def test_a_lost_reference_falls_back_to_the_bounded_wait(redis, monkeypatch):
+    waits = []
+
+    async def load(call_sid, *, wait_for_initialization=False):
+        waits.append(wait_for_initialization)
+        return None
+
+    monkeypatch.setattr(tch, "load_twilio_call_state", load)
+    assert asyncio.run(tch.resolve_outbound_twilio_call_state(
+        SID, str(uuid.uuid4()), wait_for_initialization=True)) is None
+    assert waits == [False, True]        # quick read, then the old wait once the reference misses
+
+
+def test_the_worker_never_resets_a_call_an_early_answer_already_manages(redis):
+    correlation = str(uuid.uuid4())
+    _prebound(correlation)
+    asyncio.run(tch.resolve_outbound_twilio_call_state(SID, correlation))
+    streaming = json.loads(redis.values[tch._state_key(SID)])
+    streaming["stage"] = "qwen_streaming"
+    redis.values[tch._state_key(SID)] = json.dumps(streaming)
+    kept = asyncio.run(tch.initialize_twilio_call_state(SID, "+15555550101", tenant_id=TENANT,
+                                                        account_sid=ACCOUNT, correlation=correlation,
+                                                        keep_existing=True))
+    assert kept["stage"] == "qwen_streaming"
+    assert json.loads(redis.values[tch._state_key(SID)])["stage"] == "qwen_streaming"
+
+
+def test_the_correlation_carries_the_command_for_reconciliation(redis):
+    command = str(uuid.uuid4())
+    correlation = str(uuid.uuid4())
+    asyncio.run(tch.initialize_outbound_twilio_correlation(
+        correlation, "+1", tenant_id=TENANT, account_sid=ACCOUNT, command_id=command))
+    assert asyncio.run(tch.load_twilio_correlation(correlation))["command_id"] == command
