@@ -2015,7 +2015,8 @@ async def _voice_reply_direct(caller_id: str, speech_text: str, *, budget: Optio
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
     loop = asyncio.get_running_loop()
     # `budget`: what is left of the turn after the entitlement read (21.4).
-    deadline = loop.time() + (VOICE_REPLY_BUDGET_SECONDS if budget is None else budget)
+    turn_budget = VOICE_REPLY_BUDGET_SECONDS if budget is None else budget
+    deadline = loop.time() + turn_budget
 
     def _remaining() -> float:
         return deadline - loop.time()
@@ -2055,7 +2056,7 @@ async def _voice_reply_direct(caller_id: str, speech_text: str, *, budget: Optio
             raise
         except asyncio.TimeoutError:
             logger.warning(
-                "Fireworks voice reply exceeded the %.1fs live-call budget", VOICE_REPLY_BUDGET_SECONDS
+                "Fireworks voice reply exceeded the %.1fs live-call budget", turn_budget
             )
         except Exception as fireworks_error:  # noqa: BLE001
             logger.warning("Fireworks voice reply failed: %s", fireworks_error)
