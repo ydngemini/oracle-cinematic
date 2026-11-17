@@ -1047,7 +1047,7 @@ async def _phase_objects(ctx, op_id, tenant_id, progress) -> dict:
     def _delete_vault() -> tuple[int, int]:
         ok = bad = 0
         try:
-            from contract_vault import ContractVault
+            from contract_vault import SovereignVault as ContractVault
 
             vault = ContractVault()
         except Exception:  # noqa: BLE001

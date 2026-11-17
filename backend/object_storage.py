@@ -519,7 +519,7 @@ def _blob_sas_url(key: str, expires_seconds: int, *, write: bool = False) -> str
 # --- boto3-compatible adapter -------------------------------------------------
 
 class BotoCompatibleStore:
-    """Exposes the two boto3 S3 methods contract_vault calls.
+    """Exposes the boto3 S3 methods contract_vault and erasure call.
 
     contract_vault takes an injected `s3_client`, which is a good seam — this
     adapter lets the vault target Azure without touching its validation, key
@@ -535,6 +535,20 @@ class BotoCompatibleStore:
             raise
         except Exception as exc:  # noqa: BLE001 — normalise SDK errors for the caller
             raise OSError(f"object storage upload failed: {exc}") from exc
+
+    def delete_object(self, Bucket=None, Key=None):  # noqa: N803
+        """Erasure deletes vault PDFs through this (privacy_lifecycle and
+        privacy_requests). It was missing, so every vault deletion on the
+        mount/blob backends raised and was counted as failed."""
+        if not Key:
+            raise StorageError("delete_object needs a Key")
+        try:
+            delete_object(Key)
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise OSError(f"object storage delete failed: {exc}") from exc
+        return {}
 
     def generate_presigned_url(self, operation, Params=None, ExpiresIn=3600):  # noqa: N803
         if operation != "get_object":

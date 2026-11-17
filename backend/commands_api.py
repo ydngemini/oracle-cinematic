@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Mapping, Optional, TYPE_CHECKING
+from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -42,9 +42,16 @@ import sealed_text
 import semantic_language
 import ws_hub
 from agent_profile import load_agent_identity
-from approval_service import create_approval, decide_approval, list_approvals, require_decider
+from approval_service import (
+    approval_dict,
+    create_approval,
+    decide_approval_in_tx,
+    list_approvals,
+    record_approval_decision,
+    require_decider,
+)
 from audit_ledger import AuditCategory, ledger
-from automation_jobs import enqueue_job, register_handler
+from automation_jobs import JobApprovalError, enqueue_job_in_tx, register_handler
 from command_providers import (
     ProviderConfigurationError,
     ProviderRejectedError,
@@ -2041,7 +2048,8 @@ async def edit_command(
             UPDATE command_executions
                SET target=$2::jsonb, draft=$3::jsonb, approval_id=$4::uuid,
                    scheduled_at=$5, state='awaiting_approval', updated_at=now()
-             WHERE id=$1::uuid
+             WHERE id=$1::uuid AND state IN ('draft', 'awaiting_approval')
+               AND approval_id IS NOT DISTINCT FROM $6::uuid
             RETURNING *
             """,
             command_id,
@@ -2049,8 +2057,72 @@ async def edit_command(
             json.dumps({"content": body.draft, "context": body.context}),
             str(approval["id"]),
             body.scheduled_at,
+            row["approval_id"],
         )
+    if updated is None:
+        # Released or re-edited while this edit was in flight (e.g. the
+        # stranded-release sweep queued it): the new approval is void.
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE action_approvals SET status='revoked', decided_by=$2, decided_at=now(), "
+                "reason='Command changed during the edit.' WHERE id=$1::uuid AND status='pending'",
+                str(approval["id"]), ctx.agent_id)
+        raise HTTPException(status_code=409, detail="This command changed while you were editing it.")
     return {"command": _command_dict(updated), "approval": approval}
+
+
+async def _queue_execution_in_tx(conn: Any, ctx: TenantContext, command: Mapping[str, Any],
+                                 *, created_by: str) -> dict[str, Any]:
+    """Insert the command's execute job for its CURRENT approval and move the
+    command to 'queued', inside the caller's transaction (24.1).
+
+    The job key carries the approval id: an edit replaces the approval, and
+    the new approval gets its own job instead of colliding with (and being
+    attached to) a job built from the earlier draft. The worker refuses a job
+    whose approval is not the command's current one.
+    """
+    command_id = str(command["id"])
+    if command["approval_id"] is None:
+        raise HTTPException(status_code=409, detail="This command has no approval to release.")
+    approval_id = str(command["approval_id"])
+    stored_draft = _decode(command["draft"])
+    try:
+        job, created = await enqueue_job_in_tx(
+            conn,
+            ctx,
+            job_type="command:execute",
+            payload=_execution_payload(
+                command_id=command_id,
+                command_type=CommandType(command["command_type"]),
+                target=_decode(command["target"]),
+                draft=dict(stored_draft.get("content") or {}),
+                context=dict(stored_draft.get("context") or {}),
+                tenant_id=ctx.tenant_id,
+            ),
+            idempotency_key=f"command:{command_id}:execute:{approval_id}",
+            created_by=created_by,
+            scheduled_at=command["scheduled_at"],
+            priority=10,
+            risk=_RISK[CommandType(command["command_type"])],
+            approval_id=approval_id,
+        )
+    except JobApprovalError as exc:
+        # e.g. the approved draft no longer hashes to the job: the caller's
+        # whole transaction rolls back.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not created and job.get("state") in {"succeeded", "partial", "cancelled", "dead_letter"}:
+        raise HTTPException(status_code=409,
+                            detail=f"This approval's job already ended ({job.get('state')}); edit and approve again.")
+    await conn.execute(
+        "UPDATE command_executions SET state='queued', job_id=$2::uuid, updated_at=now() WHERE id=$1::uuid",
+        command_id, job["id"])
+    import outreach_lifecycle
+
+    await outreach_lifecycle.advance_first_response(
+        conn, tenant_id=ctx.tenant_id, command_id=command_id,
+        stage=outreach_lifecycle.Stage.APPROVED,
+    )
+    return job
 
 
 async def release_command(
@@ -2076,47 +2148,147 @@ async def release_command(
     if refusal is not None:
         raise HTTPException(status_code=refusal[0], detail=refusal[1])
     command_id = str(row["id"])
-    approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="approved", reason=reason
-    )
-    stored_draft = _decode(row["draft"])
-    execution = _execution_payload(
-        command_id=command_id,
-        command_type=CommandType(row["command_type"]),
-        target=_decode(row["target"]),
-        draft=dict(stored_draft.get("content") or {}),
-        context=dict(stored_draft.get("context") or {}),
-        tenant_id=ctx.tenant_id,
-    )
-    job, _ = await enqueue_job(
-        ctx,
-        job_type="command:execute",
-        payload=execution,
-        idempotency_key=f"command:{command_id}:execute",
-        created_by=ctx.agent_id,
-        scheduled_at=row["scheduled_at"],
-        priority=10,
-        risk=_RISK[CommandType(row["command_type"])],
-        approval_id=str(row["approval_id"]),
-    )
+    # ONE transaction: the approval decision, the job and the command's move to
+    # 'queued' commit together or not at all (external audit 24.1). They were
+    # three: a failure after the approval committed left an approved action
+    # with no job that nobody could approve again, and a worker that claimed
+    # the new job before the third commit refused the command as still
+    # 'awaiting_approval'. The command row is locked first, so a double click
+    # or a mission release racing a person queues it once.
+    expired = None
     async with tenant_tx(ctx) as conn:
-        updated = await conn.fetchrow(
-            """
-            UPDATE command_executions
-               SET state='queued', job_id=$2::uuid, updated_at=now()
-             WHERE id=$1::uuid
-            RETURNING *
-            """,
-            command_id,
-            job["id"],
-        )
-        import outreach_lifecycle
-
-        await outreach_lifecycle.advance_first_response(
-            conn, tenant_id=ctx.tenant_id, command_id=command_id,
-            stage=outreach_lifecycle.Stage.APPROVED,
-        )
+        current = await conn.fetchrow(
+            "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+        if current["state"] != "awaiting_approval":
+            raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
+        if current["approval_id"] is None:
+            raise HTTPException(status_code=409, detail="This command has no approval to release.")
+        try:
+            decided, before = await decide_approval_in_tx(
+                conn, ctx, str(current["approval_id"]), decision="approved", reason=reason)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if decided["status"] != "approved":
+            # Expired before anyone approved it. The 'expired' decision commits
+            # (it is the truth); nothing is queued. The command stays staged, so
+            # an edit can request a fresh approval, as for one nobody clicked.
+            expired = (decided, before)
+        else:
+            job = await _queue_execution_in_tx(conn, ctx, current, created_by=ctx.agent_id)
+            updated = await conn.fetchrow("SELECT * FROM command_executions WHERE id=$1::uuid", command_id)
+    if expired is not None:
+        await record_approval_decision(ctx, str(current["approval_id"]), *expired)
+        raise HTTPException(status_code=409, detail="This approval expired before it was approved. Edit the message to request a new approval.")
+    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
     return {"command": _command_dict(updated), "approval": approval, "job": job}
+
+
+STRANDED_RELEASE_GRACE_MINUTES = 2
+
+
+async def reconcile_stranded_releases(only_tenant: Optional[str] = None, *, limit: int = 100) -> dict[str, int]:
+    """Commands left 'awaiting_approval' behind an approval that was already
+    decided (external audit 24.1). Before the single-transaction release a
+    failure between the approval and the queue insert stranded them: approved
+    with no job (or with a job the worker refused and dead-lettered), or
+    rejected with the command still staged — and the decided approval refuses
+    a second click.
+
+    approved, approval still in date → queued, on a job for this approval
+                                        (_queue_execution_in_tx); held while
+                                        the brokerage is not entitled
+    approved, approval since expired  → 'cancelled', never sent: stage it again
+    rejected                          → 'cancelled'
+    An approval that EXPIRED unapproved is left alone: the command stays
+    editable, as it always was. Called from reconciliation.run_sweep. Each
+    command is fixed in its own transaction with the command row locked, so a
+    person approving at the same moment and this sweep cannot both act.
+    """
+    platform = TenantContext(agent_id="command-reconciler",
+                             tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID",
+                                                 "00000000-0000-0000-0000-000000000000"),
+                             role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ce.id, ce.tenant_id
+              FROM command_executions ce
+              JOIN action_approvals aa ON aa.id = ce.approval_id AND aa.tenant_id = ce.tenant_id
+             WHERE ce.state = 'awaiting_approval'
+               AND aa.status IN ('approved', 'rejected')
+               AND aa.decided_at < now() - make_interval(mins => $1)
+               AND ($2::uuid IS NULL OR ce.tenant_id = $2)
+             ORDER BY aa.decided_at
+             LIMIT $3
+            """, STRANDED_RELEASE_GRACE_MINUTES, only_tenant, limit)
+    counts = {"queued": 0, "cancelled": 0, "held_not_entitled": 0}
+    import outreach_lifecycle
+
+    entitled: dict[str, bool] = {}   # per tenant, read before any row lock is taken
+    for row in rows:
+        tenant = str(row["tenant_id"])
+        if tenant not in entitled:
+            try:
+                entitled[tenant] = await billing.entitlement_refusal(TenantContext(
+                    agent_id="command-reconciler", tenant_id=tenant, role=Role.PLATFORM_ADMIN)) is None
+            except Exception:  # noqa: BLE001 - unreadable billing: hold, never queue
+                entitled[tenant] = False
+
+        ctx = TenantContext(agent_id="command-reconciler", tenant_id=str(row["tenant_id"]),
+                            role=Role.PLATFORM_ADMIN)
+        command_id = str(row["id"])
+        try:
+            queued_job = None
+            async with tenant_tx(ctx) as conn:
+                command = await conn.fetchrow(
+                    "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+                if command is None or command["state"] != "awaiting_approval":
+                    continue
+                approval = await conn.fetchrow(
+                    "SELECT status, decided_by, expires_at FROM action_approvals WHERE id=$1::uuid FOR SHARE",
+                    command["approval_id"])
+                if approval is None or approval["status"] not in ("approved", "rejected"):
+                    continue
+                expired_since = (approval["status"] == "approved"
+                                 and approval["expires_at"] <= datetime.now(timezone.utc))
+                if approval["status"] == "rejected" or expired_since:
+                    await conn.execute(
+                        "UPDATE command_executions SET state='cancelled', updated_at=now(), last_error=$2 "
+                        "WHERE id=$1::uuid", command_id,
+                        ("Approved, but it was never queued and the approval has since expired. "
+                         "Nothing was sent; stage it again to send it.") if expired_since else None)
+                    await outreach_lifecycle.advance_first_response(
+                        conn, tenant_id=ctx.tenant_id, command_id=command_id,
+                        stage=outreach_lifecycle.Stage.CANCELLED)
+                    counts["cancelled"] += 1
+                    continue
+                if not entitled[str(row["tenant_id"])]:
+                    counts["held_not_entitled"] += 1   # F18.07: nothing queued for a lapsed/closing brokerage
+                    continue
+                queued_job = await _queue_execution_in_tx(
+                    conn, ctx, command, created_by=approval["decided_by"] or "command-reconciler")
+                counts["queued"] += 1
+        except Exception:  # noqa: BLE001 - one bad row must not stop the sweep; it is retried next time
+            logger.exception("stranded command %s not reconciled", command_id)
+            continue
+        if queued_job is not None:
+            try:
+                await ledger.record(
+                    category=AuditCategory.USER_STATE_CHANGE,
+                    action="command_release_reconciled",
+                    tenant_id=ctx.tenant_id,
+                    user_id="command-reconciler",
+                    target_id=command_id,
+                    metadata={"job_id": str(queued_job["id"]), "approval_id": str(command["approval_id"]),
+                              "reason": "approved release had not been queued (24.1)"},
+                )
+            except Exception:  # noqa: BLE001 - the command IS queued; only its audit entry failed
+                logger.exception("stranded command %s queued, but its audit entry failed", command_id)
+    return counts
 
 
 @router.post("/{command_id}/approve", dependencies=[Depends(require_active_subscription)])
@@ -2152,10 +2324,32 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
     """Reject a staged command's approval and cancel the command — the Reject
     button, and a correction that supersedes it (correction.py, F05.04)."""
     command_id = str(row["id"])
-    approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="rejected", reason=reason
-    )
+    # One transaction, like release_command (24.1): a rejection that committed
+    # before the cancel left a command no one could approve or reject again.
     async with tenant_tx(ctx) as conn:
+        current = await conn.fetchrow(
+            "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+        if current["state"] != "awaiting_approval":
+            raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
+        if current["approval_id"] is None:
+            raise HTTPException(status_code=409, detail="This command has no approval to reject.")
+        lapsed = await conn.fetchrow(
+            "SELECT * FROM action_approvals WHERE id=$1::uuid FOR UPDATE", current["approval_id"])
+        if lapsed is not None and lapsed["status"] == "expired":
+            # Approve was clicked after expiry (24.1 keeps the command staged):
+            # Reject still withdraws it — the person who may decide it can cancel it.
+            require_decider(ctx, lapsed)
+            decided = before = None
+        else:
+            try:
+                decided, before = await decide_approval_in_tx(
+                    conn, ctx, str(current["approval_id"]), decision="rejected", reason=reason)
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail="This command's approval was not found.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         updated = await conn.fetchrow(
             "UPDATE command_executions SET state='cancelled' WHERE id=$1::uuid RETURNING *",
             command_id,
@@ -2168,6 +2362,9 @@ async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason
             conn, tenant_id=ctx.tenant_id, command_id=command_id,
             stage=outreach_lifecycle.Stage.CANCELLED,
         )
+    if decided is None:
+        return {"command": _command_dict(updated), "approval": approval_dict(lapsed)}
+    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
     return {"command": _command_dict(updated), "approval": approval}
 
 
@@ -2786,6 +2983,157 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
         logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)
 
 
+CALL_OUTCOME_KEEP_DAYS = 30
+#: An outcome still unmatched after this long is reported by the sweep (A02:
+#: a failure is reported as one, not left to expire silently).
+CALL_OUTCOME_UNMATCHED_MINUTES = 60
+
+
+async def accept_call_outcome(provider: str, provider_call_id: str, call_status: str,
+                              duration_seconds: Optional[int] = None, *, tenant_id: str,
+                              aliases: Sequence[str] = ()) -> int:
+    """A verified carrier call outcome, made durable BEFORE the carrier is
+    acknowledged, then applied if its call session exists (external audit 24.4).
+
+    The worker writes live_call_sessions only after the provider acknowledges
+    the call, so a status callback can arrive first — even before the
+    worker has recorded the provider's reference, when the callback knows
+    the call only by the pre-submission correlation and the carrier's own ids.
+    Every id it knows is kept (`aliases`), and the outcome applies to the
+    session written under any of them, when the worker writes it
+    (apply_pending_call_outcomes) or by the reconciliation sweep.
+
+    `tenant_id` is the brokerage whose call state verified the callback's
+    signature: the outcome applies only to that brokerage's session, so ids a
+    brokerage signs for its own Plivo account cannot reach another's.
+
+    Raises if the outcome cannot be stored, or if a matched outcome's session
+    update fails, so the route answers 503 and the carrier retries. Returns
+    how many outcomes were applied now (0: waiting for the session).
+    """
+    status_value = (call_status or "").strip().lower()
+    if not provider_call_id or not status_value:
+        return 0
+    if not tenant_id:
+        # A verified callback always has its brokerage; without one the outcome
+        # cannot be attributed — answered 503, never acknowledged into oblivion.
+        raise ValueError("call outcome has no brokerage to belong to")
+    known = sorted({str(a)[:128] for a in (provider_call_id, *aliases) if a})[:8]
+    async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_call_outcomes (provider, provider_call_id, call_status, duration_seconds,
+                                                call_aliases, tenant_id)
+            VALUES ($1, $2, $3, $4, $5::text[], $6::uuid)
+            ON CONFLICT (tenant_id, provider, provider_call_id, call_status) DO UPDATE
+               SET duration_seconds = COALESCE(EXCLUDED.duration_seconds, provider_call_outcomes.duration_seconds),
+                   call_aliases = (SELECT array_agg(DISTINCT a) FROM unnest(
+                       provider_call_outcomes.call_aliases || EXCLUDED.call_aliases) a)
+            """,
+            provider, provider_call_id[:128], status_value[:40], duration_seconds, known, str(tenant_id))
+    return await apply_pending_call_outcomes(known, raise_errors=True)
+
+
+async def apply_pending_call_outcomes(call_ids: Optional[Sequence[str]] = None, *, limit: int = 200,
+                                      raise_errors: bool = False,
+                                      only_tenant: Optional[str] = None) -> int:
+    """Apply stored outcomes whose call session now exists, oldest first.
+
+    For one call (`call_ids`: the webhook, the worker) or, with none, every
+    pending outcome (the reconciliation sweep; `only_tenant` confines it to
+    one brokerage). A row matches only a session of its own brokerage.
+
+    Each row is taken under a short lease (claimed_until) in its own brief
+    transaction, applied with no connection held, then marked applied: a
+    webhook, the worker and the sweep racing apply it once, and a burst of
+    callbacks cannot pin two pool connections each. A failure releases the
+    lease; a crashed applier's lease lapses and the row is applied again
+    (record_call_outcome is idempotent bar a possible repeated timeline entry).
+    """
+    ids = [str(c) for c in (call_ids or []) if c] or None
+    async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id
+              FROM provider_call_outcomes o
+             WHERE o.applied_at IS NULL
+               AND ($1::text[] IS NULL OR o.provider_call_id = ANY($1) OR o.call_aliases && $1)
+               AND (o.claimed_until IS NULL OR o.claimed_until < now())
+               AND ($3::uuid IS NULL OR o.tenant_id = $3)
+               AND EXISTS (SELECT 1 FROM live_call_sessions s
+                            WHERE s.tenant_id = o.tenant_id
+                              AND (s.provider_call_id = o.provider_call_id
+                                   OR s.provider_call_id = ANY(o.call_aliases)))
+             ORDER BY o.id
+             LIMIT $2
+            """, ids, limit, only_tenant)
+    applied = 0
+    for row in rows:
+        try:
+            async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+                claimed = await conn.fetchrow(
+                    """
+                    UPDATE provider_call_outcomes o SET claimed_until = now() + interval '2 minutes'
+                     WHERE o.id = $1 AND o.applied_at IS NULL
+                       AND (o.claimed_until IS NULL OR o.claimed_until < now())
+                    RETURNING o.id, o.tenant_id, o.call_status, o.duration_seconds,
+                              (SELECT s.provider_call_id FROM live_call_sessions s
+                                WHERE s.tenant_id = o.tenant_id
+                                  AND (s.provider_call_id = o.provider_call_id
+                                       OR s.provider_call_id = ANY(o.call_aliases))
+                                LIMIT 1) AS session_call_id
+                    """, row["id"])
+            if claimed is None:
+                continue          # applied, or being applied, by someone else
+            if claimed["session_call_id"] is None:
+                await _release_call_outcome(claimed["id"])
+                continue
+            try:
+                await record_call_outcome(claimed["session_call_id"], claimed["call_status"],
+                                          claimed["duration_seconds"])
+            except Exception:
+                await _release_call_outcome(claimed["id"])
+                raise
+            async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+                await conn.execute("UPDATE provider_call_outcomes SET applied_at=now(), claimed_until=NULL "
+                                   "WHERE id=$1", claimed["id"])
+            applied += 1
+        except Exception:  # noqa: BLE001 - kept pending; the next applier tries again
+            if raise_errors:
+                raise
+            logger.warning("call outcome %s not applied; kept", row["id"], exc_info=True)
+    return applied
+
+
+async def _release_call_outcome(outcome_id: int) -> None:
+    try:
+        async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+            await conn.execute("UPDATE provider_call_outcomes SET claimed_until=NULL WHERE id=$1", outcome_id)
+    except Exception:  # noqa: BLE001 - the lease lapses on its own
+        logger.warning("call outcome %s lease not released", outcome_id, exc_info=True)
+
+
+async def expire_call_outcomes() -> dict[str, int]:
+    """Outcomes are deleted after CALL_OUTCOME_KEEP_DAYS (a call id, aliases
+    and a status, nothing else). Ones no session ever claimed are counted and
+    logged as such; `unmatched` counts those pending past
+    CALL_OUTCOME_UNMATCHED_MINUTES now, so the sweep reports them."""
+    async with tenant_tx(_call_platform_ctx("call-outcome-inbox")) as conn:
+        gone = await conn.fetch(
+            "DELETE FROM provider_call_outcomes WHERE received_at < now() - make_interval(days => $1) "
+            "RETURNING applied_at IS NOT NULL AS applied", CALL_OUTCOME_KEEP_DAYS)
+        unmatched = await conn.fetchval(
+            "SELECT count(*) FROM provider_call_outcomes WHERE applied_at IS NULL "
+            "AND received_at < now() - make_interval(mins => $1)", CALL_OUTCOME_UNMATCHED_MINUTES)
+    never = sum(1 for g in gone if not g["applied"])
+    if never:
+        logger.warning("%d carrier call outcome(s) expired without ever matching a call session", never)
+    if unmatched:
+        logger.warning("%d carrier call outcome(s) unmatched for over %d minutes",
+                       unmatched, CALL_OUTCOME_UNMATCHED_MINUTES)
+    return {"expired_applied": len(gone) - never, "expired_unmatched": never, "unmatched": int(unmatched)}
+
+
 #: Who wrote a note the AI took on a call — never the agent's own id: the agent
 #: did not say these words, the callee did, and the AI summarised them.
 AI_CALL_NOTE_AUTHOR = "neoh-ai-call"
@@ -3233,6 +3581,14 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 "status": "reconciliation_required",
                 "detail": {"duplicate_submission_suppressed": True},
             }
+        job_approval = reporter.job.get("approval_id")
+        if job_approval and command["approval_id"] and str(job_approval) != str(command["approval_id"]):
+            # Built from an earlier draft whose approval an edit replaced (24.1):
+            # never send it, and never retry it.
+            superseded = RuntimeError("this job's approval was replaced by an edit; not sent")
+            superseded.job_terminal = True
+            superseded.job_error_code = "APPROVAL_SUPERSEDED"
+            raise superseded
         if command["state"] not in {"queued", "failed"}:
             raise RuntimeError(f"command is not executable from state {command['state']}")
         await conn.execute(
@@ -3683,6 +4039,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     if not recorded:
         # The provider may have accepted the action; never retry it blindly.
         raise RuntimeError("provider acknowledgement could not be persisted; manual reconciliation required")
+    if command_type is CommandType.CALL and provider_result.reference:
+        # A carrier status that beat the session row has been waiting (24.4).
+        try:
+            await apply_pending_call_outcomes([str(provider_result.reference)])
+        except Exception:  # noqa: BLE001 - the sweep applies it later
+            logger.warning("waiting call outcomes not applied for %s", provider_result.reference, exc_info=True)
     # The acknowledgement above is the one write that must not be lost. What
     # follows is bookkeeping that makes the send visible to the intelligence
     # layer, and it is deliberately OUTSIDE the retry loop and best-effort: a

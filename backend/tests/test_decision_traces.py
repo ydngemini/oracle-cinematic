@@ -318,7 +318,8 @@ def test_the_recorded_decision_is_the_row_status_not_the_request(monkeypatch):
 
     import approval_service
 
-    source = inspect.getsource(approval_service.decide_approval)
+    # The trace is written after the commit, in record_approval_decision (24.1).
+    source = inspect.getsource(approval_service.record_approval_decision)
     assert 'decision=approval["status"]' in source, (
         "the trace must record the persisted status, not the requested decision"
     )

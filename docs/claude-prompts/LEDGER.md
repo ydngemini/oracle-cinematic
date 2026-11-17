@@ -3873,6 +3873,110 @@ next_task: "DSAR access + deletion for client-cascade and SET NULL children; the
 updated: 2026-11-16
 ```
 
+#### L17-38 A data-subject request covers what is attached to the person's client: access returns it, deletion reports what went and what was kept unlinked (external audit 29.8 follow-up)
+```yaml
+id: L17-38
+status: tests_pass
+env: local
+evidence_shas: [8894bbf]   # base; fix in the commit that adds this row
+files: [backend/privacy_requests.py, backend/privacy_lifecycle.py, backend/object_storage.py, backend/tests/test_dsar_client_children_live.py, backend/tests/test_vault_delete_reaches_storage.py, backend/tests/test_subject_restore_directive_live.py]
+tests_run:
+  - {cmd: "FK children of clients at 8894bbf (pg_constraint)", result: "ON DELETE CASCADE, never discovered or returned by access: client_notes, client_tasks, client_activities, client_tags, buyer_profiles, showings, interaction_logs, contract_synthesis_artifacts, property_match_decisions, client_ai_state (no id), client_contact_index (hashes only). ON DELETE SET NULL, never returned and silently kept: command_executions, action_approvals (drafts carrying the message text)", date: 2026-11-16}
+  - {cmd: "red: test_dsar_client_children_live against 8894bbf's privacy_requests.py (live PostgreSQL)", result: "client_notes missing from the access records", date: 2026-11-16}
+  - {cmd: "after: live test_dsar_client_children_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "3 passed: access returns notes, tasks, activities, tags, showings, the AI state and the draft (text included); deletion removes the cascade children and reports removed_with_client, and the draft is kept with client_id NULL and reported as kept_unlinked {command_executions: 1}", date: 2026-11-16}
+  - {cmd: "flaky: test_subject_restore_directive_live read mine[0] in listing order (random op ids)", result: "fixed: entries picked by directive key (also in PR #95, where the glob runs it in CI)", date: 2026-11-16}
+  - {cmd: "independent review (REQUEST CHANGES) -> fixes; live test_dsar_client_children_live + test_privacy_lifecycle_live + test_dsar_subject_truth_live + test_subject_restore_directive_live", result: "4 passed. Review: the receipt counted contract artifacts as removed while their encrypted PDFs stayed in the vault with nothing referencing them -> their keys are collected before the delete and the PDFs deleted after it commits; the receipt reports contract_files {deleted, not_deleted} (+ a note when any are left). Test now covers a sealed interaction_logs row (decrypted), buyer_profiles, contract_synthesis_artifacts with its vault file, an action_approvals row and a draft linked by contact only", date: 2026-11-16}
+  - {cmd: "found while fixing: pytest tests/test_vault_delete_reaches_storage.py against 8894bbf's privacy_lifecycle.py + object_storage.py", result: "red (2): brokerage erasure imported `ContractVault`, which does not exist (the class is SovereignVault), and the default storage adapter BotoCompatibleStore had no delete_object, so EVERY vault deletion in a brokerage erasure failed (silently before #90; since #90 such an erasure can never succeed). Fixed: SovereignVault imported, BotoCompatibleStore.delete_object added -> 2 passed", date: 2026-11-16}
+authz_checked: "unchanged: owner-only, tenant_id-filtered under FORCE RLS; generic rows reuse privacy_export's column rules (sealed fields opened, hashes and raw ciphertext omitted); client_ai_state's input_fingerprint is not returned."
+blockers:
+  - {type: owner, note: "Drafts and approvals that named the person (command_executions.draft, action_approvals.draft_payload) survive a deletion, unlinked. Deleting or redacting them needs privacy_erase_subject_rows' allow-list extended (a migration) and a decision on keeping outbound-action records. Decide."}
+  - "Contract PDFs under contract_documents (clients/{client}/contracts/…) are not linked to clients by foreign key and are not covered here."
+  - "A crash between the deletion commit and the vault deletion orphans that person's contract PDFs (their keys are not stored durably); an artifact created between key collection and the delete is cascaded without its file. Re-review: APPROVE with these as low."
+  - "Legacy S3 backend only: brokerage erasure deletes contract_documents keys from the default bucket even if a row named another s3_bucket."
+  - "Access may include third-party details the person's records carry (a calendar draft's other attendees, a co-owner named in a note); the free-text caveat applies."
+  - "client_contact_index (keyed hashes only) is not returned; it goes with the client."
+  - "Privacy: independent review + owner approval before merge (owner decision 4). Not deployed (C4.4)."
+audit_refs: [29.8]
+decision_refs: []
+next_task: "Owner decision on drafts/approvals; then 24.x commands/callbacks."
+updated: 2026-11-16
+```
+
+#### L17-39 Releasing or rejecting a staged command is one transaction; commands stranded by the old split are repaired (external audit 24.1)
+```yaml
+id: L17-39
+status: tests_pass
+env: local
+evidence_shas: [04d43da]   # base; fix in the commit that adds this row
+files: [backend/approval_service.py, backend/automation_jobs.py, backend/commands_api.py, backend/reconciliation.py, backend/tests/test_command_release_atomic_live.py, backend/tests/test_decision_traces.py, backend/tests/test_outreach_lifecycle.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api.release_command / withdraw_command, approval_service.decide_approval, automation_jobs.enqueue_job at 04d43da", result: "release = three transactions (approval decided; job inserted; command -> queued); withdraw = two (approval rejected; command -> cancelled). The worker refuses a command not in queued/failed", date: 2026-11-16}
+  - {cmd: "red: test_command_release_atomic_live against 04d43da's four modules (live PostgreSQL)", result: "a failure after the job insert left ('awaiting_approval', 'approved', 1 job) — the stranded state the audit describes", date: 2026-11-16}
+  - {cmd: "after (revised per independent review): live test_command_release_atomic_live + test_reconciliation_live + test_billing_degradation_live + test_command_drafts_access_live; unit test_decision_traces, test_outreach_lifecycle, test_missions_executor", result: "live 11 passed: a failure inside release or reject rolls back the decision; another connection cannot see the job before the command is queued; a second click is 409; an expired approval is 409 with 'expired' kept, nothing queued, command still editable; the sweep queues an in-date stranded approval once — on a NEW job even when the old release's job was dead-lettered — cancels one whose approval expired since and a rejected one, leaves an expired-unapproved one editable; a job whose approval an edit replaced is refused terminally by the worker. unit 71 passed", date: 2026-11-16}
+authz_checked: "decide_approval_in_tx is decide_approval's body unchanged (same _require_decider / role-override rules); the release locks the command row FOR UPDATE, then the approval FOR UPDATE; enqueue_job_in_tx keeps the approved/in-date/payload-hash checks. The reconciler runs as the platform per tenant and only acts on approvals a person already decided."
+blockers:
+  - "Approve/Reject on a command that is no longer awaiting approval, or whose approval was already decided, now answers 409 with the reason; before, decide_approval's ValueError reached the generic handler as a 500."
+  - "The audit ledger and decision trace are written after the commit (before, decide_approval wrote them before the job existed). A failure writing them now reports an error for a release that did commit."
+  - "Reconciler grace is 2 minutes after the decision; skipped in recovery mode (it queues sends) and isolated so a failure cannot skip the rest of the sweep; held (not queued) while the brokerage is not entitled; every queue it makes is written to the audit ledger. An approved command whose approval expired before the sweep is 'cancelled' with a plain last_error: nothing was sent."
+  - "Execute jobs are keyed per approval (command:<id>:execute:<approval>): an edited command's new approval gets its own job, and the worker refuses (terminally) a job whose approval is not the command's current one. An edit's final write applies only if the command is still staged on the approval it read (409 otherwise, new approval revoked)."
+  - "Outbound-contact change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.1]
+next_task: "24.4 / 25.5 durable provider outcome inbox; 24.2 pre-bound Twilio correlation."
+updated: 2026-11-16
+```
+
+#### L17-40 A text Telnyx accepted gets its log row back: the reconciliation sweep rebuilds a missing sms_messages row from the command, never by re-sending and never for an erased person (external audit 25.5)
+```yaml
+id: L17-40
+status: tests_pass
+env: local
+evidence_shas: [04d43da]   # base; fix in the commit that adds this row
+files: [backend/messaging_data.py, backend/reconciliation.py, backend/tests/test_sms_row_repair_live.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read commands_api Telnyx SMS branch, messaging_data.record_outbound_message / record_delivery_update, reconciliation.run_sweep at 04d43da", result: "the worker sends, then writes sms_messages in a try/except that only logs; the command succeeds with provider_reference; record_delivery_update returns False (webhook 503) for a row that never appears; nothing repairs it", date: 2026-11-16}
+  - {cmd: "red: test_sms_row_repair_live against 04d43da's messaging_data + reconciliation (live PostgreSQL)", result: "no repair path exists (AttributeError); the receipt for the sent text has no row (record_delivery_update False)", date: 2026-11-16}
+  - {cmd: "after (revised per independent review): live test_sms_row_repair_live + test_reconciliation_live", result: "2 passed: two concurrent repairs insert exactly one row (one reports repaired) with one timeline entry; the sender is the send-time number from the job's provider result, not the agent's changed line; a text to a person erased by request (tombstone on the number), or naming a client since deleted, is not rebuilt; an agent with no line is left for a person; both are set aside and the scheduled run_sweep then does nothing; the carrier's retry attaches (delivered)", date: 2026-11-16}
+authz_checked: "the sweep reads commands in the platform context and writes through record_outbound_message (the same tenant-scoped brokerage context the worker uses); it only rebuilds rows for commands already 'succeeded' with a Telnyx message id, and checks erasure tombstones (contact_hmac, reason erased_by_request) and that the named client/contact still exists before rebuilding."
+blockers:
+  - "Delivery status for a rebuilt row depends on the carrier retrying its receipt webhook (503) after the repair (2 min grace, 15 min sweep). Telnyx's retry schedule is NOT verified here; if retries stop sooner the rebuilt row stays 'queued' (no delivered status, no lead_engaged meter). Planned: durable receipt inbox (migration) with 24.4, or a read-only status fetch."
+  - "Sender: the job's provider result (send-time 'from'); only if the job kept no result, the agent's line now (exact agent_id, active first). No route and no result: not rebuilt (no_sender, logged)."
+  - "Rows that cannot be rebuilt (erased, no sender, or a failed write — a transient DB error included) are marked with command_executions.reconcile_checked_at (reused: only set on succeeded commands by this repair) and rechecked after 24 h, until 30 days after the SEND (provider_submitted_at; updated_at moves with the mark itself). 'erased' also counts a client/contact deleted by any means."
+  - "The rebuilt row and its timeline entry carry the repair time (created_at = now()), not the send time; a text repaired after an outage can sort after a reply."
+  - "The query has no dedicated index (state/type/provider/updated_at): a scan of command_executions every 15 min. Fine at today's volume; a partial index needs a migration slot if it grows."
+  - "Twilio-sent texts write no sms_messages row by design; unchanged."
+  - "Customer-communication record change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [25.5]
+next_task: "24.4 durable provider outcome inbox (Plivo/Twilio call outcomes + early SMS receipts); 24.2 pre-bound Twilio correlation."
+updated: 2026-11-16
+```
+
+#### L17-41 A carrier call outcome that arrives before its call session is stored and applied later, never acknowledged into oblivion (migration 0174; external audit 24.4)
+```yaml
+id: L17-41
+status: tests_pass
+env: local
+evidence_shas: [a1ca828]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0174_provider_call_outcomes.sql, backend/commands_api.py, backend/telephony_api.py, backend/reconciliation.py, backend/privacy_data_map.py, backend/tests/test_call_outcome_inbox_live.py, backend/tests/test_plivo_outbound_webhooks.py, backend/tests/test_killer_demo_paths.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "read telephony_api.plivo_outbound_status, commands_api.record_call_outcome and the worker's live_call_sessions insert at a1ca828", result: "the session row is written only after the provider ack; an earlier verified callback runs record_call_outcome against no row (zero-row updates, no timeline, no lead_engaged meter), answers 204 and cleans up the call state; nothing can replay it", date: 2026-11-17}
+  - {cmd: "after (revised per independent review): run_migrations (0174) + live test_call_outcome_inbox_live + test_reconciliation_live; unit test_plivo_outbound_webhooks + test_killer_demo_paths", result: "live 2 passed: an early 'completed' is stored (a retry adds no row); once the session exists the worker, a webhook retry and the sweep racing apply it exactly once (one timeline entry, 0:42); a callback that beat the provider ack (stored under Neoh's correlation with the carrier ids as aliases) applies to the session written under the request id via the worker's hook; an outcome for an existing session applies at once; the tenant-confined sweep has nothing left; expiry reports never-matched rows. unit 59 passed incl. the pre-ack route test: aliases carry RequestUUID/CallUUID/correlation and the call state is NOT cleaned up before the reference is recorded", date: 2026-11-17}
+authz_checked: "each outcome is bound to the brokerage whose call state verified the callback's Plivo signature (tenant_id, FK ON DELETE CASCADE) and applies only to a session of that brokerage, so ids a brokerage signs for its own Plivo account (CallUUID/RequestUUID/neoh_ref aliases) cannot reach another brokerage's session (live test: an intruder tenant's outcome naming this brokerage's call ids stays unapplied). Tenant table: RLS + FORCE with the standard tenant-isolation policy; rls_security_review.sql PASS. Applying goes through the unchanged record_call_outcome."
+blockers:
+  - "Plivo only. Twilio's outbound status webhook still does not call record_call_outcome at all (24.3, separate); the table already accepts provider 'twilio' for it."
+  - "Early SMS delivery receipts (25.5 follow-up) are not covered by this table."
+  - "An outcome whose session is never written (the provider ack could not be persisted -> reconciliation; or a reconcile-confirmed command, which gets no session) waits 30 days and is deleted unapplied; the sweep logs outcomes unmatched after 60 min and counts never-matched expiries."
+  - "Applying runs the unchanged record_call_outcome: only a session-update failure is retried; its metering/first-response/timeline sub-steps log and swallow their own failures (pre-existing), and the row is still marked applied."
+  - "Session start/end and first-response times use the apply time, not the carrier's arrival time (an outcome applied by the sweep can be up to 15 min late)."
+  - "Terminal-status cleanup of the Redis call state is skipped until the worker has recorded the provider reference (the state then expires by TTL); before, a callback that beat the ack deleted it and the worker failed the command into reconciliation."
+  - "0174 also adds idx_live_call_sessions_provider_call_id (sessions are now looked up by provider call id on every webhook, worker hook and sweep)."
+  - "Each row is applied under a 2-minute lease (claimed_until) taken in its own short transaction, with no connection held across record_call_outcome; a crashed applier's lease lapses and the row is re-applied (idempotent except a possible repeated timeline entry). Two rows for one status under different keys (a redelivery straddling the ack) can, rarely, add a duplicate timeline entry."
+  - "The worker hook is exercised only through apply_pending_call_outcomes in tests (the sweep is the backstop if it were removed)."
+  - "Migration 0174: run as doadmin (non-superuser) on staging/prod — CREATE TABLE + GRANT to oracle_app only, no functions or SET clauses."
+  - "Call-outcome / metering change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.4]
+next_task: "24.3 Twilio call status through record_call_outcome + this inbox; 24.2 pre-bound Twilio correlation."
+```
+
 #### L17-42 A paid realtime phone model opens only for a brokerage that is entitled and open: realtime admission now checks the subscription and lifecycle, not only the AI budget (external audit 21.4, P0)
 ```yaml
 id: L17-42
