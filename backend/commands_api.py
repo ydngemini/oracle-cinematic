@@ -680,6 +680,18 @@ async def _load_provider_credential(
         return await decrypt_pii(conn, row["token_ciphertext"], _provider_key(ctx.tenant_id))
 
 
+def _canonical_anchors(target: dict[str, Any], kind: str) -> None:
+    """Each record id in the target must be a UUID, and is stored in its
+    canonical form (lower-case, hyphenated): the link (0142/0179) and every
+    comparison read that form (26.3 review)."""
+    for key in ("contact_id", "lead_id", "client_id"):
+        if target.get(key):
+            try:
+                target[key] = str(uuid.UUID(str(target[key])))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError(f"{kind} target {key} must be a UUID") from exc
+
+
 def _validate_command_payload(
     command_type: CommandType,
     target: dict[str, Any],
@@ -703,12 +715,7 @@ def _validate_command_payload(
             raise ValueError("SMS target requires an E.164 phone number")
         if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
             raise ValueError("SMS target must reference a contact, lead, or client")
-        for key in ("contact_id", "lead_id", "client_id"):
-            if target.get(key):
-                try:
-                    uuid.UUID(str(target[key]))
-                except (ValueError, TypeError, AttributeError) as exc:
-                    raise ValueError(f"SMS target {key} must be a UUID") from exc
+        _canonical_anchors(target, "SMS")
         state_code = str(target.get("state_code") or "").upper()
         if not re.fullmatch(r"[A-Z]{2}", state_code):
             raise ValueError("SMS target requires a two-letter state_code")
@@ -722,12 +729,7 @@ def _validate_command_payload(
             raise ValueError("CALL target requires an E.164 phone number")
         if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
             raise ValueError("CALL target must reference a contact, lead, or client")
-        for key in ("contact_id", "lead_id", "client_id"):
-            if target.get(key):
-                try:
-                    uuid.UUID(str(target[key]))
-                except (ValueError, TypeError, AttributeError) as exc:
-                    raise ValueError(f"CALL target {key} must be a UUID") from exc
+        _canonical_anchors(target, "CALL")
         state_code = str(target.get("state_code") or "").upper()
         if not re.fullmatch(r"[A-Z]{2}", state_code):
             raise ValueError("CALL target requires a two-letter state_code")
@@ -808,6 +810,44 @@ async def _require_target_editable(conn: Any, target: dict[str, Any]) -> None:
         except (ValueError, TypeError, AttributeError):
             continue
         await require(conn, str(value))
+    await _require_lead_editable(conn, target)
+
+
+_LEAD_NOT_FOUND = "Lead not found."
+
+
+async def _require_lead_editable(conn: Any, target: dict[str, Any]) -> None:
+    """A draft that names a lead goes only to a lead the caller may contact
+    (external audit 26.3). A lead follows its seller client (0143): read as
+    the caller, a lead they cannot see is 404; a lead of a client shared with
+    them to view only is 403; a public lead (no seller client) is the pool's.
+    A lead that belongs to a different client than the one the draft names is
+    refused — the draft would be linked (0142/0179) to one record and about
+    another."""
+    value = target.get("lead_id")
+    if not value:
+        return
+    try:
+        lead_id = str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return
+    row = await conn.fetchrow("SELECT seller_client_id FROM leads WHERE id=$1::uuid", lead_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _LEAD_NOT_FOUND)
+    seller = row["seller_client_id"]
+    if seller is None:
+        return
+    named = target.get("client_id")
+    if named:
+        try:
+            named = str(uuid.UUID(str(named)))
+        except (ValueError, TypeError, AttributeError):
+            named = None
+        if named != str(seller):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "That lead belongs to a different client than the one this draft names.")
+        return                                  # the named client was checked above
+    await record_access.require_client_edit(conn, str(seller))
 
 
 async def _require_command_edit(ctx: TenantContext, command_id: str) -> None:
@@ -829,17 +869,38 @@ async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
     (a system pipeline such as speed-to-lead) is checked as an agent with that
     id, which is exactly what it could stage: pool records only."""
     client_id, contact_id = command.get("client_id"), command.get("contact_id")
-    if client_id is None and contact_id is None:
+    # A lead the draft names is re-read now (26.3): its seller client today,
+    # not only the client it was linked to when staged (0179).
+    target = _decode(command.get("target"))
+    lead = target.get("lead_id") if isinstance(target, dict) else None
+    try:
+        lead = str(uuid.UUID(str(lead))) if lead else None
+    except (ValueError, TypeError, AttributeError):
+        lead = None
+    if client_id is None and contact_id is None and lead is None:
         return True
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    lead_client = None
     async with tenant_tx(platform) as conn:
         requested_by = None
         if command.get("approval_id") is not None:
             requested_by = await conn.fetchval(
                 "SELECT requested_by FROM action_approvals WHERE id=$1::uuid", command["approval_id"]
             )
-    return await requester_may_contact_record(
-        tenant_id, str(requested_by or command.get("created_by") or ""), client_id, contact_id)
+        if lead is not None:
+            lead_row = await conn.fetchrow(
+                "SELECT seller_client_id FROM leads WHERE id=$1::uuid AND tenant_id=$2::uuid", lead, tenant_id)
+            if lead_row is None:
+                # The lead this was about is gone: nothing to check against,
+                # so not sent (stage it again if it should still go out).
+                return False
+            lead_client = lead_row["seller_client_id"]
+    requester = str(requested_by or command.get("created_by") or "")
+    if not await requester_may_contact_record(tenant_id, requester, client_id, contact_id):
+        return False
+    if lead_client is not None and str(lead_client) != str(client_id):
+        return await requester_may_contact_record(tenant_id, requester, lead_client, None)
+    return True
 
 
 async def requester_may_contact_record(tenant_id: str, requested_by: str, client_id: Any,
