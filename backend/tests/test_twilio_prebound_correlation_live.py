@@ -156,7 +156,9 @@ async def _scenario(monkeypatch):
         await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,$3)", T, f"tw2-{s}", f"B {s}")
         await admin.execute("INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
                             "VALUES ($1,$2,'broker_owner',$2,'scrypt$x$y')", T, owner)
-        await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,$3)", client, T, f"X {s}")
+        # The call goes to the client's own number (26.4).
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, phone) VALUES ($1,$2,$3,'+13025550142')",
+                            client, T, f"X {s}")
 
         # 1. The answer arrives while calls.create has not returned.
         sid = "CA" + secrets.token_hex(16)

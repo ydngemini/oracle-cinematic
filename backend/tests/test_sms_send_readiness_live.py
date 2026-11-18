@@ -179,15 +179,21 @@ async def _scenario(monkeypatch):
             async def progress(self, *_a, **_k):
                 return None
 
+        # The text is about a client whose phone it is (26.4: the destination
+        # must be the one on the record).
+        recipient = await admin.fetchval(
+            "INSERT INTO clients (tenant_id, full_name, phone) VALUES ($1,'Texted','+13025550142') RETURNING id", T)
+        target = {"phone": "+13025550142", "client_id": str(recipient)}
+
         async def text(key):
             command = str(await admin.fetchval(
                 "INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, target, "
                 "draft, state, idempotency_key, created_by) "
                 "VALUES ($1,'SMS','external','outreach',$2::jsonb,'{}'::jsonb,'queued',$3,$4) RETURNING id",
-                T, json.dumps({"phone": "+13025550142"}), f"sms-{s}-{key}", owner))
+                T, json.dumps(target), f"sms-{s}-{key}", owner))
             try:
                 await ca._execute_command_job(
-                    {"command_type": "SMS", "command_id": command, "target": {"phone": "+13025550142"},
+                    {"command_type": "SMS", "command_id": command, "target": target,
                      "draft": {"body": "Following up on your inquiry."}}, Reporter())
             except Exception as exc:  # noqa: BLE001 — the refusal surfaces as the job's error
                 return command, exc
