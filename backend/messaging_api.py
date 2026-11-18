@@ -454,12 +454,18 @@ async def _record_orphan_opt_out(normalized, verified=None) -> None:
     from tenancy import TenantContext as _TenantContext
 
     owners = await resolve_opt_out_owners_by_number(normalized.to_e164)
-    if verified is not None:
-        # Only brokerages the signing key may speak for (25.4).
-        owners = [o for o in owners if verified.may_act_for(o["tenant_id"])]
     if not owners:
         logger.warning("STOP to a number no tenant has held; nothing to suppress")
         return
+    if verified is not None:
+        # Brokerages this signing key may record an opt-out for (25.4): its
+        # own, or any holder when the platform key signed it.
+        allowed = [o for o in owners if verified.may_suppress_for(o["tenant_id"])]
+        if not allowed:
+            logger.warning("ORACLE_ALERT telnyx_stop_unattributed a STOP signed by %s matched no brokerage it "
+                           "speaks for; not recorded", verified.label)
+            return
+        owners = allowed
     try:
         for owner in owners:
             await ConsentLedger.suppress(
@@ -519,7 +525,14 @@ async def telnyx_webhook(request: Request) -> Response:
         opted_out = is_stop_keyword(normalized.text)
         if route is not None and not verified.may_act_for(route["tenant_id"]):
             # Crossed destination or a reassigned number: the event comes from
-            # an account that does not serve this number's brokerage.
+            # an account that does not serve this number's brokerage. Nothing
+            # is logged for it — but a STOP is never dropped: it is recorded
+            # for the number's holders this key may speak for.
+            if opted_out:
+                logger.warning("ORACLE_ALERT telnyx_stop_on_refused_route signed by %s for brokerage %s; "
+                               "recorded as an opt-out only", verified.label, route["tenant_id"])
+                await _record_orphan_opt_out(normalized, verified)
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
             return _refuse(route["tenant_id"])
         if route is None:
             if opted_out:
@@ -576,7 +589,12 @@ async def telnyx_webhook(request: Request) -> Response:
             from messaging_data import tenant_for_provider_message
 
             owner = await tenant_for_provider_message(delivery.provider, delivery.provider_message_id)
-            if owner is not None and not verified.may_act_for(owner):
+            if owner is None:
+                # The receipt beat our own write of the message row: retried,
+                # so the brokerage check runs once the row exists (never an
+                # unchecked update of a row written in between).
+                return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"})
+            if not verified.may_act_for(owner):
                 return _refuse(owner)
             known = await record_delivery_update(
                 provider=delivery.provider,

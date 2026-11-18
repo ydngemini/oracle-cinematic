@@ -21,7 +21,7 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-def test_stored_brokerage_keys_enter_the_registry(monkeypatch):
+def test_the_schema_refuses_brokerage_telnyx_keys_and_the_registry_reads_the_table(monkeypatch):
     asyncio.run(_scenario(monkeypatch))
 
 
@@ -46,11 +46,18 @@ async def _scenario(monkeypatch):
             await admin.execute(
                 "INSERT INTO provider_credentials (tenant_id, provider, account_label, token_ciphertext, scopes, "
                 "created_by) VALUES ($1,'telnyx','default',$2,'{}'::text[],'live@test')", T, ciphertext)
-        # The registry reads the table without error and finds no brokerage key.
-        assert await telnyx_signing._tenant_credentials() == []
-        monkeypatch.setenv("TELNYX_PUBLIC_KEY", "platform-key")
-        registry = await telnyx_signing._registry(force=True)
-        assert list(registry.keys) == ["platform-key"] and not registry.own_account_tenants
+        # The registry's own query runs against the real table (no error is
+        # swallowed here: _decrypt_all raises) and finds no brokerage key.
+        from db.connection import tenant_tx
+        from crypto import decrypt_pii
+        from tenancy import Role, TenantContext
+
+        assert os.environ.get("ORACLE_ENCRYPTION_MASTER_KEY")
+        platform = TenantContext(agent_id="live", role=Role.PLATFORM_ADMIN,
+                                 tenant_id="00000000-0000-0000-0000-000000000000")
+        assert await telnyx_signing._decrypt_all(
+            tenant_tx, platform, os.environ["ORACLE_ENCRYPTION_MASTER_KEY"], decrypt_pii, derive_tenant_key) == []
+        # (What the registry builds from that is unit-tested in test_telnyx_signing.)
     finally:
         await admin.execute("DELETE FROM provider_credentials WHERE tenant_id=$1", T)
         await admin.execute("DELETE FROM tenants WHERE id=$1", T)

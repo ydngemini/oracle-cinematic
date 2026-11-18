@@ -9,18 +9,31 @@ brokerage the event was about. Now:
 - the registry holds the platform key (TELNYX_PUBLIC_KEY, plus
   TELNYX_PUBLIC_KEY_PREVIOUS while rotating) and each brokerage's own key from
   its stored Telnyx credential (public_key, plus public_key_previous);
-- an event is authentic if one of those keys verifies its raw body and
-  timestamp (the SDK rejects a timestamp more than 5 minutes off);
+- an event is authentic if one of those keys verifies the Ed25519 signature
+  over "timestamp|raw body" and the timestamp is within 5 minutes;
 - it may act for a brokerage only if the verifying key is that brokerage's
-  own, or the platform's and the brokerage has no Telnyx account of its own.
-  A number's destination never authenticates anything.
+  own, or the platform's and the brokerage runs on the platform account. A
+  number's destination never authenticates anything.
+- A STOP is never dropped: any authenticated key may record an opt-out for a
+  brokerage it is tied to, and the platform key (Telnyx-held, unforgeable)
+  for any holder of the number — over-suppression is the safe direction.
 
-Today no brokerage can store a Telnyx credential through the app (the
-provider endpoints accept google/smtp/twilio), so every brokerage is on the
-platform account; the binding is in place for when one can.
+"Own account" mirrors how the app resolves a brokerage's Telnyx credential
+(messaging_api._telnyx_credentials): a brokerage runs its own account only if
+its stored api_key is not the platform's and it stored its own public_key;
+otherwise the platform key speaks for it.
+
+Today no brokerage can store a Telnyx credential (the provider endpoints
+accept google/smtp/twilio, and provider_credentials_provider_check refuses
+'telnyx'), so only the platform keys exist. Before that changes, a brokerage
+public_key must be controlled — fetched from Telnyx with the brokerage's
+api_key or approved by an operator — not trusted as typed (L10-18).
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,15 +44,16 @@ from typing import Any, Mapping, Optional
 logger = logging.getLogger("oracle.messaging.signing")
 
 CACHE_SECONDS = 60.0
-# A miss (no key verifies) reloads the registry at most this often: a
-# brokerage that just saved its key is picked up, a flood of forgeries is not
-# a flood of credential decryptions.
+# A miss (no key verifies) reloads the brokerage keys at most this often.
 MISS_RELOAD_SECONDS = 30.0
+# After a failed load, the last good set is kept and a reload is retried soon.
+FAILED_LOAD_RETRY_SECONDS = 5.0
+TIMESTAMP_TOLERANCE_SECONDS = 300
 
 
 @dataclass(frozen=True)
 class Verified:
-    """What the verifying key(s) prove: the platform account, and/or the
+    """What the verifying key proves: the platform account, and/or the
     brokerages whose own account holds the key."""
     platform: bool
     tenants: frozenset[str]
@@ -54,113 +68,188 @@ class Verified:
             return True
         return self.platform and tenant not in self.own_account_tenants
 
+    def may_suppress_for(self, tenant_id: Any) -> bool:
+        """An authenticated STOP: recorded for a brokerage this key may act
+        for, or for any brokerage when the platform key signed it."""
+        return self.may_act_for(tenant_id) or (self.platform and bool(str(tenant_id or "")))
+
+
+@dataclass
+class _Key:
+    verify_key: Any            # nacl VerifyKey, built once
+    platform: bool
+    tenants: frozenset[str]
+    label: str
+
 
 @dataclass
 class _Registry:
-    keys: dict[str, tuple[bool, frozenset[str], str]]   # key -> (platform, tenants, label)
+    keys: dict[str, _Key]
     own_account_tenants: frozenset[str]
 
 
 @dataclass
 class _TenantKeys:
-    credentials: list[tuple[str, dict[str, Any]]]
+    credentials: list[tuple[str, Optional[dict[str, Any]]]]   # None: the row could not be read
     loaded_at: float
 
 
 _cache: Optional[_TenantKeys] = None
 _last_miss_reload = 0.0
+_load_lock: Optional[asyncio.Lock] = None
+_warned_rotation = False
 
 
-async def _tenant_credentials() -> list[tuple[str, dict[str, Any]]]:
-    """Every active stored Telnyx credential, decrypted (tenant_id, fields)."""
+class CredentialsUnavailable(Exception):
+    """The credential table could not be read."""
+
+
+async def _tenant_credentials() -> list[tuple[str, Optional[dict[str, Any]]]]:
+    """Every active stored Telnyx credential: (tenant_id, fields), or
+    (tenant_id, None) for a row that could not be decrypted. Raises
+    CredentialsUnavailable if the table cannot be read at all."""
     from crypto import decrypt_pii, derive_tenant_key
     from db.connection import tenant_tx
     from tenancy import Role, TenantContext
 
     master = os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "")
-    if not master:
-        return []
     ctx = TenantContext(agent_id="telnyx-webhook-keys", role=Role.PLATFORM_ADMIN,
                         tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"))
-    out: list[tuple[str, dict[str, Any]]] = []
     try:
-        return await _decrypt_all(tenant_tx, ctx, master, decrypt_pii, derive_tenant_key, out)
-    except Exception:  # noqa: BLE001 — the platform key still works without the database
-        logger.warning("brokerage Telnyx signing keys unavailable; only the platform key is trusted", exc_info=True)
-        return out
+        return await _decrypt_all(tenant_tx, ctx, master, decrypt_pii, derive_tenant_key)
+    except Exception as exc:  # noqa: BLE001
+        raise CredentialsUnavailable(str(exc)) from exc
 
 
-async def _decrypt_all(tenant_tx, ctx, master, decrypt_pii, derive_tenant_key, out):
+async def _decrypt_all(tenant_tx, ctx, master, decrypt_pii, derive_tenant_key):
+    out: list[tuple[str, Optional[dict[str, Any]]]] = []
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             "SELECT tenant_id::text AS tenant_id, token_ciphertext FROM provider_credentials "
             "WHERE provider='telnyx' AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at > now())")
         for row in rows:
+            fields: Optional[dict[str, Any]] = None
             try:
+                if not master:
+                    raise ValueError("ORACLE_ENCRYPTION_MASTER_KEY is not set")
                 raw = await decrypt_pii(conn, row["token_ciphertext"], derive_tenant_key(row["tenant_id"], master))
-                fields = json.loads(raw) if raw else {}
+                decoded = json.loads(raw) if raw else {}
+                fields = decoded if isinstance(decoded, dict) else None
             except Exception:  # noqa: BLE001 — one unreadable credential must not stop the others
                 logger.warning("Telnyx credential for tenant %s unreadable; its key is not trusted", row["tenant_id"])
-                continue
-            if isinstance(fields, dict):
-                out.append((row["tenant_id"], fields))
+            out.append((row["tenant_id"], fields))
     return out
 
 
-def _build(credentials: list[tuple[str, dict[str, Any]]]) -> _Registry:
-    keys: dict[str, tuple[bool, frozenset[str], str]] = {}
+def _fingerprint(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def _build(credentials: list[tuple[str, Optional[dict[str, Any]]]]) -> _Registry:
+    from nacl.signing import VerifyKey
+
+    keys: dict[str, _Key] = {}
 
     def add(key: Any, *, platform: bool = False, tenant: Optional[str] = None, label: str) -> None:
         key = str(key or "").strip()
         if not key:
             return
-        was_platform, tenants, old_label = keys.get(key, (False, frozenset(), label))
-        keys[key] = (was_platform or platform, tenants | ({tenant} if tenant else set()),
-                     old_label if key in keys else label)
+        try:
+            raw = base64.b64decode(key, validate=True)
+            verify_key = VerifyKey(raw) if len(raw) == 32 else None
+        except Exception:  # noqa: BLE001
+            verify_key = None
+        if verify_key is None:
+            logger.warning("Telnyx signing key (%s) is not a valid Ed25519 public key; ignored", label)
+            return
+        current = keys.get(key)
+        if current is None:
+            keys[key] = _Key(verify_key, platform, frozenset({tenant} if tenant else ()), label)
+        else:
+            keys[key] = _Key(current.verify_key, current.platform or platform,
+                             current.tenants | ({tenant} if tenant else set()), current.label)
 
     add(os.getenv("TELNYX_PUBLIC_KEY"), platform=True, label="platform")
     add(os.getenv("TELNYX_PUBLIC_KEY_PREVIOUS"), platform=True, label="platform-previous")
+    platform_api = str(os.getenv("TELNYX_API_KEY", "")).strip()
+    platform_fp = _fingerprint(platform_api) if platform_api else None
     own: set[str] = set()
     for tenant_id, fields in credentials:
-        if str(fields.get("api_key") or "").strip():
-            own.add(tenant_id)      # sends through its own account: the platform key does not speak for it
-        add(fields.get("public_key"), tenant=tenant_id, label="tenant")
-        add(fields.get("public_key_previous"), tenant=tenant_id, label="tenant-previous")
+        if fields is None:
+            # Unreadable: fail closed for everything but STOPs (the platform
+            # key no longer speaks for it; may_suppress_for still records them).
+            own.add(tenant_id)
+            continue
+        api_key = str(fields.get("api_key") or "").strip()
+        has_own_key = bool(str(fields.get("public_key") or "").strip())
+        if api_key and _fingerprint(api_key) != platform_fp and has_own_key:
+            own.add(tenant_id)
+        if has_own_key:
+            add(fields.get("public_key"), tenant=tenant_id, label="tenant")
+            add(fields.get("public_key_previous"), tenant=tenant_id, label="tenant-previous")
     return _Registry(keys=keys, own_account_tenants=frozenset(own))
 
 
 async def _registry(*, force: bool = False) -> _Registry:
     """The platform keys are read from the environment every time (a rotation
-    takes effect at once); only the decrypted brokerage keys are cached."""
-    global _cache
-    if force or _cache is None or time.monotonic() - _cache.loaded_at > CACHE_SECONDS:
-        _cache = _TenantKeys(credentials=await _tenant_credentials(), loaded_at=time.monotonic())
-    return _build(_cache.credentials)
+    takes effect at once); the brokerage credentials are cached. A failed
+    load keeps the last good set and retries soon; it is never cached as
+    'no brokerage keys'."""
+    global _cache, _load_lock, _warned_rotation
+    if os.getenv("TELNYX_PUBLIC_KEY_PREVIOUS") and not _warned_rotation:
+        _warned_rotation = True
+        logger.warning("ORACLE_ALERT telnyx_signing_key_rotation TELNYX_PUBLIC_KEY_PREVIOUS is set: the old "
+                       "platform signing key is still trusted; clear it once the rotation is complete")
+    stale = _cache is None or time.monotonic() - _cache.loaded_at > CACHE_SECONDS
+    if force or stale:
+        if _load_lock is None:
+            _load_lock = asyncio.Lock()
+        async with _load_lock:
+            stale = _cache is None or time.monotonic() - _cache.loaded_at > CACHE_SECONDS
+            if force or stale:
+                try:
+                    _cache = _TenantKeys(credentials=await _tenant_credentials(), loaded_at=time.monotonic())
+                except CredentialsUnavailable:
+                    logger.warning("brokerage Telnyx signing keys unavailable; keeping the last known set",
+                                   exc_info=True)
+                    previous = _cache.credentials if _cache else []
+                    _cache = _TenantKeys(credentials=previous,
+                                         loaded_at=time.monotonic() - CACHE_SECONDS + FAILED_LOAD_RETRY_SECONDS)
+    return _build(_cache.credentials if _cache else [])
 
 
 def reset_cache() -> None:
-    global _cache, _last_miss_reload
-    _cache, _last_miss_reload = None, 0.0
+    global _cache, _last_miss_reload, _warned_rotation
+    _cache, _last_miss_reload, _warned_rotation = None, 0.0, False
 
 
-def _try(registry: _Registry, raw_body: str, headers: Mapping[str, str]) -> tuple[Any, Optional[Verified]]:
-    from messaging_provider import TelnyxMessagingProvider
+def _match(registry: _Registry, raw_body: str, headers: Mapping[str, str]) -> Optional[str]:
+    """The registry key whose Ed25519 signature checks out, or None. The
+    timestamp is checked once; each key is a prebuilt VerifyKey (no client is
+    built per key), and the first match wins — two distinct keys cannot both
+    verify one signature."""
+    from nacl.exceptions import BadSignatureError
 
-    adapter = TelnyxMessagingProvider()
-    event = None
-    platform, tenants, labels = False, set(), []
-    for key, (is_platform, key_tenants, label) in registry.keys.items():
+    normalized = {name.lower(): value for name, value in headers.items()}
+    signature_header, timestamp_header = (normalized.get("telnyx-signature-ed25519"),
+                                          normalized.get("telnyx-timestamp"))
+    if not signature_header or not timestamp_header:
+        return None
+    try:
+        timestamp = int(timestamp_header)
+        signature = base64.b64decode(signature_header, validate=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if abs(time.time() - timestamp) > TIMESTAMP_TOLERANCE_SECONDS or len(signature) != 64:
+        return None
+    message = f"{timestamp_header}|{raw_body}".encode("utf-8")
+    for key, entry in registry.keys.items():
         try:
-            event = adapter.validate_webhook(raw_body, dict(headers), credentials={"public_key": key})
-        except Exception:  # noqa: BLE001 — not this key
+            entry.verify_key.verify(message, signature)
+        except BadSignatureError:
             continue
-        platform = platform or is_platform
-        tenants |= set(key_tenants)
-        labels.append(label)
-    if event is None:
-        return None, None
-    return event, Verified(platform=platform, tenants=frozenset(tenants), label="+".join(labels),
-                           own_account_tenants=registry.own_account_tenants)
+        return key
+    return None
 
 
 class NoSigningKeys(Exception):
@@ -172,15 +261,20 @@ async def verify(raw_body: str, headers: Mapping[str, str]) -> tuple[Any, Verifi
     authorized key verifies it (tampered, unknown or retired key, stale
     timestamp), NoSigningKeys if none is configured."""
     global _last_miss_reload
+    from messaging_provider import TelnyxMessagingProvider
+
     registry = await _registry()
     if not registry.keys:
-        registry = await _registry(force=True)
-        if not registry.keys:
-            raise NoSigningKeys("Telnyx webhook validation is not configured.")
-    event, verified = _try(registry, raw_body, headers)
-    if verified is None and time.monotonic() - _last_miss_reload > MISS_RELOAD_SECONDS:
+        raise NoSigningKeys("Telnyx webhook validation is not configured.")
+    key = _match(registry, raw_body, headers)
+    if key is None and time.monotonic() - _last_miss_reload > MISS_RELOAD_SECONDS:
         _last_miss_reload = time.monotonic()
-        event, verified = _try(await _registry(force=True), raw_body, headers)
-    if verified is None:
+        registry = await _registry(force=True)
+        key = _match(registry, raw_body, headers)
+    if key is None:
         raise ValueError("no authorized Telnyx signing key verifies this webhook")
-    return event, verified
+    entry = registry.keys[key]
+    # Parsed once, through the SDK with the one key that matched (it re-checks).
+    event = TelnyxMessagingProvider().validate_webhook(raw_body, dict(headers), credentials={"public_key": key})
+    return event, Verified(platform=entry.platform, tenants=entry.tenants, label=entry.label,
+                           own_account_tenants=registry.own_account_tenants)

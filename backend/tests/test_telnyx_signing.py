@@ -218,3 +218,122 @@ def test_a_delivery_receipt_from_another_account_is_not_applied(webhook):
 
 def test_an_unauthenticated_webhook_is_400(webhook):
     assert post(webhook, *_signed(STRANGER[0], _inbound())).status_code == 400
+
+
+# ── review round 1 (25.4) ───────────────────────────────────────────────────
+
+def test_a_stop_on_a_refused_route_is_still_recorded_for_the_keys_own_holders(webhook):
+    # B's account signs a STOP to a number that routes to A: the message is
+    # not logged for A, but the opt-out is kept for the holder B speaks for.
+    assert post(webhook, *_signed(KEY_B[0], _inbound(text="STOP"))).status_code == 204
+    assert webhook["recorded"] == [] and webhook["suppressed"] == [TB]
+
+
+def test_a_platform_signed_stop_is_kept_even_for_an_own_account_brokerage(webhook):
+    # The platform key cannot speak for A's messages, but a STOP it signed is
+    # recorded for every holder: over-suppression is the safe direction.
+    assert post(webhook, *_signed(PLATFORM[0], _inbound(text="STOP"))).status_code == 204
+    assert sorted(webhook["suppressed"]) == sorted([TA, TB])
+
+
+def test_a_receipt_for_a_message_not_written_yet_is_retried_not_applied_unchecked(webhook):
+    webhook["message_tenant"] = None
+    receipt = {"data": {"event_type": "message.finalized", "id": "evt3", "payload": {
+        "id": "msg-new", "to": [{"phone_number": "+13025550142", "status": "delivered"}], "errors": []}}}
+    response = post(webhook, *_signed(KEY_A[0], receipt))
+    assert response.status_code == 503 and response.headers.get("retry-after") == "30"
+    assert webhook["delivered"] == []
+
+
+def test_a_10dlc_nudge_is_ignored_unless_the_key_speaks_for_its_brokerage(registry, monkeypatch):
+    synced = []
+
+    async def owner(_provider_id):
+        return TA
+
+    async def sync(tenant_id, **_k):
+        synced.append(tenant_id)
+
+    monkeypatch.setattr(messaging_data, "tenant_for_registration", owner)
+    monkeypatch.setattr(messaging_api, "sync_registration_for_tenant", sync)
+    _, vb = verify(*_signed(KEY_B[0], _inbound()))
+    asyncio.run(messaging_api._refresh_for_provider_id("C1", vb))
+    assert synced == []
+    _, va = verify(*_signed(KEY_A[0], _inbound()))
+    asyncio.run(messaging_api._refresh_for_provider_id("C1", va))
+    assert synced == [TA]
+
+
+def _registry_with(monkeypatch, creds, **env):
+    for name in ("TELNYX_PUBLIC_KEY", "TELNYX_PUBLIC_KEY_PREVIOUS", "TELNYX_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    async def load():
+        return creds
+
+    monkeypatch.setattr(telnyx_signing, "_tenant_credentials", load)
+    telnyx_signing.reset_cache()
+
+
+def test_own_account_mirrors_how_the_app_resolves_a_brokerage_credential(monkeypatch):
+    TD, TE = "dddddddd-0000-4000-8000-00000000000d", "eeeeeeee-0000-4000-8000-00000000000e"
+    _registry_with(monkeypatch, [
+        (TA, {"api_key": "key-a", "public_key": KEY_A[1]}),     # its own account
+        (TC, {"api_key": "key-c"}),                             # no own key: the platform key is its key
+        (TD, {"api_key": "platform-api", "public_key": KEY_B[1]}),  # the platform's own account
+        (TE, None),                                             # unreadable: fails closed (STOPs still kept)
+    ], TELNYX_PUBLIC_KEY=PLATFORM[1], TELNYX_API_KEY="platform-api")
+    _, vp = verify(*_signed(PLATFORM[0], _inbound()))
+    assert not vp.may_act_for(TA) and vp.may_act_for(TC) and vp.may_act_for(TD)
+    assert not vp.may_act_for(TE) and vp.may_suppress_for(TE)
+    _, vd = verify(*_signed(KEY_B[0], _inbound()))
+    assert vd.may_act_for(TD)
+
+
+def test_a_key_shared_by_the_platform_and_a_brokerage_speaks_for_both(monkeypatch):
+    _registry_with(monkeypatch, [(TA, {"api_key": "key-a", "public_key": PLATFORM[1]})],
+                   TELNYX_PUBLIC_KEY=PLATFORM[1])
+    _, v = verify(*_signed(PLATFORM[0], _inbound()))
+    assert v.platform and TA in v.tenants and v.may_act_for(TA) and v.may_act_for(TC)
+
+
+def test_a_failed_load_keeps_the_last_good_keys(registry, monkeypatch):
+    _, va = verify(*_signed(KEY_A[0], _inbound()))
+    assert va.may_act_for(TA)
+
+    async def down():
+        raise telnyx_signing.CredentialsUnavailable("database down")
+
+    monkeypatch.setattr(telnyx_signing, "_tenant_credentials", down)
+    asyncio.run(telnyx_signing._registry(force=True))
+    _, va = verify(*_signed(KEY_A[0], _inbound()))
+    assert va.may_act_for(TA) and not va.may_act_for(TB)   # the last good set, not 'no brokerage keys'
+    _, vp = verify(*_signed(PLATFORM[0], _inbound()))
+    assert not vp.may_act_for(TA)            # A still recorded as own-account
+
+
+def test_many_keys_and_a_forged_flood_do_not_rebuild_clients(monkeypatch):
+    import messaging_provider
+
+    tenants = [(f"{i:08d}-0000-4000-8000-000000000000", _key()) for i in range(12)]
+    _registry_with(monkeypatch, [(t, {"api_key": f"k{i}", "public_key": key[1]})
+                                 for i, (t, key) in enumerate(tenants)], TELNYX_PUBLIC_KEY=PLATFORM[1])
+    builds = []
+    real = messaging_provider._verification_client
+
+    def counting(api_key, public_key):
+        builds.append(public_key)
+        return real(api_key, public_key)
+
+    monkeypatch.setattr(messaging_provider, "_verification_client", counting)
+    last_tenant, last_key = tenants[-1]
+    _, v = verify(*_signed(last_key[0], _inbound()))
+    assert v.may_act_for(last_tenant) and len(builds) <= 1      # one parse, not one client per key
+    builds.clear()
+    monkeypatch.setattr(telnyx_signing, "_last_miss_reload", time.monotonic())
+    for _ in range(20):
+        with pytest.raises(ValueError):
+            verify(*_signed(STRANGER[0], _inbound()))
+    assert builds == []                                          # forgeries never reach the SDK
