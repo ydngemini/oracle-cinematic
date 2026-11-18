@@ -195,17 +195,28 @@ def test_phone_status_follows_verified_caller_id(counts, expected):
     assert asyncio.run(bo._phone_status(conn, TENANT_A)) == expected
 
 
+_SENDABLE = {"agent_id": "a", "active": True, "provider": "telnyx", "hosted_order_status": "active",
+             "campaign_id": "c1", "sender": "+13025550100", "sender_verified": True,
+             "campaign_status": "approved", "campaign_provider": "telnyx", "provider_campaign_id": "TC1",
+             "brand_status": "verified", "sender_assigned": True}
+
+
 @pytest.mark.parametrize(
-    "counts,expected",
+    "counts,routes,expected",
     [
-        ({"active": 0, "working": 0, "total": 0}, "NOT_STARTED"),
-        ({"active": 1, "working": 0, "total": 1}, "READY"),
-        ({"active": 0, "working": 1, "total": 1}, "IN_PROGRESS"),
-        ({"active": 0, "working": 0, "total": 1}, "NEEDS_ACTION"),
+        ({"active": 0, "working": 0, "total": 0}, [], "NOT_STARTED"),
+        ({"active": 1, "working": 0, "total": 1}, [_SENDABLE], "READY"),
+        # hosting live is not carrier-ready (25.1)
+        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "campaign_status": "pending"}], "IN_PROGRESS"),
+        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "campaign_status": "rejected"}], "NEEDS_ACTION"),
+        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "sender_assigned": False}], "NEEDS_ACTION"),
+        ({"active": 0, "working": 1, "total": 1}, [], "IN_PROGRESS"),
+        ({"active": 0, "working": 0, "total": 1}, [], "NEEDS_ACTION"),
     ],
 )
-def test_messaging_status_is_tracked_apart_from_calls(counts, expected):
-    conn = FakeConn(rows={"FROM messaging_routes": counts})
+def test_messaging_status_is_tracked_apart_from_calls(counts, routes, expected, monkeypatch):
+    monkeypatch.setenv("ORACLE_MESSAGING_PROVIDER", "telnyx")
+    conn = FakeConn(rows={"FROM messaging_routes": counts}, fetch_rows={"sender_assigned": routes})
     assert asyncio.run(bo._messaging_status(conn, TENANT_A)) == expected
 
 

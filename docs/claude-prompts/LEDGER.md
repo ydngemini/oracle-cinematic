@@ -2086,6 +2086,31 @@ next_task: "26.1/26.9: CRM do-not-contact and destination changes must reach the
 updated: 2026-11-16
 ```
 
+#### L10-16 A business text is sent only from a sender Neoh can show is registered (external audit 25.1)
+```yaml
+id: L10-16
+status: tests_pass
+env: local
+evidence_shas: [6ec2898]   # base; fix in the commit that adds this row
+files: [backend/messaging_data.py, backend/commands_api.py, backend/messaging_api.py, backend/brokerage_onboarding.py, backend/command_providers.py, .env.prod.example, backend/tests/test_sms_send_readiness.py, backend/tests/test_sms_send_readiness_live.py, backend/tests/test_telnyx_message_idempotency_and_dispatch.py, backend/tests/test_brokerage_onboarding.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the Telnyx SMS branch of _execute_command_job, messaging_api get_business_messaging_status, brokerage_onboarding._messaging_status and send_twilio_sms at 6ec2898", result: "confirmed: an active hosted order + a verified voice number was enough to submit; the campaign status and the number's assignment were never checked; 'ready' and onboarding READY were hosting alone; a Twilio sender with no declared registration type passed", date: 2026-11-18}
+  - {cmd: "red: live test_sms_send_readiness_live with 6ec2898's commands_api.py", result: "fails: the worker sent the text with the campaign rejected (sent == ['+13025550177'])", date: 2026-11-18}
+  - {cmd: "after: live test_sms_send_readiness_live; unit test_sms_send_readiness (16) + messaging/onboarding/SMS/telnyx/operator/twilio selection", result: "1 live pass (8 registration states + worker refuse/send); 452 unit pass", date: 2026-11-18}
+authz_checked: "The gate reads only the sending agent's own route (tenant_id + agent_id) and joins campaign, brand and assignment on the same tenant; the composite FK messaging_routes(tenant_id, campaign_id) refuses another brokerage's campaign (live test). Refused before submission_started, so the command fails cleanly and is not retried into a later send."
+blockers:
+  - "messaging_data.messaging_send_readiness / send_blockers: route active, provider is the one sending, hosting active, owner's voice-verified number, not toll-free, route campaign approved (same tenant and provider), brand registered (not failed/not_started), and an ATTACHED 10DLC assignment of that exact number to that campaign's provider id. An 'unknown' (unconfirmed) assignment is not committed."
+  - "The sender sent from is the one the gate proved. The status API's ready flag and onboarding's texting READY use the same rows (send_blockers); the status API also returns send_blockers. Onboarding: hosting live + campaign pending reads IN_PROGRESS, other gaps NEEDS_ACTION."
+  - "Toll-free senders are refused on this path (toll-free verification is a separate registration Neoh does not carry)."
+  - "Legacy Twilio: the sender must declare twilio_registered, ported or toll_free_verified (credential sms_sender_type, or TWILIO_SMS_SENDER_TYPE for an env sender); undeclared is refused. Neoh does not read Twilio's A2P registry: the declaration is the brokerage's."
+  - "Campaign approval still only changes when written locally: syncing it from Telnyx is 25.2 (next). Until then an approved campaign at Telnyx reads pending here and texts are refused (fail-closed)."
+  - "Customer-contact/compliance change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [25.1]
+decision_refs: []
+next_task: "25.2 (brand/campaign status sync)."
+updated: 2026-11-18
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

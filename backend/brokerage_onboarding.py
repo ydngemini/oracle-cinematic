@@ -247,7 +247,20 @@ async def _messaging_status(conn, tenant_id: str) -> Status:
     if not row or not row["total"]:
         return "NOT_STARTED"
     if row["active"]:
-        return "READY"
+        # Hosting is live; READY only when a route may actually send (25.1:
+        # approved campaign and this number's committed assignment too).
+        import messaging_data
+        from messaging_provider import messaging_provider_name
+
+        # Same tables as the count above (0108/0123/0139), so no tolerance
+        # needed; a failure here aborts the transaction like any other query.
+        routes = await messaging_data.send_readiness_rows(conn, tenant_id)
+        provider = messaging_provider_name()
+        if any(not messaging_data.send_blockers(r, provider) for r in routes):
+            return "READY"
+        if any(r.get("campaign_status") == "pending" for r in routes):
+            return "IN_PROGRESS"      # waiting for the carrier's 10DLC decision
+        return "NEEDS_ACTION"         # campaign, assignment or brand needs the brokerage
     return "IN_PROGRESS" if row["working"] else "NEEDS_ACTION"
 
 

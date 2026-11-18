@@ -133,7 +133,14 @@ async def get_business_messaging_status(
             "ready": False,
         }
     payload = _route_json(route, business_number)
-    payload["ready"] = route.get("hosted_order_status") == "active"
+    # Ready means carrier-ready (25.1): hosting AND the approved campaign AND
+    # the committed assignment of this number — not hosting alone.
+    from messaging_data import messaging_send_readiness
+    from messaging_provider import messaging_provider_name
+
+    readiness = await messaging_send_readiness(ctx, provider=messaging_provider_name())
+    payload["ready"] = readiness["ready"]
+    payload["send_blockers"] = readiness["blockers"]
     return payload
 
 

@@ -3727,18 +3727,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # agent's own READY hosted number, never a client-supplied
                 # from_number, and never a silent fallback to legacy Twilio
                 # SMS — retries on a fallback provider could double-send.
-                from messaging_data import get_messaging_route, get_public_business_number
+                # 24.1-style: refused before submission_started, so the command
+                # fails cleanly. Hosting alone is not carrier-ready (25.1): the
+                # brokerage's approved 10DLC campaign and the committed
+                # assignment of this exact sender are required too.
+                from messaging_data import describe_blockers, messaging_send_readiness
 
-                messaging_route = await get_messaging_route(owner_ctx)
-                business_number = await get_public_business_number(owner_ctx)
-                if (
-                    messaging_route is None
-                    or messaging_route.get("hosted_order_status") != "active"
-                    or business_number is None
-                ):
+                readiness = await messaging_send_readiness(owner_ctx, provider="telnyx")
+                if not readiness["ready"]:
                     raise ProviderConfigurationError(
-                        "Text message blocked: connect and finish setting up "
-                        "text messages for your business number before sending."
+                        "Text message blocked: " + describe_blockers(readiness["blockers"]) + "."
                     )
                 telnyx_raw = await _load_provider_credential(ctx, "telnyx")
                 telnyx_credentials = None
@@ -3751,7 +3749,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 submission_started = True
                 from messaging_provider import get_messaging_provider
 
-                sender_number = str(business_number["voice_caller_id_e164"])
+                sender_number = str(readiness["sender"])
                 adapter = get_messaging_provider("telnyx")
                 provider_result = await adapter.send_message(
                     to=str(target["phone"]),

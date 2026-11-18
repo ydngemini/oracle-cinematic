@@ -293,7 +293,11 @@ async def send_twilio_sms(
         or credentials.get("sms_sender_e164")
         or os.getenv("TWILIO_SMS_FROM_NUMBER", "")
     ).strip()
-    sender_type = str(credentials.get("sms_sender_type") or "").strip()
+    # 25.1: the sender must declare how it is registered for business texts;
+    # an undeclared one (an env-only sender) is refused, not assumed.
+    sender_type = str(
+        credentials.get("sms_sender_type") or os.getenv("TWILIO_SMS_SENDER_TYPE", "")
+    ).strip()
     recipient = str((draft.get("target") or {}).get("phone") or "").strip()
     body = str(draft.get("body") or "").strip()
 
@@ -302,7 +306,7 @@ async def send_twilio_sms(
         raise ProviderConfigurationError(cred_error)
     if not sender.startswith("+"):
         raise ProviderConfigurationError("A registered Twilio SMS sender is not configured")
-    if sender_type and sender_type not in {
+    if sender_type not in {
         "twilio_registered",
         "ported",
         "toll_free_verified",

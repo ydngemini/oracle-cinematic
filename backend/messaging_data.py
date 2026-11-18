@@ -815,6 +815,103 @@ async def register_messaging_campaign(
     return {"campaign_id": str(row["id"]), "provider_campaign_id": ref, "status": row["status"]}
 
 
+# ── Send readiness (external audit 25.1) ───────────────────────────────────
+# A business text may reach the carrier only when Neoh itself can show the
+# sender is registered for it: an active route on the provider that sends it,
+# live hosting, the owner's voice-verified number, the brokerage's approved
+# 10DLC campaign (same tenant, same provider, brand not failed) on that route,
+# and a committed (attached) assignment of THAT exact number to THAT campaign.
+# Hosting alone was enough before; the carrier then rejects or filters it.
+# Toll-free numbers are a separate registration (toll-free verification) that
+# this path does not carry, so they are refused here rather than sent as 10DLC.
+TOLL_FREE_PREFIXES = ("+1800", "+1833", "+1844", "+1855", "+1866", "+1877", "+1888")
+
+SEND_BLOCKERS = {
+    "not_connected": "connect text messages for your business number",
+    "disconnected": "text messages were disconnected for this number",
+    "wrong_provider": "this number is set up with a different text-message provider",
+    "hosting_not_active": "finish hosting your business number for text messages",
+    "no_verified_number": "verify your business number for calls first",
+    "toll_free_not_supported": "toll-free numbers need toll-free verification, which is not available here yet",
+    "no_campaign_assigned": "assign your business number to your approved texting campaign (10DLC)",
+    "campaign_not_approved": "your texting campaign (10DLC) is not approved yet",
+    "brand_not_registered": "your texting brand (10DLC) is not registered or was rejected",
+    "number_not_assigned": "your business number is not confirmed on your approved texting campaign",
+}
+
+_SEND_READINESS_SQL = """
+    SELECT r.agent_id, r.active, r.provider, r.hosted_order_status, r.campaign_id,
+           t.voice_caller_id_e164 AS sender,
+           COALESCE(t.voice_caller_id_verified, false) AS sender_verified,
+           c.status AS campaign_status, c.provider AS campaign_provider,
+           c.provider_campaign_id, b.status AS brand_status,
+           EXISTS (
+               SELECT 1 FROM provider_purchases p
+                WHERE p.tenant_id = r.tenant_id AND p.provider = r.provider
+                  AND p.kind = '10dlc_number_assignment' AND p.state = 'attached'
+                  AND p.detail->>'campaign_id' = c.provider_campaign_id
+                  AND p.detail->>'phone_number' = t.voice_caller_id_e164
+           ) AS sender_assigned
+      FROM messaging_routes r
+      LEFT JOIN telephony_routes t
+        ON t.tenant_id = r.tenant_id AND t.agent_id = r.agent_id AND t.active
+      LEFT JOIN tenant_messaging_campaigns c
+        ON c.tenant_id = r.tenant_id AND c.id = r.campaign_id
+      LEFT JOIN tenant_messaging_brands b
+        ON b.tenant_id = c.tenant_id AND b.id = c.brand_id
+     WHERE r.tenant_id = $1::uuid AND ($2::text IS NULL OR r.agent_id = $2)
+"""
+
+
+def send_blockers(row: Optional[Mapping[str, Any]], provider: str) -> list[str]:
+    """Why this route may not send business texts yet ([] = it may). Pure."""
+    if row is None:
+        return ["not_connected"]
+    blockers: list[str] = []
+    if not row.get("active"):
+        blockers.append("disconnected")
+    if row.get("provider") != provider:
+        blockers.append("wrong_provider")
+    if row.get("hosted_order_status") != "active":
+        blockers.append("hosting_not_active")
+    sender = str(row.get("sender") or "")
+    if not sender or not row.get("sender_verified"):
+        blockers.append("no_verified_number")
+    elif sender.startswith(TOLL_FREE_PREFIXES):
+        blockers.append("toll_free_not_supported")
+    if not row.get("campaign_id"):
+        blockers.append("no_campaign_assigned")
+    else:
+        if row.get("campaign_status") != "approved":
+            blockers.append("campaign_not_approved")
+        if row.get("campaign_provider") != row.get("provider") and "wrong_provider" not in blockers:
+            blockers.append("wrong_provider")
+        if row.get("brand_status") in (None, "failed", "not_started"):
+            blockers.append("brand_not_registered")
+        if not row.get("sender_assigned"):
+            blockers.append("number_not_assigned")
+    return blockers
+
+
+async def send_readiness_rows(conn: Any, tenant_id: str, agent_id: Optional[str] = None) -> list[dict[str, Any]]:
+    return [dict(r) for r in await conn.fetch(_SEND_READINESS_SQL, tenant_id, agent_id)]
+
+
+async def messaging_send_readiness(ctx: TenantContext, *, provider: str) -> dict[str, Any]:
+    """{"ready", "blockers", "sender"} for this agent's business texts."""
+    async with tenant_tx(ctx) as conn:
+        rows = await send_readiness_rows(conn, ctx.tenant_id, ctx.agent_id)
+    ready = [r for r in rows if not send_blockers(r, provider)]
+    row = ready[0] if ready else (rows[0] if rows else None)
+    blockers = send_blockers(row, provider)
+    return {"ready": not blockers, "blockers": blockers,
+            "sender": str(row["sender"]) if row and not blockers else None}
+
+
+def describe_blockers(blockers: Sequence[str]) -> str:
+    return "; ".join(SEND_BLOCKERS.get(b, b) for b in blockers)
+
+
 NO_APPROVED_CAMPAIGN = "No approved Campaign to assign this number to."
 _ASSIGNMENT_IN_FLIGHT = (
     "This number is already being assigned to your campaign. Nothing new was submitted — "
