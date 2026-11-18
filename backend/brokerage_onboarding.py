@@ -526,56 +526,98 @@ async def _queue_invitation_email(conn, ctx: TenantContext, *, invitation_id: st
     await enqueue_job_in_tx(
         conn, ctx, job_type=INVITATION_JOB_TYPE, payload={"invitation_id": invitation_id},
         idempotency_key=f"invitation-email:{invitation_id}", created_by=ctx.agent_id,
-        queue_name="interactive", priority=20, max_attempts=4)
+        # The default queue: nobody waits on this in real time, and a slow mail
+        # server must not occupy the chat workers (21.5 review).
+        queue_name="default", priority=40, max_attempts=4)
 
 
-async def deliver_invitation_email(tenant_id: str, invitation_id: str) -> dict[str, Any]:
-    """The delivery job (21.5): send one queued invitation, record whether it
-    left, and clear the sealed link once it has. A revoked or accepted
-    invitation is not sent. A send failure raises so the worker retries
-    (bounded by the job's attempts); the row shows 'failed' meanwhile and the
-    owner can resend."""
+class InvitationDeliveryError(RuntimeError):
+    """What the job worker records: the error's type only (an SMTP refusal can
+    quote the invitee's address), and whether a retry can help."""
+
+    def __init__(self, kind: str, *, terminal: bool = False, code: str = "INVITATION_DELIVERY") -> None:
+        super().__init__(kind)
+        self.job_terminal = terminal
+        self.job_error_code = code
+
+
+async def _mark_invitation(ctx: TenantContext, invitation_id: str, status_: str, error: Optional[str],
+                           *, clear_link: bool) -> None:
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            "UPDATE brokerage_invitations SET delivery_status=$3, delivery_error=$4, "
+            "pending_link_ciphertext=CASE WHEN $5 THEN NULL ELSE pending_link_ciphertext END, "
+            "last_sent_at=CASE WHEN $3='sent' THEN now() ELSE last_sent_at END "
+            "WHERE id=$1::uuid AND tenant_id=$2::uuid", invitation_id, ctx.tenant_id, status_, error, clear_link)
+
+
+async def deliver_invitation_email(tenant_id: str, invitation_id: str, *, last_attempt: bool = False) -> dict[str, Any]:
+    """The delivery job (21.5): send one queued invitation and record what
+    happened. A revoked, accepted or expired invitation is not sent.
+
+    - sent: recorded, the sealed link cleared.
+    - a definite refusal: 'failed', raised so the worker retries (bounded by
+      the job's attempts); on the last attempt the link is cleared.
+    - the mail server is misconfigured: 'failed', not retried.
+    - the outcome is unknown (SMTP uncertain, or the send outlived its
+      timeout and may still go out): 'unconfirmed', not retried (a retry
+      could send the link twice) — the owner can Resend.
+    Every error is recorded by type only; the row never stays 'queued' when
+    the job has given up."""
     import asyncio
 
+    import smtp_mailer
     from crypto import decrypt_pii
 
     ctx = TenantContext(agent_id="invitation-mailer", tenant_id=str(tenant_id), role=Role.PLATFORM_ADMIN)
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            "SELECT i.email, i.expires_at, i.pending_link_ciphertext, i.consumed_at, i.revoked_at, "
-            "       i.invited_by_agent_id, t.name AS brokerage "
-            "  FROM brokerage_invitations i JOIN tenants t ON t.id = i.tenant_id "
-            " WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid", invitation_id, str(tenant_id))
-        if row is None or row["consumed_at"] or row["revoked_at"] or not row["pending_link_ciphertext"]:
-            return {"status": "skipped"}
-        link = await decrypt_pii(conn, row["pending_link_ciphertext"], _invitation_key(tenant_id))
-    subject, text, html = build_invitation_email(
-        brokerage=row["brokerage"] or "your brokerage", inviter=row["invited_by_agent_id"] or "your broker",
-        link=link, expires_at=row["expires_at"])
     try:
-        import smtp_mailer
-
+        async with tenant_tx(ctx) as conn:
+            row = await conn.fetchrow(
+                "SELECT i.email, i.expires_at, i.pending_link_ciphertext, i.consumed_at, i.revoked_at, "
+                "       i.invited_by_agent_id, i.expires_at <= now() AS expired, t.name AS brokerage "
+                "  FROM brokerage_invitations i JOIN tenants t ON t.id = i.tenant_id "
+                " WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid", invitation_id, str(tenant_id))
+            if row is None or row["consumed_at"] or row["revoked_at"] or not row["pending_link_ciphertext"]:
+                return {"status": "skipped"}
+            if row["expired"]:
+                await conn.execute(
+                    "UPDATE brokerage_invitations SET pending_link_ciphertext=NULL, delivery_status='failed', "
+                    "delivery_error='expired' WHERE id=$1::uuid AND tenant_id=$2::uuid",
+                    invitation_id, str(tenant_id))
+                return {"status": "expired"}
+            link = await decrypt_pii(conn, row["pending_link_ciphertext"], _invitation_key(tenant_id))
+        subject, text, html = build_invitation_email(
+            brokerage=row["brokerage"] or "your brokerage", inviter=row["invited_by_agent_id"] or "your broker",
+            link=link, expires_at=row["expires_at"])
+    except Exception as exc:
+        # Could not even prepare the email (database, key, decryption).
+        log.error("Invitation email could not be prepared: %s", type(exc).__name__)
+        await _mark_invitation(ctx, invitation_id, "failed", type(exc).__name__, clear_link=last_attempt)
+        raise InvitationDeliveryError(type(exc).__name__) from None
+    try:
         await asyncio.wait_for(
             asyncio.to_thread(smtp_mailer.send, recipient=row["email"], subject=subject, text=text, html=html),
             timeout=40.0)
+    except (smtp_mailer.SmtpUncertainError, TimeoutError) as exc:
+        log.error("Invitation email outcome unknown: %s", type(exc).__name__)
+        await _mark_invitation(ctx, invitation_id, "unconfirmed", type(exc).__name__, clear_link=True)
+        raise InvitationDeliveryError(type(exc).__name__, terminal=True, code="DELIVERY_UNCONFIRMED") from None
+    except smtp_mailer.SmtpConfigurationError as exc:
+        log.error("Invitation email not sent: mail server not configured")
+        await _mark_invitation(ctx, invitation_id, "failed", type(exc).__name__, clear_link=True)
+        raise InvitationDeliveryError(type(exc).__name__, terminal=True, code="NOT_CONFIGURED") from None
     except Exception as exc:
         log.error("Invitation email delivery failed: %s", type(exc).__name__)
-        async with tenant_tx(ctx) as conn:
-            await conn.execute(
-                "UPDATE brokerage_invitations SET delivery_status='failed', delivery_error=$3 "
-                "WHERE id=$1::uuid AND tenant_id=$2::uuid AND revoked_at IS NULL",
-                invitation_id, str(tenant_id), type(exc).__name__)
-        raise
-    async with tenant_tx(ctx) as conn:
-        await conn.execute(
-            "UPDATE brokerage_invitations SET delivery_status='sent', delivery_error=NULL, "
-            "pending_link_ciphertext=NULL, last_sent_at=now() WHERE id=$1::uuid AND tenant_id=$2::uuid",
-            invitation_id, str(tenant_id))
+        await _mark_invitation(ctx, invitation_id, "failed", type(exc).__name__, clear_link=last_attempt)
+        raise InvitationDeliveryError(type(exc).__name__) from None
+    await _mark_invitation(ctx, invitation_id, "sent", None, clear_link=True)
     return {"status": "sent"}
 
 
 async def _invitation_job(payload: dict, reporter) -> dict:
-    return await deliver_invitation_email(str(reporter.job["tenant_id"]), str(payload["invitation_id"]))
+    job = reporter.job
+    last = int(job.get("attempt_count") or 0) >= int(job.get("max_attempts") or 1)
+    return await deliver_invitation_email(str(job["tenant_id"]), str(payload["invitation_id"]), last_attempt=last)
 
 
 def register() -> None:
@@ -691,12 +733,16 @@ async def create_invitations(conn, ctx: TenantContext, emails: list[str], role: 
 
         prior = await conn.fetchrow(
             "SELECT token_hash, send_count, "
-            "       created_at > now() - make_interval(mins => $3) AS recent "
+            "       created_at > now() - make_interval(mins => $3) "
+            "       AND COALESCE(delivery_status, '') NOT IN ('failed', 'unconfirmed') "
+            "       AND invited_role = $4 AS recent "
             "  FROM brokerage_invitations "
             " WHERE tenant_id = $1::uuid AND email = $2 "
             "   AND consumed_at IS NULL AND revoked_at IS NULL",
-            ctx.tenant_id, email, RECENT_INVITE_MINUTES,
+            ctx.tenant_id, email, RECENT_INVITE_MINUTES, role,
         )
+        # A recent invitation is kept — unless its email failed or may not have
+        # arrived, or the role changed: then a Send reissues it.
         if prior and prior["recent"] and not reissue_recent:
             skipped.append({"email": email, "reason": "already_invited"})
             continue
@@ -892,10 +938,8 @@ async def post_invitations(
         expires_at = result.pop("_expires_at")
         deliveries = result.pop("_deliveries")
 
-    # Mail is sent AFTER the transaction commits. Sending inside it would mean
-    # a slow mail server holds a database transaction open, and a rollback
-    # after a successful send would leave a live link to a row that no longer
-    # exists.
+    # The delivery jobs were queued in the same transaction as the
+    # invitations (21.5): the request never waits on a mail server.
     return await _finish_invitations(ctx, result, deliveries, brokerage=brokerage, expires_at=expires_at)
 
 
@@ -906,8 +950,8 @@ async def resend_invitation(
 ) -> dict[str, Any]:
     """Resend issues a NEW link and retires the old one.
 
-    It cannot do otherwise: only the digest of the original token was stored,
-    so the original link is unrecoverable by design. Anyone holding the old
+    It cannot do otherwise: only the digest of the original token identifies
+    it, and its sealed copy (held only until the email is sent) is not reused. Anyone holding the old
     email finds a dead link, which is the correct outcome for a credential
     that has just been reissued.
     """

@@ -98,20 +98,48 @@ async def _scenario(monkeypatch):
         assert (await bo.deliver_invitation_email(T, str(first["id"])))["status"] == "skipped"
         assert len(sent) == 1
 
-        # A failing mail server: recorded and raised, so the worker retries.
+        # A refusing mail server: recorded by type and raised, so the worker
+        # retries; the seal stays for the retry, and goes on the last attempt.
         behaviour["fail"] = True
         second = rows[1]
-        with pytest.raises(ConnectionRefusedError):
+        with pytest.raises(bo.InvitationDeliveryError) as exc:
             await bo.deliver_invitation_email(T, str(second["id"]))
+        assert exc.value.job_terminal is False and str(exc.value) == "ConnectionRefusedError"
         row = [r for r in await invites() if r["id"] == second["id"]][0]
-        assert row["delivery_status"] == "failed" and row["sealed"]          # still sendable on retry
+        assert row["delivery_status"] == "failed" and row["sealed"]
+        with pytest.raises(bo.InvitationDeliveryError):
+            await bo.deliver_invitation_email(T, str(second["id"]), last_attempt=True)
+        row = [r for r in await invites() if r["id"] == second["id"]][0]
+        assert row["delivery_status"] == "failed" and not row["sealed"]      # the job gave up: link gone
         behaviour["fail"] = False
+        # a bulk Send now reissues the failed one (it never arrived)
+        again = await bo.post_invitations(bo.InviteCreate(emails=[second["email"]], role="agent"), ctx)
+        assert again["queued"] == [second["email"]]
 
-        # A revoked invitation is not sent.
+        # A revoked invitation is not sent, and its sealed link is gone at once
+        # (the trigger, whatever path revokes it).
         third = rows[2]
         await bo.revoke_invitation(str(third["id"]), ctx)
+        assert not [r for r in await invites() if r["id"] == third["id"]][0]["sealed"]
         assert (await bo.deliver_invitation_email(T, str(third["id"])))["status"] == "skipped"
         assert len(sent) == 1
+        # accepted: the consume function clears it too
+        fifth = rows[4]
+        token_hash = await admin.fetchval("SELECT token_hash FROM brokerage_invitations WHERE id=$1", fifth["id"])
+        joiner = await admin.fetchval(
+            "INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,'agent',$2,'scrypt$x$y') RETURNING id", T, fifth["email"])
+        await admin.fetchrow("SELECT * FROM consume_brokerage_invitation($1, $2)", token_hash, joiner)
+        assert not [r for r in await invites() if r["id"] == fifth["id"]][0]["sealed"]
+        # expired before it was sent: not sent, the seal cleared
+        sixth = (await bo.post_invitations(bo.InviteCreate(emails=[f"late-{s}@live.test"], role="agent"),
+                                           ctx))["created"][0]
+        await admin.execute("UPDATE brokerage_invitations SET created_at = now() - interval '2 days', "
+                            "expires_at = now() - interval '1 minute' "
+                            "WHERE id=$1::uuid", sixth["id"])
+        assert (await bo.deliver_invitation_email(T, str(sixth["id"])))["status"] == "expired"
+        assert await admin.fetchval("SELECT pending_link_ciphertext IS NULL FROM brokerage_invitations "
+                                    "WHERE id=$1::uuid", sixth["id"])
 
         # The explicit Resend does reissue (old link retired, new one queued).
         fourth = rows[3]
@@ -119,7 +147,11 @@ async def _scenario(monkeypatch):
         assert resent["created"] and resent["queued"] == [fourth["email"]]
         mine = [r for r in await invites() if r["email"] == fourth["email"]]
         assert len(mine) == 2 and mine[0]["revoked_at"] is not None and mine[1]["sealed"]
+        assert not mine[0]["sealed"]                       # the reissued one's link went with it
         assert mine[1]["send_count"] == 2
+        jobs = await admin.fetch("SELECT queue_name FROM automation_jobs WHERE tenant_id=$1 AND job_type=$2",
+                                 uuid.UUID(T), bo.INVITATION_JOB_TYPE)
+        assert {j["queue_name"] for j in jobs} == {"default"}   # not the chat workers
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

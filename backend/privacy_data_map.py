@@ -51,7 +51,9 @@ TABLES: dict[str, TableEntry] = {
     "agent_ai_settings": TableEntry(C.ACCOUNT, E),
     "autonomy_preferences": TableEntry(C.ACCOUNT, E),
     "agent_routing_state": TableEntry(C.ACCOUNT, E),
-    "brokerage_invitations": TableEntry(C.CAPABILITY_TOKEN, E),
+    "brokerage_invitations": TableEntry(C.CAPABILITY_TOKEN, E, "token digest; since 0178 (21.5) the link is "
+                                        "sealed in pending_link_ciphertext only until its email is sent "
+                                        "(cleared on send, revoke, accept, expiry, final attempt)"),
     "brokerage_setup_progress": TableEntry(C.ACCOUNT, E),
     "user_policy_acceptances": TableEntry(C.ACCOUNT, E),
     "account_security_acceptances": TableEntry(C.ACCOUNT, E),

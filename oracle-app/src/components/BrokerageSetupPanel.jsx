@@ -140,11 +140,16 @@ export function BrokerageSetupPanel() {
     setNotice('');
     try {
       const result = await crmPost('/api/brokerage/invitations', { emails: pendingEmails, role: 'agent' });
-      const sent = result.created?.length || 0;
-      const skipped = result.skipped?.length || 0;
+      // Emails are queued and sent in the background (audit 21.5): say
+      // "queued", and say why an address was skipped.
+      const queued = result.created?.length || 0;
+      const skipped = result.skipped || [];
+      const members = skipped.filter((k) => k.reason === 'already_a_member').length;
+      const invited = skipped.filter((k) => k.reason === 'already_invited').length;
       setNotice(
-        `${sent} invitation${sent === 1 ? '' : 's'} sent`
-        + (skipped ? ` · ${skipped} already on your team` : ''),
+        `${queued} invitation${queued === 1 ? '' : 's'} queued to be emailed`
+        + (members ? ` · ${members} already on your team` : '')
+        + (invited ? ` · ${invited} already invited — use Resend if it didn't arrive` : ''),
       );
       // Dev only: with no mail server configured the backend hands the link
       // back so the flow can be finished locally. It is never returned in prod.
@@ -363,8 +368,8 @@ export function BrokerageSetupPanel() {
             <li key={inv.id} className={styles.member} data-pending="true">
               <span className={styles.memberName}>{inv.email}</span>
               <span className={styles.memberRole}>{inv.role === 'broker_owner' ? 'Owner' : 'Agent'}</span>
-              <span className={styles.memberState} data-state={inv.delivery_status === 'failed' ? 'failed' : 'pending'}>
-                {inv.delivery_status === 'failed' ? 'Email not delivered' : 'Pending'}
+              <span className={styles.memberState} data-state={['failed', 'unconfirmed'].includes(inv.delivery_status) ? 'failed' : 'pending'}>
+                {inviteDeliveryLabel(inv.delivery_status)}
               </span>
               <span className={styles.rowActions}>
                 <button
@@ -415,6 +420,14 @@ export function BrokerageSetupPanel() {
       </div>
     </section>
   );
+}
+
+// What an invitation's email did (21.5: it is sent by a background job).
+function inviteDeliveryLabel(status) {
+  if (status === 'queued') return 'Sending invitation…';
+  if (status === 'failed') return 'Email not delivered';
+  if (status === 'unconfirmed') return 'Delivery not confirmed — Resend if needed';
+  return 'Pending';
 }
 
 export default BrokerageSetupPanel;
