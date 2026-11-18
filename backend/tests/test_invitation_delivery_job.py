@@ -96,3 +96,32 @@ def _patch_prepared(monkeypatch, marks):
     monkeypatch.setattr(crypto, "decrypt_pii", decrypt)
     monkeypatch.setattr(bo, "_invitation_key", lambda _t: "k")
     monkeypatch.setattr(bo, "_mark_invitation", mark)
+
+
+@pytest.mark.parametrize("sweep_fails", [False, True])
+def test_the_retention_janitor_runs_the_link_sweep(monkeypatch, sweep_fails):
+    """Wired into the daily retention task; a sweep failure is logged and the
+    task still reports its committed purges (21.5 re-review)."""
+    from contextlib import asynccontextmanager
+
+    import db.connection
+    from data_integrations import periodic
+
+    class _Conn:
+        async def fetchval(self, q, *_a):
+            return {"source_payloads_purged": 1} if "purge_expired_platform_data" in q else 2
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    async def sweep():
+        if sweep_fails:
+            raise ConnectionError("db")
+        return 3
+
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
+    monkeypatch.setattr(bo, "sweep_stale_invitation_links", sweep)
+    out = asyncio.run(periodic._retention_cleanup_task())
+    assert out["invitation_links_cleared"] == (None if sweep_fails else 3)
+    assert out["oauth_states_deleted"] == 2

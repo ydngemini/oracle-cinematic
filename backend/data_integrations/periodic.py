@@ -873,10 +873,15 @@ async def _retention_cleanup_task() -> dict:
         result = json.loads(result)
     clean = dict(result or {})
     clean["oauth_states_deleted"] = int(oauth_states_deleted or 0)
-    # Sealed invitation links no job will send (21.5).
+    # Sealed invitation links no job will send (21.5). Its own failure is
+    # logged, not the task's: the purges above have already committed.
     import brokerage_onboarding
 
-    clean["invitation_links_cleared"] = await brokerage_onboarding.sweep_stale_invitation_links()
+    try:
+        clean["invitation_links_cleared"] = await brokerage_onboarding.sweep_stale_invitation_links()
+    except Exception as exc:  # noqa: BLE001 - reported, retried next run
+        logger.error("ORACLE_ALERT invitation link sweep failed: %s", type(exc).__name__)
+        clean["invitation_links_cleared"] = None
     logger.info(
         "ORACLE_METRIC retention_cleanup source_payloads=%d transcripts=%d cache_rows=%d oauth_states=%d",
         int(clean.get("source_payloads_purged") or 0),
