@@ -207,6 +207,43 @@ pgcrypto per row, so 10,000 rows take about 5 s.
 **Rollback:** `--unseal` writes the plaintext back. Run it before rolling the
 code back to a release older than 0152 (or 0154 for its five fields).
 
+## `backend/crm_suppression_backfill.py` — CRM do-not-contact flags into the outreach ledger (26.1)
+
+### When this is needed
+
+Once per environment, after deploying the 26.1 change (PR #118). Since then a
+contact's CRM do-not-contact flags reach `outreach_suppression` in the edit's
+own transaction; flags set before it live only in `agent_contacts.suppression`,
+which no send gate reads. This copies them, for the contact's own phone/email
+and every linked client's (L04-07).
+
+### Running it
+
+Requires `ORACLE_ENCRYPTION_MASTER_KEY` (to open sealed contacts) plus the usual
+`ORACLE_DB_*` vars (it runs in each tenant's platform context).
+
+```bash
+docker compose run --rm --no-deps \
+  -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
+  backend python /app/crm_suppression_backfill.py [--count] [--tenant <brokerage id> ...]   # --count is scoped by --tenant too
+```
+
+Optional: `ORACLE_CRM_SUPPRESSION_BATCH` (default `200`, range 1–2000);
+`--tenant` (repeatable) for a staged run, one brokerage at a time.
+
+### What to expect
+
+Writes only `outreach_suppression` (reason `manual_dnc`). Insert-only and
+idempotent (a second run adds 0 rows; it never lifts an opt-out). Soft-deleted
+contacts are included (a restore does not rewrite their flags). Keyset batches
+per tenant, each one short transaction. Prints flagged contact counts, tenant
+ids and ledger rows added — never phones or emails.
+
+Exit codes: `0` done; `1` some sealed contacts could not be opened (listed by
+id; their linked clients' details were still written — investigate those
+records and run again); `2` the master key is missing, or five sealed contacts
+in a row could not be opened (the key is wrong; nothing more is written).
+
 ## `backend/client_contact_index.py` — keyed lookup hashes and name tokens for clients (0156)
 
 ### When this is needed
