@@ -49,6 +49,11 @@ log = logging.getLogger("oracle.brokerage_onboarding")
 router = APIRouter(prefix="/api/brokerage", tags=["Brokerage Onboarding"])
 
 INVITE_TTL_DAYS = 14
+# A live invitation issued this recently is not reissued by another bulk
+# Send (a retried, timed-out request): only the explicit Resend reissues it
+# (external audit 21.5).
+RECENT_INVITE_MINUTES = 15
+INVITATION_JOB_TYPE = "brokerage.invitation_email"
 MAX_BULK_INVITES = 25
 
 # The capability order is also the order we recommend working through them.
@@ -501,6 +506,84 @@ async def _send_invitation(*, email: str, brokerage: str, inviter: str,
     return None
 
 
+def _invitation_key(tenant_id: str) -> str:
+    from crypto import derive_tenant_key
+
+    master = os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "")
+    if not master:
+        raise RuntimeError("ORACLE_ENCRYPTION_MASTER_KEY is not set; invitation links cannot be queued")
+    return derive_tenant_key(str(tenant_id), master)
+
+
+async def _queue_invitation_email(conn, ctx: TenantContext, *, invitation_id: str, link: str) -> None:
+    from automation_jobs import enqueue_job_in_tx
+    from crypto import encrypt_pii
+
+    sealed = await encrypt_pii(conn, link, _invitation_key(ctx.tenant_id))
+    await conn.execute(
+        "UPDATE brokerage_invitations SET pending_link_ciphertext=$2, delivery_status='queued', "
+        "delivery_error=NULL WHERE id=$1::uuid AND tenant_id=$3::uuid", invitation_id, sealed, ctx.tenant_id)
+    await enqueue_job_in_tx(
+        conn, ctx, job_type=INVITATION_JOB_TYPE, payload={"invitation_id": invitation_id},
+        idempotency_key=f"invitation-email:{invitation_id}", created_by=ctx.agent_id,
+        queue_name="interactive", priority=20, max_attempts=4)
+
+
+async def deliver_invitation_email(tenant_id: str, invitation_id: str) -> dict[str, Any]:
+    """The delivery job (21.5): send one queued invitation, record whether it
+    left, and clear the sealed link once it has. A revoked or accepted
+    invitation is not sent. A send failure raises so the worker retries
+    (bounded by the job's attempts); the row shows 'failed' meanwhile and the
+    owner can resend."""
+    import asyncio
+
+    from crypto import decrypt_pii
+
+    ctx = TenantContext(agent_id="invitation-mailer", tenant_id=str(tenant_id), role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "SELECT i.email, i.expires_at, i.pending_link_ciphertext, i.consumed_at, i.revoked_at, "
+            "       i.invited_by_agent_id, t.name AS brokerage "
+            "  FROM brokerage_invitations i JOIN tenants t ON t.id = i.tenant_id "
+            " WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid", invitation_id, str(tenant_id))
+        if row is None or row["consumed_at"] or row["revoked_at"] or not row["pending_link_ciphertext"]:
+            return {"status": "skipped"}
+        link = await decrypt_pii(conn, row["pending_link_ciphertext"], _invitation_key(tenant_id))
+    subject, text, html = build_invitation_email(
+        brokerage=row["brokerage"] or "your brokerage", inviter=row["invited_by_agent_id"] or "your broker",
+        link=link, expires_at=row["expires_at"])
+    try:
+        import smtp_mailer
+
+        await asyncio.wait_for(
+            asyncio.to_thread(smtp_mailer.send, recipient=row["email"], subject=subject, text=text, html=html),
+            timeout=40.0)
+    except Exception as exc:
+        log.error("Invitation email delivery failed: %s", type(exc).__name__)
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE brokerage_invitations SET delivery_status='failed', delivery_error=$3 "
+                "WHERE id=$1::uuid AND tenant_id=$2::uuid AND revoked_at IS NULL",
+                invitation_id, str(tenant_id), type(exc).__name__)
+        raise
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            "UPDATE brokerage_invitations SET delivery_status='sent', delivery_error=NULL, "
+            "pending_link_ciphertext=NULL, last_sent_at=now() WHERE id=$1::uuid AND tenant_id=$2::uuid",
+            invitation_id, str(tenant_id))
+    return {"status": "sent"}
+
+
+async def _invitation_job(payload: dict, reporter) -> dict:
+    return await deliver_invitation_email(str(reporter.job["tenant_id"]), str(payload["invitation_id"]))
+
+
+def register() -> None:
+    from automation_jobs import register_handler
+
+    register_handler(INVITATION_JOB_TYPE, _invitation_job)
+
+
 # Outcome of the most recent send per address, read straight after the call by
 # _record_delivery (same task, so no interleaving with another send to it).
 _LAST_DELIVERY_ERROR: dict[str, str] = {}
@@ -570,13 +653,19 @@ async def _resolve_inviter(conn, ctx: TenantContext) -> dict:
     return dict(row)
 
 
-async def create_invitations(conn, ctx: TenantContext, emails: list[str], role: str) -> dict[str, Any]:
+async def create_invitations(conn, ctx: TenantContext, emails: list[str], role: str, *,
+                             reissue_recent: bool = False) -> dict[str, Any]:
     """Issue invitations, one row per address. Returns created + skipped.
 
     Idempotent by construction: re-inviting an address that already has a live
     invitation revokes the old row and issues a fresh one inside the same
     transaction, carrying send_count forward. Double-clicking Send therefore
     produces one live invitation, not two — and never two memberships.
+
+    21.5: a live invitation issued in the last RECENT_INVITE_MINUTES is left
+    alone (skipped as "already_invited") unless `reissue_recent` — only the
+    explicit Resend passes it — so a retried request cannot revoke a link that
+    is still on its way.
     """
     inviter = await _resolve_inviter(conn, ctx)
     tenant = await conn.fetchrow("SELECT name FROM tenants WHERE id = $1::uuid", ctx.tenant_id)
@@ -601,11 +690,16 @@ async def create_invitations(conn, ctx: TenantContext, emails: list[str], role: 
             continue
 
         prior = await conn.fetchrow(
-            "SELECT token_hash, send_count FROM brokerage_invitations "
+            "SELECT token_hash, send_count, "
+            "       created_at > now() - make_interval(mins => $3) AS recent "
+            "  FROM brokerage_invitations "
             " WHERE tenant_id = $1::uuid AND email = $2 "
             "   AND consumed_at IS NULL AND revoked_at IS NULL",
-            ctx.tenant_id, email,
+            ctx.tenant_id, email, RECENT_INVITE_MINUTES,
         )
+        if prior and prior["recent"] and not reissue_recent:
+            skipped.append({"email": email, "reason": "already_invited"})
+            continue
         send_count = 1
         if prior:
             await conn.execute(
@@ -625,6 +719,14 @@ async def create_invitations(conn, ctx: TenantContext, emails: list[str], role: 
             token_hash, ctx.tenant_id, email, role, inviter["id"],
             ctx.agent_id, expires_at, send_count,
         )
+        if not _dev_capture_enabled():
+            # Queued (21.5): the link is sealed on the row and a delivery job
+            # sends it, in this same transaction — no invitation without its
+            # job, and the request does not wait for any mail server.
+            await _queue_invitation_email(conn, ctx, invitation_id=str(row["id"]),
+                                          link=invitation_link(raw_token))
+            row = dict(row)
+            row["delivery_status"] = "queued"
         created.append(_invite_row(row))
         to_send.append((email, raw_token))
 
@@ -743,6 +845,28 @@ async def list_invitations(ctx: TenantContext = Depends(require_context)) -> dic
         return {"invitations": [_invite_row(r) for r in rows]}
 
 
+async def _finish_invitations(ctx: TenantContext, result: dict[str, Any], deliveries: list[tuple[str, str]],
+                              *, brokerage: str, expires_at: datetime) -> dict[str, Any]:
+    """Answer at once (21.5). Outside development the emails were queued with
+    the invitations (a delivery job sends each; its status shows on the
+    invitation). Only a development build without a mail server hands the
+    links back instead (dev capture, never on staging-like deploys)."""
+    dev_links: dict[str, str] = {}
+    for email, raw_token in deliveries:
+        if _dev_capture_enabled():
+            link = await _send_invitation(email=email, brokerage=brokerage, inviter=ctx.agent_id,
+                                          raw_token=raw_token, expires_at=expires_at)
+            await _record_delivery(ctx, email, link)
+            if link:
+                dev_links[email] = link
+    if dev_links:
+        result["dev_links"] = dev_links
+    result["queued"] = [email for email, _ in deliveries if email not in dev_links]
+    # Delivery is reported on each invitation (queued -> sent / failed), not here.
+    result["undelivered"] = []
+    return result
+
+
 @router.post("/invitations", status_code=status.HTTP_201_CREATED)
 async def post_invitations(
     body: InviteCreate,
@@ -772,23 +896,7 @@ async def post_invitations(
     # a slow mail server holds a database transaction open, and a rollback
     # after a successful send would leave a live link to a row that no longer
     # exists.
-    dev_links: dict[str, str] = {}
-    undelivered: list[str] = []
-    for email, raw_token in deliveries:
-        link = await _send_invitation(
-            email=email, brokerage=brokerage, inviter=ctx.agent_id,
-            raw_token=raw_token, expires_at=expires_at,
-        )
-        if not await _record_delivery(ctx, email, link):
-            undelivered.append(email)
-        if link:
-            dev_links[email] = link
-    if dev_links:
-        result["dev_links"] = dev_links
-    # The invitation exists either way; tell the owner which emails did not
-    # leave so they can resend instead of waiting on someone who never got it.
-    result["undelivered"] = undelivered
-    return result
+    return await _finish_invitations(ctx, result, deliveries, brokerage=brokerage, expires_at=expires_at)
 
 
 @router.post("/invitations/{invitation_id}/resend")
@@ -813,28 +921,12 @@ async def resend_invitation(
         )
         if not row:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No live invitation with that id.")
-        result = await create_invitations(conn, ctx, [row["email"]], row["invited_role"])
+        result = await create_invitations(conn, ctx, [row["email"]], row["invited_role"], reissue_recent=True)
         brokerage = result.pop("_brokerage")
         expires_at = result.pop("_expires_at")
         deliveries = result.pop("_deliveries")
 
-    dev_links = {}
-    undelivered: list[str] = []
-    for email, raw_token in deliveries:
-        link = await _send_invitation(
-            email=email, brokerage=brokerage, inviter=ctx.agent_id,
-            raw_token=raw_token, expires_at=expires_at,
-        )
-        if not await _record_delivery(ctx, email, link):
-            undelivered.append(email)
-        if link:
-            dev_links[email] = link
-    if dev_links:
-        result["dev_links"] = dev_links
-    # The invitation exists either way; tell the owner which emails did not
-    # leave so they can resend instead of waiting on someone who never got it.
-    result["undelivered"] = undelivered
-    return result
+    return await _finish_invitations(ctx, result, deliveries, brokerage=brokerage, expires_at=expires_at)
 
 
 @router.delete("/invitations/{invitation_id}", status_code=status.HTTP_200_OK)

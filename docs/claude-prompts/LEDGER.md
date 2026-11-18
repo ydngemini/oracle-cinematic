@@ -3054,6 +3054,30 @@ next_task: "None for 35-04."
 updated: 2026-11-16
 ```
 
+#### L16-07 Invitation emails are queued with the invitations and sent by a job; a retried Send revokes nothing (external audit 21.5)
+```yaml
+id: L16-07
+status: tests_pass
+env: local
+evidence_shas: [8ddfb3c]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0178_invitation_delivery_queue.sql, backend/brokerage_onboarding.py, backend/server.py, backend/tests/test_brokerage_onboarding.py, backend/tests/test_invitation_queue_live.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read post_invitations/resend_invitation/create_invitations/_send_invitation at 8ddfb3c", result: "confirmed: up to 25 addresses, each emailed in turn (40 s timeout each) before the response; a repeated Send revoked the live invitation and issued a new one. Found: 0123 added delivery_status/delivery_error without an UPDATE grant (0109 narrowed UPDATE to named columns), so recording delivery always failed silently and the UI's 'Email not delivered' could never appear", date: 2026-11-18}
+  - {cmd: "red: live test_invitation_queue_live with 8ddfb3c's brokerage_onboarding.py", result: "fails: 5 invitations held the request ~5 s (one 1 s send each)", date: 2026-11-18}
+  - {cmd: "after: live test_invitation_queue_live; unit test_brokerage_onboarding (76) + onboarding/invitation/job selection", result: "pass: the request answers in <1 s with every invitation 'queued' and one durable job each; a retried Send within 15 minutes skips (already_invited), revoking nothing; the job emails the invitation's own link (its token hashes to the stored digest), records 'sent' and clears the seal; a mail failure records 'failed', keeps the seal and raises for the worker's retry; a revoked invitation is not sent; Resend reissues and queues", date: 2026-11-18}
+authz_checked: "Routes unchanged (broker owner / platform admin). The link is sealed with the brokerage's key on the invitation row (pending_link_ciphertext, cleared once sent); the raw token is still never stored in the clear. The job reads only that brokerage's invitation. 0178 grants the app UPDATE on the three delivery columns only."
+blockers:
+  - "Delivery runs on the durable job worker (job brokerage.invitation_email, interactive queue, 4 attempts), so its concurrency is the worker's; a development build without SMTP still returns the links inline (dev capture)."
+  - "A live invitation issued in the last 15 minutes is not reissued by a bulk Send (skipped 'already_invited'); the explicit Resend reissues it."
+  - "The response keeps 'undelivered' (now always empty) for compatibility and adds 'queued'; delivery shows on each invitation (queued -> sent / failed). The setup UI shows failed as 'Email not delivered' and anything else as 'Pending'."
+  - "Needs ORACLE_ENCRYPTION_MASTER_KEY (as every sealed column does) to queue; without it the invite request fails rather than sending unsealed."
+  - "Not deployed (C4.4)."
+audit_refs: [21.5]
+decision_refs: []
+next_task: "Chunk 26 open items."
+updated: 2026-11-18
+```
+
 ### L17
 Security, privacy and data lifecycle.
 
