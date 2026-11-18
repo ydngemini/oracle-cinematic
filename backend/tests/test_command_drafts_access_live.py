@@ -135,9 +135,11 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             await admin.execute(
                 "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state) "
                 "VALUES ($1,$2,$3,'matrix','pending_encryption')", p["contact"], tenant, assignee[k])
+            # The destination is the one on the record (26.4).
             await admin.execute(
-                "INSERT INTO clients (id, tenant_id, full_name, assignee_id, contact_id) VALUES ($1,$2,$3,$4,$5)",
-                p["client"], tenant, f"Drafts {k}", assignee[k], p["contact"])
+                "INSERT INTO clients (id, tenant_id, full_name, assignee_id, contact_id, email, phone) "
+                "VALUES ($1,$2,$3,$4,$5,$6,'+13025550142')",
+                p["client"], tenant, f"Drafts {k}", assignee[k], p["contact"], f"{k}-{tag}@client.test")
         await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,'Elsewhere')",
                             foreign_client, other_tenant)
         for kind in ("client", "contact"):
@@ -237,7 +239,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             assert await status_of(commands_api.reject_command(drafts["b"], reason, ctx=ctx(who))) == code, who
         # A colleague's draft about a POOL client: readable, not B's to decide.
         assert await status_of(commands_api.command_detail(drafts["pool"], ctx=ctx("b"))) == 200
-        edit_pool = CommandEdit(target={"email": "pool@client.test", "client_id": str(people["pool"]["client"])},
+        edit_pool = CommandEdit(target={"email": f"pool-{tag}@client.test", "client_id": str(people["pool"]["client"])},
                                 draft={"subject": "Mine now", "body": "Edited by B."})
         assert await status_of(commands_api.edit_command(drafts["pool"], edit_pool, ctx=ctx("b"))) == 403
         assert await status_of(commands_api.approve_command(drafts["pool"], reason, ctx=ctx("b"))) == 403

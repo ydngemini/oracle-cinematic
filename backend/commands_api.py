@@ -708,6 +708,7 @@ def _validate_command_payload(
             raise ValueError("EMAIL draft requires body")
         if len(str(draft["subject"])) > 200 or len(str(draft["body"])) > 20_000:
             raise ValueError("EMAIL draft exceeds size limits")
+        _canonical_anchors(target, "EMAIL")
         return
     if command_type is CommandType.SMS:
         phone = str(target.get("phone") or "").strip()
@@ -814,6 +815,155 @@ async def _require_target_editable(conn: Any, target: dict[str, Any]) -> None:
 
 
 _LEAD_NOT_FOUND = "Lead not found."
+
+# Literal statements only (bandit B608). Bound to the command's brokerage: at
+# execution the worker reads as platform admin, which spans tenants.
+# A record that is gone (archived client, deleted contact) vouches for nothing.
+_CLIENT_DESTINATION = ("SELECT email, phone FROM clients "
+                       "WHERE id=$1::uuid AND tenant_id=$2::uuid AND archived_at IS NULL")
+_CONTACT_DESTINATION = ("SELECT email_lookup_hash, phone_lookup_hash, legacy_client_id FROM agent_contacts "
+                        "WHERE id=$1::uuid AND tenant_id=$2::uuid AND deleted_at IS NULL")
+# A contact kept before it was sealed (no hashes) holds its details on its
+# client (contacts_api._contact_json): clients.contact_id or legacy_client_id.
+_CONTACT_CLIENT_DESTINATION = (
+    "SELECT email, phone FROM clients WHERE tenant_id=$2::uuid AND archived_at IS NULL "
+    "AND (contact_id=$1::uuid OR id=$3::uuid) ORDER BY (contact_id=$1::uuid) DESC, created_at LIMIT 1")
+# Named together, a client and a contact must be the same person's records.
+_PAIR_LINKED = ("SELECT EXISTS(SELECT 1 FROM clients c WHERE c.id=$1::uuid AND c.tenant_id=$3::uuid "
+                "AND c.contact_id=$2::uuid) OR EXISTS(SELECT 1 FROM agent_contacts ac WHERE ac.id=$2::uuid "
+                "AND ac.tenant_id=$3::uuid AND ac.legacy_client_id=$1::uuid)")
+
+
+class DestinationNotOnRecord(RuntimeError):
+    """At execution: the approved destination is no longer what the record
+    holds. Terminal — retrying could send once the record changes back, after
+    the requester was told it was not sent (26.4 review)."""
+
+    job_terminal = True
+    job_error_code = "DESTINATION_CHANGED"
+_LEAD_SELLER = "SELECT seller_client_id FROM leads WHERE id=$1::uuid AND tenant_id=$2::uuid"
+
+
+def _anchor(target: dict[str, Any], key: str) -> Optional[str]:
+    try:
+        return str(uuid.UUID(str(target[key]))) if target.get(key) else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+async def _destination_problem(conn: Any, tenant_id: str, command_type: CommandType,
+                               target: dict[str, Any]) -> Optional[tuple[str, str]]:
+    """Is the destination the one on the record the draft is about (external
+    audit 26.4)? None when it is; otherwise (code, what is wrong).
+
+    The record is the named client and/or contact (a lead-only draft: the
+    lead's seller client). The phone or email must equal what one of them
+    holds now — a client's stored value (normalised), a contact's keyed lookup
+    hash (contacts keep no plaintext). A record with nothing on file for the
+    channel cannot vouch for any destination. An EMAIL that names no record is
+    not about a CRM identity and is left to the outreach gate."""
+    import contact_truth
+
+    if command_type is CommandType.EMAIL:
+        field, raw = "email", target.get("email")
+        normalize = contact_truth.normalize_email
+    elif command_type in (CommandType.SMS, CommandType.CALL):
+        field, raw = "phone", target.get("phone")
+        normalize = contact_truth.normalize_phone
+    else:
+        return None
+    noun = "email address" if field == "email" else "phone number"
+    named = {k: target.get(k) for k in ("client_id", "contact_id", "lead_id") if target.get(k)}
+    client_id, contact_id, lead_id = (_anchor(target, k) for k in ("client_id", "contact_id", "lead_id"))
+    if not named and command_type is CommandType.EMAIL:
+        return None                               # an email about no record at all
+    if client_id is not None and contact_id is not None:
+        if not await conn.fetchval(_PAIR_LINKED, client_id, contact_id, tenant_id):
+            return ("unlinked", "The client and the contact named are not the same person's records: "
+                                "the message would be filed under one and reach the other.")
+    if client_id is None and lead_id is not None:
+        seller = await conn.fetchval(_LEAD_SELLER, lead_id, tenant_id)
+        client_id = str(seller) if seller else None
+        # the lead's client and a contact named beside it: one person's records too
+        if client_id is not None and contact_id is not None and not await conn.fetchval(
+                _PAIR_LINKED, client_id, contact_id, tenant_id):
+            return ("unlinked", "The lead's client and the contact named are not the same person's "
+                                "records: the message would be filed under one and reach the other.")
+    if client_id is None and contact_id is None:
+        return ("no_record", f"No client or contact holding a {noun} is linked to this, so nothing vouches "
+                             f"for the destination. Link it to a client with that {noun} first.")
+    try:
+        wanted = normalize(str(raw or ""))
+    except ValueError:
+        wanted = None
+    if wanted is None:
+        return ("invalid", f"The destination is not a usable {noun}.")
+    on_file = unreadable = False
+
+    def _compare(stored: Any) -> Optional[bool]:
+        nonlocal on_file, unreadable
+        if not str(stored or "").strip():
+            return None
+        on_file = True
+        try:
+            return normalize(str(stored)) == wanted
+        except ValueError:
+            unreadable = True
+            return False
+
+    if client_id is not None:
+        row = await conn.fetchrow(_CLIENT_DESTINATION, client_id, tenant_id)
+        if row is not None and _compare(row[field]):
+            return None
+    if contact_id is not None:
+        row = await conn.fetchrow(_CONTACT_DESTINATION, contact_id, tenant_id)
+        stored = row[f"{field}_lookup_hash"] if row is not None else None
+        if stored:
+            on_file = True
+            if stored == contact_truth.lookup_hash(tenant_id, field, wanted):
+                return None
+        elif row is not None:
+            legacy = await conn.fetchrow(_CONTACT_CLIENT_DESTINATION, contact_id, tenant_id,
+                                         row["legacy_client_id"])
+            if legacy is not None and _compare(legacy[field]):
+                return None
+    if unreadable:
+        return ("unreadable", f"The {noun} on this client's or contact's record cannot be read as a "
+                              f"{noun} (an extension, or a missing country code?). Fix it on the record, "
+                              f"then stage the message again.")
+    if on_file:
+        return ("mismatch", f"That {noun} is not the one on this client's or contact's record. If it has "
+                            f"changed, update the record first, then stage the message again.")
+    return ("none_on_file", f"No {noun} is on this client's or contact's record. Add it to the record, "
+                            f"then stage the message again.")
+
+
+async def _require_destination_on_record(conn: Any, tenant_id: str, command_type: CommandType,
+                                         target: dict[str, Any]) -> None:
+    import contact_truth
+
+    try:
+        problem = await _destination_problem(conn, tenant_id, command_type, target)
+    except contact_truth.ContactTruthConfigError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "The destination could not be checked against the record right now.") from exc
+    if problem is not None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem[1])
+
+
+async def _destination_still_on_record(tenant_id: str, command_type: CommandType,
+                                       target: Any) -> Optional[str]:
+    """At execution (26.4): the approved destination — the one the worker is
+    about to send to — is still what the record holds. None when it is;
+    otherwise why not. Read as platform admin of the command's brokerage:
+    this is a fact about the record, not the requester."""
+    target = _decode(target)
+    if not isinstance(target, dict):
+        return "the command has no destination"
+    platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        problem = await _destination_problem(conn, tenant_id, command_type, target)
+    return problem[1] if problem else None
 
 
 async def _require_lead_editable(conn: Any, target: dict[str, Any]) -> None:
@@ -1595,6 +1745,7 @@ async def stage_command(
         )
         if not existing:
             await _require_target_editable(conn, target)
+            await _require_destination_on_record(conn, ctx.tenant_id, command_type, target)
     if existing:
         return {"command": _command_dict(existing), "created": False}
 
@@ -2088,6 +2239,7 @@ async def edit_command(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         await _require_target_editable(conn, body.target)
+        await _require_destination_on_record(conn, ctx.tenant_id, command_type, body.target)
         await conn.execute(
             """
             UPDATE action_approvals
@@ -2378,6 +2530,11 @@ async def approve_command(
         raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
     if row["state"] != "awaiting_approval":
         raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
+    # The destination is checked against the record at approval too (26.4):
+    # an approver is never asked to approve a message certain to be refused.
+    async with tenant_tx(ctx) as conn:
+        await _require_destination_on_record(conn, ctx.tenant_id, CommandType(row["command_type"]),
+                                             _decode(row["target"]) or {})
     return await release_command(ctx, row, reason=body.reason)
 
 
@@ -3768,6 +3925,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 "client or contact (reassigned, or access removed since it was approved). "
                 "Stage it again if it should still go out."
             )
+        destination_problem = await _destination_still_on_record(tenant_id, command_type, target)
+        if destination_problem is not None:
+            # The record changed since approval (26.4): the approved message is
+            # not re-pointed at the new number or address, and not sent — nor
+            # retried (terminal).
+            raise DestinationNotOnRecord(f"Not sent: {destination_problem}")
         if command_type is CommandType.EMAIL:
             decision = await guard_outreach(
                 ctx,
