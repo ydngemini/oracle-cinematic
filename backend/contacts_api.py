@@ -621,6 +621,12 @@ async def create_contact(
                     body.phone,
                     body.client_id,
                 )
+            # The contact's do-not-contact flags reach the send gates now (26.1).
+            import outreach_compliance
+
+            await outreach_compliance.record_crm_suppression(
+                conn, ctx.tenant_id, phone=body.phone, email=body.email,
+                flags=body.suppression.model_dump(mode="json", by_alias=True), source="CRM contact created")
             if body.phone:
                 # Texts and calls from this phone that came before anyone added
                 # the contact join it now, as they do for lead intake (L04-04,
@@ -702,6 +708,32 @@ async def update_contact(
                 if "consent" in fields and body.consent is not None
                 else current_json["consent"]
             )
+            # A consent was given for a destination, not for whatever number or
+            # address the record holds later (26.9): a changed phone resets the
+            # SMS and voice grants, a changed email the email grant — unless
+            # this same edit records consent for the new destination.
+            consent_reset: list[str] = []
+            if "consent" not in fields:
+                import outreach_compliance
+
+                def _changed(field: str, channel: str) -> bool:
+                    new, old = fields.get(field), current_json[field]
+                    if field not in fields or not new:
+                        return False
+                    if not old:
+                        return True
+                    norm = outreach_compliance.normalize_contact
+                    return norm(str(new), channel) != norm(str(old), channel)
+
+                if _changed("phone", "sms"):
+                    consent_reset += ["sms", "voice"]
+                if _changed("email", "email"):
+                    consent_reset.append("email")
+                if consent_reset:
+                    merged_consent = dict(merged_consent)
+                    for channel in consent_reset:
+                        merged_consent[channel] = {"granted": False, "captured_at": None,
+                                                   "source": "reset: destination changed"}
 
             def has_grant(channel: str) -> bool:
                 grant = merged_consent.get(channel, {})
@@ -766,6 +798,9 @@ async def update_contact(
                     value = getattr(body, column)
                     args.append(json.dumps(value.model_dump(mode="json", by_alias=True)))
                     sets.append(f"{column}=${len(args)}::jsonb")
+            if consent_reset:
+                args.append(json.dumps(merged_consent))
+                sets.append(f"consent=${len(args)}::jsonb")
             if "deleted" in fields:
                 sets.append("deleted_at=now()" if fields["deleted"] else "deleted_at=NULL")
 
@@ -777,6 +812,18 @@ async def update_contact(
                 f"WHERE id=${len(args)}::uuid",
                 *args,
             )
+            if "suppression" in fields or pii_fields.intersection(fields):
+                # The flags now in force, on the destinations now on record,
+                # reach the send gates (26.1). Insert-only: clearing a flag here
+                # does not lift an opt-out.
+                import outreach_compliance
+
+                flags = (body.suppression.model_dump(mode="json", by_alias=True)
+                         if "suppression" in fields and body.suppression is not None
+                         else current_json["suppression"])
+                await outreach_compliance.record_crm_suppression(
+                    conn, ctx.tenant_id, phone=merged_phone, email=merged_email,
+                    flags=flags or {}, source="CRM contact updated")
             if pii_fields.intersection(fields):
                 await conn.execute(
                     """
@@ -1055,7 +1102,7 @@ async def reserve_nurture_job(
             contact = await conn.fetchrow(
                 """
                 SELECT id,birthday_month,birthday_day,timezone,consent,suppression,
-                       nurture_enabled
+                       nurture_enabled,pii_ciphertext
                   FROM agent_contacts
                  WHERE id=$1::uuid AND deleted_at IS NULL
                 """,
@@ -1094,6 +1141,17 @@ async def reserve_nurture_job(
 
             consent = _json_object(_row_get(contact, "consent"), {})
             suppression = _json_object(_row_get(contact, "suppression"), {})
+            # The outreach ledger is the suppression authority (26.1): an opt-out
+            # recorded there (an inbound STOP, another contact with this number,
+            # an erased person's tombstone) makes nurture ineligible whatever
+            # the contact's own flags say.
+            import outreach_compliance
+
+            ciphertext = _row_get(contact, "pii_ciphertext")
+            pii = await open_json(conn, ctx.tenant_id, ciphertext) if ciphertext else {}
+            destination = pii.get("email") if body.channel == "email" else pii.get("phone")
+            if await outreach_compliance.ledger_suppressed(conn, ctx.tenant_id, destination, body.channel):
+                suppression = {**suppression, body.channel: True}
             decision = evaluate_nurture(
                 event_type=body.event_type,
                 channel=body.channel,

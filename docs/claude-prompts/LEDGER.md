@@ -929,6 +929,30 @@ next_task: "One match key and tie-break for all channels; AC04.02 dedup under ra
 updated: 2026-10-16
 ```
 
+#### L04-07 The outreach ledger is the one suppression authority: CRM do-not-contact flags reach the send gates, a STOP reaches nurture, a changed destination drops its consent (external audits 26.1, 26.9)
+```yaml
+id: L04-07
+status: tests_pass
+env: local
+evidence_shas: [6e2c95f]   # base; fix in the commit that adds this row
+files: [backend/outreach_compliance.py, backend/contacts_api.py, backend/tests/test_crm_suppression_authority_live.py]
+tests_run:
+  - {cmd: "read contacts_api.create_contact / update_contact / reserve_nurture_job and outreach_compliance.ConsentLedger.gather_state at 6e2c95f", result: "CRM consent/suppression lived only in agent_contacts JSON; every send gate (guard_outreach) read only outreach_suppression/outreach_consent; nurture read only the JSON; a phone/email change kept the JSON grants", date: 2026-11-18}
+  - {cmd: "live: tests/test_crm_suppression_authority_live.py with 6e2c95f's contacts_api.py", result: "red: a CRM do-not-contact left the ledger empty (set() != {'*'})", date: 2026-11-18}
+  - {cmd: "same with the fix", result: "pass: a CRM dnc writes (phone,'*') in the edit's transaction and the gate blocks SMS and voice; clearing the flag does not lift it; flags at creation reach the ledger per channel; an inbound STOP in the ledger makes nurture 'suppressed' for that contact and for another contact with the same phone (formatted differently), a control contact stays eligible; a changed phone resets SMS+voice consent, a changed email the email consent, a reformatted same number keeps it, consent recorded in the same edit is kept; a do-not-contact person's new number is suppressed too", date: 2026-11-18}
+authz_checked: "Ledger rows are written on the CRM edit's own connection (tenant_tx as the editor, after require_contact_edit), so RLS and the transaction decide them; insert-only (ON CONFLICT DO NOTHING) — concurrent edits resolve to the union, i.e. the stricter decision; reason 'manual_dnc' (0015 CHECK), source_text names the CRM action. Mapping: global -> phone '*' + email '*'; dnc -> phone '*'; sms/voice -> that channel of the phone; email -> the email. Nurture reads the same suppression rule as the gate (outreach_suppression or an erased person's tombstone, channel or '*') for the destination it would use, decrypted from the contact's sealed record."
+blockers:
+  - "Existing contacts' CRM do-not-contact flags are not yet copied into the ledger (they need the sealed phone/email, so a key-holding backfill script, not a migration): they reach it on the contact's next edit. Until then the gate does not see them; nurture still honours the JSON."
+  - "Consent stays two-sourced: CRM consent JSON is not written to outreach_consent (self-asserted written consent is 26.6, owner/counsel decision); the send gates require ledger consent, nurture the JSON grant."
+  - "The contact page does not yet show ledger opt-outs as derived flags (a read model): a STOP shows only as a blocked send or 'suppressed' nurture."
+  - "Lifting an opt-out has no reviewed path from the CRM (by design: stricter wins)."
+  - "Compliance (customer contact): independent review + owner approval before merge."
+  - "Not deployed (C4.4)."
+audit_refs: [26.1, 26.9]
+decision_refs: []
+next_task: "Backfill script for existing CRM flags; then 26.5/26.6 need owner/counsel consent rules."
+updated: 2026-11-18
+```
 ### L05
 Semantic intent.
 
