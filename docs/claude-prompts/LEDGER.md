@@ -2171,6 +2171,31 @@ next_task: "25.6-25.8; 21.5."
 updated: 2026-11-18
 ```
 
+#### L10-19 Hosted orders are swept, the ownership code has a real lockout, contradicting receipts are held (external audits 25.6, 25.7, 25.8)
+```yaml
+id: L10-19
+status: tests_pass
+env: local
+evidence_shas: [8ddfb3c]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0177_messaging_hardening.sql, backend/messaging_data.py, backend/messaging_api.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/operator_api.py, backend/privacy_data_map.py, backend/tests/test_messaging_hardening_live.py, backend/tests/test_receipt_reconcile_route.py, backend/tests/test_telnyx_messaging_data.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the Telnyx webhook's order-event handling, refresh_hosted_order_status, complete_messaging_verification and record_delivery_update at 8ddfb3c", result: "confirmed: hosted orders advanced only on a broker's refresh; _MAX_VERIFICATION_ATTEMPTS/_VERIFICATION_LOCKOUT_SECONDS defined in messaging_data but unused (each code went straight to Telnyx); a contradicting final receipt was dropped by the monotonic UPDATE with no trace", date: 2026-11-18}
+  - {cmd: "red: live test_messaging_hardening_live (3 parts) with 8ddfb3c's messaging_data/messaging_api/component_health and 0177 applied", result: "3 failed (10 of 10 concurrent wrong codes reached the provider; no sweep; no journal)", date: 2026-11-18}
+  - {cmd: "after: live 3 parts; unit test_receipt_reconcile_route + messaging/telnyx/operator/component/periodic/privacy selection", result: "3 live pass; 359 + 5 unit pass", date: 2026-11-18}
+  - {cmd: "full suite at 04316f1 (6814 passed); independent review (REQUEST_CHANGES: HIGH the sweep moved orders waiting for the owner's code to 'processing', hiding the code form; the lockout could become permanent (lock written after the provider answered) and the count never expired; reconcile claimed side effects the lifecycle cannot apply; no way to find a receipt id; health noise/masking; failing routes starved the sweep; no provider event id/time; reconcile races) -> pending_verification is not swept and a refresh keeps it on 'pending'; the reservation sets the lock in the same statement, attempts expire after the lockout window, a new hosted order resets the count, a timeout is not refunded; reconcile locks the receipt, clears the other outcome's timestamp and reports first_response_advanced/disposition/metered/billing_followup instead of claiming reversals; GET /api/admin/messaging/receipts and the alert line carry the receipt id; journal stores provider event id (deduplicated) and occurred_at; health ordered by severity with every count, the hosting alert only for 'processing'; a failed sweep read still stamps the route; the backfill no longer resets updated_at", result: "378 affected unit pass; live 3 parts pass (incl. code form kept, expiring attempts, timeout counted, refund, failing credential stamped, event dedupe, billing follow-up reported)", date: 2026-11-18}
+authz_checked: "The sweep reads each route under its own tenant/agent and credential. The lockout is per route (tenant + agent). GET /api/admin/messaging/receipts and POST /api/admin/messaging/receipts/{id}/reconcile are require_platform_admin (broker owner 403), closed vocabulary (delivered/failed) and a reason, audited (admin.messaging.receipt_reconciled). The journal has the 0141 tenant wall RLS; no personal data."
+blockers:
+  - "25.6: the 10DLC sync task (messaging_registration_sync) also re-reads every active hosted order that is with the provider and not final (processing/pending_documents/manual_action_required), least recently checked first, stamping the check even when the read fails; an order still waiting for the owner's ownership code (pending_verification) is not swept, and no refresh moves it to processing on a mere 'pending'. A trigger stamps hosted_order_status_at on every status change; the health component (DEGRADED, emailed by ops_alerts) flags an order processing for 7 days. Order webhooks are still acknowledged without acting (their content is not trusted); the manual refresh stays."
+  - "25.7: one attempt is reserved atomically before Telnyx is asked (concurrent submissions cannot exceed 5) and the 5th reservation itself sets the 15-minute lock (a request dying mid-flight cannot leave a permanent lock); even a right code is refused while locked, without asking Telnyx; attempts expire after 15 minutes of inactivity; a provider error gives the attempt back (and lifts a lock it set), a timeout does not; success and a new hosted order reset. Telnyx's own limits were not verified live. The voice caller-ID OTP (inbound_voice) has the same read-then-write race; not changed here."
+  - "25.8: every receipt is journaled (sms_delivery_receipts with the provider's event id, deduplicated, and event time; kept 90 days, an open contradiction until reconciled). A final receipt of the other outcome (delivered vs failed/undelivered) is marked contradicts, raises ORACLE_ALERT sms_delivery_contradiction (with the receipt id) and the health component, and changes nothing — no status and no delivery/failure side effect — until a platform admin reconciles it (GET .../receipts lists them). The chosen status is applied to the message; side effects that already happened are not reversed (a delivered first response stays delivered, a lead_engaged charge stays) and the result reports them (billing_followup for the usage-resolution flow)."
+  - "Migration 0177: columns, a CHECK, a status-change trigger, the journal table with RLS and grants; the updated_at trigger is paused for the backfill (table owner, same transaction). Known low gaps: a lead texted twice can have its lead_engaged row re-pointed to the newer command, so reconcile may not report that charge; an SDK connection/timeout error raised after sending is refunded."
+  - "Customer-contact change (delivery evidence, metering): independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [25.6, 25.7, 25.8]
+decision_refs: []
+next_task: "21.5; chunk 26 open items."
+updated: 2026-11-18
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

@@ -786,11 +786,16 @@ def _hours_env(name: str, default: float, *, ceiling_h: float = 72.0) -> float:
 
 
 async def _messaging_registration_sync_task() -> dict:
-    """Read pending/approved 10DLC brand and campaign status back from the
-    provider (external audit 25.2: nothing else ever did)."""
-    from messaging_api import sync_open_registrations
+    """Read pending/approved 10DLC brand and campaign status (25.2) and every
+    non-final hosted order (25.6) back from the provider — nothing else ever
+    did — and prune the delivery-receipt journal (25.8)."""
+    from messaging_api import sync_hosted_orders, sync_open_registrations
+    from messaging_data import prune_delivery_receipts
 
-    return await sync_open_registrations()
+    registrations = await sync_open_registrations()
+    hosted = await sync_hosted_orders()
+    pruned = await prune_delivery_receipts()
+    return {**registrations, "hosted_orders": hosted, "receipts_pruned": pruned}
 
 
 async def _privacy_lifecycle_task() -> dict:

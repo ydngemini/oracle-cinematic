@@ -99,6 +99,13 @@ class FakeMessagingRouteConn:
 
     async def fetchval(self, query: str, *args: Any):
         q = " ".join(query.split())
+        if "UPDATE messaging_routes" in q and "verification_attempt_count" in q:
+            # the ownership-code attempt reservation (25.7), without the lock
+            used = int(self.row.get("verification_attempt_count") or 0)
+            if used >= args[2]:
+                return None
+            self.row["verification_attempt_count"] = used + 1
+            return used + 1
         assert q.startswith("INSERT INTO provider_purchases"), q
         row = {"id": f"purchase-{len(self.ledger) + 1}", "provider": args[2], "kind": args[3],
                "state": "intended", "provider_ref": None}

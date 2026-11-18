@@ -224,7 +224,14 @@ async def _db_components() -> dict[str, dict]:
             "       (SELECT count(*) FROM provider_purchases "
             "         WHERE kind IN ('10dlc_brand','10dlc_campaign','10dlc_number_assignment') "
             "           AND (state = 'unknown' OR (state = 'confirmed' AND updated_at < now() - interval '1 hour')) "
-            "       ) AS unresolved")
+            "       ) AS unresolved, "
+            # 25.6: a hosted order not final for a week; 25.8: a contradicting
+            # final delivery receipt nobody has reconciled
+            "       (SELECT count(*) FROM messaging_routes WHERE active AND hosted_order_id IS NOT NULL "
+            "          AND hosted_order_status = 'processing' "
+            "          AND hosted_order_status_at < now() - interval '7 days') AS hosting_stalled, "
+            "       (SELECT count(*) FROM sms_delivery_receipts WHERE contradicts IS NOT NULL "
+            "          AND reconciled_at IS NULL) AS receipt_contradictions")
         harvest = await conn.fetchrow(
             """
             SELECT count(*) FILTER (WHERE enabled) AS enabled,
@@ -340,23 +347,28 @@ def _usage_reporting(row: dict) -> dict:
 
 
 def _messaging_registration(row: dict) -> dict:
-    """25.2: a texting campaign that stopped being able to send (suspended or
-    expired at the carrier), one whose status could not be read in the last
-    day, or one still pending after 14 days."""
-    lost, unreadable = int(row.get("lost") or 0), int(row.get("unreadable") or 0)
-    stalled, unresolved = int(row.get("stalled") or 0), int(row.get("unresolved") or 0)
-    if unresolved:
-        return _c(DEGRADED, "a 10DLC submission's outcome is unknown or unattached; an operator must check it "
-                  "with the provider", unresolved=unresolved, lost=lost, unreadable=unreadable)
-    if lost:
-        return _c(DEGRADED, "a texting campaign (10DLC) was suspended or expired; its texts are refused",
-                  lost=lost, unreadable=unreadable, stalled=stalled)
-    if unreadable:
-        return _c(DEGRADED, "10DLC registration status could not be read from the provider",
-                  unreadable=unreadable, stalled=stalled)
-    if stalled:
-        return _c(DEGRADED, "a texting campaign (10DLC) has been pending for over 14 days", stalled=stalled)
-    return _c(HEALTHY, "10DLC registrations current")
+    """25.2 / 25.6 / 25.8, most severe first; every count is in the detail.
+    A campaign suspended or expired (texts refused); contradicting carrier
+    receipts nobody reconciled; a 10DLC submission whose outcome is unknown
+    or unattached; a status unreadable for a day; a campaign pending 14 days;
+    a hosted order with the provider (processing) for 7 days. States waiting
+    on the brokerage itself (ownership code, documents) do not page."""
+    counts = {key: int(row.get(key) or 0) for key in
+              ("lost", "receipt_contradictions", "unresolved", "unreadable", "stalled", "hosting_stalled")}
+    summaries = (
+        ("lost", "a texting campaign (10DLC) was suspended or expired; its texts are refused"),
+        ("receipt_contradictions", "carrier delivery receipts contradict each other for a text; an operator "
+                                   "must reconcile them"),
+        ("unresolved", "a 10DLC submission's outcome is unknown or unattached; an operator must check it "
+                       "with the provider"),
+        ("unreadable", "10DLC registration status could not be read from the provider"),
+        ("stalled", "a texting campaign (10DLC) has been pending for over 14 days"),
+        ("hosting_stalled", "a business number's text hosting has been processing for over 7 days"),
+    )
+    for key, summary in summaries:
+        if counts[key]:
+            return _c(DEGRADED, summary, **counts)
+    return _c(HEALTHY, "10DLC registrations current", **counts)
 
 
 def _syncs_paused() -> bool:
