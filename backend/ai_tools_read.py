@@ -1867,9 +1867,15 @@ async def _get_billing_status(conn, ctx: TenantContext, tool_input: dict) -> dic
              FROM subscriptions WHERE tenant_id=$1::uuid""",
         ctx.tenant_id,
     )
+    # Quarantined usage (24.5, 24.6) is not pending: 'expired' will not be
+    # billed through the meter and 'uncertain' may already have been. It is
+    # counted on its own until a person resolves it.
     pending = await conn.fetchrow(
-        """SELECT count(*)::int AS n,
-                  count(*) FILTER (WHERE report_error IS NOT NULL)::int AS failed
+        """SELECT count(*) FILTER (WHERE report_state IS NULL)::int AS n,
+                  count(*) FILTER (WHERE report_state IS NULL
+                                     AND report_error IS NOT NULL)::int AS failed,
+                  count(*) FILTER (WHERE report_state IS NOT NULL
+                                     AND report_resolution IS NULL)::int AS held
              FROM billing_usage_events
             WHERE tenant_id=$1::uuid AND reported_at IS NULL
               AND """ + BILLABLE_PREDICATE,
@@ -1886,6 +1892,7 @@ async def _get_billing_status(conn, ctx: TenantContext, tool_input: dict) -> dic
         usage_metering_configured=metering_configured(),
         unreported_usage_events=pending["n"] if pending else 0,
         usage_events_with_report_errors=pending["failed"] if pending else 0,
+        usage_events_held_for_billing_review=pending["held"] if pending else 0,
         # Processor ids are reported as present/absent rather than by value, and
         # the card itself never touches this database.
         not_available={
@@ -1917,7 +1924,7 @@ async def _list_billing_invoices(conn, ctx: TenantContext, tool_input: dict) -> 
                   min(occurred_at) AS first_occurred_at,
                   max(occurred_at) AS last_occurred_at
              FROM billing_usage_events
-            WHERE tenant_id=$1::uuid AND reported_at IS NULL
+            WHERE tenant_id=$1::uuid AND reported_at IS NULL AND report_state IS NULL
               AND """ + BILLABLE_PREDICATE + """
             GROUP BY metric ORDER BY metric""",
         ctx.tenant_id,

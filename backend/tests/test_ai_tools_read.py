@@ -1059,7 +1059,7 @@ def test_billing_status_says_the_card_is_not_here_rather_than_omitting_it():
         ("FROM subscriptions", {"status": "active", "plan": "standard",
                                 "current_period_end": None, "has_customer": True,
                                 "has_subscription": True, "updated_at": None}),
-        ("FROM billing_usage_events", {"n": 4, "failed": 1}),
+        ("FROM billing_usage_events", {"n": 4, "failed": 1, "held": 0}),
     )
     result = asyncio.run(tools.execute(conn, _ctx(Role.BROKER_OWNER),
                                        "get_billing_status", {}))
@@ -1074,7 +1074,7 @@ def test_billing_status_says_the_card_is_not_here_rather_than_omitting_it():
 
 
 def test_a_missing_subscription_is_not_reported_as_an_unpaid_one():
-    conn = _Conn(("FROM billing_usage_events", {"n": 0, "failed": 0}))
+    conn = _Conn(("FROM billing_usage_events", {"n": 0, "failed": 0, "held": 0}))
     result = asyncio.run(tools.execute(conn, _ctx(Role.BROKER_OWNER),
                                        "get_billing_status", {}))
 

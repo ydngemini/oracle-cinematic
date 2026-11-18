@@ -303,8 +303,10 @@ function BillingCard({ data }) {
   // Two plans that may both bill one brokerage: first, and listed until a
   // person cancels one in Stripe (the security list buries the alert).
   const duplicates = data?.duplicate_subscriptions || [];
+  // Usage the drain will not send again waits on a person (24.5, 24.6).
+  const quarantined = usage.quarantined_by_tenant || [];
   const any = duplicates.length || groups.some(([k]) => (data?.[k] || []).length)
-    || (data?.reactivated_90d || []).length;
+    || (data?.reactivated_90d || []).length || usage.state === 'attention';
   return (
     <>
       {!any ? <Empty>No billing exceptions.</Empty> : null}
@@ -344,6 +346,16 @@ function BillingCard({ data }) {
           </div>
         );
       })}
+      {quarantined.length ? (
+        <p className={styles.warnNote}>
+          Usage held for billing review: {quarantined.map((q) => {
+            const parts = [];
+            if (q.uncertain) parts.push(`${q.uncertain} to reconcile with Stripe`);
+            if (q.expired) parts.push(`${q.expired} too old to report`);
+            return `${q.name || q.tenant_id} (${parts.join(', ')})`;
+          }).join('; ')}
+        </p>
+      ) : null}
       {(data?.reactivated_90d || []).length ? (
         <p className={styles.sub}>Reactivated in the last 90 days: {data.reactivated_90d.map((r) => r.name).join(', ')}</p>
       ) : null}

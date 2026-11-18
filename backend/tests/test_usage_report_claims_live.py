@@ -26,7 +26,8 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-@pytest.mark.parametrize("part", ["unknown_outcome", "resend_window", "expired", "replicas"])
+@pytest.mark.parametrize("part", ["unknown_outcome", "resend_window", "expired", "replicas",
+                                  "crash_and_lease", "legacy_and_resolution"])
 def test_usage_reaches_stripe_at_most_once(monkeypatch, part):
     asyncio.run(_scenario(monkeypatch, part))
 
@@ -43,9 +44,15 @@ async def _scenario(monkeypatch, part):
     on_meter: Counter = Counter()   # what Stripe actually billed
     behaviour: dict[str, str] = {}  # identifier -> how the next send goes
 
-    def create(*, event_name, payload, identifier, timestamp):
+    def create(*, event_name, payload, identifier, timestamp, idempotency_key=None, max_network_retries=None):
+        # one HTTP attempt per send, under a key that is the same on every resend
+        assert max_network_retries == 0
+        assert idempotency_key == f"oracle-meter-event:{identifier}"
         sent.append(identifier)
         mode = behaviour.pop(identifier, "ok")
+        if mode == "crash":             # Stripe records it, then this process dies
+            on_meter[identifier] += 1
+            raise asyncio.CancelledError()
         if mode == "connection":
             raise stripe.APIConnectionError("connection reset")
         if mode == "refused":
@@ -109,10 +116,17 @@ async def _scenario(monkeypatch, part):
                                 return getattr(conn, name)
 
                             async def execute(self, sql, *args):
+                                self._fail_ack(sql)
+                                return await conn.execute(sql, *args)
+
+                            async def fetchval(self, sql, *args):
+                                self._fail_ack(sql)
+                                return await conn.fetchval(sql, *args)
+
+                            def _fail_ack(self, sql):
                                 if "SET reported_at=now()" in sql and not failed["n"]:
                                     failed["n"] += 1
                                     raise ConnectionResetError("database went away")
-                                return await conn.execute(sql, *args)
                         return _Conn()
 
                     async def __aexit__(self, *exc):
@@ -223,6 +237,79 @@ async def _scenario(monkeypatch, part):
                                 T, stale[0])
             await bu.drain_all_tenants(tenant_limit=5000)
             assert T in chosen
+        if part == "crash_and_lease":
+            # The attempt is on the row BEFORE Stripe is called: the process
+            # dies after Stripe recorded the event, and the row is uncertain and
+            # still leased — not merely marked by an error handler afterwards.
+            k = await usage("crash")
+            behaviour[k] = "crash"
+            with pytest.raises(asyncio.CancelledError):
+                await bu.drain_usage_to_stripe(ctx)
+            r = await row(k)
+            assert r["uncertain"] and not r["reported"] and r["report_claimed_until"] is not None
+            assert on_meter[k] == 1
+
+            # A send that outlived its lease cannot touch the later claim.
+            # Claim 1 (stale) and claim 2 (live) on one row; claim 1's refused
+            # release and its acknowledgement change nothing.
+            m = await usage("lease-lapse")
+            await admin.execute("UPDATE billing_usage_events SET report_claimed_until = now() - interval '1 second'"
+                                " WHERE tenant_id=$1 AND idempotency_key=$2", T, k)
+            async with connection.tenant_tx(ctx) as conn:
+                first_claim = await bu._claim_next_report(conn, T, [])
+            while first_claim["idempotency_key"] != m:   # the crashed row comes first (deadline)
+                async with connection.tenant_tx(ctx) as conn:
+                    first_claim = await bu._claim_next_report(conn, T, [str(first_claim["id"])])
+            assert first_claim["prior_uncertain_since"] is None
+            await admin.execute("UPDATE billing_usage_events SET report_claimed_until = now() - interval '1 second'"
+                                " WHERE tenant_id=$1 AND idempotency_key=$2", T, m)
+            async with connection.tenant_tx(ctx) as conn:
+                second_claim = await bu._claim_next_report(conn, T, [])
+                while second_claim["idempotency_key"] != m:
+                    second_claim = await bu._claim_next_report(conn, T, [str(second_claim["id"])])
+            assert second_claim["attempt"] == first_claim["attempt"] + 1
+            await bu._release_report(ctx, first_claim, "refused late", None)   # stale refusal
+            r = await row(m)
+            assert r["uncertain"] and r["report_claimed_until"] is not None    # claim 2 untouched
+            assert r["report_error"] is None
+
+        if part == "legacy_and_resolution":
+            # Rows the old drain failed on may have reached Stripe: 0175 carries
+            # them over as uncertain since creation; an old one is quarantined,
+            # never resent. (0175 is idempotent; re-running it applies the backfill.)
+            old = await usage("legacy-old", report_error="Request timed out")
+            new = await usage("legacy-new", report_error="Request timed out")
+            await admin.execute("UPDATE billing_usage_events SET created_at = now() - interval '2 days'"
+                                " WHERE tenant_id=$1 AND idempotency_key=$2", T, old)
+            migration = os.path.join(os.path.dirname(__file__), "..", "db", "migrations",
+                                     "0175_usage_report_claims.sql")
+            await admin.execute(open(migration).read())
+            assert (await row(old))["uncertain"] and (await row(new))["uncertain"]
+            await bu.drain_usage_to_stripe(ctx)
+            assert (await row(old))["report_state"] == "uncertain" and old not in sent
+            assert (await row(new))["reported"]                             # inside the window
+
+            # The health component pages on it until a person resolves it.
+            import component_health as ch
+            health = (await ch._db_components())["usage_reporting"]
+            assert health["state"] == ch.DEGRADED
+            before = health["detail"]["uncertain"]
+            assert before >= 1
+            with pytest.raises(ValueError):
+                await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
+                                                   resolution="refunded", note="x")
+            n = await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
+                                                   resolution="billed", note="found on the Stripe meter")
+            assert n == 1
+            resolved = await admin.fetchrow(
+                "SELECT report_state, report_resolution, report_resolved_by FROM billing_usage_events"
+                " WHERE tenant_id=$1 AND idempotency_key=$2", T, old)
+            assert tuple(resolved) == ("uncertain", "billed", "usage-drain")   # history kept
+            assert await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
+                                                      resolution="credited", note="again") == 0
+            after = (await ch._db_components())["usage_reporting"]["detail"].get("uncertain", 0)
+            assert after == before - 1                                      # resolved rows stop paging
+
     finally:
         await admin.execute("DELETE FROM billing_usage_events WHERE tenant_id=$1", T)
         await admin.execute("DELETE FROM tenants WHERE id=$1", T)

@@ -328,16 +328,25 @@ REPORT_RESEND_WINDOW_HOURS = 20
 REPORT_EXPIRY_DAYS = 34
 # Unreported usage this old is alerted on, a week before it would expire.
 REPORT_AGING_ALERT_DAYS = 28
-# One row is claimed at a time and its lease outlives one Stripe call (the SDK
-# times out at 80 s), so a second drain replica never sends a leased row.
+# One row is claimed at a time and its lease outlives one Stripe call (one HTTP
+# attempt: the SDK's own retries are off, below; it times out at 80 s), so a
+# second drain replica does not send a leased row. Should a send outlive the
+# lease anyway, every write after it names the attempt it belongs to.
 REPORT_CLAIM_LEASE_SECONDS = 300
+# The resolutions a person may record for a quarantined row (0175).
+REPORT_RESOLUTIONS = frozenset({"billed", "credited", "written_off"})
 
 # A row still in play: not reported, not quarantined.
 _IN_PLAY = "reported_at IS NULL AND report_state IS NULL"
 
 # Errors with which Stripe REFUSED the request: the event was not recorded, so
 # the attempt adds no uncertainty. Everything else — a connection failure, a
-# timeout, a 5xx, our own failure after Stripe answered — may have recorded it.
+# timeout, a 5xx, an idempotency conflict, our own failure after Stripe
+# answered — may have recorded it. Only valid because each send is ONE HTTP
+# attempt (max_network_retries=0): with the SDK's retries a refusal could be
+# the answer to a retry of an attempt that timed out after Stripe recorded it.
+# A connection failure is counted as possibly recorded even when nothing left
+# this host (the SDK does not say which); after the window a person decides.
 _REFUSED = (
     stripe.InvalidRequestError, stripe.AuthenticationError, stripe.PermissionError,
     stripe.RateLimitError, stripe.CardError,
@@ -346,6 +355,13 @@ _REFUSED = (
 # proves an earlier attempt landed. (Any OTHER refusal of a row that already had
 # an uncertain attempt leaves that uncertainty standing.)
 _DUPLICATE_EVENT = "duplicate_meter_event"
+
+
+def _idempotency_key(identifier: str) -> str:
+    """The same Idempotency-Key for every send of one row: a resend inside
+    Stripe's 24 h idempotency window replays Stripe's answer to the first
+    request instead of being processed again."""
+    return f"oracle-meter-event:{identifier}"
 
 
 def _error_text(exc: BaseException) -> str:
@@ -425,7 +441,7 @@ async def _claim_next_report(conn: Any, tenant_id: str, skip: list[str]) -> Opti
           FROM picked
          WHERE u.id = picked.id
         RETURNING u.id, u.metric, u.quantity, u.occurred_at, u.idempotency_key,
-                  picked.prior_uncertain_since
+                  u.report_attempts AS attempt, picked.prior_uncertain_since
         """,
         tenant_id, sorted(_STRIPE_REPORTED), REPORT_EXPIRY_DAYS, REPORT_RESEND_WINDOW_HOURS,
         skip, REPORT_CLAIM_LEASE_SECONDS,
@@ -485,15 +501,17 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
             break
         seen.append(str(row["id"]))
         identifier = str(row["idempotency_key"])[:100]
+        params = {
+            "event_name": STRIPE_METER_EVENT_NAME,
+            "payload": {"stripe_customer_id": customer_id, "value": str(row["quantity"])},
+            "identifier": identifier,
+            "timestamp": int(row["occurred_at"].timestamp()),
+        }
         try:
             event = stripe.billing.MeterEvent.create(
-                event_name=STRIPE_METER_EVENT_NAME,
-                payload={
-                    "stripe_customer_id": customer_id,
-                    "value": str(row["quantity"]),
-                },
-                identifier=identifier,
-                timestamp=int(row["occurred_at"].timestamp()),
+                **params,
+                idempotency_key=_idempotency_key(identifier),
+                max_network_retries=0,
             )
             event_id = getattr(event, "identifier", None) or identifier
         except _REFUSED as exc:
@@ -514,20 +532,32 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
             continue
         try:
             async with tenant_tx(ctx) as conn:
-                await conn.execute(
+                # Tied to this attempt: if the lease lapsed and another drain
+                # claimed the row, that drain's send (same identifier and
+                # idempotency key) acknowledges it. A row quarantined meanwhile
+                # was reported after all: the quarantine is lifted.
+                acked = await conn.fetchval(
                     """
                     UPDATE billing_usage_events
                        SET reported_at=now(), stripe_event_id=$2, report_error=NULL,
-                           report_claimed_until=NULL, updated_at=now()
-                     WHERE id=$1::uuid AND tenant_id=$3::uuid
+                           report_claimed_until=NULL, report_state=NULL,
+                           report_quarantined_at=NULL, report_resolution=NULL,
+                           report_resolved_at=NULL, report_resolved_by=NULL,
+                           report_resolution_note=NULL, updated_at=now()
+                     WHERE id=$1::uuid AND tenant_id=$3::uuid AND report_attempts=$4
+                       AND reported_at IS NULL
+                    RETURNING id
                     """,
-                    row["id"], event_id, ctx.tenant_id,
+                    row["id"], event_id, ctx.tenant_id, row["attempt"],
                 )
         except Exception as exc:  # noqa: BLE001
             # Stripe has it and we could not say so. The row keeps its uncertain
             # attempt; its lease lapses and the resend inside the window is
             # de-duplicated by Stripe, or a person reconciles it after.
             logger.warning("Usage %s reported but not acknowledged locally: %s", row["id"], exc)
+            continue
+        if acked is None:
+            logger.info("Usage %s: a later claim took over before this report was acknowledged", row["id"])
             continue
         reported += 1
 
@@ -547,27 +577,63 @@ async def _release_report(ctx: TenantContext, row: Any, error: str,
                           prior_uncertain_since: Any = None, *, keep_uncertain: bool = False) -> None:
     """End a claim without a report: stamp the error and free the row.
 
-    keep_uncertain: the send may have landed, so report_uncertain_since (set
-    when the row was claimed) stays. Otherwise it goes back to what it was
-    before this claim. Best effort: if this write fails too, the lease lapses.
+    keep_uncertain: the send may have landed, so report_uncertain_since stays
+    set (COALESCE: never cleared here). Otherwise it goes back to what it was
+    before this claim. Tied to this claim's attempt, so a send that outlived
+    its lease cannot touch a later claim's row. Best effort: if this write
+    fails too, the lease lapses.
     """
     try:
         async with tenant_tx(ctx) as conn:
             if keep_uncertain:
                 await conn.execute(
                     "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=NULL,"
-                    " updated_at=now() WHERE id=$1::uuid AND tenant_id=$3::uuid",
-                    row["id"], error, ctx.tenant_id,
+                    " report_uncertain_since=COALESCE(report_uncertain_since, now()), updated_at=now()"
+                    " WHERE id=$1::uuid AND tenant_id=$3::uuid AND report_attempts=$4"
+                    " AND reported_at IS NULL",
+                    row["id"], error, ctx.tenant_id, row["attempt"],
                 )
             else:
                 await conn.execute(
                     "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=NULL,"
-                    " report_uncertain_since=$4, updated_at=now()"
-                    " WHERE id=$1::uuid AND tenant_id=$3::uuid",
-                    row["id"], error, ctx.tenant_id, prior_uncertain_since,
+                    " report_uncertain_since=$5, updated_at=now()"
+                    " WHERE id=$1::uuid AND tenant_id=$3::uuid AND report_attempts=$4"
+                    " AND reported_at IS NULL AND report_state IS NULL",
+                    row["id"], error, ctx.tenant_id, row["attempt"], prior_uncertain_since,
                 )
     except Exception:  # noqa: BLE001
         logger.warning("Could not release usage report claim %s", row["id"], exc_info=True)
+
+
+async def resolve_quarantined_usage(
+    ctx: TenantContext, *, tenant_id: str, report_state: str, resolution: str,
+    note: str, usage_ids: Optional[list[str]] = None,
+) -> int:
+    """Record a person's decision on quarantined usage (24.5, 24.6; 0175).
+
+    'billed' (reported to Stripe by hand or found on the meter), 'credited' or
+    'written_off'. The quarantine stays on the row as history; only rows not
+    yet resolved change. Returns how many. Callers check the role: the
+    operator route requires a platform admin and writes the audit chain.
+    """
+    if report_state not in ("expired", "uncertain"):
+        raise ValueError("report_state must be 'expired' or 'uncertain'")
+    if resolution not in REPORT_RESOLUTIONS:
+        raise ValueError(f"resolution must be one of {sorted(REPORT_RESOLUTIONS)}")
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE billing_usage_events
+               SET report_resolution=$3, report_resolved_at=now(), report_resolved_by=$4,
+                   report_resolution_note=$5, updated_at=now()
+             WHERE tenant_id=$1::uuid AND report_state=$2 AND report_resolution IS NULL
+               AND ($6::uuid[] IS NULL OR id = ANY($6::uuid[]))
+            RETURNING id
+            """,
+            tenant_id, report_state, resolution, str(ctx.agent_id)[:200], note[:500] or None,
+            usage_ids,
+        )
+    return len(rows)
 
 
 async def drain_all_tenants(

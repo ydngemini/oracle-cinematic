@@ -223,12 +223,16 @@ describe('OperatorOverview', () => {
     respond({
       '/api/admin/billing/exceptions': {
         ...FIXTURES['/api/admin/billing/exceptions'],
-        usage_metering: { state: 'attention', configured: true, unreported: 4, uncertain: 2, expired: 1, aging: 0 },
+        no_subscription: [],
+        usage_metering: { state: 'attention', configured: true, unreported: 4, uncertain: 2, expired: 1, aging: 0,
+                          quarantined_by_tenant: [{ tenant_id: T1, name: 'Lockwood Realty', uncertain: 2, expired: 1 }] },
       },
     });
     render(<OperatorOverview />);
     expect(await screen.findByText(
       '2 to reconcile with Stripe · 1 too old to report · 4 unreported')).toBeTruthy();
+    expect(screen.getByText(/Lockwood Realty \(2 to reconcile with Stripe, 1 too old to report\)/)).toBeTruthy();
+    expect(screen.queryByText('No billing exceptions.')).toBeNull();
   });
 
   it('keeps pilot metrics small and labels attribution honestly', async () => {
