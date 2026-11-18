@@ -636,16 +636,16 @@ async def _release_report(ctx: TenantContext, row: Any, error: str,
     be in flight (a timeout), so the lease is left to lapse instead of being
     cleared. Best effort: if this write fails too, the lease lapses.
     """
-    claim = "report_claimed_until" if keep_claim else "NULL"
     try:
         async with tenant_tx(ctx) as conn:
             if keep_uncertain:
                 await conn.execute(
-                    "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=" + claim + ","
+                    "UPDATE billing_usage_events SET report_error=$2,"
+                    " report_claimed_until=CASE WHEN $5::boolean THEN report_claimed_until END,"
                     " report_uncertain_since=COALESCE(report_uncertain_since, now()), updated_at=now()"
                     " WHERE id=$1::uuid AND tenant_id=$3::uuid AND report_attempts=$4"
                     " AND reported_at IS NULL",
-                    row["id"], error, ctx.tenant_id, row["attempt"],
+                    row["id"], error, ctx.tenant_id, row["attempt"], keep_claim,
                 )
             else:
                 await conn.execute(

@@ -50,6 +50,7 @@ class _Conn:
 
     async def execute(self, sql, *args):
         self.log.append(sql)
+        self.log.args[sql] = args
         return "UPDATE 1"
 
 
@@ -73,7 +74,9 @@ def drain_env(monkeypatch):
 
 
 class _Log(list):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.args: dict = {}
 
 
 async def _with_heartbeat(coro, period=0.02):
@@ -120,8 +123,8 @@ def test_a_stripe_call_past_the_timeout_is_an_unknown_outcome(drain_env, monkeyp
     # lease lapses; then it is resent under the same identifier and key
     release = [sql for sql in drain_env if isinstance(sql, str) and "report_error=$2" in sql]
     assert release and "COALESCE(report_uncertain_since, now())" in release[0]
-    assert "report_claimed_until=report_claimed_until" in release[0]
-    assert "report_claimed_until=NULL" not in release[0]
+    assert "CASE WHEN $5::boolean THEN report_claimed_until END" in release[0]
+    assert drain_env.args[release[0]][4] is True                # keep_claim
     assert ticks >= 2
 
 
