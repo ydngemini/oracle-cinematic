@@ -47,11 +47,21 @@ DECLARE
     v_lead uuid;
     v_seller uuid;
     v_prev text;
+    v_writing boolean := TG_OP = 'INSERT';
 BEGIN
+    -- The target is being written (not a re-derivation: a foreign key's SET
+    -- NULL, this migration's backfill). Only a write is refused for a
+    -- mismatched lead; an old row keeps its named client's link.
     IF TG_TABLE_NAME = 'command_executions' THEN
         v_target := NEW.target;
+        IF NOT v_writing THEN
+            v_writing := NEW.target IS DISTINCT FROM OLD.target;
+        END IF;
     ELSE
         v_target := NEW.draft_payload -> 'target';
+        IF NOT v_writing THEN
+            v_writing := NEW.draft_payload IS DISTINCT FROM OLD.draft_payload;
+        END IF;
     END IF;
     IF jsonb_typeof(v_target) = 'object' THEN
         v_client := app_try_uuid(v_target ->> 'client_id');
@@ -77,7 +87,7 @@ BEGIN
              WHERE l.id = v_lead AND l.tenant_id = NEW.tenant_id;
             IF NEW.client_id IS NULL THEN
                 NEW.client_id := v_seller;
-            ELSIF v_seller IS NOT NULL AND v_seller <> NEW.client_id THEN
+            ELSIF v_writing AND v_seller IS NOT NULL AND v_seller <> NEW.client_id THEN
                 PERFORM set_config('app.record_scope', v_prev, true);
                 RAISE EXCEPTION 'draft names a lead of a different client'
                     USING ERRCODE = 'check_violation';

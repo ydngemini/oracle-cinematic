@@ -209,27 +209,46 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         after = await row_for(pool)
         assert after["state"] == "failed" and after["provider_reference"] is None
 
-        # The 0179 backfill re-links a lead-only draft written before it
-        # (also one whose target carries "client_id": null).
-        old = uuid.uuid4()
-        await admin.execute("ALTER TABLE command_executions DISABLE TRIGGER trg_command_executions_link")
-        try:
-            await admin.execute(
-                "INSERT INTO command_executions (id, tenant_id, command_type, classification, risk_class, target, "
-                "draft, idempotency_key, created_by) VALUES ($1,$2,'SMS','explicit_sms','outreach',$3::jsonb,"
-                "'{}'::jsonb,$4,$5)", old, tenant, _json.dumps({"client_id": None, "lead_id": str(lead["b"])}),
-                f"leads-{tag}-old", agent["b"])
-        finally:
-            await admin.execute("ALTER TABLE command_executions ENABLE TRIGGER trg_command_executions_link")
-        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) is None
+        # The 0179 backfill re-links a lead-only draft written before it (also
+        # one whose target carries "client_id": null), and re-deriving an old
+        # row whose lead has since moved to another client neither aborts the
+        # backfill nor blocks deleting its contact (only a WRITE of a mismatched
+        # target is refused). Bounded to these rows, in one transaction.
         import pathlib
         import re as _re
 
         sql = pathlib.Path(__file__).resolve().parents[1].joinpath(
             "db/migrations/0179_lead_commands_follow_the_record.sql").read_text()
-        backfill = _re.search(r"(UPDATE command_executions SET client_id = NULL.*?;)", sql, _re.S).group(1)
-        await admin.execute(backfill)
-        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) == client["b"]
+        backfill = _re.search(r"(UPDATE command_executions SET client_id = NULL.*?);", sql, _re.S).group(1)
+        old, moved, contact = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        await admin.execute(
+            "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state) "
+            "VALUES ($1,$2,$3,'matrix','pending_encryption')", contact, tenant, agent["b"])
+        moved_target = _json.dumps({"client_id": str(client["b"]), "contact_id": str(contact),
+                                    "lead_id": str(lead["b"]), "phone": "+13025550179"})
+        async with connection.tenant_tx(ctx("b")) as conn:      # staged while the lead was B's client's
+            await conn.execute(*raw("moved", moved_target), agent["b"])
+            moved = await conn.fetchval("SELECT id FROM command_executions WHERE idempotency_key=$1",
+                                        f"leads-{tag}-moved")
+        await admin.execute("UPDATE leads SET seller_client_id=$2 WHERE id=$1", lead["b"], client["b2"])
+        async with admin.transaction():
+            await admin.execute("ALTER TABLE command_executions DISABLE TRIGGER trg_command_executions_link")
+            await admin.execute(
+                "INSERT INTO command_executions (id, tenant_id, command_type, classification, risk_class, target, "
+                "draft, idempotency_key, created_by) VALUES ($1,$2,'SMS','explicit_sms','outreach',$3::jsonb,"
+                "'{}'::jsonb,$4,$5)", old, tenant, _json.dumps({"client_id": None, "lead_id": str(lead["a"])}),
+                f"leads-{tag}-old", agent["a"])
+            await admin.execute("ALTER TABLE command_executions ENABLE TRIGGER trg_command_executions_link")
+            assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) is None
+            await admin.execute(backfill + " AND id = ANY($1::uuid[])", [old, moved])
+        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) == client["a"]
+        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", moved) == client["b"]
+        await admin.execute("DELETE FROM agent_contacts WHERE id=$1", contact)       # FK SET NULL re-derives
+        assert await admin.fetchval("SELECT contact_id FROM command_executions WHERE id=$1", moved) is None
+        # ...and the send is still refused for the requester if they cannot reach the lead's client now
+        assert await commands_api._requester_may_contact(tenant, await row_for(str(moved))) is True  # B owns both
+        await admin.execute("UPDATE clients SET assignee_id=$2 WHERE id=$1", client["b2"], agent["a"])
+        assert await commands_api._requester_may_contact(tenant, await row_for(str(moved))) is False
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
