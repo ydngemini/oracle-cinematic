@@ -736,9 +736,18 @@ async def update_contact(
                 # grant sent back unchanged (26.1 review).
                 supplied = merged_consent.get(channel) if "consent" in fields else None
                 old = stored_consent.get(channel) if isinstance(stored_consent, dict) else None
+                def _instant(value: Any):
+                    try:
+                        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+                    except ValueError:
+                        return None
+
+                new_at = _instant(supplied.get("captured_at")) if isinstance(supplied, dict) else None
+                old_at = _instant(old.get("captured_at")) if isinstance(old, dict) else None
+                # A NEW capture: later than the one stored (not the same instant
+                # written another way).
                 fresh = (isinstance(supplied, dict) and supplied.get("granted") is True
-                         and supplied.get("captured_at")
-                         and (not isinstance(old, dict) or supplied.get("captured_at") != old.get("captured_at")))
+                         and new_at is not None and (old_at is None or new_at > old_at))
                 if not fresh:
                     consent_reset.append(channel)
             if consent_reset:
@@ -836,6 +845,13 @@ async def update_contact(
                 await outreach_compliance.record_crm_suppression(
                     conn, ctx.tenant_id, phone=merged_phone, email=merged_email,
                     flags=flags or {}, source="CRM contact updated")
+                # ...and on the linked client's own details, should they differ
+                # (the send path reads the client): one person, both numbers.
+                linked_phone, linked_email = _row_get(current, "legacy_phone"), _row_get(current, "legacy_email")
+                if linked_phone or linked_email:
+                    await outreach_compliance.record_crm_suppression(
+                        conn, ctx.tenant_id, phone=linked_phone, email=linked_email,
+                        flags=flags or {}, source="CRM contact updated (client details)")
             if pii_fields.intersection(fields):
                 await conn.execute(
                     """
@@ -875,23 +891,49 @@ async def update_contact(
     return {"contact": contact}
 
 
-async def client_destination_changed(conn: Any, tenant_id: str, client_id: str, *,
+class _BrokerageScope:
+    """Read and write a client's linked contact whatever the editor's own
+    contact visibility, for the length of a block (the 0142/0179 triggers set
+    the same setting). The editor may edit the client; its contact is the same
+    person's record, kept in step with it."""
+
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+        self.prev = ""
+
+    async def __aenter__(self):
+        self.prev = await self.conn.fetchval("SELECT COALESCE(current_setting('app.record_scope', true), '')")
+        await self.conn.execute("SELECT set_config('app.record_scope', 'brokerage', true)")
+        return self.conn
+
+    async def __aexit__(self, *_exc):
+        await self.conn.execute("SELECT set_config('app.record_scope', $1, true)", self.prev)
+        return False
+
+
+async def lock_linked_contact(conn: Any, tenant_id: str, client_id: str):
+    """The contact linked to this client (clients.contact_id or its
+    legacy_client_id), locked — taken BEFORE the client row, the same order as
+    update_contact (contact, then client), so the two paths cannot deadlock."""
+    async with _BrokerageScope(conn):
+        return await conn.fetchrow(
+            "SELECT ac.id, ac.consent, ac.suppression, ac.pii_ciphertext FROM agent_contacts ac "
+            " WHERE ac.tenant_id=$1::uuid AND ac.deleted_at IS NULL "
+            "   AND (ac.legacy_client_id=$2::uuid OR ac.id=(SELECT contact_id FROM clients WHERE id=$2::uuid)) "
+            " ORDER BY ac.created_at LIMIT 1 FOR UPDATE OF ac", tenant_id, client_id)
+
+
+async def client_destination_changed(conn: Any, tenant_id: str, contact: Any, *,
                                      phone: str | None, email: str | None,
                                      phone_changed: bool, email_changed: bool) -> None:
-    """A client's phone or email was edited on the client record (crm.update_client):
-    its contact's do-not-contact flags reach the ledger for the new destination,
-    and the consent given for the old one no longer applies (26.1, 26.9 review).
-    Same transaction as the client edit; the contact row is locked."""
+    """A client's phone or email was edited on the client record (crm.update_client).
+    Its linked contact (already locked) follows: its do-not-contact flags reach
+    the ledger for the new destination, the consent given for the old one is
+    reset, and its sealed details take the new value — so the contact and the
+    client the send path reads cannot drift apart (26.1, 26.9 review)."""
     import outreach_compliance
 
-    if not (phone_changed or email_changed):
-        return
-    contact = await conn.fetchrow(
-        "SELECT ac.id, ac.consent, ac.suppression FROM agent_contacts ac "
-        " WHERE ac.tenant_id=$1::uuid AND ac.deleted_at IS NULL "
-        "   AND (ac.legacy_client_id=$2::uuid OR ac.id=(SELECT contact_id FROM clients WHERE id=$2::uuid)) "
-        " ORDER BY ac.created_at LIMIT 1 FOR UPDATE OF ac", tenant_id, client_id)
-    if contact is None:
+    if contact is None or not (phone_changed or email_changed):
         return
     flags = _json_object(_row_get(contact, "suppression"), {})
     await outreach_compliance.record_crm_suppression(
@@ -901,8 +943,26 @@ async def client_destination_changed(conn: Any, tenant_id: str, client_id: str, 
     channels = (["sms", "voice"] if phone_changed else []) + (["email"] if email_changed else [])
     for channel in channels:
         consent[channel] = {"granted": False, "captured_at": None, "source": "reset: destination changed"}
-    await conn.execute("UPDATE agent_contacts SET consent=$2::jsonb WHERE id=$1::uuid",
-                       _row_get(contact, "id"), json.dumps(consent))
+    sets, args = ["consent=$2::jsonb"], [_row_get(contact, "id"), json.dumps(consent)]
+    ciphertext = _row_get(contact, "pii_ciphertext")
+    if ciphertext:
+        pii = dict(await open_json(conn, tenant_id, ciphertext))
+        for field, value, changed, normalize in (("phone", phone, phone_changed, normalize_phone),
+                                                 ("email", email, email_changed, normalize_email)):
+            if not changed:
+                continue
+            try:
+                canonical = normalize(value)
+            except ValueError:
+                canonical = None
+            pii[field] = canonical or value
+            args.append(lookup_hash(tenant_id, field, canonical))
+            sets.append(f"{field}_lookup_hash=${len(args)}")
+        args.append(await seal_json(conn, tenant_id, pii))
+        sets.append(f"pii_ciphertext=${len(args)}::bytea")
+    async with _BrokerageScope(conn):
+        # Column names come from the fixed tuple above; values are bound.
+        await conn.execute(f"UPDATE agent_contacts SET {', '.join(sets)} WHERE id=$1::uuid", *args)
 
 
 @router.post(

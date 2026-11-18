@@ -17,7 +17,7 @@ import json as _json
 import os
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -119,7 +119,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
                                                      ctx=ctx))["contact"]
         assert mailed["consent"]["email"]["granted"] is False and mailed["consent"]["sms"]["granted"] is True
         # consent newly recorded for the new number in the same edit is kept
-        fresh_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        fresh_at = datetime.now(timezone.utc).isoformat()
         fresh = {ch: {"granted": True, "captured_at": fresh_at, "source": "new form"} for ch in ("sms", "voice")}
         kept = (await contacts_api.update_contact(
             z["id"], ContactPatch(phone="+13025550398", consent=fresh), ctx=ctx))["contact"]
@@ -169,6 +169,57 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         stored = await admin.fetchval("SELECT consent FROM agent_contacts WHERE id=$1", uuid.UUID(k["id"]))
         stored = _json.loads(stored) if isinstance(stored, str) else stored
         assert stored["sms"]["granted"] is False and stored["voice"]["granted"] is False
+
+        # ── review round 2 ────────────────────────────────────────────────
+        # An agent who may edit the client but not its contact (an edit share
+        # on the client; the contact is a colleague's): the edit still carries
+        # the contact's flags and resets its consent.
+        agent_a, agent_b = f"a-{tag}@crm.test", f"b-{tag}@crm.test"
+        ids = {}
+        for who in (agent_a, agent_b):
+            ids[who] = await admin.fetchval(
+                "INSERT INTO users (tenant_id, agent_id, role, email, password_hash, is_active) "
+                "VALUES ($1,$2,'agent',$2,'scrypt$x$y',true) RETURNING id", tenant, who)
+        shared = uuid.uuid4()
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,'Shared',$3)",
+                            shared, tenant, agent_b)
+        sc = (await contacts_api.create_contact(person("Sam", "+13025550340", client_id=str(shared),
+                                                       suppression={"dnc": True}), ctx=ctx))["contact"]
+        await admin.execute("UPDATE agent_contacts SET assigned_agent_id=$2, assigned_user_id=$3 WHERE id=$1",
+                            uuid.UUID(sc["id"]), agent_b, ids[agent_b])
+        await admin.execute(
+            "INSERT INTO record_shares (tenant_id, resource_kind, resource_id, grantee_user_id, permission, "
+            "granted_by) VALUES ($1,'client',$2,$3,'edit',$4)", tenant, shared, ids[agent_a], agent_b)
+        ctx_a = TenantContext(agent_id=agent_a, tenant_id=tenant, role=Role.AGENT)
+        await crm.update_client(str(shared), crm.ClientPatch(phone="+13025550341"), ctx=ctx_a)
+        assert await gate_blocks("+13025550341", Channel.SMS)
+        stored = await admin.fetchval("SELECT consent FROM agent_contacts WHERE id=$1", uuid.UUID(sc["id"]))
+        stored = _json.loads(stored) if isinstance(stored, str) else stored
+        assert stored["sms"]["granted"] is False
+        # The contact follows the client's new number, so a later contact
+        # do-not-contact reaches the number the send path reads.
+        d = (await contacts_api.create_contact(person("Dee", "+13025550350"), ctx=ctx))["contact"]
+        dc = uuid.uuid4()
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, contact_id, phone) "
+                            "VALUES ($1,$2,'Dee C',$3,'+13025550350')", dc, tenant, uuid.UUID(d["id"]))
+        await crm.update_client(str(dc), crm.ClientPatch(phone="+13025550351"), ctx=ctx)
+        shown = (await contacts_api.get_contact(d["id"], ctx=ctx))["contact"]
+        assert shown["phone"] == "+13025550351"
+        await contacts_api.update_contact(d["id"], ContactPatch(suppression={"sms": True}), ctx=ctx)
+        assert await gate_blocks("+13025550351", Channel.SMS)
+        # Concurrent contact and client edits of one pair: no deadlock.
+        await asyncio.gather(
+            contacts_api.update_contact(d["id"], ContactPatch(phone="+13025550352"), ctx=ctx),
+            crm.update_client(str(dc), crm.ClientPatch(phone="+13025550353"), ctx=ctx))
+        # The same capture instant written with another offset is not new consent.
+        q = (await contacts_api.create_contact(person("Quin", "+13025550360"), ctx=ctx))["contact"]
+        stored_at = datetime.fromisoformat(q["consent"]["sms"]["captured_at"].replace("Z", "+00:00"))
+        same_instant = stored_at.astimezone(timezone(timedelta(hours=-5))).isoformat()
+        moved_q = (await contacts_api.update_contact(q["id"], ContactPatch(
+            phone="+13025550361",
+            consent={ch: {"granted": True, "captured_at": same_instant, "source": "form"} for ch in ("sms", "voice")}),
+            ctx=ctx))["contact"]
+        assert moved_q["consent"]["sms"]["granted"] is False
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

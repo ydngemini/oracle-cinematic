@@ -944,6 +944,13 @@ async def update_client(
 
     try:
         async with tenant_tx(ctx) as conn:
+            linked_contact = None
+            if "phone" in fields or "email" in fields:
+                # The linked contact is locked first (contact, then client — the
+                # order update_contact uses), so the two edits cannot deadlock.
+                import contacts_api
+
+                linked_contact = await contacts_api.lock_linked_contact(conn, ctx.tenant_id, client_id)
             current = await conn.fetchrow(
                 "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1 FOR UPDATE",
                 client_id,
@@ -979,7 +986,7 @@ async def update_client(
                     return not old or normalize_contact(str(new), channel) != normalize_contact(str(old), channel)
 
                 await contacts_api.client_destination_changed(
-                    conn, ctx.tenant_id, client_id, phone=fields.get("phone"), email=fields.get("email"),
+                    conn, ctx.tenant_id, linked_contact, phone=fields.get("phone"), email=fields.get("email"),
                     phone_changed=_moved("phone", "sms"), email_changed=_moved("email", "email"))
 
             # A human override only counts when the value actually moved —
