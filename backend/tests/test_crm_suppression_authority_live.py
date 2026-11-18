@@ -13,6 +13,7 @@ Nothing is sent: a nurture reservation only queues a job.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import os
 import secrets
 import uuid
@@ -117,14 +118,57 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         mailed = (await contacts_api.update_contact(x["id"], ContactPatch(email=f"new-{tag}@crm.test"),
                                                      ctx=ctx))["contact"]
         assert mailed["consent"]["email"]["granted"] is False and mailed["consent"]["sms"]["granted"] is True
-        # consent recorded for the new number in the same edit is kept
+        # consent newly recorded for the new number in the same edit is kept
+        fresh_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        fresh = {ch: {"granted": True, "captured_at": fresh_at, "source": "new form"} for ch in ("sms", "voice")}
         kept = (await contacts_api.update_contact(
-            z["id"], ContactPatch(phone="+13025550398", consent=sms_ok), ctx=ctx))["contact"]
+            z["id"], ContactPatch(phone="+13025550398", consent=fresh), ctx=ctx))["contact"]
         assert kept["consent"]["sms"]["granted"] is True
         # a new number of a do-not-contact person is suppressed too
         await contacts_api.update_contact(x["id"], ContactPatch(suppression={"sms": True}), ctx=ctx)
         await contacts_api.update_contact(x["id"], ContactPatch(phone="+13025550397"), ctx=ctx)
         assert "sms" in await ledger("+13025550397")
+
+        # ── review round 1 ────────────────────────────────────────────────
+        # Concurrent edits (a new phone, a new do-not-contact) resolve to the
+        # stricter outcome: the number finally stored is suppressed.
+        for i in range(3):
+            c = (await contacts_api.create_contact(person(f"Race{i}", f"+1302555060{i}"), ctx=ctx))["contact"]
+            new_phone = f"+1302555070{i}"
+            await asyncio.gather(
+                contacts_api.update_contact(c["id"], ContactPatch(phone=new_phone), ctx=ctx),
+                contacts_api.update_contact(c["id"], ContactPatch(suppression={"sms": True}), ctx=ctx))
+            assert await gate_blocks(new_phone, Channel.SMS), i
+        # The old consent object sent back with a new number does not carry over.
+        r = (await contacts_api.create_contact(person("Ray", "+13025550310"), ctx=ctx))["contact"]
+        back = (await contacts_api.update_contact(
+            r["id"], ContactPatch(phone="+13025550311", consent=r["consent"]), ctx=ctx))["contact"]
+        assert back["consent"]["sms"]["granted"] is False
+        # A legacy (unsealed) contact: its client's phone is its destination,
+        # and a STOP there makes its nurture ineligible.
+        legacy_client, legacy_contact = uuid.uuid4(), uuid.uuid4()
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, phone) "
+                            "VALUES ($1,$2,'Old Client','+13025550320')", legacy_client, tenant)
+        await admin.execute(
+            "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state, legacy_client_id, "
+            "consent, timezone, birthday_month, birthday_day, nurture_enabled) "
+            "VALUES ($1,$2,$3,'legacy','pending_encryption',$4,$5::jsonb,$6,$7,$8,true)",
+            legacy_contact, tenant, owner, legacy_client, _json.dumps(sms_ok), zone, local.month, local.day)
+        await ConsentLedger.suppress(ctx, contact="+13025550320", channel="*", reason="stop_keyword")
+        assert await nurture(str(legacy_contact)) == "suppressed"
+        # A phone edited on the CLIENT record: the contact's flags follow, its
+        # consent does not.
+        import crm
+
+        linked = uuid.uuid4()
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name) VALUES ($1,$2,'Linked')", linked, tenant)
+        k = (await contacts_api.create_contact(person("Kai", "+13025550330", client_id=str(linked),
+                                                      suppression={"dnc": True}), ctx=ctx))["contact"]
+        await crm.update_client(str(linked), crm.ClientPatch(phone="+13025550331"), ctx=ctx)
+        assert await gate_blocks("+13025550331", Channel.SMS)
+        stored = await admin.fetchval("SELECT consent FROM agent_contacts WHERE id=$1", uuid.UUID(k["id"]))
+        stored = _json.loads(stored) if isinstance(stored, str) else stored
+        assert stored["sms"]["granted"] is False and stored["voice"]["granted"] is False
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

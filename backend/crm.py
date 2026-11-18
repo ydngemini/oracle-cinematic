@@ -945,7 +945,7 @@ async def update_client(
     try:
         async with tenant_tx(ctx) as conn:
             current = await conn.fetchrow(
-                "SELECT id, full_name, stage, lead_score FROM clients WHERE id = $1",
+                "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1 FOR UPDATE",
                 client_id,
             )
             if current is None:
@@ -965,6 +965,22 @@ async def update_client(
                 """,
                 *args,
             )
+
+            # A new phone or email on the client record carries its contact's
+            # do-not-contact flags, and not its consent (26.1, 26.9).
+            if "phone" in fields or "email" in fields:
+                import contacts_api
+                from outreach_compliance import normalize_contact
+
+                def _moved(col: str, channel: str) -> bool:
+                    new, old = fields.get(col), current[col]
+                    if col not in fields or not new:
+                        return False
+                    return not old or normalize_contact(str(new), channel) != normalize_contact(str(old), channel)
+
+                await contacts_api.client_destination_changed(
+                    conn, ctx.tenant_id, client_id, phone=fields.get("phone"), email=fields.get("email"),
+                    phone_changed=_moved("phone", "sms"), email_changed=_moved("email", "email"))
 
             # A human override only counts when the value actually moved —
             # re-submitting the existing stage/score must not silently take the

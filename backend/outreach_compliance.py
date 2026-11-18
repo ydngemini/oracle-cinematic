@@ -476,6 +476,12 @@ async def ledger_suppressed(conn, tenant_id: str, contact: Optional[str], channe
         return False
     channel = Channel(channel)
     norm = normalize_contact(contact, channel)
+    if channel is not Channel.EMAIL:
+        # A spoken STOP still spooled (not yet written) blocks, as at the gate.
+        import voice_opt_out
+
+        if voice_opt_out.pending_opt_out(tenant_id, normalize_contact(contact, Channel.VOICE)):
+            return True
     return bool(await conn.fetchval(_LEDGER_SUPPRESSED, norm, channel.value, _tombstone_hash(tenant_id, norm)))
 
 
