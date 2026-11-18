@@ -2906,7 +2906,11 @@ async def _update_call_session_async(call_connection_id: str, status: str,
 
 #: Provider call statuses, in the words a client timeline should use. Only a
 #: status the carrier itself reported ever reaches the timeline; "answered" is
-#: written when the carrier says the call was picked up, never before.
+#: written when the carrier says the call was picked up, never before. A
+#: Plivo-style "completed" is the carrier finishing the call, not a pickup: it
+#: reads "answered" only with positive billed time or after an explicit answer
+#: status (external audit 24.8; see record_call_outcome).
+_CALL_ANSWER_NOT_CONFIRMED = "Call completed; answer not confirmed"
 _CALL_OUTCOME_SUMMARY: dict[str, str] = {
     "completed": "Call answered and ended",
     "busy": "Call not connected — line busy",
@@ -2963,6 +2967,13 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     if summary is None:
         return
     await _update_call_session_async(provider_call_id, "completed", outcome=status_value)
+    # 24.8: with no duration at all, a non-Twilio "completed" says only that
+    # the carrier finished the call. It reads "answered" only when an explicit
+    # answer status was recorded for this session (started_at, set by an
+    # in-progress/answered status alone) — the same caution call_status_stage
+    # applies to delivery, so the timeline never says "answered" where the
+    # lifecycle says it cannot tell.
+    answer_unconfirmed_unless_started = False
     if (status_value == "completed" and duration_seconds is not None and duration_seconds <= 0
             and provider != "twilio"):
         # Plivo reports a never-answered call as completed with zero billed time.
@@ -2972,6 +2983,8 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     elif status_value == "completed" and duration_seconds:
         minutes, seconds = divmod(int(duration_seconds), 60)
         summary = f"{summary} ({minutes}:{seconds:02d})"
+    elif status_value == "completed" and duration_seconds is None and provider != "twilio":
+        answer_unconfirmed_unless_started = True
     platform_ctx = TenantContext(
         agent_id="call-status-webhook",
         tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
@@ -2982,12 +2995,16 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
             await conn.execute(
                 """
                 INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
-                SELECT s.tenant_id, s.client_id, 'message', $2,
+                SELECT s.tenant_id, s.client_id, 'message',
+                       CASE WHEN $5::boolean AND s.started_at IS NULL THEN $6 ELSE $2 END,
                        jsonb_build_object('direction', 'outbound', 'channel', 'call',
                                           'command_id', s.command_id::text,
                                           'provider_call_id', $1::text,
                                           'carrier_status', $3::text,
-                                          'duration_seconds', $4::int),
+                                          'duration_seconds', $4::int,
+                                          'answer_confirmed',
+                                          CASE WHEN $5::boolean THEN s.started_at IS NOT NULL
+                                               ELSE $7::boolean END),
                        'carrier'
                   FROM live_call_sessions s
                  WHERE s.provider_call_id = $1 AND s.client_id IS NOT NULL
@@ -2998,6 +3015,8 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
                           AND a.meta ? 'carrier_status')
                 """,
                 provider_call_id, summary, status_value, duration_seconds,
+                answer_unconfirmed_unless_started, _CALL_ANSWER_NOT_CONFIRMED,
+                summary.startswith("Call answered"),
             )
     except Exception:  # noqa: BLE001 — the status is recorded above; the timeline row is extra
         logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)

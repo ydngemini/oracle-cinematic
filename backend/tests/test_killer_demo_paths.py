@@ -363,6 +363,25 @@ def test_a_finished_call_is_written_in_the_carriers_words(monkeypatch, status, d
     assert rows and rows[0][1] == summary
 
 
+def test_a_completed_call_with_no_duration_is_not_narrated_as_answered(monkeypatch):
+    """24.8: the timeline row falls back to "answer not confirmed" unless the
+    session recorded an explicit answer (started_at); Twilio's completed is an
+    answer by Twilio's own rules."""
+    import commands_api as ca
+
+    conn = RecordingConn()
+    _patch_tx(monkeypatch, ca, conn)
+    asyncio.run(ca.record_call_outcome("call-uuid-1", "completed", None))
+    sql, args = [(q, a) for q, a in conn.executed if "INSERT INTO client_activities" in q][0]
+    assert "s.started_at IS NULL THEN $6" in sql
+    assert args[4] is True and args[5] == "Call completed; answer not confirmed"
+    conn = RecordingConn()
+    _patch_tx(monkeypatch, ca, conn)
+    asyncio.run(ca.record_call_outcome("CA1", "completed", None, provider="twilio"))
+    args = [a for q, a in conn.executed if "INSERT INTO client_activities" in q][0]
+    assert args[4] is False and args[1] == "Call answered and ended" and args[6] is True
+
+
 def test_ringing_writes_nothing_and_answered_only_starts_the_session(monkeypatch):
     import commands_api as ca
 

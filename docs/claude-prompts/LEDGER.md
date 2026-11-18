@@ -4087,6 +4087,28 @@ next_task: "24.5/24.6; 25.1/25.2."
 updated: 2026-11-17
 ```
 
+#### L17-46 A carrier's "completed" with no duration is not narrated as an answered call (external audit 24.8)
+```yaml
+id: L17-46
+status: tests_pass
+env: local
+evidence_shas: [36ce875]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_call_outcome_wording_live.py, backend/tests/test_killer_demo_paths.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read record_call_outcome and outreach_lifecycle.call_status_stage at 36ce875", result: "confirmed: call_status_stage('completed', None) is FAILED (unknown is not delivered), but the timeline summary for 'completed' was 'Call answered and ended', overridden only for a duration <= 0", date: 2026-11-17}
+  - {cmd: "red: live test_call_outcome_wording_live + unit test_a_completed_call_with_no_duration_is_not_narrated_as_answered against 36ce875's commands_api.py", result: "both fail ('Call answered and ended' != 'Call completed; answer not confirmed')", date: 2026-11-17}
+  - {cmd: "after: live test_call_outcome_wording_live + test_twilio_call_outcome_live + test_call_outcome_inbox_live; unit test_killer_demo_paths + test_twilio_call_outcome", result: "3 live pass; 55 unit pass", date: 2026-11-17}
+authz_checked: "Wording and a meta flag on a timeline row the carrier callback already writes; no route, query scope or tenant handling changes."
+blockers:
+  - "A non-Twilio 'completed' with no duration reads 'Call completed; answer not confirmed' unless the session recorded an explicit answer status first (started_at, set only by an in-progress/answered status: carrier status callback, ACS CallConnected, custom 'connected'); positive billed time still reads 'Call answered and ended (m:ss)', zero still 'Call not answered'. Twilio keeps its own rule (an unanswered Twilio call is no-answer/busy; L17-44)."
+  - "Timeline rows gain meta.answer_confirmed (true/false). Rows already written are not rewritten."
+  - "Delivery and metering are unchanged: they already followed call_status_stage."
+audit_refs: [24.8]
+decision_refs: []
+next_task: "24.7 (after PR #109); 25.1/25.2."
+updated: 2026-11-17
+```
+
 ### L18
 Billing, seats and analytics.
 
