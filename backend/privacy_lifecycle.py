@@ -711,6 +711,8 @@ STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS = 30
 # out is still running in its thread, and a later opposite change (close, then
 # withdraw) must not be overtaken by it — the order the owner acted in is the
 # order Stripe sees. Held until the thread finishes, not until the wait ends.
+# Bound to the process's one event loop; a handful of entries per closure, not
+# pruned. A withdrawal waits out an earlier change (one HTTP attempt).
 _SUBSCRIPTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 

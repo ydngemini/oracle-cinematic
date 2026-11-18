@@ -142,6 +142,30 @@ def test_a_drain_stops_when_stripe_stops_answering(drain_env, monkeypatch):
     assert len(sent) == billing_usage.REPORT_MAX_CONSECUTIVE_UNKNOWN
 
 
+def test_idempotency_conflicts_do_not_stop_the_drain(drain_env, monkeypatch):
+    """24.7 re-review: a brokerage whose Stripe customer changed answers every
+    resend with a fast IdempotencyError. That is about those rows, not about
+    Stripe: the drain carries on (and so does the sweep)."""
+    drain_env.state["conn"] = _Conn(drain_env, rows=5)
+    sent = []
+
+    def conflict(**kw):
+        sent.append(kw["identifier"])
+        raise stripe.IdempotencyError("Keys for idempotent requests can only be used with the same parameters")
+
+    monkeypatch.setattr(stripe.billing.MeterEvent, "create", conflict)
+    result = asyncio.run(billing_usage.drain_usage_to_stripe(CTX))
+    assert result["state"] == "ok" and len(sent) == 5
+
+
+def test_a_stripe_5xx_counts_but_a_4xx_api_error_does_not():
+    assert billing_usage._transport_failure(stripe.APIError("boom", http_status=503))
+    assert billing_usage._transport_failure(stripe.APIConnectionError("reset"))
+    assert billing_usage._transport_failure(TimeoutError())
+    assert not billing_usage._transport_failure(stripe.APIError("odd", http_status=409))
+    assert not billing_usage._transport_failure(stripe.IdempotencyError("conflict"))
+
+
 def test_the_sweep_stops_when_stripe_stops_answering(monkeypatch):
     @asynccontextmanager
     async def tx(_ctx):
@@ -154,13 +178,15 @@ def test_the_sweep_stops_when_stripe_stops_answering(monkeypatch):
 
     async def drain(ctx, **_k):
         drained.append(ctx.tenant_id)
-        return {"state": "stripe_unresponsive", "reported": 0}
+        return {"state": "stripe_unresponsive", "reported": 0,
+                "quarantined": {"expired": 2, "uncertain": 1}, "aging": 4}
 
     monkeypatch.setattr(billing_usage, "tenant_tx", tx)
     monkeypatch.setattr(billing_usage, "STRIPE_METERED_PRICE_ID", "price_x")
     monkeypatch.setattr(billing_usage, "drain_usage_to_stripe", drain)
     result = asyncio.run(billing_usage.drain_all_tenants())
     assert drained == [T] and result["by_state"] == {"stripe_unresponsive": 1}
+    assert result["quarantined"] == {"expired": 2, "uncertain": 1} and result["aging"] == 4
 
 
 def test_closing_a_brokerage_changes_its_subscription_off_the_event_loop(monkeypatch):

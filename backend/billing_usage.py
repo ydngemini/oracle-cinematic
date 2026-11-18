@@ -344,10 +344,21 @@ REPORT_CLAIM_LEASE_SECONDS = 300
 # lease; then the resend reuses the identifier and Idempotency-Key and Stripe
 # de-duplicates it (24 h) — that, not the lease, is the final guarantee.
 REPORT_SEND_TIMEOUT_SECONDS = 30
-# This many unknown outcomes in a row means Stripe is not answering: the drain
-# stops instead of spending REPORT_SEND_TIMEOUT_SECONDS on every pending row
-# of every brokerage (and the sweep stops with it).
+# This many transport failures in a row (timeout, connection error, Stripe 5xx)
+# means Stripe is not answering: the drain stops instead of spending
+# REPORT_SEND_TIMEOUT_SECONDS on every pending row of every brokerage (and the
+# sweep stops with it). A fast, row-specific answer such as an idempotency
+# conflict does not count: it says nothing about Stripe's health.
 REPORT_MAX_CONSECUTIVE_UNKNOWN = 3
+
+
+def _transport_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, stripe.APIConnectionError)):
+        return True
+    if isinstance(exc, stripe.APIError):
+        status_code = getattr(exc, "http_status", None)
+        return status_code is None or int(status_code) >= 500
+    return False
 # The resolutions a person may record for a quarantined row (0175).
 REPORT_RESOLUTIONS = frozenset({"billed", "credited", "written_off"})
 
@@ -557,15 +568,17 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
                 logger.warning("Usage %s: Stripe customer changed between sends; held as uncertain", row["id"])
             else:
                 logger.warning("Usage report outcome unknown for %s: %s", row["id"], exc)
-            unknown_streak += 1
+            unknown_streak = unknown_streak + 1 if _transport_failure(exc) else 0
             if unknown_streak >= REPORT_MAX_CONSECUTIVE_UNKNOWN:
                 logger.warning(
                     "ORACLE_ALERT usage_meter_stripe_unresponsive tenant=%s unknown_in_a_row=%d"
                     " (drain stopped; the rows stay uncertain and are resent inside Stripe's window)",
                     tenant_id, unknown_streak,
                 )
+                async with tenant_tx(ctx) as conn:
+                    aging = await _aging_count(conn, tenant_id)
                 return {"state": "stripe_unresponsive", "reported": reported, "considered": len(seen),
-                        "quarantined": quarantined}
+                        "quarantined": quarantined, "aging": aging}
             continue
         try:
             async with tenant_tx(ctx) as conn:
@@ -740,6 +753,9 @@ async def drain_all_tenants(
         if state == "stripe_unresponsive":
             # Stripe is not answering: every other brokerage would time out too.
             reported += int(result.get("reported") or 0)
+            for kind, n in (result.get("quarantined") or {}).items():
+                quarantined[kind] = quarantined.get(kind, 0) + int(n or 0)
+            aging += int(result.get("aging") or 0)
             drained += 1
             break
         reported += int(result.get("reported") or 0)
