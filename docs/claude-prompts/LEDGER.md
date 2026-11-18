@@ -768,6 +768,26 @@ decision_refs: []
 next_task: "22.x erasure and DSAR items."
 updated: 2026-11-16
 ```
+#### L03-18 An outbound command that names only a lead follows that lead's record: staged, read and sent only by who may contact the lead's client (external audit 26.3)
+```yaml
+id: L03-18
+status: tests_pass
+env: local
+evidence_shas: [3b859cb]   # base; fix in the commit that adds this row (migration 0179)
+files: [backend/db/migrations/0179_lead_commands_follow_the_record.sql, backend/commands_api.py, backend/tests/test_lead_commands_access_live.py]
+tests_run:
+  - {cmd: "read commands_api._validate_command_payload / _require_target_editable / _requester_may_contact and 0142 app_link_draft_target at 3b859cb", result: "SMS/CALL accept lead_id as the only anchor; the stage check covered client_id and contact_id only; the 0142 trigger linked nothing for a lead-only target (so the policies treated it as a pool draft); the execution recheck returned True when no client and no contact were named", date: 2026-11-18}
+  - {cmd: "live: tests/test_lead_commands_access_live.py with 3b859cb's commands_api.py and 0142's trigger", result: "red: agent A staged a text about agent B's private lead (200, expected 404)", date: 2026-11-18}
+  - {cmd: "same with the fix (0179 applied)", result: "pass: own lead and pool lead stage; a colleague's private lead 404, a view-only one 403, a lead of another client than the one named 422, a lead that does not exist 404; the draft and its approval link the lead's seller client; B cannot list or open A's lead draft; retargeting at B's lead 404; the database refuses the row without the API; at send: client reassigned, lead moved to another client, edit share revoked -> not sent (the worker stops before the gate); test_command_drafts_access_live still passes", date: 2026-11-18}
+authz_checked: "0143 already decides who may see a lead: whoever may see its seller client (NULL = public/pool lead). 0179: app_link_draft_target links a lead-only target (command_executions.target, action_approvals.draft_payload->target) to the lead's seller client, so every 0142 policy (read/insert/update/delete) applies unchanged; existing lead-only drafts are re-linked. Staging (_require_lead_editable, read as the caller under 0143 RLS): invisible lead 404, view-only 403, lead of a different client than the one named 422. Execution (_requester_may_contact): the lead is re-read and its CURRENT seller client checked as the requester in their current role, besides the linked client/contact."
+blockers:
+  - "Privacy/authorization (customer contact): independent review + owner approval before merge."
+  - "Not deployed (C4.4)."
+audit_refs: [26.3]
+decision_refs: []
+next_task: "26.4: bind the destination phone/email to the linked record at approval and re-check before dispatch."
+updated: 2026-11-18
+```
 ### L04
 CRM, contacts, leads and relationships.
 
