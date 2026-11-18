@@ -276,14 +276,20 @@ async def _scenario(monkeypatch, part):
         if part == "legacy_and_resolution":
             # Rows the old drain failed on may have reached Stripe: 0175 carries
             # them over as uncertain since creation; an old one is quarantined,
-            # never resent. (0175 is idempotent; re-running it applies the backfill.)
+            # never resent. The backfill is run here for this tenant only (the
+            # database is shared); the file is checked to hold it.
             old = await usage("legacy-old", report_error="Request timed out")
             new = await usage("legacy-new", report_error="Request timed out")
             await admin.execute("UPDATE billing_usage_events SET created_at = now() - interval '2 days'"
                                 " WHERE tenant_id=$1 AND idempotency_key=$2", T, old)
             migration = os.path.join(os.path.dirname(__file__), "..", "db", "migrations",
                                      "0175_usage_report_claims.sql")
-            await admin.execute(open(migration).read())
+            backfill = ("UPDATE billing_usage_events\n   SET report_uncertain_since = created_at,\n"
+                        "       report_attempts = GREATEST(report_attempts, 1)\n"
+                        " WHERE reported_at IS NULL AND report_error IS NOT NULL\n"
+                        "   AND report_uncertain_since IS NULL AND report_state IS NULL")
+            assert backfill in open(migration).read()
+            await admin.execute(backfill + " AND tenant_id = $1", T)
             assert (await row(old))["uncertain"] and (await row(new))["uncertain"]
             await bu.drain_usage_to_stripe(ctx)
             assert (await row(old))["report_state"] == "uncertain" and old not in sent
@@ -298,15 +304,19 @@ async def _scenario(monkeypatch, part):
             with pytest.raises(ValueError):
                 await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
                                                    resolution="refunded", note="x")
+            old_id = str(await admin.fetchval("SELECT id FROM billing_usage_events WHERE tenant_id=$1"
+                                              " AND idempotency_key=$2", T, old))
             n = await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
-                                                   resolution="billed", note="found on the Stripe meter")
+                                                   resolution="billed", note="found on the Stripe meter",
+                                                   usage_ids=[old_id])
             assert n == 1
             resolved = await admin.fetchrow(
                 "SELECT report_state, report_resolution, report_resolved_by FROM billing_usage_events"
                 " WHERE tenant_id=$1 AND idempotency_key=$2", T, old)
             assert tuple(resolved) == ("uncertain", "billed", "usage-drain")   # history kept
             assert await bu.resolve_quarantined_usage(ctx, tenant_id=T, report_state="uncertain",
-                                                      resolution="credited", note="again") == 0
+                                                      resolution="credited", note="again",
+                                                      usage_ids=[old_id]) == 0
             after = (await ch._db_components())["usage_reporting"]["detail"].get("uncertain", 0)
             assert after == before - 1                                      # resolved rows stop paging
 

@@ -192,14 +192,17 @@ async def _db_components() -> dict[str, dict]:
         # and usage nearing Stripe's 35-day limit. Waits on a person.
         from billing_usage import BILLABLE_PREDICATE, REPORT_AGING_ALERT_DAYS
 
-        usage_rep = await conn.fetchrow(
-            "SELECT count(*) FILTER (WHERE report_state = 'uncertain' AND report_resolution IS NULL) AS uncertain, "
-            "       count(*) FILTER (WHERE report_state = 'expired' AND report_resolution IS NULL) AS expired, "
-            "       count(*) FILTER (WHERE report_state IS NULL AND occurred_at"
-            "                        <= now() - make_interval(days => $1)) AS aging "
+        # Two statements, each matching one partial index of 0175 (this runs
+        # every minute across every brokerage).
+        usage_rep = dict(await conn.fetchrow(
+            "SELECT count(*) FILTER (WHERE report_state = 'uncertain') AS uncertain, "
+            "       count(*) FILTER (WHERE report_state = 'expired') AS expired "
             "  FROM billing_usage_events "
-            " WHERE reported_at IS NULL AND metric = 'lead_engaged' AND " + BILLABLE_PREDICATE
-            + " AND (report_state IS NULL OR report_resolution IS NULL)",
+            " WHERE report_state IS NOT NULL AND report_resolution IS NULL"))
+        usage_rep["aging"] = await conn.fetchval(
+            "SELECT count(*) FROM billing_usage_events "
+            " WHERE reported_at IS NULL AND report_state IS NULL AND metric = 'lead_engaged' AND "
+            + BILLABLE_PREDICATE + " AND occurred_at <= now() - make_interval(days => $1)",
             REPORT_AGING_ALERT_DAYS)
         harvest = await conn.fetchrow(
             """
@@ -251,7 +254,7 @@ async def _db_components() -> dict[str, dict]:
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
-    out["usage_reporting"] = _usage_reporting(dict(usage_rep))
+    out["usage_reporting"] = _usage_reporting(usage_rep)
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
     out["valuation_providers"] = _valuation_providers(providers)

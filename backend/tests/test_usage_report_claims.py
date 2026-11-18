@@ -25,8 +25,9 @@ AGENT = TenantContext(agent_id="agent@a.test", tenant_id="aaaaaaaa-0000-0000-000
                       role=Role.AGENT)
 T1 = "11111111-1111-1111-1111-111111111111"
 NOW = datetime.now(timezone.utc)
+U1 = "33333333-3333-3333-3333-333333333333"
 BODY = {"tenant_id": T1, "report_state": "uncertain", "resolution": "billed",
-        "reason": "found on the Stripe meter"}
+        "reason": "found on the Stripe meter", "usage_ids": [U1]}
 
 
 def _client(ctx):
@@ -48,6 +49,7 @@ def test_only_a_platform_admin_may_resolve_quarantined_usage(ctx, monkeypatch):
 @pytest.mark.parametrize("patch", [
     {"resolution": "refunded"}, {"report_state": "reported"}, {"reason": ""},
     {"usage_ids": []}, {"extra": 1}, {"tenant_id": "not-a-uuid"},
+    {"usage_ids": None},   # an uncertain row is a per-row fact: never resolved in bulk
 ])
 def test_a_resolution_outside_the_vocabulary_is_refused(patch, monkeypatch):
     async def must_not(*_a, **_k):
@@ -76,10 +78,13 @@ def test_a_resolution_is_recorded_and_audited(monkeypatch):
     resp = _client(ADMIN).post("/api/admin/billing/usage/resolve", json=BODY)
     assert resp.status_code == 200 and resp.json()["resolved"] == 3
     assert seen == {"tenant_id": T1, "report_state": "uncertain", "resolution": "billed",
-                    "note": "found on the Stripe meter", "usage_ids": None, "actor": "ops@neoh.test"}
+                    "note": "found on the Stripe meter", "usage_ids": [U1], "actor": "ops@neoh.test"}
     (category, action, kw), = audited
     assert action == "admin.billing.usage_resolved" and category == audit_ledger.AuditCategory.ADMIN_ACTION
-    assert kw["tenant_id"] == T1 and kw["metadata"]["rows"] == 3 and kw["metadata"]["usage_ids"] == "all"
+    assert kw["tenant_id"] == T1 and kw["metadata"]["rows"] == 3 and kw["metadata"]["usage_ids"] == [U1]
+    # expired usage (a billing decision) may be resolved for the whole brokerage
+    bulk = {**BODY, "report_state": "expired", "resolution": "written_off", "usage_ids": None}
+    assert _client(ADMIN).post("/api/admin/billing/usage/resolve", json=bulk).status_code == 200
 
 
 def test_the_resolver_refuses_an_unknown_state_or_resolution():

@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from admin_ops import require_platform_admin
 from db.connection import tenant_tx
@@ -1123,6 +1123,15 @@ class UsageResolutionBody(BaseModel):
     resolution: Literal["billed", "credited", "written_off"]
     reason: str = Field(min_length=3, max_length=500)
     usage_ids: Optional[list[uuid.UUID]] = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _uncertain_rows_are_named(self) -> "UsageResolutionBody":
+        # Whether an uncertain send is on the Stripe meter is a fact per row:
+        # a bulk resolve could sweep in rows quarantined after the person
+        # looked. Expired rows (a billing decision) may be resolved in bulk.
+        if self.report_state == "uncertain" and not self.usage_ids:
+            raise ValueError("name the uncertain rows (usage_ids) checked against the Stripe meter")
+        return self
 
 
 @router.post("/billing/usage/resolve")

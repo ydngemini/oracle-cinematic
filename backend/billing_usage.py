@@ -528,7 +528,14 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
                 continue
         except Exception as exc:  # noqa: BLE001 — the outcome is unknown; recorded, drain continues
             await _release_report(ctx, row, _error_text(exc), keep_uncertain=True)
-            logger.warning("Usage report outcome unknown for %s: %s", row["id"], exc)
+            if isinstance(exc, stripe.IdempotencyError):
+                # The key was used with other parameters inside Stripe's 24 h
+                # idempotency window: the brokerage's Stripe customer changed
+                # between sends. Kept uncertain (the earlier send may have
+                # landed under the old customer); named so a person sees why.
+                logger.warning("Usage %s: Stripe customer changed between sends; held as uncertain", row["id"])
+            else:
+                logger.warning("Usage report outcome unknown for %s: %s", row["id"], exc)
             continue
         try:
             async with tenant_tx(ctx) as conn:
