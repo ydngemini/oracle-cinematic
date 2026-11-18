@@ -774,13 +774,15 @@ async def _provider_reconciliation_task() -> dict:
     return await run_sweep()
 
 
-def _hours_env(name: str, default: float) -> float:
-    """An hours setting as seconds, at least an hour; a bad value is the default."""
+def _hours_env(name: str, default: float, *, ceiling_h: float = 72.0) -> float:
+    """An hours setting as seconds, between an hour and `ceiling_h`; a bad
+    value is the default. The 10DLC sync's ceiling keeps it well inside the
+    send gate's 14-day freshness window (L10-16)."""
     try:
         hours = float(os.getenv(name, str(default)))
     except ValueError:
         hours = default
-    return max(3600.0, hours * 3600)
+    return min(max(1.0, hours), ceiling_h) * 3600
 
 
 async def _messaging_registration_sync_task() -> dict:

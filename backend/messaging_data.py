@@ -1042,8 +1042,11 @@ _APPLY_CAMPAIGN_SQL = """
     RETURNING status"""
 
 # Telnyx number-assignment states. Only ASSIGNED carries traffic (the send
-# gate requires it); these end the assignment, so the row is released.
-_ASSIGNMENT_ENDED = frozenset({"FAILED_ASSIGNMENT", "PENDING_UNASSIGNMENT"})
+# gate requires it). A failed assignment ended; PENDING_UNASSIGNMENT is kept
+# attached (recorded, not sendable): if the unassignment then fails the
+# number is still on the campaign, and a released row would make the next
+# assignment a duplicate the provider refuses.
+_ASSIGNMENT_ENDED = frozenset({"FAILED_ASSIGNMENT"})
 _ASSIGNMENT_STATES = frozenset({"ASSIGNED", "PENDING_ASSIGNMENT", "FAILED_ASSIGNMENT",
                                 "PENDING_UNASSIGNMENT", "FAILED_UNASSIGNMENT"})
 
@@ -1091,10 +1094,14 @@ async def refresh_registration_status(
             " UNION ALL SELECT status_checked_at FROM tenant_messaging_brands WHERE tenant_id=$1::uuid"
             "   AND provider_brand_id IS NOT NULL) r", ctx.tenant_id, float(min_interval_s))
     out: dict[str, Any] = {"brand": None, "campaigns": [], "assignments": [], "throttled": False}
-    if min_interval_s and recent:
-        out["throttled"] = True
-        return out
     adapter = get_messaging_provider(provider)
+    if min_interval_s and recent:
+        # Brand and campaign were just read; committed assignments are still
+        # re-read (a phone-number event must not wait for the next sweep).
+        out["throttled"] = True
+        out["assignments"] = await _refresh_assignments(ctx, adapter, provider, credentials,
+                                                        account is not None and route_account == account)
+        return out
 
     def holder_is(recorded: Optional[str]) -> bool:
         holder = recorded or route_account
@@ -1361,8 +1368,12 @@ async def assign_campaign_number(
             )
     # The provider completes an assignment asynchronously; texts wait for
     # ASSIGNED (25.2). Read it once now, best effort; the sync reads it after.
-    adapter = get_messaging_provider(provider)
-    assignments = await _refresh_assignments(ctx, adapter, provider, credentials, False)
+    try:
+        adapter = get_messaging_provider(provider)
+        assignments = await _refresh_assignments(ctx, adapter, provider, credentials, False)
+    except Exception:  # noqa: BLE001 — the assignment itself succeeded; the sync reads its status
+        logger.warning("assignment status not read right after assigning", exc_info=True)
+        assignments = []
     mine = purchase_id or (str(done["id"]) if done is not None else None)
     status = next((a["assignment_status"] for a in assignments if a["assignment_id"] == mine), None)
     return {"campaign_id": str(campaign["id"]), "assigned": True, "already_assigned": done is not None,

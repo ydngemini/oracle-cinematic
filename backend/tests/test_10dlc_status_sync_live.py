@@ -273,8 +273,7 @@ async def _scenario(monkeypatch):
         await reattach()
         answers["number"] = {"campaign_id": campaign_ref, "assignment_status": "PENDING_UNASSIGNMENT"}
         await refresh()
-        assert await state() == "released"
-        await reattach()
+        assert await state() == "attached" and await status() == "PENDING_UNASSIGNMENT"   # kept, not sendable
         answers["number"] = {"campaign_id": "C-someone-else", "assignment_status": "ASSIGNED"}
         out = await refresh()
         assert await state() == "released" and out["assignments"][0]["released"]
@@ -300,7 +299,8 @@ async def _scenario(monkeypatch):
         await refresh()
         reads.clear()
         throttled = await refresh(min_interval_s=30)
-        assert throttled["throttled"] and reads == []
+        # brand and campaign not re-read; committed assignments still are
+        assert throttled["throttled"] and not [r for r in reads if r[0] in ("brand", "campaign")]
 
         # Approval read back makes the number assignable (_CAMPAIGN_FOR_ASSIGNMENT_SQL).
         assert await admin.fetchval(md._CAMPAIGN_FOR_ASSIGNMENT_SQL.replace("FOR UPDATE OF c", ""), T) is not None

@@ -89,8 +89,12 @@ async def _sms(ctx: Any) -> Optional[str]:
             credential = _json.loads(raw) if raw else None
         except (TypeError, ValueError):
             credential = None
-        readiness = await messaging_data.messaging_send_readiness(
-            ctx, provider="telnyx", account=messaging_data.account_fingerprint(credential))
+        account = messaging_data.account_fingerprint(credential)
+        readiness = await messaging_data.messaging_send_readiness(ctx, provider="telnyx", account=account)
+        if readiness["ready"] and account is None:
+            # Everything else is in place, but no key to send with at all.
+            return ("texting isn't set up: no Telnyx account key is configured for this brokerage or the "
+                    "platform; nothing can be sent.")
         if readiness["ready"]:
             return None
         return ("texting isn't ready: " + messaging_data.describe_blockers(readiness["blockers"])

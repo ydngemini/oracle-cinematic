@@ -27,7 +27,7 @@ def world(monkeypatch):
     for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY", "TWILIO_API_SECRET",
                  "PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "ORACLE_SMTP_FROM_EMAIL", "ORACLE_SMTP_USERNAME",
                  "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_MESSAGING_PROVIDER", "ORACLE_EMAIL_PROVIDER",
-                 "TWILIO_SMS_FROM_NUMBER", "TWILIO_SMS_SENDER_TYPE"):
+                 "TWILIO_SMS_FROM_NUMBER", "TWILIO_SMS_SENDER_TYPE", "TELNYX_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     async def has_credential(ctx, provider, *, account_label=None):
@@ -85,7 +85,7 @@ def test_with_nothing_set_up_every_channel_names_what_it_needs(world):
 
 # ── sms ─────────────────────────────────────────────────────────────────────
 
-def test_texting_on_the_telnyx_rail_needs_the_send_gate_not_hosting_alone(world):
+def test_texting_on_the_telnyx_rail_needs_the_send_gate_not_hosting_alone(world, monkeypatch):
     world["business_number"] = {"voice_caller_id_e164": "+13025550100"}
     world["messaging_route"] = {"hosted_order_status": "processing"}
     assert "still being set up (processing)" in gaps()["sms"]
@@ -95,6 +95,9 @@ def test_texting_on_the_telnyx_rail_needs_the_send_gate_not_hosting_alone(world)
     world["send_readiness"] = {"ready": False, "blockers": ["campaign_not_approved"], "sender": None}
     assert "texting campaign (10DLC) is not approved" in gaps()["sms"]
     world["send_readiness"] = {"ready": True, "blockers": [], "sender": "+13025550100"}
+    # ready, but no key to send with anywhere: not offered
+    assert "no Telnyx account key" in gaps()["sms"]
+    monkeypatch.setenv("TELNYX_API_KEY", "platform-key")
     assert "sms" not in gaps()
 
 
