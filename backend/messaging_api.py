@@ -447,13 +447,16 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
 
 
 
-async def _record_orphan_opt_out(normalized) -> None:
+async def _record_orphan_opt_out(normalized, verified=None) -> None:
     from messaging_data import resolve_opt_out_owners_by_number
     from outreach_compliance import ConsentLedger
     from tenancy import Role as _Role
     from tenancy import TenantContext as _TenantContext
 
     owners = await resolve_opt_out_owners_by_number(normalized.to_e164)
+    if verified is not None:
+        # Only brokerages the signing key may speak for (25.4).
+        owners = [o for o in owners if verified.may_act_for(o["tenant_id"])]
     if not owners:
         logger.warning("STOP to a number no tenant has held; nothing to suppress")
         return
@@ -486,19 +489,25 @@ async def telnyx_webhook(request: Request) -> Response:
     )
     from outreach_compliance import is_stop_keyword
 
-    raw_body = (await request.body()).decode("utf-8")
-    public_key = os.getenv("TELNYX_PUBLIC_KEY", "").strip()
-    if not public_key:
-        raise HTTPException(status_code=503, detail="Telnyx webhook validation is not configured.")
+    import telnyx_signing
 
+    raw_body = (await request.body()).decode("utf-8")
     adapter = TelnyxMessagingProvider()
+    # 25.4: verified against every authorized signing key (platform, its
+    # rotation predecessor, each brokerage's own), and what verified it
+    # decides which brokerages the event may act for — never the destination.
     try:
-        event = adapter.validate_webhook(
-            raw_body, dict(request.headers), credentials={"public_key": public_key}
-        )
+        event, verified = await telnyx_signing.verify(raw_body, dict(request.headers))
+    except telnyx_signing.NoSigningKeys as exc:
+        raise HTTPException(status_code=503, detail="Telnyx webhook validation is not configured.") from exc
     except Exception as exc:
         logger.warning("Rejected invalid Telnyx webhook signature: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid Telnyx signature.") from exc
+
+    def _refuse(tenant_id: Any) -> Response:
+        logger.warning("Telnyx webhook signed by %s is not authorized for brokerage %s; not applied",
+                       verified.label, tenant_id)
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
 
     event_type = str(getattr(getattr(event, "data", None), "event_type", "") or "")
 
@@ -508,11 +517,15 @@ async def telnyx_webhook(request: Request) -> Response:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         route = await resolve_messaging_route_by_number(normalized.to_e164)
         opted_out = is_stop_keyword(normalized.text)
+        if route is not None and not verified.may_act_for(route["tenant_id"]):
+            # Crossed destination or a reassigned number: the event comes from
+            # an account that does not serve this number's brokerage.
+            return _refuse(route["tenant_id"])
         if route is None:
             if opted_out:
                 # No active route (disconnected, suspended, offboarded) — the
                 # message is not logged, but the opt-out must still be kept.
-                await _record_orphan_opt_out(normalized)
+                await _record_orphan_opt_out(normalized, verified)
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
             logger.warning("Inbound Telnyx message did not match an active route")
             return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -560,6 +573,11 @@ async def telnyx_webhook(request: Request) -> Response:
     if event_type in ("message.sent", "message.finalized"):
         delivery = adapter.normalize_delivery_event(event)
         if delivery is not None:
+            from messaging_data import tenant_for_provider_message
+
+            owner = await tenant_for_provider_message(delivery.provider, delivery.provider_message_id)
+            if owner is not None and not verified.may_act_for(owner):
+                return _refuse(owner)
             known = await record_delivery_update(
                 provider=delivery.provider,
                 provider_message_id=delivery.provider_message_id,
@@ -583,7 +601,7 @@ async def telnyx_webhook(request: Request) -> Response:
         provider_id = str(get("campaignId") or get("campaign_id") or get("brandId") or get("brand_id")
                           or get("phoneNumber") or get("phone_number") or "")
         if provider_id:
-            task = asyncio.ensure_future(_refresh_for_provider_id(provider_id))
+            task = asyncio.ensure_future(_refresh_for_provider_id(provider_id, verified))
             _REFRESH_TASKS.add(task)                   # kept until done (no GC mid-flight)
             task.add_done_callback(_REFRESH_TASKS.discard)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -598,7 +616,7 @@ async def telnyx_webhook(request: Request) -> Response:
 _REFRESH_TASKS: set = set()
 
 
-async def _refresh_for_provider_id(provider_id: str) -> None:
+async def _refresh_for_provider_id(provider_id: str, verified: Any = None) -> None:
     """Re-read one brokerage's 10DLC status after a provider event (25.2)."""
     from messaging_data import tenant_for_registration
     from messaging_provider import messaging_provider_name
@@ -607,6 +625,10 @@ async def _refresh_for_provider_id(provider_id: str) -> None:
         tenant_id = await tenant_for_registration(provider_id)
         if not tenant_id:
             logger.info("10DLC event for an unknown registration %s ignored", provider_id[:64])
+            return
+        if verified is not None and not verified.may_act_for(tenant_id):
+            logger.warning("10DLC event signed by %s not authorized for brokerage %s; ignored",
+                           verified.label, tenant_id)
             return
         # A burst of events for one brokerage reads the provider once a minute.
         await sync_registration_for_tenant(tenant_id, provider=messaging_provider_name(), min_interval_s=60)
