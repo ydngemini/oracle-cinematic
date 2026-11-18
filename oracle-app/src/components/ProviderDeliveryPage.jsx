@@ -194,8 +194,12 @@ export default function ProviderDeliveryPage() {
 
   // Same carrier-agnostic rule as voice: messaging provider terminology
   // never renders — only messagingStatus.hosted_order_status decides which
-  // step of the flow to show.
-  const smsReady = messagingStatus?.hosted_order_status === 'active';
+  // step of the flow to show. "Ready" is the server's send gate (audit
+  // 25.1): a hosted number still needs its approved texting campaign and
+  // assignment, and the server says which part is missing.
+  const smsHosted = messagingStatus?.hosted_order_status === 'active';
+  const smsReady = smsHosted && messagingStatus?.ready === true;
+  const smsBlockers = Array.isArray(messagingStatus?.send_blocker_messages) ? messagingStatus.send_blocker_messages : [];
   const smsEligibilityChecked = Boolean(
     messagingStatus?.eligibility_status && messagingStatus.eligibility_status !== 'unknown'
   );
@@ -429,6 +433,18 @@ export default function ProviderDeliveryPage() {
     }
   }, [smsOtpInput]);
 
+  const refreshMessagingRegistration = useCallback(async () => {
+    setWorking('sms-registration'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/messaging/business/registration/refresh', {});
+      setMessagingStatus((current) => ({ ...(current || {}), ...(response?.messaging || {}) }));
+    } catch (refreshError) {
+      setError(errorText(refreshError));
+    } finally {
+      setWorking('');
+    }
+  }, []);
+
   const refreshMessagingStatus = useCallback(async () => {
     setWorking('sms-refresh'); setError(''); setMessage('');
     try {
@@ -584,6 +600,16 @@ export default function ProviderDeliveryPage() {
           <div className={styles.panelBody}>
             {smsReady ? (
               <p>Your business number can send and receive text messages through Neoh.</p>
+            ) : smsHosted ? (
+              <>
+                <p>Your business number is set up for text messages, but texts can&apos;t be sent yet:</p>
+                <ul>{(smsBlockers.length ? smsBlockers : ['texting registration (10DLC) is not complete']).map((text) => <li key={text}>{text}</li>)}</ul>
+                {(messagingStatus?.send_blockers || []).includes('wrong_account') ? (
+                  <button type="button" className={styles.secondaryButton} onClick={refreshMessagingStatus} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Refresh hosting status</button>
+                ) : (
+                  <button type="button" className={styles.secondaryButton} onClick={refreshMessagingRegistration} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Check texting registration</button>
+                )}
+              </>
             ) : smsPendingVerification ? (
               <>
                 <p>We sent a verification code to your business number. Enter it below.</p>
@@ -611,7 +637,7 @@ export default function ProviderDeliveryPage() {
                 <button type="button" className={styles.primaryButton} onClick={checkMessagingEligibility} disabled={Boolean(working)}><ShieldCheck aria-hidden="true" /> Check availability</button>
               </>
             )}
-            {smsEligible && !smsPendingVerification && !smsProcessing && !smsReady ? (
+            {smsEligible && !smsPendingVerification && !smsProcessing && !smsHosted ? (
               <button type="button" className={styles.primaryButton} onClick={connectMessaging} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> Connect text messages</button>
             ) : null}
           </div>

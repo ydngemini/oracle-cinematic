@@ -774,6 +774,25 @@ async def _provider_reconciliation_task() -> dict:
     return await run_sweep()
 
 
+def _hours_env(name: str, default: float, *, ceiling_h: float = 72.0) -> float:
+    """An hours setting as seconds, between an hour and `ceiling_h`; a bad
+    value is the default. The 10DLC sync's ceiling keeps it well inside the
+    send gate's 14-day freshness window (L10-16)."""
+    try:
+        hours = float(os.getenv(name, str(default)))
+    except ValueError:
+        hours = default
+    return min(max(1.0, hours), ceiling_h) * 3600
+
+
+async def _messaging_registration_sync_task() -> dict:
+    """Read pending/approved 10DLC brand and campaign status back from the
+    provider (external audit 25.2: nothing else ever did)."""
+    from messaging_api import sync_open_registrations
+
+    return await sync_open_registrations()
+
+
 async def _privacy_lifecycle_task() -> dict:
     """Start erasure for brokerages whose closure grace period has ended, and
     delete export archives past their expiry (privacy_lifecycle.py)."""
@@ -1101,6 +1120,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="provider_reconciliation",
         interval_s=900,
         run=_provider_reconciliation_task,
+    ))
+    sched.register(PeriodicTask(
+        name="messaging_registration_sync",
+        interval_s=_hours_env("ORACLE_10DLC_SYNC_INTERVAL_HOURS", 6.0),
+        run=_messaging_registration_sync_task,
     ))
     sched.register(PeriodicTask(
         name="privacy_lifecycle",

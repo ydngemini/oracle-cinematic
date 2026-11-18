@@ -144,7 +144,9 @@ def test_sms_branch_fails_closed_when_telnyx_route_not_ready():
     telnyx_idx = branch.index('if sms_provider == "telnyx":')
     else_idx = branch.index("else:", telnyx_idx)
     telnyx_block = branch[telnyx_idx:else_idx]
-    assert 'hosted_order_status") != "active"' in telnyx_block
+    # carrier readiness, not hosting alone (25.1)
+    assert 'owner_ctx, provider="telnyx", account=account_fingerprint(telnyx_credentials))' in telnyx_block
+    assert 'if not readiness["ready"]' in telnyx_block
     # A configuration refusal: a clean failure (never "uncertain"), and terminal
     # for the job worker, so it is not retried into a later, unannounced send.
     assert "raise ProviderConfigurationError" in telnyx_block
@@ -172,7 +174,9 @@ def test_sms_branch_sender_is_the_verified_business_number_not_client_supplied()
     else_idx = branch.index("else:", telnyx_idx)
     telnyx_block = branch[telnyx_idx:else_idx]
     assert 'from_=sender_number' in telnyx_block
-    assert 'business_number["voice_caller_id_e164"]' in telnyx_block
+    # the sender is the one the readiness gate proved registered (the owner's
+    # voice-verified number, assigned to the approved campaign)
+    assert 'sender_number = str(readiness["sender"])' in telnyx_block
 
 
 def test_webhook_verification_does_not_need_the_api_key(monkeypatch):

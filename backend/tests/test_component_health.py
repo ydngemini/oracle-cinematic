@@ -304,3 +304,15 @@ def test_an_unmetered_billable_engagement_degrades_health():
     degraded = ch._billing_meter(3)
     assert degraded["state"] == ch.DEGRADED and degraded["detail"] == {"unmetered": 3}
     assert "billing_meter" in ch._DB_KEYS
+
+
+def test_10dlc_registration_trouble_pages_an_operator(monkeypatch):
+    """25.2: a lost campaign, a status unreadable for a day, two weeks pending,
+    or a submission/assignment whose outcome no row reflects."""
+    ok = {"lost": 0, "unreadable": 0, "stalled": 0, "unresolved": 0}
+    assert ch._messaging_registration(ok)["state"] == ch.HEALTHY
+    for key in ok:
+        out = ch._messaging_registration({**ok, key: 1})
+        assert out["state"] == ch.DEGRADED, key
+    assert "operator" in ch._messaging_registration({**ok, "unresolved": 2})["summary"]
+    assert "messaging_registration" in ch._DB_KEYS

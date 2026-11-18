@@ -251,6 +251,12 @@ class MessagingProvider:
     ) -> ProviderResult:
         raise NotImplementedError
 
+    async def get_number_campaign(
+        self, phone_number: str, *, credentials: Optional[Mapping[str, Any]] = None
+    ) -> dict[str, Any]:
+        """{"campaign_id", "assignment_status"} for this number's 10DLC assignment."""
+        raise NotImplementedError
+
 
 class TwilioMessagingProvider(MessagingProvider):
     """Legacy path — wraps the existing send_twilio_sms unchanged. No hosted-
@@ -799,9 +805,16 @@ class TelnyxMessagingProvider(MessagingProvider):
             return client.messaging_10dlc.brand.retrieve(brand_id)
 
         response = await asyncio.wait_for(asyncio.to_thread(_get), timeout=15.0)
+        response = getattr(response, "data", None) or response
+        # Two fields (25.2): `status` is the registration (OK /
+        # REGISTRATION_PENDING / REGISTRATION_FAILED), `identity_status` the
+        # verification of an active brand. The first decides, the second
+        # qualifies an OK brand.
         return {
-            "status": str(getattr(response, "identity_status", "") or ""),
-            "failure_reason": getattr(response, "failure_reason", None),
+            "status": str(getattr(response, "status", "") or ""),
+            "identity_status": str(getattr(response, "identity_status", "") or ""),
+            "failure_reason": (getattr(response, "failure_reasons", None)
+                               or getattr(response, "failure_reason", None)),
         }
 
     async def submit_campaign(
@@ -843,9 +856,30 @@ class TelnyxMessagingProvider(MessagingProvider):
             return client.messaging_10dlc.campaign.retrieve(campaign_id)
 
         response = await asyncio.wait_for(asyncio.to_thread(_get), timeout=15.0)
+        response = getattr(response, "data", None) or response
         return {
             "status": str(getattr(response, "campaign_status", "") or getattr(response, "status", "") or ""),
+            "failure_reason": (getattr(response, "failure_reasons", None)
+                               or getattr(response, "failure_reason", None)),
+            # provisioned at the carriers, yet suspended by T-Mobile
+            "t_mobile_suspended": bool(getattr(response, "is_t_mobile_suspended", False)),
         }
+
+    async def get_number_campaign(
+        self, phone_number: str, *, credentials: Optional[Mapping[str, Any]] = None
+    ) -> dict[str, Any]:
+        import asyncio
+
+        def _get():
+            client = self._client(credentials)
+            return client.messaging_10dlc.phone_number_campaigns.retrieve(phone_number)
+
+        response = await asyncio.wait_for(asyncio.to_thread(_get), timeout=15.0)
+        response = getattr(response, "data", None) or response
+        # The assignment completes asynchronously: ASSIGNED is the only state
+        # in which the number carries the campaign's traffic.
+        return {"campaign_id": str(getattr(response, "campaign_id", "") or "") or None,
+                "assignment_status": str(getattr(response, "assignment_status", "") or "")}
 
     async def assign_number_to_campaign(
         self,

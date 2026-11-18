@@ -288,12 +288,15 @@ async def send_twilio_sms(
     api_secret = str(
         credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")
     ).strip()
-    sender = str(
-        credentials.get("sms_sender")
-        or credentials.get("sms_sender_e164")
-        or os.getenv("TWILIO_SMS_FROM_NUMBER", "")
-    ).strip()
-    sender_type = str(credentials.get("sms_sender_type") or "").strip()
+    # 25.1: the sender must declare how it is registered for business texts,
+    # and the declaration comes from the same place as the sender — the
+    # platform's env never vouches for a brokerage's number, nor the reverse.
+    tenant_sender = str(credentials.get("sms_sender") or credentials.get("sms_sender_e164") or "").strip()
+    if tenant_sender:
+        sender, sender_type = tenant_sender, str(credentials.get("sms_sender_type") or "").strip()
+    else:
+        sender = os.getenv("TWILIO_SMS_FROM_NUMBER", "").strip()
+        sender_type = os.getenv("TWILIO_SMS_SENDER_TYPE", "").strip()
     recipient = str((draft.get("target") or {}).get("phone") or "").strip()
     body = str(draft.get("body") or "").strip()
 
@@ -302,7 +305,7 @@ async def send_twilio_sms(
         raise ProviderConfigurationError(cred_error)
     if not sender.startswith("+"):
         raise ProviderConfigurationError("A registered Twilio SMS sender is not configured")
-    if sender_type and sender_type not in {
+    if sender_type not in {
         "twilio_registered",
         "ported",
         "toll_free_verified",

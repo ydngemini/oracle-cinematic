@@ -538,7 +538,7 @@ def test_comms_masks_numbers_and_names_problems(use_conn, monkeypatch):
     assert row["name"] == "Lockwood"
     assert row["voice"]["business_number"] == "•••0199" and row["voice"]["providers"] == ["plivo"]
     assert "caller ID verification pending" in row["verification_pending"]
-    assert "10DLC registration rejected" in row["problems"]
+    assert "10DLC registration rejected, suspended or expired" in row["problems"]
     assert "many texts failing in the last 24h" in row["problems"]
     assert row["failures_24h"]["neoh_texts_failed"] == 2
     assert out["platform_providers"] == {"twilio": True, "plivo": False, "telnyx": False}

@@ -72,19 +72,42 @@ async def _sms(ctx: Any) -> Optional[str]:
     from messaging_provider import messaging_provider_name
 
     if messaging_provider_name() == "telnyx":
+        # The same gate the send itself applies (25.1): hosting alone is not
+        # carrier-ready, so offering or drafting a text it would refuse is
+        # the contradiction this module exists to prevent.
         route = await messaging_data.get_messaging_route(ctx)
-        number = await messaging_data.get_public_business_number(ctx)
         status = (route or {}).get("hosted_order_status")
-        if route is not None and number is not None and status == "active":
-            return None
         if route is not None and status in ("pending_verification", "processing", "pending_documents",
                                             "manual_action_required"):
             return (f"texting isn't ready yet: text messages for your business number are still being "
                     f"set up ({status}); nothing can be sent until that finishes.")
-        return ("texting isn't set up: connect and finish setting up text messages for your business "
-                "number before sending.")
-    if _env_twilio() or await commands_api.has_provider_credential(ctx, "twilio", account_label=ctx.agent_id):
-        return None
+        # ...with the account a send would actually use (25.1).
+        import json as _json
+
+        raw = await commands_api._load_provider_credential(ctx, "telnyx")
+        try:
+            credential = _json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            credential = None
+        account = messaging_data.account_fingerprint(credential)
+        readiness = await messaging_data.messaging_send_readiness(ctx, provider="telnyx", account=account)
+        if readiness["ready"] and account is None:
+            # Everything else is in place, but no key to send with at all.
+            return ("texting isn't set up: no Telnyx account key is configured for this brokerage or the "
+                    "platform; nothing can be sent.")
+        if readiness["ready"]:
+            return None
+        return ("texting isn't ready: " + messaging_data.describe_blockers(readiness["blockers"])
+                + " before sending.")
+    if await commands_api.has_provider_credential(ctx, "twilio", account_label=ctx.agent_id):
+        return None   # a saved credential pairs its sender with its registration type (sales_api)
+    if _env_twilio():
+        # The platform sender must declare its registration, as send_twilio_sms requires (25.1).
+        if (os.getenv("TWILIO_SMS_FROM_NUMBER", "").strip().startswith("+") and os.getenv(
+                "TWILIO_SMS_SENDER_TYPE", "").strip() in {"twilio_registered", "ported", "toll_free_verified"}):
+            return None
+        return ("texting isn't set up: the platform's Twilio text sender has no declared registration "
+                "(TWILIO_SMS_SENDER_TYPE); nothing can be sent until it does.")
     return "texting isn't set up: no Twilio account is connected for this brokerage and the platform has none."
 
 

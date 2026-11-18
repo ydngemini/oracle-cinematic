@@ -70,5 +70,5 @@ def test_the_refused_text_is_a_configuration_error():
     import commands_api
 
     src = inspect.getsource(commands_api)
-    at = src.index("Text message blocked: connect and finish setting up")
+    at = src.index('"Text message blocked: " + describe_blockers(')
     assert "raise ProviderConfigurationError(" in src[at - 120:at]
