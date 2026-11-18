@@ -84,6 +84,29 @@ async def _scenario():
         await ca.accept_call_outcome("plivo", zero, "completed", 0, tenant_id=T)
         assert await timeline(zero) == ("Call not answered", False)
 
+        # started_at alone is not an answer: an agent's transcript telemetry
+        # can set it while the call rings.
+        typed = await session("typed")
+        await admin.execute("UPDATE live_call_sessions SET started_at = now() WHERE provider_call_id=$1", typed)
+        await ca.accept_call_outcome("plivo", typed, "completed", None, tenant_id=T)
+        assert await timeline(typed) == ("Call completed; answer not confirmed", False)
+
+        # The final status applied before the answer: the late answer
+        # corrects the row, once.
+        late = await session("late-answer")
+        await ca.accept_call_outcome("plivo", late, "completed", None, tenant_id=T)
+        assert await timeline(late) == ("Call completed; answer not confirmed", False)
+        await ca.accept_call_outcome("plivo", late, "in-progress", None, tenant_id=T)
+        assert await timeline(late) == ("Call answered and ended", True)
+        await ca.accept_call_outcome("plivo", late, "answered", None, tenant_id=T)
+        assert await admin.fetchval("SELECT count(*) FROM client_activities WHERE tenant_id=$1 "
+                                    "AND meta->>'provider_call_id' = $2", uuid.UUID(T), late) == 1
+
+        # Twilio's completed is an answer by Twilio's rules (L17-44).
+        tw = await session("twilio")
+        await ca.accept_call_outcome("twilio", tw, "completed", None, tenant_id=T)
+        assert await timeline(tw) == ("Call answered and ended", True)
+
         busy = await session("busy")
         await ca.accept_call_outcome("plivo", busy, "busy", None, tenant_id=T)
         assert await timeline(busy) == ("Call not connected — line busy", False)

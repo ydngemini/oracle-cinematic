@@ -365,15 +365,16 @@ def test_a_finished_call_is_written_in_the_carriers_words(monkeypatch, status, d
 
 def test_a_completed_call_with_no_duration_is_not_narrated_as_answered(monkeypatch):
     """24.8: the timeline row falls back to "answer not confirmed" unless the
-    session recorded an explicit answer (started_at); Twilio's completed is an
-    answer by Twilio's own rules."""
+    carrier itself reported an answer for the call (a stored in-progress /
+    answered outcome); Twilio's completed is an answer by Twilio's own rules."""
     import commands_api as ca
 
     conn = RecordingConn()
     _patch_tx(monkeypatch, ca, conn)
     asyncio.run(ca.record_call_outcome("call-uuid-1", "completed", None))
     sql, args = [(q, a) for q, a in conn.executed if "INSERT INTO client_activities" in q][0]
-    assert "s.started_at IS NULL THEN $6" in sql
+    assert "NOT ans.answered THEN $6" in sql and "provider_call_outcomes o" in sql
+    assert "started_at" not in sql   # an agent's transcript can set that
     assert args[4] is True and args[5] == "Call completed; answer not confirmed"
     conn = RecordingConn()
     _patch_tx(monkeypatch, ca, conn)
@@ -390,7 +391,11 @@ def test_ringing_writes_nothing_and_answered_only_starts_the_session(monkeypatch
     asyncio.run(ca.record_call_outcome("call-uuid-1", "ringing"))
     assert conn.executed == []
     asyncio.run(ca.record_call_outcome("call-uuid-1", "in-progress"))
-    assert len(conn.executed) == 1 and "UPDATE live_call_sessions" in conn.executed[0][0]
+    # the session starts; the only timeline write is correcting an earlier
+    # "answer not confirmed" row (24.8), never a new row
+    assert len(conn.executed) == 2 and "UPDATE live_call_sessions" in conn.executed[0][0]
+    assert "UPDATE client_activities" in conn.executed[1][0]
+    assert not any("INSERT" in sql for sql, _ in conn.executed)
 
 
 def test_plivo_outbound_status_records_the_outcome():
