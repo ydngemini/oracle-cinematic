@@ -4942,7 +4942,7 @@ next_task: "Keep live tests self-contained (own tenant, generic tenant_id cleanu
 updated: 2026-11-16
 ```
 
-#### L19-16 An alert nobody was emailed about is not recorded as notified, and is sent once a recipient is set (external audit 30.3)
+#### L19-16 An alert nobody was emailed about is not recorded as notified, and is sent once a recipient is set while the problem is still detected (external audit 30.3)
 ```yaml
 id: L19-16
 status: tests_pass
@@ -4953,7 +4953,7 @@ tests_run:
   - {cmd: "read ops_alerts at f4365e2", result: "confirmed 30.3: send_email returned None with ORACLE_ALERT_EMAIL empty, _record read None as delivered and set notified_at, and re-sends only happen while notified_at IS NULL, so an incident first seen with no recipient was never emailed even after one was set; readiness treated a missing recipient as a warning everywhere", date: 2026-11-18}
   - {cmd: "live PostgreSQL: test_ops_alert_recipient_live against f4365e2's ops_alerts.py", result: "red: notified_at was set with no recipient", date: 2026-11-18}
   - {cmd: "after: live 1 passed; full unit suite 6834 passed / 152 skipped (with the review-round fixes); vitest OperatorOverview 14 passed; eslint clean", result: "pass", date: 2026-11-18}
-authz_checked: "No access-control change. notified_at now means the relay accepted the email; with no recipient the row records notify_error='recipient_missing', is not re-attempted (or re-logged) while there is still no recipient, and is sent at the next evaluation after ORACLE_ALERT_EMAIL is set; a delivered incident is not sent twice (unit + live). security_alerts.deliver checks its recipient itself and passes to=, so it never sees RECIPIENT_MISSING. Readiness: ORACLE_ALERT_EMAIL missing on api or worker (both run server.py and either can be the elected evaluator) BLOCKS production, WARNs staging, in the spec and no-spec paths. The operator overview says 'nobody was emailed: no alert recipient is set' or 'alert email not delivered; it is resent while the problem is still detected'."
+authz_checked: "No access-control change. notified_at now means the relay accepted the email; with no recipient the row records notify_error='recipient_missing', is not re-attempted (or re-logged) while there is still no recipient, and is sent once ORACLE_ALERT_EMAIL is set and the component is still confirmed bad (setting the variable redeploys, so about two evaluations later); a delivered incident is not sent twice (unit + live). security_alerts.deliver checks its recipient itself and passes to=, so it never sees RECIPIENT_MISSING. Readiness: ORACLE_ALERT_EMAIL missing on api or worker (both run server.py and either can be the elected evaluator) BLOCKS production, WARNs staging, in the spec and no-spec paths. The operator overview says 'nobody was emailed: no alert recipient is set' or 'alert email not delivered; it is resent while the problem is still detected'."
 blockers:
   - "OPEN, part of 30.3: no delivered test alert is required before go-live. Readiness checks only that the variable is set, so a mistyped address or a broken relay passes until the first real incident. Next: an operator 'send test alert' action whose recorded outcome readiness checks."
   - "Independent review r1 (REQUEST CHANGES): the test alert (above, recorded open), worker-side recipient (fixed), 'retrying' copy (fixed), stale doc line refs (fixed). Residual, LOW: incidents opened before this change with no recipient keep notified_at set and stay unsent (production never deployed; staging cannot send email in recovery mode); a 'recovered' email can reach someone who never got the opening alert and its outcome is not recorded; delivery failures (including SmtpUncertainError) retry every evaluation, so an uncertain send can arrive twice (pre-existing); 'logged'/'sent' stay implied by notified_at/notify_error rather than a status column; security_alerts.deliver still returns None with no recipient (nothing records it)."
@@ -4983,7 +4983,6 @@ decision_refs: [D-2026-10-12-01]
 next_task: "Item 8 annotated as legacy in this change; replace with a property-sources check (11 T11.01)"
 updated: 2026-10-12
 ```
-
 
 #### L20-02 One launch backlog, read from every ledger row (T20.02, AC20.02)
 Backlog: [LAUNCH-BACKLOG.md](LAUNCH-BACKLOG.md) (generated).
