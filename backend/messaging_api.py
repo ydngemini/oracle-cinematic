@@ -676,9 +676,7 @@ async def sync_hosted_orders(*, limit: int = 200) -> dict[str, Any]:
     acknowledges order events without acting; nothing else advanced them but
     a broker's refresh). Each route under its own agent and credential; one
     failure is recorded and the sweep goes on."""
-    from messaging_data import hosted_orders_to_sync, refresh_hosted_order_status
-
-    from messaging_data import mark_hosted_order_checked
+    from messaging_data import hosted_orders_to_sync, mark_hosted_order_checked, refresh_hosted_order_status
 
     synced = failed = 0
     for tenant_id, agent_id in await hosted_orders_to_sync(limit=limit):
