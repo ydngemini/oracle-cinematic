@@ -2171,6 +2171,30 @@ next_task: "25.6-25.8; 21.5."
 updated: 2026-11-18
 ```
 
+#### L10-19 Hosted orders are swept, the ownership code has a real lockout, contradicting receipts are held (external audits 25.6, 25.7, 25.8)
+```yaml
+id: L10-19
+status: tests_pass
+env: local
+evidence_shas: [8ddfb3c]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0177_messaging_hardening.sql, backend/messaging_data.py, backend/messaging_api.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/operator_api.py, backend/privacy_data_map.py, backend/tests/test_messaging_hardening_live.py, backend/tests/test_receipt_reconcile_route.py, backend/tests/test_telnyx_messaging_data.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the Telnyx webhook's order-event handling, refresh_hosted_order_status, complete_messaging_verification and record_delivery_update at 8ddfb3c", result: "confirmed: hosted orders advanced only on a broker's refresh; _MAX_VERIFICATION_ATTEMPTS/_VERIFICATION_LOCKOUT_SECONDS defined in messaging_data but unused (each code went straight to Telnyx); a contradicting final receipt was dropped by the monotonic UPDATE with no trace", date: 2026-11-18}
+  - {cmd: "red: live test_messaging_hardening_live (3 parts) with 8ddfb3c's messaging_data/messaging_api/component_health and 0177 applied", result: "3 failed (10 of 10 concurrent wrong codes reached the provider; no sweep; no journal)", date: 2026-11-18}
+  - {cmd: "after: live 3 parts; unit test_receipt_reconcile_route + messaging/telnyx/operator/component/periodic/privacy selection", result: "3 live pass; 359 + 5 unit pass", date: 2026-11-18}
+authz_checked: "The sweep reads each route under its own tenant/agent and credential. The lockout is per route (tenant + agent). POST /api/admin/messaging/receipts/{id}/reconcile is require_platform_admin (broker owner 403), closed vocabulary (delivered/failed) and a reason, audited (admin.messaging.receipt_reconciled). The journal has the 0141 tenant wall RLS; no personal data."
+blockers:
+  - "25.6: the 10DLC sync task (messaging_registration_sync) also re-reads every active non-final hosted order (pending_verification/processing/pending_documents/manual_action_required), least recently checked first; hosted_order_checked_at records the read and a trigger stamps hosted_order_status_at on every status change; the health component pages on an order not final for 7 days. Order webhooks are still acknowledged without acting (their content is not trusted); the manual refresh stays."
+  - "25.7: one attempt is reserved atomically before Telnyx is asked (concurrent submissions cannot exceed 5); the 5th wrong code locks the route for 15 minutes (even a right code is refused without asking Telnyx); a provider error gives the attempt back; success resets. Telnyx's own limits were not verified live. The voice caller-ID OTP (inbound_voice) has the same read-then-write race; not changed here."
+  - "25.8: every receipt is journaled (sms_delivery_receipts, kept 90 days; an open contradiction until reconciled). A final receipt of the other outcome (delivered vs failed/undelivered) is marked contradicts, raises ORACLE_ALERT sms_delivery_contradiction and the health component, and changes nothing — no status and no delivery/failure side effect (no lead_engaged meter, no failed first response) — until a platform admin reconciles it against the provider's record; the chosen status then applies with its side effect."
+  - "Migration 0177: columns, a CHECK, a trigger function without a SET clause (non-superuser migration), the journal table with RLS and grants."
+  - "Customer-contact change (delivery evidence, metering): independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [25.6, 25.7, 25.8]
+decision_refs: []
+next_task: "21.5; chunk 26 open items."
+updated: 2026-11-18
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

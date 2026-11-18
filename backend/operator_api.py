@@ -1144,6 +1144,46 @@ async def reset_user_two_step(
     return await reset_member_mfa(ctx, user_id, body.reason)
 
 
+class ReceiptReconcileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    final_status: Literal["delivered", "failed"]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/messaging/receipts/{receipt_id}/reconcile")
+async def reconcile_receipt(
+    receipt_id: int,
+    body: ReceiptReconcileBody,
+    ctx: TenantContext = Depends(require_platform_admin),
+) -> dict[str, Any]:
+    """Settle contradicting carrier delivery receipts for one text (25.8),
+    after checking the provider's own record: the text takes the final status
+    named here, with that status's delivery/failure effects. Audited."""
+    import messaging_data
+
+    try:
+        result = await messaging_data.reconcile_delivery_receipt(
+            ctx, receipt_id=receipt_id, final_status=body.final_status)
+    except messaging_data.ReceiptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _db_unavailable(exc) from None
+    try:
+        from audit_ledger import AuditCategory, ledger
+
+        await ledger.record(
+            AuditCategory.ADMIN_ACTION, "admin.messaging.receipt_reconciled",
+            tenant_id=result["tenant_id"], user_id=ctx.agent_id, target_id=str(receipt_id),
+            metadata={"final_status": body.final_status, "reason": body.reason,
+                      "status_changed": result["status_changed"]},
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("audit record for admin.messaging.receipt_reconciled failed")
+    return result
+
+
 class UsageResolutionBody(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     tenant_id: uuid.UUID
