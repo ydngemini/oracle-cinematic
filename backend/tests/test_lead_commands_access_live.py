@@ -46,12 +46,13 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
 
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=3)
-    tenant = str(uuid.uuid4())
+    tenant, other_tenant = str(uuid.uuid4()), str(uuid.uuid4())
     tag = uuid.uuid4().hex[:8]
     users = {k: uuid.uuid4() for k in ("owner", "a", "b", "c")}
     agent = {k: f"{k}-{tag}@leads.test" for k in users}
     client = {"a": uuid.uuid4(), "b": uuid.uuid4(), "b2": uuid.uuid4()}
-    lead = {"a": uuid.uuid4(), "b": uuid.uuid4(), "pool": uuid.uuid4(), "shared": uuid.uuid4()}
+    lead = {"a": uuid.uuid4(), "b": uuid.uuid4(), "pool": uuid.uuid4(), "shared": uuid.uuid4(),
+            "foreign": uuid.uuid4(), "doomed": uuid.uuid4()}
 
     def ctx(who: str) -> TenantContext:
         return TenantContext(agent_id=agent[who], tenant_id=tenant,
@@ -74,8 +75,9 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         return admin.fetchrow("SELECT * FROM command_executions WHERE id=$1", uuid.UUID(cid))
 
     try:
-        await admin.execute("INSERT INTO tenants (id, slug, name, postal_address) VALUES ($1,$2,'Lead drafts',"
-                            "'1 Main St, Dover, DE 19901')", tenant, f"leads-{tag}")
+        for t, slug in ((tenant, "leads"), (other_tenant, "leads-other")):
+            await admin.execute("INSERT INTO tenants (id, slug, name, postal_address) VALUES ($1,$2,'Lead drafts',"
+                                "'1 Main St, Dover, DE 19901')", t, f"{slug}-{tag}")
         for who, uid in users.items():
             await admin.execute(
                 "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash, full_name, is_active) "
@@ -84,10 +86,15 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         for k, owner in (("a", agent["a"]), ("b", agent["b"]), ("b2", agent["b"])):
             await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,$3,$4)",
                                 client[k], tenant, f"Seller {k}", owner)
-        for k, seller in (("a", client["a"]), ("b", client["b"]), ("pool", None), ("shared", client["b2"])):
+        for k, seller in (("a", client["a"]), ("b", client["b"]), ("pool", None), ("shared", client["b2"]),
+                          ("doomed", None)):
             await admin.execute(
                 "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, seller_client_id, address) "
                 "VALUES ($1,$2,$3,'DE',50,$4,$5)", lead[k], tenant, f"P-{tag}-{k}", seller, f"{k} St")
+        # a lead of ANOTHER brokerage (C3.5: cross-brokerage denial is tested)
+        await admin.execute(
+            "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, address) "
+            "VALUES ($1,$2,$3,'DE',50,'Elsewhere St')", lead["foreign"], other_tenant, f"P-{tag}-foreign")
         await admin.execute(
             "INSERT INTO record_shares (tenant_id, resource_kind, resource_id, grantee_user_id, permission, "
             "granted_by) VALUES ($1,'client',$2,$3,'view',$4)", tenant, client["b"], users["c"], agent["b"])
@@ -105,9 +112,20 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # a lead with a client that is not its own: refused, whatever the caller may see
         assert await status_of(commands_api.create_command(
             sms("mismatch", lead_id=lead["b"], client_id=client["b2"]), ctx=ctx("b"))) == 422
-        # a lead that does not exist links nothing and is refused
+        # a lead that does not exist, or is another brokerage's, is refused
         assert await status_of(commands_api.create_command(
             sms("ghost", lead_id=uuid.uuid4()), ctx=ctx("a"))) == 404
+        assert await status_of(commands_api.create_command(
+            sms("foreign", lead_id=lead["foreign"]), ctx=ctx("a"))) == 404
+        # an id in another form is stored canonically, and links as such
+        odd = (await commands_api.create_command(sms("odd", lead_id=lead["a"].hex.upper()), ctx=ctx("a")))["command"]
+        assert odd["target"]["lead_id"] == str(lead["a"])
+        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1",
+                                    uuid.UUID(odd["id"])) == client["a"]
+        # the canonical form of the right client is not a mismatch
+        same = sms("same", lead_id=lead["b"], client_id=str(client["b"]).upper())
+        assert await status_of(commands_api.create_command(same, ctx=ctx("b"))) == 200
+        doomed = (await commands_api.create_command(sms("doomed", lead_id=lead["doomed"]), ctx=ctx("a")))["command"]["id"]
 
         # The trigger links a lead-only draft (and its approval) to the lead's client.
         for cid, want in ((own, client["a"]), (pool, None)):
@@ -124,7 +142,28 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         retarget = CommandEdit(target={"phone": "+13025550179", "state_code": "DE", "lead_id": str(lead["b"])},
                                draft={"body": "Changed"})
         assert await status_of(commands_api.edit_command(own, retarget, ctx=ctx("a"))) == 404
-        # the database refuses the same row without the API
+        # The database, without the API: an unknown client named beside a
+        # private lead still links the lead's client (refused for C); a lead of
+        # a different client than the one named is refused for anyone; a
+        # non-canonical id links like the canonical one.
+        def raw(key, target):
+            return ("INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, target, "
+                    "draft, idempotency_key, created_by) VALUES ($1,'SMS','explicit_sms','outreach',$2::jsonb,"
+                    "'{}'::jsonb,$3,$4)", tenant, target, f"leads-{tag}-{key}")
+        import json as _json
+
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with connection.tenant_tx(ctx("c")) as conn:
+                await conn.execute(*raw("unknown", _json.dumps({"client_id": str(uuid.uuid4()),
+                                                                  "lead_id": str(lead["b"])})), agent["c"])
+        with pytest.raises(asyncpg.CheckViolationError):
+            async with connection.tenant_tx(ctx("owner")) as conn:
+                await conn.execute(*raw("mixed", _json.dumps({"client_id": str(client["a"]),
+                                                                "lead_id": str(lead["b"])})), agent["owner"])
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with connection.tenant_tx(ctx("a")) as conn:
+                await conn.execute(*raw("hex", _json.dumps({"lead_id": lead["b"].hex})), agent["a"])
+        # (another brokerage's lead links nothing in this one: no record here to protect)
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             async with connection.tenant_tx(ctx("c")) as conn:
                 await conn.execute(
@@ -144,6 +183,9 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # is from staging time): the lead is re-read, not sent
         await admin.execute("UPDATE leads SET seller_client_id=$2 WHERE id=$1", lead["pool"], client["b"])
         assert await commands_api._requester_may_contact(tenant, await row_for(pool)) is False
+        # the lead the draft was about is deleted: not sent
+        await admin.execute("DELETE FROM leads WHERE id=$1", lead["doomed"])
+        assert await commands_api._requester_may_contact(tenant, await row_for(doomed)) is False
         # C staged on a lead of a client shared with C to edit; the share is
         # revoked before the send: not sent
         assert await commands_api._requester_may_contact(tenant, await row_for(shared)) is True
@@ -166,6 +208,28 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             await commands_api._execute_command_job(payload, _Reporter())
         after = await row_for(pool)
         assert after["state"] == "failed" and after["provider_reference"] is None
+
+        # The 0179 backfill re-links a lead-only draft written before it
+        # (also one whose target carries "client_id": null).
+        old = uuid.uuid4()
+        await admin.execute("ALTER TABLE command_executions DISABLE TRIGGER trg_command_executions_link")
+        try:
+            await admin.execute(
+                "INSERT INTO command_executions (id, tenant_id, command_type, classification, risk_class, target, "
+                "draft, idempotency_key, created_by) VALUES ($1,$2,'SMS','explicit_sms','outreach',$3::jsonb,"
+                "'{}'::jsonb,$4,$5)", old, tenant, _json.dumps({"client_id": None, "lead_id": str(lead["b"])}),
+                f"leads-{tag}-old", agent["b"])
+        finally:
+            await admin.execute("ALTER TABLE command_executions ENABLE TRIGGER trg_command_executions_link")
+        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) is None
+        import pathlib
+        import re as _re
+
+        sql = pathlib.Path(__file__).resolve().parents[1].joinpath(
+            "db/migrations/0179_lead_commands_follow_the_record.sql").read_text()
+        backfill = _re.search(r"(UPDATE command_executions SET client_id = NULL.*?;)", sql, _re.S).group(1)
+        await admin.execute(backfill)
+        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", old) == client["b"]
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
@@ -177,8 +241,10 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
                       AND t.table_type = 'BASE TABLE'""")
             for row in tables:
                 cast = "uuid" if row["data_type"] == "uuid" else "text"
-                await admin.execute(f"DELETE FROM {row['table_name']} WHERE tenant_id = $1::{cast}", tenant)
-            await admin.execute("DELETE FROM tenants WHERE id=$1", uuid.UUID(tenant))
+                for t in (tenant, other_tenant):
+                    await admin.execute(f"DELETE FROM {row['table_name']} WHERE tenant_id = $1::{cast}", t)
+            for t in (tenant, other_tenant):
+                await admin.execute("DELETE FROM tenants WHERE id=$1", uuid.UUID(t))
         finally:
             await admin.execute("SET session_replication_role = origin")
             await admin.close()

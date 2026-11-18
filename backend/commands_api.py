@@ -680,6 +680,18 @@ async def _load_provider_credential(
         return await decrypt_pii(conn, row["token_ciphertext"], _provider_key(ctx.tenant_id))
 
 
+def _canonical_anchors(target: dict[str, Any], kind: str) -> None:
+    """Each record id in the target must be a UUID, and is stored in its
+    canonical form (lower-case, hyphenated): the link (0142/0179) and every
+    comparison read that form (26.3 review)."""
+    for key in ("contact_id", "lead_id", "client_id"):
+        if target.get(key):
+            try:
+                target[key] = str(uuid.UUID(str(target[key])))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError(f"{kind} target {key} must be a UUID") from exc
+
+
 def _validate_command_payload(
     command_type: CommandType,
     target: dict[str, Any],
@@ -703,12 +715,7 @@ def _validate_command_payload(
             raise ValueError("SMS target requires an E.164 phone number")
         if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
             raise ValueError("SMS target must reference a contact, lead, or client")
-        for key in ("contact_id", "lead_id", "client_id"):
-            if target.get(key):
-                try:
-                    uuid.UUID(str(target[key]))
-                except (ValueError, TypeError, AttributeError) as exc:
-                    raise ValueError(f"SMS target {key} must be a UUID") from exc
+        _canonical_anchors(target, "SMS")
         state_code = str(target.get("state_code") or "").upper()
         if not re.fullmatch(r"[A-Z]{2}", state_code):
             raise ValueError("SMS target requires a two-letter state_code")
@@ -722,12 +729,7 @@ def _validate_command_payload(
             raise ValueError("CALL target requires an E.164 phone number")
         if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
             raise ValueError("CALL target must reference a contact, lead, or client")
-        for key in ("contact_id", "lead_id", "client_id"):
-            if target.get(key):
-                try:
-                    uuid.UUID(str(target[key]))
-                except (ValueError, TypeError, AttributeError) as exc:
-                    raise ValueError(f"CALL target {key} must be a UUID") from exc
+        _canonical_anchors(target, "CALL")
         state_code = str(target.get("state_code") or "").upper()
         if not re.fullmatch(r"[A-Z]{2}", state_code):
             raise ValueError("CALL target requires a two-letter state_code")
@@ -837,7 +839,11 @@ async def _require_lead_editable(conn: Any, target: dict[str, Any]) -> None:
         return
     named = target.get("client_id")
     if named:
-        if str(named).lower() != str(seller):
+        try:
+            named = str(uuid.UUID(str(named)))
+        except (ValueError, TypeError, AttributeError):
+            named = None
+        if named != str(seller):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 "That lead belongs to a different client than the one this draft names.")
         return                                  # the named client was checked above
@@ -882,8 +888,13 @@ async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
                 "SELECT requested_by FROM action_approvals WHERE id=$1::uuid", command["approval_id"]
             )
         if lead is not None:
-            lead_client = await conn.fetchval(
+            lead_row = await conn.fetchrow(
                 "SELECT seller_client_id FROM leads WHERE id=$1::uuid AND tenant_id=$2::uuid", lead, tenant_id)
+            if lead_row is None:
+                # The lead this was about is gone: nothing to check against,
+                # so not sent (stage it again if it should still go out).
+                return False
+            lead_client = lead_row["seller_client_id"]
     requester = str(requested_by or command.get("created_by") or "")
     if not await requester_may_contact_record(tenant_id, requester, client_id, contact_id):
         return False
