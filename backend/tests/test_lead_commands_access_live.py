@@ -71,6 +71,20 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             return exc.status_code
         return 200
 
+    async def staged_before_26_4(body: CommandCreate, who: str) -> str:
+        """A draft staged before destinations were bound to the record (26.4):
+        a pool lead has no record holding a phone, so it is refused today."""
+        real = commands_api._require_destination_on_record
+
+        async def _unchecked(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(commands_api, "_require_destination_on_record", _unchecked)
+        try:
+            return (await commands_api.create_command(body, ctx=ctx(who)))["command"]["id"]
+        finally:
+            monkeypatch.setattr(commands_api, "_require_destination_on_record", real)
+
     def row_for(cid):
         return admin.fetchrow("SELECT * FROM command_executions WHERE id=$1", uuid.UUID(cid))
 
@@ -84,8 +98,8 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
                 "VALUES ($1,$2,$3,$4,$3,'scrypt$x$y',$5,true)", uid, tenant, agent[who],
                 "broker_owner" if who == "owner" else "agent", f"Agent {who.upper()}")
         for k, owner in (("a", agent["a"]), ("b", agent["b"]), ("b2", agent["b"])):
-            await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,$3,$4)",
-                                client[k], tenant, f"Seller {k}", owner)
+            await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id, phone) "
+                                "VALUES ($1,$2,$3,$4,'+13025550179')", client[k], tenant, f"Seller {k}", owner)
         for k, seller in (("a", client["a"]), ("b", client["b"]), ("pool", None), ("shared", client["b2"]),
                           ("doomed", None)):
             await admin.execute(
@@ -105,7 +119,9 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # ── staging: own lead and a pool lead stage; a colleague's private
         # lead is 404, a view-only one 403 (before 0179 every one was 200) ──
         own = (await commands_api.create_command(sms("own", lead_id=lead["a"]), ctx=ctx("a")))["command"]["id"]
-        pool = (await commands_api.create_command(sms("pool", lead_id=lead["pool"]), ctx=ctx("a")))["command"]["id"]
+        # a pool lead (no client): nothing on record vouches for the number (26.4)
+        assert await status_of(commands_api.create_command(sms("pool-now", lead_id=lead["pool"]), ctx=ctx("a"))) == 422
+        pool = await staged_before_26_4(sms("pool", lead_id=lead["pool"]), "a")
         shared = (await commands_api.create_command(sms("shared", lead_id=lead["shared"]), ctx=ctx("c")))["command"]["id"]
         assert await status_of(commands_api.create_command(sms("sneak-a", lead_id=lead["b"]), ctx=ctx("a"))) == 404
         assert await status_of(commands_api.create_command(sms("sneak-c", lead_id=lead["b"]), ctx=ctx("c"))) == 403
@@ -125,7 +141,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # the canonical form of the right client is not a mismatch
         same = sms("same", lead_id=lead["b"], client_id=str(client["b"]).upper())
         assert await status_of(commands_api.create_command(same, ctx=ctx("b"))) == 200
-        doomed = (await commands_api.create_command(sms("doomed", lead_id=lead["doomed"]), ctx=ctx("a")))["command"]["id"]
+        doomed = await staged_before_26_4(sms("doomed", lead_id=lead["doomed"]), "a")
 
         # The trigger links a lead-only draft (and its approval) to the lead's client.
         for cid, want in ((own, client["a"]), (pool, None)):

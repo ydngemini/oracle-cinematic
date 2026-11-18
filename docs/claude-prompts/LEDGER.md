@@ -792,6 +792,28 @@ decision_refs: []
 next_task: "26.4: bind the destination phone/email to the linked record at approval and re-check before dispatch."
 updated: 2026-11-18
 ```
+#### L03-19 An outbound command goes only to the phone or email on the record it is about, at staging and again before sending (external audit 26.4)
+```yaml
+id: L03-19
+status: tests_pass
+env: local
+evidence_shas: [6e2c95f]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_command_destination_live.py, backend/tests/test_command_drafts_access_live.py, backend/tests/test_lead_commands_access_live.py]
+tests_run:
+  - {cmd: "read commands_api._validate_command_payload / _require_target_editable / _execute_command_job at 6e2c95f", result: "SMS/CALL checked the phone's E.164 format and the record id's permission, EMAIL only the address's syntax; nothing compared the destination with the named client's or contact's own; the worker sent to the approved target as given", date: 2026-11-18}
+  - {cmd: "live: tests/test_command_destination_live.py with 6e2c95f's commands_api.py", result: "red: a text to a number that is not the client's was staged (200, expected 422)", date: 2026-11-18}
+  - {cmd: "same with the fix", result: "pass: the client's own number (stored as typed, normalised) stages; a stranger's number (SMS and CALL) 422; a client with no phone 422; a contact matched by its keyed hash, a wrong number 422; client+contact: either record's own; email normalised (case), a stranger's address 422, an email about no record allowed; an edit to another number 422; the client's phone changed after approval -> not sent (worker stops before the gate, state failed), the client's email removed -> not sent; test_command_drafts_access_live and test_lead_commands_access_live pass with phones/emails on their records", date: 2026-11-18}
+authz_checked: "_destination_problem: the destination must equal what one of the named records holds NOW — a client's stored phone/email (normalised with contact_truth), a contact's phone/email lookup hash (contacts keep no plaintext; HMAC with the brokerage key); a lead-only draft uses the lead's seller client; a record with nothing on file for the channel vouches for nothing. Staging and editing (stage_command, edit_command, after the record-permission checks) answer 422 with what is wrong (503 if the key is unavailable); the worker re-checks the approved payload target as platform admin of the command's brokerage and does not send (no re-pointing of approved content). An EMAIL that names no record is not about a CRM identity and is left to the outreach gate."
+blockers:
+  - "A lead with no client (a public/pool lead) has no record holding a phone: a text or call about it is refused (no caller stages one today)."
+  - "No reviewed alternate-destination flow yet (the audit's 'separately reviewed alternate destination'): a number not on the record must be added to the record first."
+  - "Privacy/authorization (customer contact): independent review + owner approval before merge."
+  - "Not deployed (C4.4)."
+audit_refs: [26.4]
+decision_refs: []
+next_task: "26.1 / 26.9: one suppression and consent authority for CRM edits and the outreach ledger."
+updated: 2026-11-18
+```
 ### L04
 CRM, contacts, leads and relationships.
 
