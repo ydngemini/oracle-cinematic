@@ -393,8 +393,9 @@ def test_ringing_writes_nothing_and_answered_only_starts_the_session(monkeypatch
     asyncio.run(ca.record_call_outcome("call-uuid-1", "in-progress"))
     # the session starts; the only timeline write is correcting an earlier
     # "answer not confirmed" row (24.8), never a new row
-    assert len(conn.executed) == 2 and "UPDATE live_call_sessions" in conn.executed[0][0]
-    assert "UPDATE client_activities" in conn.executed[1][0]
+    assert len(conn.executed) == 3 and "UPDATE live_call_sessions" in conn.executed[0][0]
+    assert "pg_advisory_xact_lock" in conn.executed[1][0]      # one timeline writer per call
+    assert "UPDATE client_activities" in conn.executed[2][0]
     assert not any("INSERT" in sql for sql, _ in conn.executed)
 
 
