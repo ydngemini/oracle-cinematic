@@ -59,6 +59,12 @@ class Verified:
     tenants: frozenset[str]
     label: str
     own_account_tenants: frozenset[str] = field(default_factory=frozenset)
+    # brokerages whose stored credential could not be read: refusals for them
+    # are temporary (retry), not a verdict
+    unreadable_tenants: frozenset[str] = field(default_factory=frozenset)
+
+    def refusal_is_temporary(self, tenant_id: Any) -> bool:
+        return str(tenant_id or "") in self.unreadable_tenants
 
     def may_act_for(self, tenant_id: Any) -> bool:
         tenant = str(tenant_id or "")
@@ -86,12 +92,14 @@ class _Key:
 class _Registry:
     keys: dict[str, _Key]
     own_account_tenants: frozenset[str]
+    unreadable_tenants: frozenset[str] = frozenset()
 
 
 @dataclass
 class _TenantKeys:
     credentials: list[tuple[str, Optional[dict[str, Any]]]]   # None: the row could not be read
     loaded_at: float
+    built: Optional[tuple[tuple[str, str, str], "_Registry"]] = None   # (platform env, registry)
 
 
 _cache: Optional[_TenantKeys] = None
@@ -174,11 +182,14 @@ def _build(credentials: list[tuple[str, Optional[dict[str, Any]]]]) -> _Registry
     platform_api = str(os.getenv("TELNYX_API_KEY", "")).strip()
     platform_fp = _fingerprint(platform_api) if platform_api else None
     own: set[str] = set()
+    unreadable: set[str] = set()
     for tenant_id, fields in credentials:
         if fields is None:
             # Unreadable: fail closed for everything but STOPs (the platform
-            # key no longer speaks for it; may_suppress_for still records them).
+            # key no longer speaks for it; may_suppress_for still records them),
+            # and its other events are retried rather than refused for good.
             own.add(tenant_id)
+            unreadable.add(tenant_id)
             continue
         api_key = str(fields.get("api_key") or "").strip()
         has_own_key = bool(str(fields.get("public_key") or "").strip())
@@ -187,7 +198,7 @@ def _build(credentials: list[tuple[str, Optional[dict[str, Any]]]]) -> _Registry
         if has_own_key:
             add(fields.get("public_key"), tenant=tenant_id, label="tenant")
             add(fields.get("public_key_previous"), tenant=tenant_id, label="tenant-previous")
-    return _Registry(keys=keys, own_account_tenants=frozenset(own))
+    return _Registry(keys=keys, own_account_tenants=frozenset(own), unreadable_tenants=frozenset(unreadable))
 
 
 async def _registry(*, force: bool = False) -> _Registry:
@@ -215,7 +226,14 @@ async def _registry(*, force: bool = False) -> _Registry:
                     previous = _cache.credentials if _cache else []
                     _cache = _TenantKeys(credentials=previous,
                                          loaded_at=time.monotonic() - CACHE_SECONDS + FAILED_LOAD_RETRY_SECONDS)
-    return _build(_cache.credentials if _cache else [])
+    if _cache is None:
+        return _build([])
+    # Built once per load and platform-key setting, not on every request.
+    env = (os.getenv("TELNYX_PUBLIC_KEY", ""), os.getenv("TELNYX_PUBLIC_KEY_PREVIOUS", ""),
+           os.getenv("TELNYX_API_KEY", ""))
+    if _cache.built is None or _cache.built[0] != env:
+        _cache.built = (env, _build(_cache.credentials))
+    return _cache.built[1]
 
 
 def reset_cache() -> None:
@@ -277,4 +295,5 @@ async def verify(raw_body: str, headers: Mapping[str, str]) -> tuple[Any, Verifi
     # Parsed once, through the SDK with the one key that matched (it re-checks).
     event = TelnyxMessagingProvider().validate_webhook(raw_body, dict(headers), credentials={"public_key": key})
     return event, Verified(platform=entry.platform, tenants=entry.tenants, label=entry.label,
-                           own_account_tenants=registry.own_account_tenants)
+                           own_account_tenants=registry.own_account_tenants,
+                           unreadable_tenants=registry.unreadable_tenants)

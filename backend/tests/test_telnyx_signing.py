@@ -337,3 +337,36 @@ def test_many_keys_and_a_forged_flood_do_not_rebuild_clients(monkeypatch):
         with pytest.raises(ValueError):
             verify(*_signed(STRANGER[0], _inbound()))
     assert builds == []                                          # forgeries never reach the SDK
+
+
+def test_an_unreadable_credential_defers_rather_than_refuses(monkeypatch, webhook):
+    """Re-review: refusing for an unreadable credential would lose the message
+    for good (403 is never retried successfully); it is retried instead."""
+    async def creds():
+        return [(TA, None)]
+
+    monkeypatch.setattr(telnyx_signing, "_tenant_credentials", creds)
+    telnyx_signing.reset_cache()
+    response = post(webhook, *_signed(PLATFORM[0], _inbound()))
+    assert response.status_code == 503 and response.headers.get("retry-after") == "60"
+    assert webhook["recorded"] == []
+    # ...while a STOP is still recorded at once
+    assert post(webhook, *_signed(PLATFORM[0], _inbound(text="STOP"))).status_code == 204
+    assert TA in webhook["suppressed"]
+
+
+def test_the_registry_is_built_once_per_load(registry, monkeypatch):
+    builds = []
+    real = telnyx_signing._build
+
+    def counting(credentials):
+        builds.append(1)
+        return real(credentials)
+
+    monkeypatch.setattr(telnyx_signing, "_build", counting)
+    for _ in range(5):
+        verify(*_signed(KEY_A[0], _inbound()))
+    assert len(builds) == 1
+    monkeypatch.setenv("TELNYX_PUBLIC_KEY_PREVIOUS", KEY_B[1])     # a platform key change rebuilds
+    verify(*_signed(KEY_A[0], _inbound()))
+    assert len(builds) == 2

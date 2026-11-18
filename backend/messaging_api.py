@@ -511,6 +511,10 @@ async def telnyx_webhook(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="Invalid Telnyx signature.") from exc
 
     def _refuse(tenant_id: Any) -> Response:
+        if verified.refusal_is_temporary(tenant_id):
+            # Its credential could not be read: not a verdict — Telnyx retries.
+            logger.warning("Telnyx webhook for brokerage %s deferred: its credential is unreadable", tenant_id)
+            return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "60"})
         logger.warning("Telnyx webhook signed by %s is not authorized for brokerage %s; not applied",
                        verified.label, tenant_id)
         return Response(status_code=status.HTTP_403_FORBIDDEN)
