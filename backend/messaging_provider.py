@@ -81,6 +81,8 @@ class NormalizedDeliveryEvent:
     status: str  # one of MSG_*
     provider_status: str
     error_reason: Optional[str]
+    event_id: Optional[str] = None       # the provider's event id (25.8 journal)
+    occurred_at: Optional[str] = None    # the provider's event time
 
 
 @dataclass(frozen=True)
@@ -485,12 +487,15 @@ class TelnyxMessagingProvider(MessagingProvider):
         normalized = status_map.get(to_status, MSG_SENT)
         errors = getattr(payload, "errors", None) or []
         error_reason = str(getattr(errors[0], "detail", "") or "") if errors else None
+        occurred = getattr(data, "occurred_at", None)
         return NormalizedDeliveryEvent(
             provider=PROVIDER_TELNYX,
             provider_message_id=message_id,
             status=normalized,
             provider_status=to_status or event_type,
             error_reason=error_reason,
+            event_id=str(getattr(data, "id", "") or "") or None,
+            occurred_at=occurred.isoformat() if hasattr(occurred, "isoformat") else (str(occurred) if occurred else None),
         )
 
     async def check_number_eligibility(

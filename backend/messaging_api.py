@@ -605,6 +605,8 @@ async def telnyx_webhook(request: Request) -> Response:
                 provider_message_id=delivery.provider_message_id,
                 status=delivery.status,
                 error_reason=delivery.error_reason,
+                event_id=delivery.event_id,
+                occurred_at=delivery.occurred_at,
             )
             if not known:
                 # The receipt beat our own write of the message row; ask
@@ -667,6 +669,29 @@ async def sync_registration_for_tenant(tenant_id: str, *, provider: str,
         raise RuntimeError(f"Telnyx credential unusable: {exc.detail}") from exc
     return await refresh_registration_status(ctx, provider=provider, credentials=credentials,
                                              min_interval_s=min_interval_s)
+
+
+async def sync_hosted_orders(*, limit: int = 200) -> dict[str, Any]:
+    """25.6: read every non-final hosted order from the provider (the webhook
+    acknowledges order events without acting; nothing else advanced them but
+    a broker's refresh). Each route under its own agent and credential; one
+    failure is recorded and the sweep goes on."""
+    from messaging_data import hosted_orders_to_sync, mark_hosted_order_checked, refresh_hosted_order_status
+
+    synced = failed = 0
+    for tenant_id, agent_id in await hosted_orders_to_sync(limit=limit):
+        ctx = TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+        try:
+            await refresh_hosted_order_status(ctx, credentials=await _telnyx_credentials(ctx))
+            synced += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+            logger.warning("hosted-order status sync failed for tenant %s", tenant_id, exc_info=True)
+            # stamped anyway: a route that keeps failing must not sort first
+            # forever and starve the others
+            await mark_hosted_order_checked(ctx)
+    logger.info("ORACLE_METRIC messaging_hosted_order_sync synced=%d failed=%d", synced, failed)
+    return {"synced": synced, "failed": failed}
 
 
 async def sync_open_registrations(*, limit: int = 200) -> dict[str, Any]:

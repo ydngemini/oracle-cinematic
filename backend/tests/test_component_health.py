@@ -309,10 +309,18 @@ def test_an_unmetered_billable_engagement_degrades_health():
 def test_10dlc_registration_trouble_pages_an_operator(monkeypatch):
     """25.2: a lost campaign, a status unreadable for a day, two weeks pending,
     or a submission/assignment whose outcome no row reflects."""
-    ok = {"lost": 0, "unreadable": 0, "stalled": 0, "unresolved": 0}
+    ok = {"lost": 0, "unreadable": 0, "stalled": 0, "unresolved": 0, "receipt_contradictions": 0,
+          "hosting_stalled": 0}
     assert ch._messaging_registration(ok)["state"] == ch.HEALTHY
     for key in ok:
         out = ch._messaging_registration({**ok, key: 1})
         assert out["state"] == ch.DEGRADED, key
     assert "operator" in ch._messaging_registration({**ok, "unresolved": 2})["summary"]
     assert "messaging_registration" in ch._DB_KEYS
+
+
+def test_messaging_registration_reports_the_most_severe_first_with_every_count():
+    out = ch._messaging_registration({"lost": 1, "receipt_contradictions": 2, "hosting_stalled": 3})
+    assert "suspended or expired" in out["summary"]
+    assert out["detail"]["receipt_contradictions"] == 2 and out["detail"]["hosting_stalled"] == 3
+    assert ch._messaging_registration({})["detail"]["lost"] == 0

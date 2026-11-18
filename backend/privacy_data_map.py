@@ -144,6 +144,9 @@ TABLES: dict[str, TableEntry] = {
     "tenant_messaging_brands": TableEntry(C.CONTACT_PII, E, "EIN, address"),
     "tenant_messaging_campaigns": TableEntry(C.COMMUNICATION_METADATA, E),
     "live_call_sessions": TableEntry(C.COMMUNICATION_METADATA, E),
+    "sms_delivery_receipts": TableEntry(C.COMMUNICATION_METADATA, E, "0177 (25.8): provider message id, "
+                                        "status and carrier error per receipt; no person; 90 days, "
+                                        "a contradiction until reconciled"),
     "provider_call_outcomes": TableEntry(C.COMMUNICATION_METADATA, E, "0174 (24.4): carrier call id, "
                                          "status and duration until the session exists; no person; 30 days"),
     "agent_call_intents": TableEntry(C.COMMUNICATION_METADATA, E),

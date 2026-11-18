@@ -636,7 +636,7 @@ def test_every_operator_route_is_platform_admin_only(ctx):
     app.dependency_overrides[require_context] = lambda: ctx
     client = TestClient(app)
     paths = [r.path.replace("{tenant_id}", T_LIVE) for r in _routes()]
-    assert len(paths) == 8, paths
+    assert len(paths) == 9, paths
     for path in paths:
         resp = client.get(path)
         assert resp.status_code == 403, (path, resp.status_code)
