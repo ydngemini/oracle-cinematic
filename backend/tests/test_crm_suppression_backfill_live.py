@@ -63,20 +63,38 @@ async def _scenario(monkeypatch):
             "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state, legacy_client_id, "
             "suppression) VALUES ($1,$2,$3,'legacy','pending_encryption',$4,$5::jsonb)",
             legacy, tenant, owner, legacy_client, json.dumps({"sms": True}))
+        # A soft-deleted flagged contact: included (a restore would not rewrite it).
+        gone = (await contacts_api.create_contact(ContactCreate(
+            full_name="Gone", phone="+13025550450", suppression={"voice": True}), ctx=ctx))["contact"]
+        await admin.execute("UPDATE agent_contacts SET deleted_at=now() WHERE id=$1", uuid.UUID(gone["id"]))
+        # A sealed contact whose record cannot be opened: skipped, listed, its
+        # client's details still written.
+        broken_client, broken = uuid.uuid4(), uuid.uuid4()
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, phone) VALUES ($1,$2,'Broken','+13025550460')",
+                            broken_client, tenant)
+        await admin.execute(
+            "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state, legacy_client_id, "
+            "suppression, pii_ciphertext) VALUES ($1,$2,$3,'legacy','sealed',$4,$5::jsonb,'\\x00ff'::bytea)",
+            broken, tenant, owner, broken_client, json.dumps({"sms": True}))
         # An unflagged contact adds nothing.
         await contacts_api.create_contact(ContactCreate(full_name="Clear", phone="+13025550440"), ctx=ctx)
         # Before 26.1 none of this reached the ledger.
         await admin.execute("DELETE FROM outreach_suppression WHERE tenant_id=$1", uuid.UUID(tenant))
         assert await ledger() == set()
 
-        out = await backfill.backfill(batch_size=1)          # batch of one: exercises the keyset
-        assert out["contacts"] >= 2
+        # Only this brokerage (the shared database holds others); a batch of one
+        # exercises the keyset.
+        out = await backfill.backfill(batch_size=1, tenant_ids=[tenant])
+        assert (out["contacts"], out["unreadable"]) == (4, 1)
         assert await ledger() == {
             ("+13025550410", "*"), (f"sealed-{tag}@bf.test", "email"),     # the sealed contact's own
             ("+13025550420", "*"),                                         # its drifted client's number
             ("+13025550430", "sms"),                                       # the legacy contact's client
+            ("+13025550450", "voice"),                                     # the soft-deleted contact
+            ("+13025550460", "sms"),                                       # the unreadable one's client
         }
-        again = await backfill.backfill(batch_size=50)
+        assert out["rows_added"] == 6
+        again = await backfill.backfill(batch_size=50, tenant_ids=[tenant])
         assert again["rows_added"] == 0                                    # idempotent
         assert sealed["id"]
     finally:

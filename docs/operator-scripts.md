@@ -225,16 +225,24 @@ Requires `ORACLE_ENCRYPTION_MASTER_KEY` (to open sealed contacts) plus the usual
 ```bash
 docker compose run --rm --no-deps \
   -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
-  backend python /app/crm_suppression_backfill.py [--count]
+  backend python /app/crm_suppression_backfill.py [--count] [--tenant <brokerage id> ...]
 ```
 
-Optional: `ORACLE_CRM_SUPPRESSION_BATCH` (default `200`, range 1–2000).
+Optional: `ORACLE_CRM_SUPPRESSION_BATCH` (default `200`, range 1–2000);
+`--tenant` (repeatable) for a staged run, one brokerage at a time.
 
 ### What to expect
 
-Insert-only and idempotent (a second run adds 0 rows; it never lifts an
-opt-out). Keyset batches per tenant, each one short transaction. Prints flagged
-contact counts and ledger rows added per tenant — never phones or emails.
+Writes only `outreach_suppression` (reason `manual_dnc`). Insert-only and
+idempotent (a second run adds 0 rows; it never lifts an opt-out). Soft-deleted
+contacts are included (a restore does not rewrite their flags). Keyset batches
+per tenant, each one short transaction. Prints flagged contact counts, tenant
+ids and ledger rows added — never phones or emails.
+
+Exit codes: `0` done; `1` some sealed contacts could not be opened (listed by
+id; their linked clients' details were still written — investigate those
+records and run again); `2` the master key is missing, or five sealed contacts
+in a row could not be opened (the key is wrong; nothing more is written).
 
 ## `backend/client_contact_index.py` — keyed lookup hashes and name tokens for clients (0156)
 
