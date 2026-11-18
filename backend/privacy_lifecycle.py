@@ -32,6 +32,7 @@ Three flows:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -704,6 +705,17 @@ async def _resume_billing(tenant_id: str) -> str:
     return await _set_cancel_at_period_end(tenant_id, False)
 
 
+#: How long the closure path waits for Stripe to change a subscription (24.7).
+STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS = 30
+# One change per subscription at a time in this process: a change that timed
+# out is still running in its thread, and a later opposite change (close, then
+# withdraw) must not be overtaken by it — the order the owner acted in is the
+# order Stripe sees. Held until the thread finishes, not until the wait ends.
+# Bound to the process's one event loop; a handful of entries per closure, not
+# pruned. A withdrawal waits out an earlier change (one HTTP attempt).
+_SUBSCRIPTION_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
     import recovery_mode
 
@@ -720,7 +732,27 @@ async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
 
         if not stripe.api_key:
             return "stripe_not_configured"
-        stripe.Subscription.modify(sub, cancel_at_period_end=value)
+        # Off the event loop (24.7): the SDK's client is synchronous. One HTTP
+        # attempt (no SDK retries that could land minutes later); a timeout is
+        # reported as a failure like any other.
+        lock = _SUBSCRIPTION_LOCKS.setdefault(sub, asyncio.Lock())
+        # No timeout on the wait: an earlier change ends with its one HTTP
+        # attempt, and a cancelled timed wait could leave the lock held.
+        await lock.acquire()
+        try:
+            task = asyncio.ensure_future(asyncio.to_thread(
+                stripe.Subscription.modify, sub, cancel_at_period_end=value, max_network_retries=0))
+        except BaseException:
+            lock.release()
+            raise
+
+        def _done(t: asyncio.Future) -> None:
+            lock.release()
+            if not t.cancelled() and t.exception() is not None:
+                log.warning("subscription change finished with %s", type(t.exception()).__name__)
+
+        task.add_done_callback(_done)
+        await asyncio.wait_for(asyncio.shield(task), timeout=STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
         return "renewal_cancelled" if value else "renewal_resumed"
     except Exception as exc:  # noqa: BLE001 - reported to the owner and the runbook
         log.warning("subscription update for closure failed: %s", type(exc).__name__)
