@@ -2912,13 +2912,6 @@ async def _update_call_session_async(call_connection_id: str, status: str,
 #: status (external audit 24.8; see record_call_outcome).
 _CALL_ANSWER_NOT_CONFIRMED = "Call completed; answer not confirmed"
 _CALL_TIMELINE_LOCK = "SELECT pg_advisory_xact_lock(hashtext('call-timeline:' || $1))"
-# SQL: the carrier itself reported an answer for session s's call (a stored
-# in-progress/answered outcome under its id or an alias). Not started_at: an
-# agent's transcript telemetry can set that without any carrier answer.
-_ANSWER_STORED = """EXISTS (
-    SELECT 1 FROM provider_call_outcomes o
-     WHERE o.tenant_id = s.tenant_id AND o.call_status IN ('in-progress', 'answered')
-       AND (o.provider_call_id = s.provider_call_id OR s.provider_call_id = ANY(o.call_aliases)))"""
 _CALL_OUTCOME_SUMMARY: dict[str, str] = {
     "completed": "Call answered and ended",
     "busy": "Call not connected — line busy",
@@ -2979,7 +2972,7 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     # 24.8: with no duration at all, a non-Twilio "completed" says only that
     # the carrier finished the call. It reads "answered" only when the carrier
     # itself reported an answer for this call (a stored in-progress/answered
-    # outcome, _ANSWER_STORED) — the same caution call_status_stage applies to
+    # outcome) — the same caution call_status_stage applies to
     # delivery, so the timeline never says "answered" where the lifecycle says
     # it cannot tell. An answer stored after this row is written upgrades it
     # (_confirm_answer_on_timeline).
@@ -3020,7 +3013,15 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
                                           $7::boolean OR (ans.answered AND $2 <> 'Call not answered')),
                        'carrier'
                   FROM live_call_sessions s
-                 CROSS JOIN LATERAL (SELECT """ + _ANSWER_STORED + """ AS answered) ans
+                 -- the carrier itself reported an answer for this call (a
+                 -- stored in-progress/answered outcome under its id or an
+                 -- alias), never the session start time (transcripts set it)
+                 CROSS JOIN LATERAL (SELECT EXISTS (
+                       SELECT 1 FROM provider_call_outcomes o
+                        WHERE o.tenant_id = s.tenant_id
+                          AND o.call_status IN ('in-progress', 'answered')
+                          AND (o.provider_call_id = s.provider_call_id
+                               OR s.provider_call_id = ANY(o.call_aliases))) AS answered) ans
                  WHERE s.provider_call_id = $1 AND s.client_id IS NOT NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM client_activities a
