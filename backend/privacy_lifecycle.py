@@ -32,6 +32,7 @@ Three flows:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -720,7 +721,10 @@ async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
 
         if not stripe.api_key:
             return "stripe_not_configured"
-        stripe.Subscription.modify(sub, cancel_at_period_end=value)
+        # Off the event loop (24.7): the SDK's client is synchronous. A timeout
+        # is reported as a failure like any other; the change is idempotent.
+        await asyncio.wait_for(asyncio.to_thread(
+            stripe.Subscription.modify, sub, cancel_at_period_end=value), timeout=30)
         return "renewal_cancelled" if value else "renewal_resumed"
     except Exception as exc:  # noqa: BLE001 - reported to the owner and the runbook
         log.warning("subscription update for closure failed: %s", type(exc).__name__)

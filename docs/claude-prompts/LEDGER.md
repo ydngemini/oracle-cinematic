@@ -4373,6 +4373,28 @@ next_task: "24.7/24.8; 25.1/25.2."
 updated: 2026-11-17
 ```
 
+#### L18-14 A slow Stripe call no longer freezes the worker's event loop (external audit 24.7)
+```yaml
+id: L18-14
+status: tests_pass
+env: local
+evidence_shas: [615a306]   # base (L18-13, PR #109); fix in the commit that adds this row
+files: [backend/billing_usage.py, backend/privacy_lifecycle.py, backend/tests/test_stripe_off_event_loop.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read drain_usage_to_stripe and every stripe.* call in backend at 615a306", result: "confirmed: the drain (a coroutine in the durable job worker) called stripe.billing.MeterEvent.create synchronously; privacy_lifecycle._set_cancel_at_period_end (brokerage closure) called stripe.Subscription.modify synchronously too. billing.py already used asyncio.to_thread with a timeout; admin_ops runs its rollup in an executor", date: 2026-11-17}
+  - {cmd: "red: test_stripe_off_event_loop (a blocking 0.4-0.5 s Stripe fake beside a 20 ms heartbeat coroutine) against 615a306's billing_usage.py and privacy_lifecycle.py", result: "3 failed (the heartbeat stopped for the whole call)", date: 2026-11-17}
+  - {cmd: "after: test_stripe_off_event_loop + test_billing_usage + test_usage_report_claims + privacy unit; live test_usage_report_claims_live (6) + test_engagement_lifecycle_live + test_privacy_lifecycle_live", result: "82 unit pass; 9 live pass", date: 2026-11-17}
+authz_checked: "No route, query or tenant scope changes: the same Stripe calls run in a worker thread."
+blockers:
+  - "Same pattern as billing.py: asyncio.wait_for(asyncio.to_thread(...)). The drain waits at most REPORT_SEND_TIMEOUT_SECONDS (30 s); a timeout is an unknown outcome (the thread may still finish) and keeps the row uncertain (L18-13). The SDK's own 80 s timeout ends the thread well inside the 300 s claim lease, so the row is not re-claimed while that send can still land. One thread per drain at a time (rows and tenants are sent one after another)."
+  - "Closure's subscription change waits 30 s, then reports failed:TimeoutError to the owner as before (the change is idempotent; the runbook covers a retry)."
+  - "Stacked on L18-13 (PR #109). Billing change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [24.7]
+decision_refs: []
+next_task: "25.1/25.2."
+updated: 2026-11-17
+```
+
 ### L19
 Production operations.
 

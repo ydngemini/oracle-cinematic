@@ -29,6 +29,8 @@ uses.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 from datetime import datetime, timezone
@@ -333,6 +335,13 @@ REPORT_AGING_ALERT_DAYS = 28
 # second drain replica does not send a leased row. Should a send outlive the
 # lease anyway, every write after it names the attempt it belongs to.
 REPORT_CLAIM_LEASE_SECONDS = 300
+# The Stripe call runs in a worker thread (24.7: the SDK's synchronous client
+# would block the event loop that also runs job heartbeats and, all-in-one,
+# live calls). Waited on for at most this long: a timeout is an unknown outcome
+# (the thread may still finish), handled like any other. The SDK's own timeout
+# (80 s) ends the thread well inside the lease, so nobody re-claims the row
+# while it can still land.
+REPORT_SEND_TIMEOUT_SECONDS = 30
 # The resolutions a person may record for a quarantined row (0175).
 REPORT_RESOLUTIONS = frozenset({"billed", "credited", "written_off"})
 
@@ -508,11 +517,12 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
             "timestamp": int(row["occurred_at"].timestamp()),
         }
         try:
-            event = stripe.billing.MeterEvent.create(
+            event = await asyncio.wait_for(asyncio.to_thread(functools.partial(
+                stripe.billing.MeterEvent.create,
                 **params,
                 idempotency_key=_idempotency_key(identifier),
                 max_network_retries=0,
-            )
+            )), timeout=REPORT_SEND_TIMEOUT_SECONDS)
             event_id = getattr(event, "identifier", None) or identifier
         except _REFUSED as exc:
             if getattr(exc, "code", None) == _DUPLICATE_EVENT:
