@@ -32,7 +32,6 @@ async def _scenario(monkeypatch, part):
     import messaging_api
     import messaging_data as md
     import messaging_provider
-    import outreach_lifecycle
     from db import connection
     from tenancy import Role, TenantContext
 
@@ -41,14 +40,14 @@ async def _scenario(monkeypatch, part):
     owner = f"owner-{s}@live.test"
     ctx = TenantContext(agent_id=owner, tenant_id=T, role=Role.BROKER_OWNER)
     calls = {"verify": 0, "order": 0}
-    behaviour = {"verify": False, "order": "pending", "verify_raises": False}
+    behaviour = {"verify": False, "order": "pending", "verify_raises": None}
 
     class _Adapter:
         async def complete_ownership_verification(self, order, number, code, *, credentials=None):
             calls["verify"] += 1
             await asyncio.sleep(0.05)      # in flight together
             if behaviour["verify_raises"]:
-                raise TimeoutError("provider timed out")
+                raise behaviour["verify_raises"]
             return behaviour["verify"]
 
         async def get_hosted_order_status(self, order, *, credentials=None):
@@ -89,29 +88,47 @@ async def _scenario(monkeypatch, part):
             assert all(isinstance(r, md.MessagingDataError) for r in results)
             assert sum(md.VERIFICATION_LOCKED in str(r) for r in results) >= 10 - md._MAX_VERIFICATION_ATTEMPTS
             row = await route()
+            # the lock was set by the reservation itself (no later write needed)
             assert row["verification_locked_until"] is not None
-            # even the right code is refused while locked, without asking the provider
             behaviour["verify"] = True
             with pytest.raises(md.MessagingDataError, match="Too many incorrect codes"):
                 await md.complete_messaging_verification(ctx, "123456", credentials={})
             assert calls["verify"] == md._MAX_VERIFICATION_ATTEMPTS
-            # the lock passes: a provider failure gives the attempt back; then the right code works
+            # the lock passes: a provider error gives the attempt back...
             await admin.execute("UPDATE messaging_routes SET verification_locked_until = now() - interval '1 second' "
                                 "WHERE tenant_id=$1", T)
-            behaviour["verify_raises"] = True
-            with pytest.raises(TimeoutError):
+            behaviour["verify_raises"] = RuntimeError("provider 500")
+            with pytest.raises(RuntimeError):
                 await md.complete_messaging_verification(ctx, "123456", credentials={})
             assert (await route())["verification_attempt_count"] == 0
-            behaviour["verify_raises"] = False
+            # ...a timeout does not (the request may have reached the provider)
+            behaviour["verify_raises"] = TimeoutError("provider timed out")
+            with pytest.raises(TimeoutError):
+                await md.complete_messaging_verification(ctx, "123456", credentials={})
+            assert (await route())["verification_attempt_count"] == 1
+            # attempts expire: one 20 minutes ago counts no more
+            await admin.execute("UPDATE messaging_routes SET verification_attempt_count = 4, "
+                                "verification_attempted_at = now() - interval '20 minutes' WHERE tenant_id=$1", T)
+            behaviour["verify_raises"], behaviour["verify"] = None, False
+            with pytest.raises(md.MessagingDataError, match="did not verify"):
+                await md.complete_messaging_verification(ctx, "111111", credentials={})
+            row = await route()
+            assert row["verification_attempt_count"] == 1 and row["verification_locked_until"] is None
+            # the right code works and resets everything
+            behaviour["verify"] = True
             await md.complete_messaging_verification(ctx, "123456", credentials={})
             row = await route()
             assert row["hosted_order_status"] == "processing" and row["verification_attempt_count"] == 0
             assert row["verification_locked_until"] is None
 
         if part == "hosted_order_sweep":
+            # ── 25.6: an order waiting for the owner's code is left alone ──
+            assert (T, owner) not in await md.hosted_orders_to_sync(limit=1000)
+            await md.refresh_hosted_order_status(ctx, credentials={})      # a manual refresh: provider "pending"
+            assert (await route())["hosted_order_status"] == "pending_verification"   # the code form stays
+            # once with the provider, the sweep reads it; the status change is stamped
             await admin.execute("UPDATE messaging_routes SET hosted_order_status='processing' WHERE tenant_id=$1", T)
             row = await route()
-            # ── 25.6: the sweep reads non-final hosted orders; the status change is stamped ──
             before = row["hosted_order_status_at"]
             assert (T, owner) in await md.hosted_orders_to_sync(limit=1000)
             await messaging_api.sync_hosted_orders(limit=1000)
@@ -119,7 +136,17 @@ async def _scenario(monkeypatch, part):
             assert row["hosted_order_status"] == "processing" and row["hosted_order_checked_at"] is not None
             await admin.execute("UPDATE messaging_routes SET hosted_order_status_at = now() - interval '8 days' "
                                 "WHERE tenant_id=$1", T)
-            assert (await ch._db_components())["messaging_registration"]["detail"].get("hosting_stalled", 0) >= 1
+            assert (await ch._db_components())["messaging_registration"]["detail"]["hosting_stalled"] >= 1
+            # a route whose credential fails is still stamped (cannot starve the others)
+            checked = (await route())["hosted_order_checked_at"]
+
+            async def broken(_ctx):
+                raise RuntimeError("credential unusable")
+
+            monkeypatch.setattr(messaging_api, "_telnyx_credentials", broken)
+            await messaging_api.sync_hosted_orders(limit=1000)
+            assert (await route())["hosted_order_checked_at"] > checked
+            monkeypatch.setattr(messaging_api, "_telnyx_credentials", creds)
             behaviour["order"] = "successful"
             await messaging_api.sync_hosted_orders(limit=1000)
             row = await route()
@@ -128,41 +155,50 @@ async def _scenario(monkeypatch, part):
 
         if part == "receipt_contradiction":
             # ── 25.8: a contradicting final receipt is journaled and held ──
-            delivered, failed = [], []
-
-            async def on_delivered(conn, **kw):
-                delivered.append(kw["provider_message_id"])
-
-            async def on_failed(conn, **kw):
-                failed.append(kw["provider_message_id"])
-
-            monkeypatch.setattr(outreach_lifecycle, "record_sms_delivered", on_delivered)
-            monkeypatch.setattr(outreach_lifecycle, "record_sms_failed", on_failed)
             msg = f"msg-{s}"
             await admin.execute(
                 "INSERT INTO sms_messages (tenant_id, agent_id, direction, provider, provider_message_id, from_e164, "
-                "to_e164, status) VALUES ($1,$2,'outbound','telnyx',$3,$4,'+13025550142','queued')", T, owner, msg, NUMBER)
+                "to_e164, status) VALUES ($1,$2,'outbound','telnyx',$3,$4,'+13025550142','queued')",
+                T, owner, msg, NUMBER)
+            # the text's command, metered as an engagement on delivery
+            command = await admin.fetchval(
+                "INSERT INTO command_executions (tenant_id, command_type, classification, risk_class, target, draft, "
+                "state, idempotency_key, created_by, provider, provider_reference) VALUES ($1,'SMS','external',"
+                "'outreach','{}'::jsonb,'{}'::jsonb,'succeeded',$2,$3,'telnyx',$4) RETURNING id",
+                T, f"sms-{s}", owner, msg)
+            await admin.execute(
+                "INSERT INTO billing_usage_events (tenant_id, metric, quantity, idempotency_key, lifecycle_stage, "
+                "source_table, source_id) VALUES ($1,'lead_engaged',1,$2,'delivered','command_executions',$3)",
+                T, f"lead-engaged:{s}", command)
             assert await md.record_delivery_update(provider="telnyx", provider_message_id=msg, status="delivered",
-                                                   error_reason=None)
-            assert await md.record_delivery_update(provider="telnyx", provider_message_id=msg, status="undelivered",
-                                                   error_reason="carrier 30003")
-            assert await admin.fetchval("SELECT status FROM sms_messages WHERE provider_message_id=$1", msg) == "delivered"
-            journal = await admin.fetch("SELECT id, status, contradicts FROM sms_delivery_receipts "
-                                        "WHERE tenant_id=$1 ORDER BY id", T)
-            assert [(r["status"], r["contradicts"]) for r in journal] == [("delivered", None), ("undelivered", "delivered")]
-            assert delivered == [msg] and failed == []                 # the contradiction ran no side effect
-            assert (await ch._db_components())["messaging_registration"]["detail"].get("receipt_contradictions", 0) >= 1
-            # a duplicate of the stored outcome is journaled but contradicts nothing
+                                                   error_reason=None, event_id=f"evt-1-{s}",
+                                                   occurred_at="2026-11-18T05:00:00Z")
+            # the same event redelivered is one journal row
             await md.record_delivery_update(provider="telnyx", provider_message_id=msg, status="delivered",
-                                            error_reason=None)
-            assert await admin.fetchval("SELECT count(*) FROM sms_delivery_receipts WHERE tenant_id=$1 "
-                                        "AND contradicts IS NOT NULL", T) == 1
-            # an operator checks the provider's record and settles it
+                                            error_reason=None, event_id=f"evt-1-{s}")
+            assert await md.record_delivery_update(provider="telnyx", provider_message_id=msg, status="undelivered",
+                                                   error_reason="carrier 30003", event_id=f"evt-2-{s}",
+                                                   occurred_at="2026-11-18T05:00:03Z")
+            assert await admin.fetchval("SELECT status FROM sms_messages WHERE provider_message_id=$1", msg) == \
+                "delivered"
+            journal = await admin.fetch("SELECT id, status, contradicts, occurred_at FROM sms_delivery_receipts "
+                                        "WHERE tenant_id=$1 ORDER BY id", T)
+            assert [(r["status"], r["contradicts"]) for r in journal] == [("delivered", None),
+                                                                          ("undelivered", "delivered")]
+            assert journal[0]["occurred_at"] is not None                 # the provider's own time
+            assert (await ch._db_components())["messaging_registration"]["detail"]["receipt_contradictions"] >= 1
             platform = TenantContext(agent_id="ops@neoh.test", role=Role.PLATFORM_ADMIN,
                                      tenant_id="00000000-0000-0000-0000-000000000000")
+            open_ones = await md.open_delivery_contradictions(platform, limit=500)
+            assert journal[1]["id"] in [o["id"] for o in open_ones]      # the operator can find it
+            # an operator checks the provider's record and settles it: the text
+            # is failed, and what cannot be undone is reported, not claimed
             out = await md.reconcile_delivery_receipt(platform, receipt_id=journal[1]["id"], final_status="failed")
-            assert out["status_changed"] and out["receipts_reconciled"] == 1 and failed == [msg]
-            assert await admin.fetchval("SELECT status FROM sms_messages WHERE provider_message_id=$1", msg) == "failed"
+            assert out["status_changed"] and out["receipts_reconciled"] == 1
+            assert out["metered"] == 1 and out["billing_followup"]
+            row = await admin.fetchrow("SELECT status, delivered_at, failed_at FROM sms_messages "
+                                       "WHERE provider_message_id=$1", msg)
+            assert row["status"] == "failed" and row["delivered_at"] is None and row["failed_at"] is not None
             with pytest.raises(md.ReceiptNotFound):
                 await md.reconcile_delivery_receipt(platform, receipt_id=journal[1]["id"], final_status="delivered")
             # pruning keeps nothing old except open contradictions
@@ -170,7 +206,6 @@ async def _scenario(monkeypatch, part):
                                 "WHERE tenant_id=$1", T)
             await md.prune_delivery_receipts()
             assert await admin.fetchval("SELECT count(*) FROM sms_delivery_receipts WHERE tenant_id=$1", T) == 0
-            # an unknown message is still 'not yet written' (the webhook retries), journaling nothing
             assert not await md.record_delivery_update(provider="telnyx", provider_message_id="nope",
                                                        status="delivered", error_reason=None)
     finally:

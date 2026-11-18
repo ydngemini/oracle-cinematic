@@ -1144,6 +1144,19 @@ async def reset_user_two_step(
     return await reset_member_mfa(ctx, user_id, body.reason)
 
 
+@router.get("/messaging/receipts")
+async def open_receipts(ctx: TenantContext = Depends(require_platform_admin)) -> dict[str, Any]:
+    """Open contradicting carrier delivery receipts (25.8): the ids to reconcile."""
+    import messaging_data
+
+    try:
+        rows = await messaging_data.open_delivery_contradictions(ctx)
+    except Exception as exc:  # noqa: BLE001
+        raise _db_unavailable(exc) from None
+    return {"open": [{**r, "occurred_at": _iso(r["occurred_at"]), "received_at": _iso(r["received_at"])}
+                     for r in rows]}
+
+
 class ReceiptReconcileBody(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     final_status: Literal["delivered", "failed"]

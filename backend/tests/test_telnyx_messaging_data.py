@@ -99,7 +99,7 @@ class FakeMessagingRouteConn:
 
     async def fetchval(self, query: str, *args: Any):
         q = " ".join(query.split())
-        if q.startswith("UPDATE messaging_routes") and "verification_attempt_count" in q:
+        if "UPDATE messaging_routes" in q and "verification_attempt_count" in q:
             # the ownership-code attempt reservation (25.7), without the lock
             used = int(self.row.get("verification_attempt_count") or 0)
             if used >= args[2]:

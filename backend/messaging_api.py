@@ -605,6 +605,8 @@ async def telnyx_webhook(request: Request) -> Response:
                 provider_message_id=delivery.provider_message_id,
                 status=delivery.status,
                 error_reason=delivery.error_reason,
+                event_id=delivery.event_id,
+                occurred_at=delivery.occurred_at,
             )
             if not known:
                 # The receipt beat our own write of the message row; ask
@@ -676,6 +678,8 @@ async def sync_hosted_orders(*, limit: int = 200) -> dict[str, Any]:
     failure is recorded and the sweep goes on."""
     from messaging_data import hosted_orders_to_sync, refresh_hosted_order_status
 
+    from messaging_data import mark_hosted_order_checked
+
     synced = failed = 0
     for tenant_id, agent_id in await hosted_orders_to_sync(limit=limit):
         ctx = TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
@@ -685,6 +689,9 @@ async def sync_hosted_orders(*, limit: int = 200) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             failed += 1
             logger.warning("hosted-order status sync failed for tenant %s", tenant_id, exc_info=True)
+            # stamped anyway: a route that keeps failing must not sort first
+            # forever and starve the others
+            await mark_hosted_order_checked(ctx)
     logger.info("ORACLE_METRIC messaging_hosted_order_sync synced=%d failed=%d", synced, failed)
     return {"synced": synced, "failed": failed}
 

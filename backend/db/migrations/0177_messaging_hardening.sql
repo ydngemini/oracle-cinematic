@@ -22,6 +22,7 @@
 ALTER TABLE messaging_routes
     ADD COLUMN IF NOT EXISTS verification_attempt_count integer NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS verification_locked_until  timestamptz,
+    ADD COLUMN IF NOT EXISTS verification_attempted_at  timestamptz,
     ADD COLUMN IF NOT EXISTS hosted_order_checked_at    timestamptz,
     ADD COLUMN IF NOT EXISTS hosted_order_status_at     timestamptz;
 
@@ -31,11 +32,14 @@ ALTER TABLE messaging_routes
     ADD CONSTRAINT messaging_routes_verification_attempts_chk CHECK (verification_attempt_count >= 0);
 
 -- Existing routes: their status has held since at least their last update.
+-- The updated_at trigger is paused for the backfill so it does not reset
+-- every route's updated_at to the migration time (the table's owner may).
+ALTER TABLE messaging_routes DISABLE TRIGGER trg_messaging_routes_updated;
 UPDATE messaging_routes SET hosted_order_status_at = updated_at WHERE hosted_order_status_at IS NULL;
+ALTER TABLE messaging_routes ENABLE TRIGGER trg_messaging_routes_updated;
 ALTER TABLE messaging_routes ALTER COLUMN hosted_order_status_at SET DEFAULT now();
 
--- Every path that changes the hosting status stamps when (no SET clause:
--- migrations run as a non-superuser in staging/production).
+-- Every path that changes the hosting status stamps when.
 CREATE OR REPLACE FUNCTION messaging_routes_hosted_status_at() RETURNS trigger
     LANGUAGE plpgsql AS $$
 BEGIN
@@ -62,6 +66,9 @@ CREATE TABLE IF NOT EXISTS sms_delivery_receipts (
     provider_message_id text NOT NULL CHECK (length(provider_message_id) BETWEEN 1 AND 128),
     status              text NOT NULL CHECK (length(status) BETWEEN 1 AND 40),
     error_reason        text CHECK (error_reason IS NULL OR length(error_reason) <= 500),
+    -- the provider's own event id and time (a redelivered event is one row)
+    provider_event_id   text CHECK (provider_event_id IS NULL OR length(provider_event_id) <= 128),
+    occurred_at         timestamptz,
     received_at         timestamptz NOT NULL DEFAULT now(),
     -- a final status that disagrees with the final status already stored
     contradicts         text CHECK (contradicts IS NULL OR length(contradicts) <= 40),
@@ -70,6 +77,8 @@ CREATE TABLE IF NOT EXISTS sms_delivery_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_sms_delivery_receipts_message
     ON sms_delivery_receipts (tenant_id, provider, provider_message_id, received_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sms_delivery_receipts_event
+    ON sms_delivery_receipts (provider, provider_event_id) WHERE provider_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sms_delivery_receipts_contradictions
     ON sms_delivery_receipts (received_at) WHERE contradicts IS NOT NULL AND reconciled_at IS NULL;
 

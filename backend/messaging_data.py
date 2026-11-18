@@ -391,6 +391,8 @@ async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: 
             UPDATE messaging_routes
                SET hosted_order_id=$3, hosted_order_status='pending_verification',
                    verification_method='sms', hosted_order_failure_reason=NULL, updated_at=now(),
+                   verification_attempt_count=0, verification_locked_until=NULL,
+                   verification_attempted_at=NULL,
                    -- the account that holds this hosting (25.1 send gate)
                    provider_account_id=COALESCE($4, provider_account_id)
              WHERE tenant_id=$1::uuid AND agent_id=$2 AND hosted_order_id IS NULL
@@ -415,17 +417,31 @@ async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: 
 VERIFICATION_LOCKED = "Too many incorrect codes — try again in 15 minutes."
 # Reserve one ownership-code attempt (25.7). A lock that has passed starts a
 # new count; at the limit, or while locked, nothing is reserved (NULL).
+# The count restarts when a lock has passed or the last attempt is older than
+# the lockout window (attempts expire). The attempt that reaches the limit
+# sets the lock in the same statement, so no later write is needed (a request
+# that dies mid-flight cannot leave the route locked forever).
 _RESERVE_VERIFICATION_ATTEMPT_SQL = """
-    UPDATE messaging_routes
-       SET verification_attempt_count = CASE WHEN verification_locked_until <= now() THEN 1
-                                             ELSE verification_attempt_count + 1 END,
-           verification_locked_until = CASE WHEN verification_locked_until <= now() THEN NULL
-                                            ELSE verification_locked_until END,
+    WITH fresh AS (
+        SELECT id,
+               (verification_locked_until IS NOT NULL AND verification_locked_until <= now())
+            OR (verification_attempted_at IS NULL
+                OR verification_attempted_at < now() - make_interval(secs => $4)) AS restart
+          FROM messaging_routes
+         WHERE tenant_id = $1::uuid AND agent_id = $2
+           AND (verification_locked_until IS NULL OR verification_locked_until <= now())
+           FOR UPDATE
+    )
+    UPDATE messaging_routes r
+       SET verification_attempt_count = CASE WHEN f.restart THEN 1 ELSE r.verification_attempt_count + 1 END,
+           verification_attempted_at = now(),
+           verification_locked_until = CASE
+               WHEN (CASE WHEN f.restart THEN 1 ELSE r.verification_attempt_count + 1 END) >= $3
+               THEN now() + make_interval(secs => $4) ELSE NULL END,
            updated_at = now()
-     WHERE tenant_id = $1::uuid AND agent_id = $2
-       AND (verification_locked_until IS NULL OR verification_locked_until <= now())
-       AND (verification_attempt_count < $3 OR verification_locked_until <= now())
-    RETURNING verification_attempt_count"""
+      FROM fresh f
+     WHERE r.id = f.id AND (f.restart OR r.verification_attempt_count < $3)
+    RETURNING r.verification_attempt_count"""
 
 
 async def complete_messaging_verification(
@@ -450,7 +466,7 @@ async def complete_messaging_verification(
     # stored, and a wrong code says nothing about how close it was.
     async with tenant_tx(ctx) as conn:
         attempt = await conn.fetchval(_RESERVE_VERIFICATION_ATTEMPT_SQL, ctx.tenant_id, ctx.agent_id,
-                                      _MAX_VERIFICATION_ATTEMPTS)
+                                      _MAX_VERIFICATION_ATTEMPTS, float(_VERIFICATION_LOCKOUT_SECONDS))
     if attempt is None:
         raise MessagingDataError(VERIFICATION_LOCKED)
 
@@ -459,20 +475,20 @@ async def complete_messaging_verification(
         verified = await adapter.complete_ownership_verification(
             str(route["hosted_order_id"]), number, code, credentials=credentials
         )
-    except Exception:
-        # The provider failed, not the code: the attempt is given back.
-        async with tenant_tx(ctx) as conn:
-            await conn.execute(
-                "UPDATE messaging_routes SET verification_attempt_count = GREATEST(verification_attempt_count - 1, 0) "
-                "WHERE tenant_id=$1::uuid AND agent_id=$2", ctx.tenant_id, ctx.agent_id)
+    except Exception as exc:
+        # The provider failed, not the code: the attempt is given back (and a
+        # lock it set is lifted). Not for a timeout: the request may still
+        # have reached the provider, so it counts.
+        if not isinstance(exc, TimeoutError):
+            async with tenant_tx(ctx) as conn:
+                await conn.execute(
+                    "UPDATE messaging_routes SET verification_attempt_count = GREATEST(verification_attempt_count - 1, 0), "
+                    "verification_locked_until = CASE WHEN verification_attempt_count >= $3 THEN NULL "
+                    "ELSE verification_locked_until END "
+                    "WHERE tenant_id=$1::uuid AND agent_id=$2", ctx.tenant_id, ctx.agent_id, _MAX_VERIFICATION_ATTEMPTS)
         raise
     if not verified:
         if attempt >= _MAX_VERIFICATION_ATTEMPTS:
-            async with tenant_tx(ctx) as conn:
-                await conn.execute(
-                    "UPDATE messaging_routes SET verification_locked_until = now() + make_interval(secs => $3) "
-                    "WHERE tenant_id=$1::uuid AND agent_id=$2", ctx.tenant_id, ctx.agent_id,
-                    float(_VERIFICATION_LOCKOUT_SECONDS))
             raise MessagingDataError(VERIFICATION_LOCKED)
         raise MessagingDataError("That code did not verify — check it and try again")
     return await _set_route_columns(
@@ -518,6 +534,11 @@ async def refresh_hosted_order_status(ctx: TenantContext, *, credentials: Mappin
         "failed": "failed",
         "deleted": "disconnected",
     }.get(provider_status, "processing")
+    if route.get("hosted_order_status") == "pending_verification" and mapped == "processing":
+        # Before the owner has entered the ownership code the provider can only
+        # answer pending (or something unknown): that is not "processing", and
+        # moving there would hide the code form (25.6 review).
+        mapped = "pending_verification"
     updates: dict[str, Any] = {"hosted_order_status": mapped, "hosted_order_checked_at": datetime.now(timezone.utc)}
     if account:
         updates["provider_account_id"] = account
@@ -1843,14 +1864,25 @@ def _contradiction(stored: Optional[str], received: str) -> Optional[str]:
     return str(stored) if before and after and before != after else None
 
 
+async def mark_hosted_order_checked(ctx: TenantContext) -> None:
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute("UPDATE messaging_routes SET hosted_order_checked_at=now() "
+                               "WHERE tenant_id=$1::uuid AND agent_id=$2", ctx.tenant_id, ctx.agent_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("hosted-order check time not recorded", exc_info=True)
+
+
 async def hosted_orders_to_sync(*, limit: int = 200) -> list[tuple[str, str]]:
-    """(tenant_id, agent_id) of active routes whose hosted order is not final,
-    least recently read first (25.6)."""
+    """(tenant_id, agent_id) of active routes whose hosted order is with the
+    provider and not final, least recently read first (25.6). An order still
+    waiting for the owner's ownership code is not swept: nothing advances it
+    but the owner."""
     async with tenant_tx(_platform_context()) as conn:
         rows = await conn.fetch(
             "SELECT tenant_id::text AS tenant_id, agent_id FROM messaging_routes "
             "WHERE active AND hosted_order_id IS NOT NULL AND hosted_order_status IN "
-            "('pending_verification','processing','pending_documents','manual_action_required') "
+            "('processing','pending_documents','manual_action_required') "
             "ORDER BY hosted_order_checked_at NULLS FIRST LIMIT $1", max(1, min(1000, int(limit))))
     return [(r["tenant_id"], r["agent_id"]) for r in rows]
 
@@ -1861,9 +1893,13 @@ class ReceiptNotFound(MessagingDataError):
 
 async def reconcile_delivery_receipt(ctx: TenantContext, *, receipt_id: int, final_status: str) -> dict[str, Any]:
     """A person settles contradicting delivery receipts (25.8) after checking
-    the provider's record: every open contradiction of that message is marked
-    reconciled, and the message takes `final_status` ('delivered' or
-    'failed') with the delivery or failure side effects that status has."""
+    the provider's record: the open contradictions of that message are marked
+    reconciled and the message takes `final_status` ('delivered' or 'failed').
+
+    What it cannot do, it reports instead of claiming: a first-response row
+    already 'delivered' (or 'failed') does not move backwards, and a
+    lead_engaged charge metered on the first delivered receipt stays — the
+    result says so (billing_followup) for the usage-resolution flow."""
     import outreach_lifecycle
 
     if final_status not in ("delivered", "failed"):
@@ -1871,30 +1907,59 @@ async def reconcile_delivery_receipt(ctx: TenantContext, *, receipt_id: int, fin
     async with tenant_tx(ctx) as conn:
         receipt = await conn.fetchrow(
             "SELECT tenant_id, provider, provider_message_id FROM sms_delivery_receipts "
-            "WHERE id=$1 AND contradicts IS NOT NULL AND reconciled_at IS NULL", int(receipt_id))
+            "WHERE id=$1 AND contradicts IS NOT NULL AND reconciled_at IS NULL FOR UPDATE", int(receipt_id))
         if receipt is None:
             raise ReceiptNotFound("No open contradiction with that id")
+        tenant, provider, message = receipt["tenant_id"], receipt["provider"], receipt["provider_message_id"]
         stored = await conn.fetchval(
             "SELECT status FROM sms_messages WHERE tenant_id=$1 AND provider=$2 AND provider_message_id=$3 "
-            "FOR UPDATE", receipt["tenant_id"], receipt["provider"], receipt["provider_message_id"])
+            "FOR UPDATE", tenant, provider, message)
         closed = await conn.execute(
             "UPDATE sms_delivery_receipts SET reconciled_at=now() WHERE tenant_id=$1 AND provider=$2 "
-            "AND provider_message_id=$3 AND contradicts IS NOT NULL AND reconciled_at IS NULL",
-            receipt["tenant_id"], receipt["provider"], receipt["provider_message_id"])
+            "AND provider_message_id=$3 AND contradicts IS NOT NULL AND reconciled_at IS NULL AND id <= $4",
+            tenant, provider, message, int(receipt_id))
         changed = _FINAL_OUTCOME.get(str(stored or "")) != final_status
         if changed:
             await conn.execute(
                 "UPDATE sms_messages SET status=$4, provider_status=$4, "
-                "delivered_at=CASE WHEN $4='delivered' THEN COALESCE(delivered_at, now()) ELSE delivered_at END, "
-                "failed_at=CASE WHEN $4='failed' THEN COALESCE(failed_at, now()) ELSE failed_at END "
-                "WHERE tenant_id=$1 AND provider=$2 AND provider_message_id=$3",
-                receipt["tenant_id"], receipt["provider"], receipt["provider_message_id"], final_status)
-            side_effect = (outreach_lifecycle.record_sms_delivered if final_status == "delivered"
-                           else outreach_lifecycle.record_sms_failed)
-            await side_effect(conn, provider=receipt["provider"], provider_message_id=receipt["provider_message_id"])
-    return {"tenant_id": str(receipt["tenant_id"]), "provider_message_id": receipt["provider_message_id"],
-            "final_status": final_status, "status_changed": changed,
+                "delivered_at=CASE WHEN $4='delivered' THEN COALESCE(delivered_at, now()) ELSE NULL END, "
+                "failed_at=CASE WHEN $4='failed' THEN COALESCE(failed_at, now()) ELSE NULL END "
+                "WHERE tenant_id=$1 AND provider=$2 AND provider_message_id=$3", tenant, provider, message, final_status)
+            advance = (outreach_lifecycle.record_sms_delivered if final_status == "delivered"
+                       else outreach_lifecycle.record_sms_failed)
+            advanced = await advance(conn, provider=provider, provider_message_id=message)
+        else:
+            advanced = 0
+        facts = await conn.fetchrow(
+            """
+            SELECT (SELECT r.disposition FROM command_executions c
+                      JOIN lead_response_events r ON r.command_id = c.id AND r.tenant_id = c.tenant_id
+                     WHERE c.tenant_id=$1 AND c.provider=$2 AND c.provider_reference=$3 LIMIT 1) AS first_response,
+                   (SELECT count(*) FROM command_executions c
+                      JOIN billing_usage_events u ON u.source_id = c.id AND u.tenant_id = c.tenant_id
+                     WHERE c.tenant_id=$1 AND c.provider=$2 AND c.provider_reference=$3
+                       AND u.metric='lead_engaged') AS metered
+            """, tenant, provider, message)
+    first_response = facts["first_response"] if facts else None
+    metered = int(facts["metered"] or 0) if facts else 0
+    followup = None
+    if final_status == "failed" and metered:
+        followup = "a lead_engaged charge was metered on the delivered receipt; resolve it in usage billing"
+        logger.warning("ORACLE_ALERT sms_reconciled_failed_but_metered %s message %s", provider, message)
+    return {"tenant_id": str(tenant), "provider_message_id": message, "final_status": final_status,
+            "status_changed": changed, "first_response_advanced": int(advanced or 0),
+            "first_response_disposition": first_response, "metered": metered, "billing_followup": followup,
             "receipts_reconciled": int(str(closed).split()[-1] or 0)}
+
+
+async def open_delivery_contradictions(ctx: TenantContext, *, limit: int = 100) -> list[dict[str, Any]]:
+    """Open contradicting receipts for the operator (25.8): which to reconcile."""
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            "SELECT id, tenant_id, provider, provider_message_id, status, contradicts, occurred_at, received_at "
+            "FROM sms_delivery_receipts WHERE contradicts IS NOT NULL AND reconciled_at IS NULL "
+            "ORDER BY received_at LIMIT $1", max(1, min(500, int(limit))))
+    return [{**dict(r), "tenant_id": str(r["tenant_id"])} for r in rows]
 
 
 DELIVERY_RECEIPT_KEEP_DAYS = 90
@@ -1911,7 +1976,8 @@ async def prune_delivery_receipts() -> int:
 
 
 async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,
-                                 error_reason: Optional[str]) -> bool:
+                                 error_reason: Optional[str], event_id: Optional[str] = None,
+                                 occurred_at: Optional[str] = None) -> bool:
     """Monotonic status update. Returns False only when no such message row
     exists yet (the receipt beat our own insert) so the webhook can ask the
     provider to redeliver.
@@ -1932,14 +1998,23 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
         if current is None:
             return False
         contradicts = _contradiction(current["status"], status)
-        await conn.execute(
+        try:
+            occurred = datetime.fromisoformat(str(occurred_at).replace("Z", "+00:00")) if occurred_at else None
+        except ValueError:
+            occurred = None
+        receipt_id = await conn.fetchval(
             "INSERT INTO sms_delivery_receipts (tenant_id, provider, provider_message_id, status, error_reason, "
-            "contradicts) VALUES ($1,$2,$3,$4,$5,$6)",
+            "contradicts, provider_event_id, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+            "ON CONFLICT (provider, provider_event_id) WHERE provider_event_id IS NOT NULL DO NOTHING "
+            "RETURNING id",
             current["tenant_id"], provider, provider_message_id[:128], str(status)[:40],
-            (str(error_reason)[:500] if error_reason else None), contradicts)
+            (str(error_reason)[:500] if error_reason else None), contradicts,
+            (str(event_id)[:128] if event_id else None), occurred)
         if contradicts:
-            logger.warning("ORACLE_ALERT sms_delivery_contradiction %s message %s: stored %s, receipt says %s; "
-                           "left for reconciliation", provider, provider_message_id, contradicts, status)
+            if receipt_id is not None:
+                logger.warning("ORACLE_ALERT sms_delivery_contradiction receipt %s (%s message %s): stored %s, "
+                               "receipt says %s; left for reconciliation",
+                               receipt_id, provider, provider_message_id, contradicts, status)
             return True
         result = await conn.execute(
             """
