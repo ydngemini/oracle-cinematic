@@ -48,10 +48,10 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from admin_ops import require_platform_admin
 from db.connection import tenant_tx
@@ -1116,6 +1116,61 @@ async def reset_user_two_step(
     return await reset_member_mfa(ctx, user_id, body.reason)
 
 
+class UsageResolutionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    tenant_id: uuid.UUID
+    report_state: Literal["expired", "uncertain"]
+    resolution: Literal["billed", "credited", "written_off"]
+    reason: str = Field(min_length=3, max_length=500)
+    usage_ids: Optional[list[uuid.UUID]] = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _uncertain_rows_are_named(self) -> "UsageResolutionBody":
+        # Whether an uncertain send is on the Stripe meter is a fact per row:
+        # a bulk resolve could sweep in rows quarantined after the person
+        # looked. Expired rows (a billing decision) may be resolved in bulk.
+        if self.report_state == "uncertain" and not self.usage_ids:
+            raise ValueError("name the uncertain rows (usage_ids) checked against the Stripe meter")
+        return self
+
+
+@router.post("/billing/usage/resolve")
+async def resolve_usage(
+    body: UsageResolutionBody,
+    ctx: TenantContext = Depends(require_platform_admin),
+) -> dict[str, Any]:
+    """Record the decision on usage the drain quarantined (24.5, 24.6): an
+    'uncertain' send checked against the Stripe meter, or 'expired' usage
+    billed by hand, credited or written off. Nothing is sent to Stripe here.
+    Rows keep their quarantine as history; recorded in the audit chain."""
+    import billing_usage
+
+    try:
+        n = await billing_usage.resolve_quarantined_usage(
+            ctx, tenant_id=str(body.tenant_id), report_state=body.report_state,
+            resolution=body.resolution, note=body.reason,
+            usage_ids=[str(i) for i in body.usage_ids] if body.usage_ids else None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _db_unavailable(exc) from None
+    try:
+        from audit_ledger import AuditCategory, ledger
+
+        await ledger.record(
+            AuditCategory.ADMIN_ACTION, "admin.billing.usage_resolved",
+            tenant_id=str(body.tenant_id), user_id=ctx.agent_id, target_id=str(body.tenant_id),
+            metadata={"report_state": body.report_state, "resolution": body.resolution,
+                      "rows": n, "reason": body.reason,
+                      "usage_ids": [str(i) for i in body.usage_ids] if body.usage_ids else "all"},
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("audit record for admin.billing.usage_resolved failed")
+    return {"resolved": n, "tenant_id": str(body.tenant_id), "report_state": body.report_state,
+            "resolution": body.resolution}
+
+
 @router.get("/release")
 async def release(ctx: TenantContext = Depends(require_platform_admin)) -> dict[str, Any]:
     """/version and /health/workers in one authenticated answer, with the
@@ -1209,18 +1264,37 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
                 "SELECT max(received_at) FROM stripe_webhook_events"), None)
             reportable = sorted(billing_usage._STRIPE_REPORTED)
             usage = await s.run("usage", lambda: conn.fetchrow(
-                "SELECT count(*)::int AS backlog, min(occurred_at) AS oldest, "
-                "       count(*) FILTER (WHERE report_error IS NOT NULL)::int AS erroring "
+                "SELECT count(*) FILTER (WHERE report_state IS NULL)::int AS backlog, "
+                "       min(occurred_at) FILTER (WHERE report_state IS NULL) AS oldest, "
+                "       count(*) FILTER (WHERE report_state IS NULL"
+                "                          AND report_error IS NOT NULL)::int AS erroring, "
+                # 24.5/24.6: rows the drain will not send again, for a person
+                "       count(*) FILTER (WHERE report_state = 'uncertain'"
+                "                          AND report_resolution IS NULL)::int AS uncertain, "
+                "       count(*) FILTER (WHERE report_state = 'expired'"
+                "                          AND report_resolution IS NULL)::int AS expired, "
+                "       count(*) FILTER (WHERE report_state IS NULL AND occurred_at"
+                "                          <= now() - make_interval(days => $2))::int AS aging "
                 "  FROM billing_usage_events "
                 " WHERE reported_at IS NULL AND metric = ANY($1::text[]) "
-                "   AND " + billing_usage.BILLABLE_PREDICATE, reportable), None)
+                "   AND " + billing_usage.BILLABLE_PREDICATE, reportable,
+                billing_usage.REPORT_AGING_ALERT_DAYS), None)
             usage_tenants = await s.run("usage_tenants", lambda: conn.fetch(
                 "SELECT u.tenant_id, t.name, count(*)::int AS backlog, min(u.occurred_at) AS oldest, "
                 "       count(*) FILTER (WHERE u.report_error IS NOT NULL)::int AS erroring "
                 "  FROM billing_usage_events u LEFT JOIN tenants t ON t.id = u.tenant_id "
-                " WHERE u.reported_at IS NULL AND u.metric = ANY($1::text[]) "
+                " WHERE u.reported_at IS NULL AND u.report_state IS NULL AND u.metric = ANY($1::text[]) "
                 "   AND " + billing_usage.billable_predicate("u") + " "
                 " GROUP BY u.tenant_id, t.name ORDER BY min(u.occurred_at) LIMIT 20", reportable), [])
+            # Which brokerage's usage waits on a person (24.5, 24.6).
+            usage_quarantined = await s.run("usage_quarantined", lambda: conn.fetch(
+                "SELECT u.tenant_id, t.name, "
+                "       count(*) FILTER (WHERE u.report_state = 'uncertain')::int AS uncertain, "
+                "       count(*) FILTER (WHERE u.report_state = 'expired')::int AS expired, "
+                "       min(u.report_quarantined_at) AS since "
+                "  FROM billing_usage_events u LEFT JOIN tenants t ON t.id = u.tenant_id "
+                " WHERE u.report_state IS NOT NULL AND u.report_resolution IS NULL "
+                " GROUP BY u.tenant_id, t.name ORDER BY min(u.report_quarantined_at) LIMIT 50"), [])
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1255,6 +1329,7 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
 
     metering_on = billing_usage.metering_configured()
     backlog = _int((usage or {}).get("backlog")) if usage else 0
+    needs_person = sum(_int((usage or {}).get(k)) for k in ("uncertain", "expired", "aging")) if usage else 0
     webhook = billing.webhook_diagnostics()
     return {
         "duplicate_subscriptions": duplicate_subs,
@@ -1276,13 +1351,23 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
             "configured": metering_on,
             # With metering off, unreported rows are the design (history only),
             # not a backlog — saying "backlog" there would page someone for nothing.
-            "state": ("off" if not metering_on else "backlog" if backlog else "ok"),
+            # "attention" outranks "backlog": usage that may already be billed
+            # (uncertain), can no longer be billed (expired) or soon cannot
+            # (aging) waits on a person, not on the next drain (24.5, 24.6).
+            "state": ("off" if not metering_on else "attention" if needs_person
+                      else "backlog" if backlog else "ok"),
             "unreported": backlog,
             "oldest_unreported_at": _iso((usage or {}).get("oldest")) if usage else None,
             "erroring": _int((usage or {}).get("erroring")) if usage else 0,
+            "uncertain": _int((usage or {}).get("uncertain")) if usage else 0,
+            "expired": _int((usage or {}).get("expired")) if usage else 0,
+            "aging": _int((usage or {}).get("aging")) if usage else 0,
             "by_tenant": [{"tenant_id": str(u["tenant_id"]), "name": u["name"],
                            "unreported": _int(u["backlog"]), "erroring": _int(u["erroring"]),
                            "oldest_unreported_at": _iso(u["oldest"])} for u in usage_tenants],
+            "quarantined_by_tenant": [{"tenant_id": str(q["tenant_id"]), "name": q["name"],
+                                       "uncertain": _int(q["uncertain"]), "expired": _int(q["expired"]),
+                                       "since": _iso(q["since"])} for q in usage_quarantined],
         },
         "counts": {"no_subscription": len(no_sub), "payment_issue": len(payment),
                    "canceled": len(canceled), "reactivated_90d": len(reactivated),

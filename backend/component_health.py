@@ -51,7 +51,7 @@ ROLE = {
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
-    "inbound_calls", "billing_meter",
+    "inbound_calls", "billing_meter", "usage_reporting",
 )
 
 
@@ -187,6 +187,23 @@ async def _db_components() -> dict[str, dict]:
                AND r.delivered_at < now() - interval '1 hour'
                AND r.delivered_at > now() - interval '30 days'
             """)
+        # 24.5 / 24.6: usage the Stripe drain will not send again (an unknown
+        # outcome past Stripe's de-duplication window, or too old for Stripe)
+        # and usage nearing Stripe's 35-day limit. Waits on a person.
+        from billing_usage import BILLABLE_PREDICATE, REPORT_AGING_ALERT_DAYS
+
+        # Two statements, each matching one partial index of 0175 (this runs
+        # every minute across every brokerage).
+        usage_rep = dict(await conn.fetchrow(
+            "SELECT count(*) FILTER (WHERE report_state = 'uncertain') AS uncertain, "
+            "       count(*) FILTER (WHERE report_state = 'expired') AS expired "
+            "  FROM billing_usage_events "
+            " WHERE report_state IS NOT NULL AND report_resolution IS NULL"))
+        usage_rep["aging"] = await conn.fetchval(
+            "SELECT count(*) FROM billing_usage_events "
+            " WHERE reported_at IS NULL AND report_state IS NULL AND metric = 'lead_engaged' AND "
+            + BILLABLE_PREDICATE + " AND occurred_at <= now() - make_interval(days => $1)",
+            REPORT_AGING_ALERT_DAYS)
         harvest = await conn.fetchrow(
             """
             SELECT count(*) FILTER (WHERE enabled) AS enabled,
@@ -237,6 +254,7 @@ async def _db_components() -> dict[str, dict]:
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
+    out["usage_reporting"] = _usage_reporting(usage_rep)
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
     out["valuation_providers"] = _valuation_providers(providers)
@@ -277,6 +295,26 @@ def _billing_meter(unmetered: int) -> dict:
         return _c(DEGRADED, "billable engagements were delivered but not metered",
                   unmetered=unmetered)
     return _c(HEALTHY, "billable engagements metered")
+
+
+def _usage_reporting(row: dict) -> dict:
+    """24.5 / 24.6: usage the Stripe drain quarantined and nobody has resolved
+    yet ('uncertain': may already be billed; 'expired': can no longer be
+    reported), or usage still unreported after REPORT_AGING_ALERT_DAYS. With
+    metering off unreported usage is history, not a problem."""
+    from billing_usage import metering_configured
+
+    uncertain, expired = int(row.get("uncertain") or 0), int(row.get("expired") or 0)
+    aging = int(row.get("aging") or 0)
+    if uncertain or expired:
+        return _c(DEGRADED, "usage waits on a person: reconcile it with Stripe, bill, credit or write it off",
+                  uncertain=uncertain, expired=expired, aging=aging)
+    if not metering_configured():
+        return _c(NOT_CONFIGURED, "usage metering is off (recorded locally only)")
+    if aging:
+        return _c(DEGRADED, "usage is nearing the age Stripe refuses (35 days) and is still unreported",
+                  aging=aging)
+    return _c(HEALTHY, "usage reaching Stripe")
 
 
 def _syncs_paused() -> bool:

@@ -303,8 +303,10 @@ function BillingCard({ data }) {
   // Two plans that may both bill one brokerage: first, and listed until a
   // person cancels one in Stripe (the security list buries the alert).
   const duplicates = data?.duplicate_subscriptions || [];
+  // Usage the drain will not send again waits on a person (24.5, 24.6).
+  const quarantined = usage.quarantined_by_tenant || [];
   const any = duplicates.length || groups.some(([k]) => (data?.[k] || []).length)
-    || (data?.reactivated_90d || []).length;
+    || (data?.reactivated_90d || []).length || usage.state === 'attention';
   return (
     <>
       {!any ? <Empty>No billing exceptions.</Empty> : null}
@@ -344,6 +346,16 @@ function BillingCard({ data }) {
           </div>
         );
       })}
+      {quarantined.length ? (
+        <p className={styles.warnNote}>
+          Usage held for billing review: {quarantined.map((q) => {
+            const parts = [];
+            if (q.uncertain) parts.push(`${q.uncertain} to reconcile with Stripe`);
+            if (q.expired) parts.push(`${q.expired} too old to report`);
+            return `${q.name || q.tenant_id} (${parts.join(', ')})`;
+          }).join('; ')}
+        </p>
+      ) : null}
       {(data?.reactivated_90d || []).length ? (
         <p className={styles.sub}>Reactivated in the last 90 days: {data.reactivated_90d.map((r) => r.name).join(', ')}</p>
       ) : null}
@@ -351,7 +363,7 @@ function BillingCard({ data }) {
         <div><dt>Stripe</dt><dd>{hooks.stripe_mode || 'unknown'}</dd></div>
         <div><dt>Webhook secret</dt><dd>{hooks.webhook_secret_configured ? 'configured' : 'missing'}</dd></div>
         <div><dt>Last Stripe event</dt><dd>{relTime(hooks.last_processed_at) ?? 'none recorded'}</dd></div>
-        <div><dt>Usage metering</dt><dd>{usage.state === 'off' ? 'off (history only)' : usage.state === 'backlog' ? `${usage.unreported} unreported` : usage.state || 'unknown'}</dd></div>
+        <div><dt>Usage metering</dt><dd>{usageMeteringText(usage)}</dd></div>
       </dl>
       {refusals.length ? (
         <p className={styles.warnNote}>
@@ -389,6 +401,23 @@ function PilotCard({ data }) {
 }
 
 /* ── Overview ──────────────────────────────────────────────────────────── */
+
+// The drain never resends usage whose send outcome is unknown past Stripe's
+// de-duplication window, nor usage older than Stripe accepts; both wait on a
+// person (audits 24.5, 24.6), so they are named, not folded into "unreported".
+function usageMeteringText(usage) {
+  if (usage.state === 'off') return 'off (history only)';
+  if (usage.state === 'attention') {
+    const parts = [];
+    if (usage.uncertain) parts.push(`${usage.uncertain} to reconcile with Stripe`);
+    if (usage.expired) parts.push(`${usage.expired} too old to report`);
+    if (usage.aging) parts.push(`${usage.aging} nearing Stripe's 35-day limit`);
+    if (usage.unreported) parts.push(`${usage.unreported} unreported`);
+    return parts.join(' · ') || 'needs attention';
+  }
+  if (usage.state === 'backlog') return `${usage.unreported} unreported`;
+  return usage.state || 'unknown';
+}
 
 export default function OperatorOverview() {
   const [feeds, refetch] = useOperatorFeeds();
