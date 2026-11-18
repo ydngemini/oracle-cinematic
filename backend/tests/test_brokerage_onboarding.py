@@ -387,13 +387,25 @@ def test_create_skips_somebody_who_is_already_a_member():
 
 def test_reinviting_revokes_the_previous_live_invitation():
     """Double-click, resend, two tabs: one live invitation, never two."""
-    conn = _invite_conn(prior={"token_hash": "f" * 64, "send_count": 2})
+    conn = _invite_conn(prior={"token_hash": "f" * 64, "send_count": 2, "recent": False})
     out = asyncio.run(bo.create_invitations(conn, OWNER, ["invitee@a.test"], "agent"))
     revokes = [a for q, a in conn.statements if "SET revoked_at = now()" in q]
     assert len(revokes) == 1 and revokes[0][0] == "f" * 64
     insert = [(q, a) for q, a in conn.statements if "INSERT INTO brokerage_invitations" in q][0]
     assert insert[1][7] == 3          # send_count carried forward
     assert out["created"]
+
+
+def test_a_retried_send_does_not_revoke_a_link_still_on_its_way():
+    """21.5: a bulk Send repeated within minutes (the browser retried a slow
+    request) leaves the live invitation alone; only Resend reissues it."""
+    conn = _invite_conn(prior={"token_hash": "f" * 64, "send_count": 1, "recent": True})
+    out = asyncio.run(bo.create_invitations(conn, OWNER, ["invitee@a.test"], "agent"))
+    assert out["skipped"] == [{"email": "invitee@a.test", "reason": "already_invited"}] and not out["created"]
+    assert not [q for q, _ in conn.statements if "SET revoked_at = now()" in q]
+    conn = _invite_conn(prior={"token_hash": "f" * 64, "send_count": 1, "recent": True})
+    out = asyncio.run(bo.create_invitations(conn, OWNER, ["invitee@a.test"], "agent", reissue_recent=True))
+    assert out["created"] and [q for q, _ in conn.statements if "SET revoked_at = now()" in q]
 
 
 def test_bulk_invite_issues_one_row_per_address():

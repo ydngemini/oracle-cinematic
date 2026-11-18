@@ -565,6 +565,9 @@ privacy_lifecycle.register()
 privacy_export.register()
 import email_outbox  # noqa: E402  # registers `email:outbox`
 email_outbox.register()
+# Registers `brokerage.invitation_email` (21.5: invitation emails are queued).
+import brokerage_onboarding  # noqa: E402
+brokerage_onboarding.register()
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
