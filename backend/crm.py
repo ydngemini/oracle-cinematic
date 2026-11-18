@@ -954,8 +954,13 @@ async def update_client(
                 # reaches the scoped contact lock.
                 await require_client_edit(conn, client_id)
                 linked_contact = await contacts_api.lock_linked_contact(conn, ctx.tenant_id, client_id)
+            # Locked only for an identifier edit (already authorised above): a
+            # row-locking read hides a row the caller may only view, which
+            # would turn the 403 below into a 404.
             current = await conn.fetchrow(
-                "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1 FOR UPDATE",
+                "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1 FOR UPDATE"
+                if linked_contact is not None or "phone" in fields or "email" in fields else
+                "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1",
                 client_id,
             )
             if current is None:
