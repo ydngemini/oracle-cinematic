@@ -68,7 +68,8 @@ _TENANTS = """
 """
 _COUNT = """
     SELECT count(*) FROM agent_contacts
-     WHERE EXISTS (SELECT 1 FROM jsonb_each(suppression) f WHERE f.value NOT IN ('false'::jsonb, 'null'::jsonb))
+     WHERE ($1::uuid[] IS NULL OR tenant_id = ANY($1::uuid[]))
+       AND EXISTS (SELECT 1 FROM jsonb_each(suppression) f WHERE f.value NOT IN ('false'::jsonb, 'null'::jsonb))
 """
 # Stop early when this many sealed contacts in a row cannot be opened: the
 # key is wrong, not one record.
@@ -144,9 +145,19 @@ async def backfill(*, batch_size: int, tenant_ids: Optional[list[str]] = None) -
     return {**totals, "unreadable": len(state["unreadable"]), "seconds": round(time.monotonic() - started, 2)}
 
 
-async def flagged_count() -> int:
+async def flagged_count(tenant_ids: Optional[list[str]] = None) -> int:
     async with tenant_tx(_ctx(_PLATFORM_TENANT)) as conn:
-        return int(await conn.fetchval(_COUNT))
+        return int(await conn.fetchval(_COUNT, tenant_ids))
+
+
+def _tenant_id(value: str) -> str:
+    """argparse type: a brokerage id must be a UUID (a usage error, exit 2)."""
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a brokerage id: {value!r}") from exc
 
 
 def batch_size_from_env() -> int:
@@ -156,14 +167,15 @@ def batch_size_from_env() -> int:
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--count", action="store_true", help="print flagged contacts; change nothing")
-    parser.add_argument("--tenant", action="append", help="only this brokerage id (repeatable)")
+    parser.add_argument("--tenant", action="append", type=_tenant_id,
+                        help="only this brokerage id (repeatable; --count is scoped too)")
     args = parser.parse_args(argv)
     if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "").strip():
         print("ORACLE_ENCRYPTION_MASTER_KEY is required", file=sys.stderr)
         return 2
     await init_pool(min_size=1, max_size=2)
     try:
-        print(f"{await flagged_count()} flagged contact(s)", flush=True)
+        print(f"{await flagged_count(args.tenant)} flagged contact(s)", flush=True)
         if args.count:
             return 0
         try:

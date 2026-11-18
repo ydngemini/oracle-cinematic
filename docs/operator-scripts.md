@@ -225,7 +225,7 @@ Requires `ORACLE_ENCRYPTION_MASTER_KEY` (to open sealed contacts) plus the usual
 ```bash
 docker compose run --rm --no-deps \
   -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
-  backend python /app/crm_suppression_backfill.py [--count] [--tenant <brokerage id> ...]
+  backend python /app/crm_suppression_backfill.py [--count] [--tenant <brokerage id> ...]   # --count is scoped by --tenant too
 ```
 
 Optional: `ORACLE_CRM_SUPPRESSION_BATCH` (default `200`, range 1–2000);

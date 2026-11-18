@@ -96,6 +96,10 @@ async def _scenario(monkeypatch):
         assert out["rows_added"] == 6
         again = await backfill.backfill(batch_size=50, tenant_ids=[tenant])
         assert again["rows_added"] == 0                                    # idempotent
+        assert await backfill.flagged_count([tenant]) == 4                 # --count, scoped
+        with pytest.raises(SystemExit) as bad:                             # a malformed id: usage error
+            await backfill.main(["--count", "--tenant", "not-a-uuid"])
+        assert bad.value.code == 2
         assert sealed["id"]
     finally:
         await admin.execute("SET session_replication_role = replica")
