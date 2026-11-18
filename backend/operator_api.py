@@ -824,13 +824,26 @@ async def _diag_messaging(conn, tid: str) -> dict:
         tid,
     )
     brand = await conn.fetchrow(
-        "SELECT provider, status, failure_reason, submitted_at, approved_at "
+        "SELECT provider, status, failure_reason, submitted_at, approved_at, "
+        "       provider_status, status_checked_at, status_ok_at, status_check_error "
         "  FROM tenant_messaging_brands WHERE tenant_id = $1::uuid",
         tid,
     )
     campaigns = await conn.fetch(
-        "SELECT provider, status, usecase, failure_reason, submitted_at, approved_at "
+        "SELECT provider, status, usecase, failure_reason, submitted_at, approved_at, "
+        "       provider_status, status_checked_at, status_ok_at, status_check_error "
         "  FROM tenant_messaging_campaigns WHERE tenant_id = $1::uuid ORDER BY created_at DESC LIMIT 10",
+        tid,
+    )
+    # 10DLC submissions/assignments the provider may hold that no registration
+    # row reflects (unknown or confirmed-but-unattached), and assignment state:
+    # for the operator to reconcile with the provider (25.2, L10-09).
+    submissions = await conn.fetch(
+        "SELECT kind, state, detail->>'assignment_status' AS assignment_status, "
+        "       detail->>'released_reason' AS released_reason, error, created_at, updated_at "
+        "  FROM provider_purchases WHERE tenant_id = $1::uuid "
+        "   AND kind IN ('10dlc_brand','10dlc_campaign','10dlc_number_assignment') "
+        " ORDER BY updated_at DESC LIMIT 20",
         tid,
     )
     sms = await conn.fetchrow(
@@ -861,12 +874,26 @@ async def _diag_messaging(conn, tid: str) -> dict:
             "provider": brand["provider"], "status": brand["status"],
             "failure_reason": scrub(brand["failure_reason"]),
             "submitted_at": _iso(brand["submitted_at"]), "approved_at": _iso(brand["approved_at"]),
+            "provider_status": safe_code(brand.get("provider_status")),
+            "status_checked_at": _iso(brand.get("status_checked_at")),
+            "status_ok_at": _iso(brand.get("status_ok_at")),
+            "status_check_error": scrub(brand.get("status_check_error")),
         } if brand else None,
         "campaigns_10dlc": [{
             "provider": c["provider"], "status": c["status"], "usecase": safe_code(c["usecase"]),
             "failure_reason": scrub(c["failure_reason"]),
             "submitted_at": _iso(c["submitted_at"]), "approved_at": _iso(c["approved_at"]),
+            "provider_status": safe_code(c.get("provider_status")),
+            "status_checked_at": _iso(c.get("status_checked_at")),
+            "status_ok_at": _iso(c.get("status_ok_at")),
+            "status_check_error": scrub(c.get("status_check_error")),
         } for c in campaigns],
+        "registration_submissions": [{
+            "kind": safe_code(p["kind"]), "state": safe_code(p["state"]),
+            "assignment_status": safe_code(p["assignment_status"]),
+            "released_reason": scrub(p["released_reason"]), "error": scrub(p["error"]),
+            "created_at": _iso(p["created_at"]), "updated_at": _iso(p["updated_at"]),
+        } for p in submissions],
         "outbound_sms_24h": {"total": _int(sms["outbound"]), "failed": _int(sms["failed"])},
         "registration_summary": reg,
     }

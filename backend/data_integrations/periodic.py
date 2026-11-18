@@ -774,6 +774,15 @@ async def _provider_reconciliation_task() -> dict:
     return await run_sweep()
 
 
+def _hours_env(name: str, default: float) -> float:
+    """An hours setting as seconds, at least an hour; a bad value is the default."""
+    try:
+        hours = float(os.getenv(name, str(default)))
+    except ValueError:
+        hours = default
+    return max(3600.0, hours * 3600)
+
+
 async def _messaging_registration_sync_task() -> dict:
     """Read pending/approved 10DLC brand and campaign status back from the
     provider (external audit 25.2: nothing else ever did)."""
@@ -1112,7 +1121,7 @@ def build_default_scheduler() -> PeriodicScheduler:
     ))
     sched.register(PeriodicTask(
         name="messaging_registration_sync",
-        interval_s=max(3600, float(os.getenv("ORACLE_10DLC_SYNC_INTERVAL_HOURS", "6")) * 3600),
+        interval_s=_hours_env("ORACLE_10DLC_SYNC_INTERVAL_HOURS", 6.0),
         run=_messaging_registration_sync_task,
     ))
     sched.register(PeriodicTask(

@@ -195,7 +195,8 @@ def test_phone_status_follows_verified_caller_id(counts, expected):
     assert asyncio.run(bo._phone_status(conn, TENANT_A)) == expected
 
 
-_SENDABLE = {"agent_id": "a", "active": True, "provider": "telnyx", "hosted_order_status": "active",
+_SENDABLE = {"agent_id": "a", "active": True, "provider": "telnyx", "provider_account_id": "tk:0123456789abcdef",
+             "campaign_fresh": True, "brand_provider": "telnyx", "hosted_order_status": "active",
              "campaign_id": "c1", "sender": "+13025550100", "sender_verified": True,
              "campaign_status": "approved", "campaign_provider": "telnyx", "provider_campaign_id": "TC1",
              "brand_status": "verified", "sender_assigned": True}
@@ -220,6 +221,9 @@ _NO_CAMPAIGN_YET = {**_SENDABLE, "campaign_id": None, "campaign_status": None, "
         ({"active": 1, "working": 0, "total": 1}, [_NO_CAMPAIGN_YET],
          {"campaign": "approved", "brand": "verified"}, "NEEDS_ACTION"),   # assign the number
         ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "sender_assigned": False}],
+         {"campaign": "approved", "brand": "verified"}, "NEEDS_ACTION"),
+        # hosted before the account was recorded: not READY
+        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "provider_account_id": "plivo"}],
          {"campaign": "approved", "brand": "verified"}, "NEEDS_ACTION"),
         ({"active": 0, "working": 1, "total": 1}, [], None, "IN_PROGRESS"),
         ({"active": 0, "working": 0, "total": 1}, [], None, "NEEDS_ACTION"),

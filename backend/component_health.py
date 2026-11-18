@@ -206,13 +206,25 @@ async def _db_components() -> dict[str, dict]:
             REPORT_AGING_ALERT_DAYS)
         # 25.2: 10DLC registrations the status sync found lost (suspended or
         # expired), could not read for a day, or that have waited two weeks.
+        # Each brokerage's LATEST campaign only: one replaced by a new
+        # campaign is history, not a standing alarm.
         registration = await conn.fetchrow(
-            "SELECT count(*) FILTER (WHERE status IN ('suspended','expired')) AS lost, "
-            "       count(*) FILTER (WHERE status_check_error IS NOT NULL "
-            "                          AND status_checked_at > now() - interval '1 day') AS unreadable, "
-            "       count(*) FILTER (WHERE status = 'pending' "
-            "                          AND submitted_at < now() - interval '14 days') AS stalled "
-            "  FROM tenant_messaging_campaigns WHERE provider_campaign_id IS NOT NULL")
+            "WITH latest AS (SELECT DISTINCT ON (tenant_id) status, status_check_error, status_checked_at, "
+            "                       submitted_at FROM tenant_messaging_campaigns "
+            "                 WHERE provider_campaign_id IS NOT NULL ORDER BY tenant_id, created_at DESC) "
+            "SELECT (SELECT count(*) FROM latest WHERE status IN ('suspended','expired')) AS lost, "
+            "       (SELECT count(*) FROM latest WHERE status_check_error IS NOT NULL "
+            "          AND status_checked_at > now() - interval '1 day') "
+            "     + (SELECT count(*) FROM tenant_messaging_brands WHERE status_check_error IS NOT NULL "
+            "          AND status_checked_at > now() - interval '1 day') AS unreadable, "
+            "       (SELECT count(*) FROM latest WHERE status = 'pending' "
+            "          AND submitted_at < now() - interval '14 days') AS stalled, "
+            # a submission or assignment the provider may have taken that no
+            # registration row reflects yet — waits on an operator (L10-09)
+            "       (SELECT count(*) FROM provider_purchases "
+            "         WHERE kind IN ('10dlc_brand','10dlc_campaign','10dlc_number_assignment') "
+            "           AND (state = 'unknown' OR (state = 'confirmed' AND updated_at < now() - interval '1 hour')) "
+            "       ) AS unresolved")
         harvest = await conn.fetchrow(
             """
             SELECT count(*) FILTER (WHERE enabled) AS enabled,
@@ -332,7 +344,10 @@ def _messaging_registration(row: dict) -> dict:
     expired at the carrier), one whose status could not be read in the last
     day, or one still pending after 14 days."""
     lost, unreadable = int(row.get("lost") or 0), int(row.get("unreadable") or 0)
-    stalled = int(row.get("stalled") or 0)
+    stalled, unresolved = int(row.get("stalled") or 0), int(row.get("unresolved") or 0)
+    if unresolved:
+        return _c(DEGRADED, "a 10DLC submission's outcome is unknown or unattached; an operator must check it "
+                  "with the provider", unresolved=unresolved, lost=lost, unreadable=unreadable)
     if lost:
         return _c(DEGRADED, "a texting campaign (10DLC) was suspended or expired; its texts are refused",
                   lost=lost, unreadable=unreadable, stalled=stalled)

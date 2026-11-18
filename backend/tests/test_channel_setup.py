@@ -58,6 +58,11 @@ def world(monkeypatch):
     monkeypatch.setattr(messaging_data, "get_messaging_route", messaging_route)
     monkeypatch.setattr(messaging_data, "get_public_business_number", business_number)
     monkeypatch.setattr(messaging_data, "messaging_send_readiness", send_readiness)
+
+    async def no_credential(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(commands_api, "_load_provider_credential", no_credential)
     monkeypatch.setattr(inbound_voice, "get_verified_caller_id", verified)
     monkeypatch.setattr(inbound_voice, "get_telephony_route", telephony_route)
     return state

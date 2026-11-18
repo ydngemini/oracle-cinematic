@@ -604,7 +604,11 @@ export default function ProviderDeliveryPage() {
               <>
                 <p>Your business number is set up for text messages, but texts can&apos;t be sent yet:</p>
                 <ul>{(smsBlockers.length ? smsBlockers : ['texting registration (10DLC) is not complete']).map((text) => <li key={text}>{text}</li>)}</ul>
-                <button type="button" className={styles.secondaryButton} onClick={refreshMessagingRegistration} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Check texting registration</button>
+                {(messagingStatus?.send_blockers || []).includes('wrong_account') ? (
+                  <button type="button" className={styles.secondaryButton} onClick={refreshMessagingStatus} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Refresh hosting status</button>
+                ) : (
+                  <button type="button" className={styles.secondaryButton} onClick={refreshMessagingRegistration} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Check texting registration</button>
+                )}
               </>
             ) : smsPendingVerification ? (
               <>

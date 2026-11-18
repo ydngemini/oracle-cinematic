@@ -83,13 +83,16 @@ async def _scenario(monkeypatch):
         await admin.execute("UPDATE tenant_messaging_campaigns SET status='rejected' WHERE id=$1", campaign)
         assert "campaign_not_approved" in await blockers()
 
-        # Approved, but this number is not assigned (nothing, or another number).
-        await admin.execute("UPDATE tenant_messaging_campaigns SET status='approved' WHERE id=$1", campaign)
+        # Approved (as read back from the provider), but this number is not
+        # assigned (nothing, or another number).
+        await admin.execute("UPDATE tenant_messaging_campaigns SET status='approved', status_ok_at=now() "
+                            "WHERE id=$1", campaign)
         assert await blockers() == ["number_not_assigned"]
         await admin.execute(
             "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind, state, provider_ref, detail) "
             "VALUES ($1,$2,'telnyx','10dlc_number_assignment','attached','PN1',$3::jsonb)",
-            T, owner, json.dumps({"campaign_id": f"TC{s}", "phone_number": "+13025550999"}))
+            T, owner, json.dumps({"campaign_id": f"TC{s}", "phone_number": "+13025550999",
+                                  "assignment_status": "ASSIGNED"}))
         assert await blockers() == ["number_not_assigned"]
         # an assignment still unconfirmed (unknown) is not committed
         pending_assignment = await admin.fetchval(
@@ -97,11 +100,28 @@ async def _scenario(monkeypatch):
             "VALUES ($1,$2,'telnyx','10dlc_number_assignment','unknown',$3::jsonb) RETURNING id",
             T, owner, json.dumps({"campaign_id": f"TC{s}", "phone_number": NUMBER}))
         assert await blockers() == ["number_not_assigned"]
-        await admin.execute("UPDATE provider_purchases SET state='attached', provider_ref='PN2' WHERE id=$1",
+        # attached, but the provider has not finished assigning it
+        await admin.execute("UPDATE provider_purchases SET state='attached', provider_ref='PN2', "
+                            "detail = detail || '{\"assignment_status\": \"PENDING_ASSIGNMENT\"}' WHERE id=$1",
                             pending_assignment)
+        assert await blockers() == ["number_not_assigned"]
+        await admin.execute("UPDATE provider_purchases SET detail = detail || '{\"assignment_status\": \"ASSIGNED\"}' "
+                            "WHERE id=$1", pending_assignment)
 
         # The valid case.
         assert await readiness() == {"ready": True, "blockers": [], "sender": NUMBER}
+
+        # Approval not confirmed by a successful read for 14 days (reads
+        # failing, e.g. a cancelled account answering 401): not sendable.
+        await admin.execute("UPDATE tenant_messaging_campaigns SET status_ok_at = now() - interval '15 days' "
+                            "WHERE id=$1", campaign)
+        assert await blockers() == ["registration_unverified"]
+        await admin.execute("UPDATE tenant_messaging_campaigns SET status_ok_at = now() WHERE id=$1", campaign)
+        # Without a credential the route must carry a recorded account.
+        assert (await readiness(None))["ready"]
+        await admin.execute("UPDATE messaging_routes SET provider_account_id='plivo' WHERE id=$1", route)
+        assert (await readiness(None))["blockers"] == ["wrong_account"]
+        await admin.execute("UPDATE messaging_routes SET provider_account_id=$2 WHERE id=$1", route, ACCOUNT)
 
         # The hosting must belong to the account the send uses.
         other_account = md.account_fingerprint({"api_key": "KEY-B"})
@@ -178,7 +198,8 @@ async def _scenario(monkeypatch):
         assert sent == [] and error is not None and "texting campaign" in str(error)
         assert await admin.fetchval("SELECT state FROM command_executions WHERE id=$1::uuid", command) == "failed"
 
-        await admin.execute("UPDATE tenant_messaging_campaigns SET status='approved' WHERE id=$1", campaign)
+        await admin.execute("UPDATE tenant_messaging_campaigns SET status='approved', status_ok_at=now() "
+                            "WHERE id=$1", campaign)
         command, error = await text("valid")
         assert error is None and sent == [NUMBER]
         assert await admin.fetchval("SELECT state FROM command_executions WHERE id=$1::uuid", command) == "succeeded"

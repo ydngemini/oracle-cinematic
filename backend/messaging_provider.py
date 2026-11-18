@@ -253,8 +253,8 @@ class MessagingProvider:
 
     async def get_number_campaign(
         self, phone_number: str, *, credentials: Optional[Mapping[str, Any]] = None
-    ) -> Optional[str]:
-        """The provider campaign id this number is assigned to (None: none)."""
+    ) -> dict[str, Any]:
+        """{"campaign_id", "assignment_status"} for this number's 10DLC assignment."""
         raise NotImplementedError
 
 
@@ -861,11 +861,13 @@ class TelnyxMessagingProvider(MessagingProvider):
             "status": str(getattr(response, "campaign_status", "") or getattr(response, "status", "") or ""),
             "failure_reason": (getattr(response, "failure_reasons", None)
                                or getattr(response, "failure_reason", None)),
+            # provisioned at the carriers, yet suspended by T-Mobile
+            "t_mobile_suspended": bool(getattr(response, "is_t_mobile_suspended", False)),
         }
 
     async def get_number_campaign(
         self, phone_number: str, *, credentials: Optional[Mapping[str, Any]] = None
-    ) -> Optional[str]:
+    ) -> dict[str, Any]:
         import asyncio
 
         def _get():
@@ -874,7 +876,10 @@ class TelnyxMessagingProvider(MessagingProvider):
 
         response = await asyncio.wait_for(asyncio.to_thread(_get), timeout=15.0)
         response = getattr(response, "data", None) or response
-        return str(getattr(response, "campaign_id", "") or "") or None
+        # The assignment completes asynchronously: ASSIGNED is the only state
+        # in which the number carries the campaign's traffic.
+        return {"campaign_id": str(getattr(response, "campaign_id", "") or "") or None,
+                "assignment_status": str(getattr(response, "assignment_status", "") or "")}
 
     async def assign_number_to_campaign(
         self,

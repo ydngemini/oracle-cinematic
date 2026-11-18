@@ -81,7 +81,16 @@ async def _sms(ctx: Any) -> Optional[str]:
                                             "manual_action_required"):
             return (f"texting isn't ready yet: text messages for your business number are still being "
                     f"set up ({status}); nothing can be sent until that finishes.")
-        readiness = await messaging_data.messaging_send_readiness(ctx, provider="telnyx")
+        # ...with the account a send would actually use (25.1).
+        import json as _json
+
+        raw = await commands_api._load_provider_credential(ctx, "telnyx")
+        try:
+            credential = _json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            credential = None
+        readiness = await messaging_data.messaging_send_readiness(
+            ctx, provider="telnyx", account=messaging_data.account_fingerprint(credential))
         if readiness["ready"]:
             return None
         return ("texting isn't ready: " + messaging_data.describe_blockers(readiness["blockers"])

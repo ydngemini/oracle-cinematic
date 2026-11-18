@@ -15,7 +15,7 @@ READY = {"agent_id": "a", "active": True, "provider": "telnyx", "provider_accoun
          "hosted_order_status": "active", "campaign_id": "c1", "sender": "+13025550100",
          "sender_verified": True, "campaign_status": "approved", "campaign_provider": "telnyx",
          "provider_campaign_id": "TC1", "brand_status": "verified", "brand_provider": "telnyx",
-         "sender_assigned": True}
+         "campaign_fresh": True, "sender_assigned": True}
 
 
 @pytest.mark.parametrize("change,blocker", [
@@ -35,13 +35,23 @@ READY = {"agent_id": "a", "active": True, "provider": "telnyx", "provider_accoun
     ({"brand_provider": "twilio"}, "brand_not_registered"),
     ({"provider_account_id": "plivo"}, "wrong_account"),           # a route hosted before 25.1
     ({"provider_account_id": md.account_fingerprint({"api_key": "KEY-B"})}, "wrong_account"),
+    # approval not confirmed by a successful provider read in 14 days (a
+    # cancelled account answers 401s: the status must not stay sendable)
+    ({"campaign_fresh": False}, "registration_unverified"),
 ])
+
 def test_each_registration_gap_blocks_the_send(change, blocker):
     blockers = md.send_blockers({**READY, **change}, "telnyx", ACCOUNT)
     if blocker is None:
         assert blockers == []
     else:
         assert blocker in blockers
+
+
+def test_without_a_credential_the_route_must_carry_a_recorded_account():
+    assert md.send_blockers(READY, "telnyx", None) == []
+    assert md.send_blockers({**READY, "provider_account_id": "plivo"}, "telnyx", None) == ["wrong_account"]
+    assert md.send_blockers({**READY, "provider_account_id": None}, "telnyx", None) == ["wrong_account"]
 
 
 def test_no_route_is_not_connected():

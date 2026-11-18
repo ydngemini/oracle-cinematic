@@ -28,6 +28,10 @@ class _NotFound(Exception):
     status_code = 404
 
 
+class _Unauthorized(Exception):
+    status_code = 401
+
+
 def test_registration_status_follows_the_provider(monkeypatch):
     asyncio.run(_scenario(monkeypatch))
 
@@ -61,10 +65,10 @@ async def _scenario(monkeypatch):
 
         async def get_number_campaign(self, phone_number, *, credentials=None):
             reads.append(("number", phone_number))
-            answer = answers.get("number", campaign_ref)
+            answer = answers.get("number", {"campaign_id": campaign_ref, "assignment_status": "ASSIGNED"})
             if isinstance(answer, Exception):
                 raise answer
-            return answer
+            return dict(answer)
 
         async def get_campaign_status(self, campaign_id, *, credentials=None):
             reads.append(("campaign", campaign_id))
@@ -79,24 +83,30 @@ async def _scenario(monkeypatch):
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=4)
 
-    async def refresh():
-        return await md.refresh_registration_status(ctx, provider="telnyx", credentials={"api_key": "k"})
+    KEY = {"api_key": "k"}
+    ACCOUNT = md.account_fingerprint(KEY)
+    creds_in_use = {"value": KEY}
+
+    async def refresh(**kw):
+        return await md.refresh_registration_status(ctx, provider="telnyx", credentials=creds_in_use["value"], **kw)
 
     async def campaign_row():
         return await admin.fetchrow(
-            "SELECT status, provider_status, failure_reason, status_check_error, approved_at, status_checked_at "
+            "SELECT status, provider_status, failure_reason, status_check_error, approved_at, status_checked_at, status_ok_at "
             "FROM tenant_messaging_campaigns WHERE tenant_id=$1", T)
 
     try:
         await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,$3)", T, f"ds-{s}", f"DS {s}")
         await admin.execute("INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
                             "VALUES ($1,$2,'broker_owner',$2,'scrypt$x$y')", T, owner)
+        # registered through this account (recorded at registration)
         brand = await admin.fetchval(
-            "INSERT INTO tenant_messaging_brands (tenant_id, provider, provider_brand_id, status, submitted_at) "
-            "VALUES ($1,'telnyx',$2,'pending',now()) RETURNING id", T, brand_ref)
+            "INSERT INTO tenant_messaging_brands (tenant_id, provider, provider_brand_id, status, submitted_at, "
+            "provider_account_id) VALUES ($1,'telnyx',$2,'pending',now(),$3) RETURNING id", T, brand_ref, ACCOUNT)
         await admin.execute(
             "INSERT INTO tenant_messaging_campaigns (tenant_id, brand_id, provider, provider_campaign_id, status, "
-            "submitted_at) VALUES ($1,$2,'telnyx',$3,'pending',now())", T, brand, campaign_ref)
+            "submitted_at, provider_account_id) VALUES ($1,$2,'telnyx',$3,'pending',now(),$4)",
+            T, brand, campaign_ref, ACCOUNT)
 
         # Still pending at the provider: nothing moves upward.
         out = await refresh()
@@ -150,14 +160,42 @@ async def _scenario(monkeypatch):
         await refresh()
         assert tuple((await campaign_row())[:3]) == ("rejected", "TELNYX_FAILED", "opt-in not described")
 
-        # Gone at the provider (e.g. the account was cancelled): expired, never
-        # left approved.
+        # Provisioned but suspended by T-Mobile: suspended, not approved.
+        answers["campaign"] = {"status": "MNO_PROVISIONED", "t_mobile_suspended": True}
+        await refresh()
+        assert (await campaign_row())["status"] == "suspended"
+
+        # A cancelled account / revoked key answers 401: nothing changes, the
+        # error is recorded, and status_ok_at stops advancing (the send gate
+        # refuses once the last good read is 14 days old).
         answers["campaign"] = {"status": "MNO_PROVISIONED"}
         await refresh()
+        ok_before = (await campaign_row())["status_ok_at"]
+        answers["campaign"] = _Unauthorized("401 Unauthorized")
+        await refresh()
+        row = await campaign_row()
+        assert row["status"] == "approved" and "Unauthorized" in row["status_check_error"]
+        assert row["status_ok_at"] == ok_before and row["status_checked_at"] > ok_before
+
+        # A "not found" from ANOTHER account (switched or fallback credential)
+        # is not evidence the campaign is gone: nothing changes.
+        creds_in_use["value"] = {"api_key": "a-different-account"}
         answers["campaign"] = _NotFound("campaign not found")
         await refresh()
         row = await campaign_row()
+        assert row["status"] == "approved" and "not the one holding it" in row["status_check_error"]
+        # From the account that holds it: expired, never left approved.
+        creds_in_use["value"] = KEY
+        await refresh()
+        row = await campaign_row()
         assert row["status"] == "expired" and row["provider_status"] == "NOT_FOUND"
+        # ...and still swept, so a transient account problem recovers.
+        assert T in await md.registrations_to_sync(limit=1000)
+        answers["campaign"] = {"status": "MNO_PROVISIONED"}
+        await refresh()
+        assert (await campaign_row())["status"] == "approved"
+        answers["campaign"] = _NotFound("campaign not found")
+        await refresh()
 
         # A registration the provider confirmed but that never reached a row is
         # counted for an operator, not attached by the refresh.
@@ -176,6 +214,12 @@ async def _scenario(monkeypatch):
             return {"api_key": "k"}
 
         monkeypatch.setattr(messaging_api, "_telnyx_credentials", creds)
+        # a nudge right after a read is throttled (one read a minute per brokerage)
+        await messaging_api._refresh_for_provider_id(campaign_ref)
+        assert reads == []
+        for table in ("tenant_messaging_campaigns", "tenant_messaging_brands"):
+            await admin.execute(f"UPDATE {table} SET status_checked_at = now() - interval '2 minutes' "
+                                "WHERE tenant_id=$1", T)
         await messaging_api._refresh_for_provider_id(campaign_ref)
         assert ("campaign", campaign_ref) in reads and (await campaign_row())["status"] == "approved"
         reads.clear()
@@ -207,19 +251,56 @@ async def _scenario(monkeypatch):
         async def state():
             return await admin.fetchval("SELECT state FROM provider_purchases WHERE id=$1", assignment)
 
+        async def status():
+            return await admin.fetchval("SELECT detail->>'assignment_status' FROM provider_purchases "
+                                        "WHERE id=$1", assignment)
+
+        async def reattach():
+            await admin.execute("UPDATE provider_purchases SET state='attached' WHERE id=$1", assignment)
+
         answers["number"] = TimeoutError("slow")
         await refresh()
-        assert await state() == "attached"
-        answers["number"] = campaign_ref
+        assert await state() == "attached" and await status() is None      # not yet ASSIGNED: not sendable
+        answers["number"] = {"campaign_id": campaign_ref, "assignment_status": "PENDING_ASSIGNMENT"}
         await refresh()
-        assert await state() == "attached"
-        answers["number"] = "C-someone-else"
-        out = await refresh()
-        assert await state() == "released" and out["assignments"][0]["released"]
-        await admin.execute("UPDATE provider_purchases SET state='attached' WHERE id=$1", assignment)
-        answers["number"] = _NotFound("no assignment")
+        assert await state() == "attached" and await status() == "PENDING_ASSIGNMENT"
+        answers["number"] = {"campaign_id": campaign_ref, "assignment_status": "ASSIGNED"}
+        await refresh()
+        assert await state() == "attached" and await status() == "ASSIGNED"
+        answers["number"] = {"campaign_id": campaign_ref, "assignment_status": "FAILED_ASSIGNMENT"}
         await refresh()
         assert await state() == "released"
+        await reattach()
+        answers["number"] = {"campaign_id": campaign_ref, "assignment_status": "PENDING_UNASSIGNMENT"}
+        await refresh()
+        assert await state() == "released"
+        await reattach()
+        answers["number"] = {"campaign_id": "C-someone-else", "assignment_status": "ASSIGNED"}
+        out = await refresh()
+        assert await state() == "released" and out["assignments"][0]["released"]
+        await reattach()
+        answers["number"] = {"campaign_id": None, "assignment_status": ""}
+        await refresh()
+        assert await state() == "released"
+        await reattach()
+        # a not-found from another account releases nothing; from the holder it does
+        await admin.execute(
+            "INSERT INTO messaging_routes (tenant_id, agent_id, provider, provider_account_id, hosted_order_status, "
+            "active) VALUES ($1,$2,'telnyx',$3,'active',true)", T, owner, ACCOUNT)
+        answers["number"] = _NotFound("no assignment")
+        creds_in_use["value"] = {"api_key": "a-different-account"}
+        await refresh()
+        assert await state() == "attached"
+        creds_in_use["value"] = KEY
+        await refresh()
+        assert await state() == "released"
+
+        # Owner refresh is throttled: a second refresh within the window reads nothing.
+        reads.clear()
+        await refresh()
+        reads.clear()
+        throttled = await refresh(min_interval_s=30)
+        assert throttled["throttled"] and reads == []
 
         # Approval read back makes the number assignable (_CAMPAIGN_FOR_ASSIGNMENT_SQL).
         assert await admin.fetchval(md._CAMPAIGN_FOR_ASSIGNMENT_SQL.replace("FOR UPDATE OF c", ""), T) is not None

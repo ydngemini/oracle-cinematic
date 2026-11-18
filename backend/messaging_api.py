@@ -400,10 +400,16 @@ async def refresh_registration(ctx: TenantContext = Depends(require_context)) ->
     now (25.2). A broker owner only; reads, never submits. Two owners racing
     are safe: the newer provider answer wins."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    from messaging_provider import MessagingProviderError, messaging_provider_name
 
+    try:
+        provider = messaging_provider_name()
+    except MessagingProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     credentials = await _telnyx_credentials(ctx)
-    result = await refresh_registration_status(ctx, provider=messaging_provider_name(), credentials=credentials)
+    # Throttled: repeated clicks within 30 s answer from what was just read.
+    result = await refresh_registration_status(ctx, provider=provider, credentials=credentials,
+                                               min_interval_s=30)
     return {**result, "messaging": await _with_readiness(ctx, {})}
 
 
@@ -567,16 +573,19 @@ async def telnyx_webhook(request: Request) -> Response:
                 return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"})
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    if event_type in ("10dlc.brand.update", "10dlc.campaign.update"):
+    if event_type in ("10dlc.brand.update", "10dlc.campaign.update", "10dlc.phone_number.update"):
         # The event is only a nudge (25.2): its status is not trusted. The
         # brokerage's registration is re-read from the provider, in the
         # background so the acknowledgement is not held up; the periodic sync
         # is the backstop if this process stops first.
         payload = getattr(getattr(event, "data", None), "payload", None) or {}
         get = payload.get if isinstance(payload, dict) else (lambda k: getattr(payload, k, None))
-        provider_id = str(get("campaignId") or get("campaign_id") or get("brandId") or get("brand_id") or "")
+        provider_id = str(get("campaignId") or get("campaign_id") or get("brandId") or get("brand_id")
+                          or get("phoneNumber") or get("phone_number") or "")
         if provider_id:
-            asyncio.ensure_future(_refresh_for_provider_id(provider_id))
+            task = asyncio.ensure_future(_refresh_for_provider_id(provider_id))
+            _REFRESH_TASKS.add(task)                   # kept until done (no GC mid-flight)
+            task.add_done_callback(_REFRESH_TASKS.discard)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Hosted-order / number-order status events and anything else this
@@ -584,6 +593,9 @@ async def telnyx_webhook(request: Request) -> Response:
     # Telnyx does not retry indefinitely on an event Neoh does not need.
     logger.info("Telnyx webhook event acknowledged: type=%s", event_type or "unknown")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+_REFRESH_TASKS: set = set()
 
 
 async def _refresh_for_provider_id(provider_id: str) -> None:
@@ -596,18 +608,21 @@ async def _refresh_for_provider_id(provider_id: str) -> None:
         if not tenant_id:
             logger.info("10DLC event for an unknown registration %s ignored", provider_id[:64])
             return
-        await sync_registration_for_tenant(tenant_id, provider=messaging_provider_name())
+        # A burst of events for one brokerage reads the provider once a minute.
+        await sync_registration_for_tenant(tenant_id, provider=messaging_provider_name(), min_interval_s=60)
     except Exception:  # noqa: BLE001 — the periodic sync retries
         logger.warning("10DLC status refresh after an event failed", exc_info=True)
 
 
-async def sync_registration_for_tenant(tenant_id: str, *, provider: str) -> dict[str, Any]:
+async def sync_registration_for_tenant(tenant_id: str, *, provider: str,
+                                       min_interval_s: float = 0) -> dict[str, Any]:
     ctx = TenantContext(agent_id="10dlc-status-sync", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     try:
         credentials = await _telnyx_credentials(ctx)
     except HTTPException as exc:
         raise RuntimeError(f"Telnyx credential unusable: {exc.detail}") from exc
-    return await refresh_registration_status(ctx, provider=provider, credentials=credentials)
+    return await refresh_registration_status(ctx, provider=provider, credentials=credentials,
+                                             min_interval_s=min_interval_s)
 
 
 async def sync_open_registrations(*, limit: int = 200) -> dict[str, Any]:
@@ -615,9 +630,13 @@ async def sync_open_registrations(*, limit: int = 200) -> dict[str, Any]:
     can still change, least recently read first. One brokerage's failure is
     recorded and the sweep goes on."""
     from messaging_data import registrations_to_sync
-    from messaging_provider import messaging_provider_name
+    from messaging_provider import MessagingProviderError, messaging_provider_name
 
-    provider = messaging_provider_name()
+    try:
+        provider = messaging_provider_name()
+    except MessagingProviderError:
+        logger.warning("10DLC status sync skipped: ORACLE_MESSAGING_PROVIDER is not a supported provider")
+        return {"synced": 0, "failed": 0, "skipped": "provider"}
     synced = failed = 0
     for tenant_id in await registrations_to_sync(limit=limit):
         try:

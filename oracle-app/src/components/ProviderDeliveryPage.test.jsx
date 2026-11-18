@@ -36,6 +36,14 @@ describe('ProviderDeliveryPage texting status (audit 25.1)', () => {
     expect(api.crmPost).toHaveBeenCalledWith('/api/messaging/business/registration/refresh', {});
   });
 
+  it('offers the hosting refresh when the hosting belongs to another account', async () => {
+    serve({ hosted_order_status: 'active', eligibility_status: 'eligible', ready: false,
+            send_blockers: ['wrong_account'], send_blocker_messages: ['hosting belongs to a different account'] });
+    render(<ProviderDeliveryPage />);
+    expect(await screen.findByRole('button', { name: /Refresh hosting status/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Check texting registration/ })).toBeNull();
+  });
+
   it('says ready only when the server says the number may send', async () => {
     serve({ hosted_order_status: 'active', eligibility_status: 'eligible', ready: true,
             send_blockers: [], send_blocker_messages: [] });
