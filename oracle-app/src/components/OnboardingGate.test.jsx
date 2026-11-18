@@ -51,4 +51,28 @@ describe('OnboardingGate', () => {
 
     outside.remove();
   });
+
+  it('focus stays inside the dialog when the step changes', () => {
+    render(<OnboardingGate />);
+    const dialog = screen.getByRole('dialog');
+
+    // step 1 -> 2: the clicked option unmounts with the step
+    const option = screen.getByRole('button', { name: /Closer/ });
+    option.focus();
+    expect(document.activeElement).toBe(option);
+    fireEvent.click(option);
+    expect(screen.getByLabelText('Target ZIP codes')).toBeTruthy();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    // step 2 -> 3: the clicked advance button unmounts with the step
+    fireEvent.change(screen.getByLabelText('Target ZIP codes'), { target: { value: '19901' } });
+    const advance = screen.getByRole('button', { name: 'Lock Grid Target' });
+    advance.focus();
+    expect(document.activeElement).toBe(advance);
+    fireEvent.click(advance);
+    expect(screen.getByText('Set your acquisition targets.')).toBeTruthy();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
 });

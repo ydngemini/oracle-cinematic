@@ -55,6 +55,13 @@ export function OnboardingGate() {
     };
   }, [visible]);
 
+  // A step change swaps the panel's buttons; the focused one unmounts, so
+  // re-seat focus on the new step's first control.
+  useEffect(() => {
+    if (!visible) return;
+    panelRef.current?.querySelector(FOCUSABLE)?.focus();
+  }, [visible, step]);
+
   if (!visible) return null;
 
   const zips = parseZips(zipInput);
