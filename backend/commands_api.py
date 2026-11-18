@@ -2906,7 +2906,12 @@ async def _update_call_session_async(call_connection_id: str, status: str,
 
 #: Provider call statuses, in the words a client timeline should use. Only a
 #: status the carrier itself reported ever reaches the timeline; "answered" is
-#: written when the carrier says the call was picked up, never before.
+#: written when the carrier says the call was picked up, never before. A
+#: Plivo-style "completed" is the carrier finishing the call, not a pickup: it
+#: reads "answered" only with positive billed time or after an explicit answer
+#: status (external audit 24.8; see record_call_outcome).
+_CALL_ANSWER_NOT_CONFIRMED = "Call completed; answer not confirmed"
+_CALL_TIMELINE_LOCK = "SELECT pg_advisory_xact_lock(hashtext('call-timeline:' || $1))"
 _CALL_OUTCOME_SUMMARY: dict[str, str] = {
     "completed": "Call answered and ended",
     "busy": "Call not connected — line busy",
@@ -2958,11 +2963,20 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
         await _record_call_answered(provider_call_id)
     if status_value in {"in-progress", "answered"}:
         await _update_call_session_async(provider_call_id, "in-progress")
+        await _confirm_answer_on_timeline(provider_call_id)
         return
     summary = _CALL_OUTCOME_SUMMARY.get(status_value)
     if summary is None:
         return
     await _update_call_session_async(provider_call_id, "completed", outcome=status_value)
+    # 24.8: with no duration at all, a non-Twilio "completed" says only that
+    # the carrier finished the call. It reads "answered" only when the carrier
+    # itself reported an answer for this call (a stored in-progress/answered
+    # outcome) — the same caution call_status_stage applies to
+    # delivery, so the timeline never says "answered" where the lifecycle says
+    # it cannot tell. An answer stored after this row is written upgrades it
+    # (_confirm_answer_on_timeline).
+    answer_unconfirmed_unless_reported = False
     if (status_value == "completed" and duration_seconds is not None and duration_seconds <= 0
             and provider != "twilio"):
         # Plivo reports a never-answered call as completed with zero billed time.
@@ -2972,6 +2986,8 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     elif status_value == "completed" and duration_seconds:
         minutes, seconds = divmod(int(duration_seconds), 60)
         summary = f"{summary} ({minutes}:{seconds:02d})"
+    elif status_value == "completed" and duration_seconds is None and provider != "twilio":
+        answer_unconfirmed_unless_reported = True
     platform_ctx = TenantContext(
         agent_id="call-status-webhook",
         tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
@@ -2979,17 +2995,33 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     )
     try:
         async with tenant_tx(platform_ctx) as conn:
+            # One timeline writer per call at a time: this INSERT and a late
+            # answer's correction (_confirm_answer_on_timeline) must not miss
+            # each other's uncommitted row.
+            await conn.execute(_CALL_TIMELINE_LOCK, provider_call_id)
             await conn.execute(
                 """
                 INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
-                SELECT s.tenant_id, s.client_id, 'message', $2,
+                SELECT s.tenant_id, s.client_id, 'message',
+                       CASE WHEN $5::boolean AND NOT ans.answered THEN $6 ELSE $2 END,
                        jsonb_build_object('direction', 'outbound', 'channel', 'call',
                                           'command_id', s.command_id::text,
                                           'provider_call_id', $1::text,
                                           'carrier_status', $3::text,
-                                          'duration_seconds', $4::int),
+                                          'duration_seconds', $4::int,
+                                          'answer_confirmed',
+                                          $7::boolean OR (ans.answered AND $2 <> 'Call not answered')),
                        'carrier'
                   FROM live_call_sessions s
+                 -- the carrier itself reported an answer for this call (a
+                 -- stored in-progress/answered outcome under its id or an
+                 -- alias), never the session start time (transcripts set it)
+                 CROSS JOIN LATERAL (SELECT EXISTS (
+                       SELECT 1 FROM provider_call_outcomes o
+                        WHERE o.tenant_id = s.tenant_id
+                          AND o.call_status IN ('in-progress', 'answered')
+                          AND (o.provider_call_id = s.provider_call_id
+                               OR s.provider_call_id = ANY(o.call_aliases))) AS answered) ans
                  WHERE s.provider_call_id = $1 AND s.client_id IS NOT NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM client_activities a
@@ -2998,9 +3030,34 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
                           AND a.meta ? 'carrier_status')
                 """,
                 provider_call_id, summary, status_value, duration_seconds,
+                answer_unconfirmed_unless_reported, _CALL_ANSWER_NOT_CONFIRMED,
+                summary.startswith("Call answered") and not answer_unconfirmed_unless_reported,
             )
     except Exception:  # noqa: BLE001 — the status is recorded above; the timeline row is extra
         logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)
+
+
+async def _confirm_answer_on_timeline(provider_call_id: str) -> None:
+    """The carrier reported an answer after the call's final status was
+    written as "answer not confirmed" (outcomes can apply in either order,
+    24.8): the timeline row is corrected, once, to the answer."""
+    try:
+        async with tenant_tx(_call_platform_ctx("call-status-webhook")) as conn:
+            await conn.execute(_CALL_TIMELINE_LOCK, provider_call_id)
+            await conn.execute(
+                """
+                UPDATE client_activities a
+                   SET summary = $3,
+                       meta = a.meta || jsonb_build_object('answer_confirmed', true)
+                  FROM live_call_sessions s
+                 WHERE s.provider_call_id = $1 AND a.tenant_id = s.tenant_id
+                   AND a.client_id = s.client_id
+                   AND a.meta->>'provider_call_id' = $1 AND a.summary = $2
+                """,
+                provider_call_id, _CALL_ANSWER_NOT_CONFIRMED, _CALL_OUTCOME_SUMMARY["completed"],
+            )
+    except Exception:  # noqa: BLE001 — the answer is recorded on the session; the wording is extra
+        logger.warning("answer not reflected on the timeline: %s", provider_call_id, exc_info=True)
 
 
 CALL_OUTCOME_KEEP_DAYS = 30
