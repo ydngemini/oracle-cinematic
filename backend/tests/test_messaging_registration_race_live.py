@@ -444,7 +444,9 @@ def test_racing_number_assignments_reach_the_provider_once(monkeypatch):
 
             # A later click is answered from the ledger: nothing reaches the provider.
             again = await messaging_api.assign_campaign_number(_ctx(tenant, owner))
-            assert again == {"campaign_id": campaign, "assigned": True, "already_assigned": True}
+            # (assignment_status: the provider read right after assigning, 25.2 — this fake has none)
+            assert again == {"campaign_id": campaign, "assigned": True, "already_assigned": True,
+                             "assignment_status": None}
             assert len(adapter.assign_calls) == 1
             assert len(await _ledger(admin, tenant)) == 1
         finally:

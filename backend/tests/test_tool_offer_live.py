@@ -102,6 +102,29 @@ async def _scenario(monkeypatch):
         assert "still being set up (processing)" in offer.withheld["draft_sms"]
         await admin.execute("UPDATE messaging_routes SET hosted_order_status='active' WHERE tenant_id=$1",
                             uuid.UUID(tenant))
+        # Hosting alone is not carrier-ready (25.1): no texting campaign yet,
+        # so the AI does not offer a text the send would refuse.
+        offer = await tool_offer.for_turn(agent, "client")
+        assert "texting brand and campaign" in offer.withheld["draft_sms"]
+        # The registration completed: approved campaign (read back recently),
+        # this number assigned (ASSIGNED), hosting on the account in use.
+        import messaging_data
+
+        monkeypatch.setenv("TELNYX_API_KEY", "offer-platform-key")
+        account = messaging_data.account_fingerprint({})
+        brand = await admin.fetchval(
+            "INSERT INTO tenant_messaging_brands (tenant_id, provider, provider_brand_id, status) "
+            "VALUES ($1,'telnyx','B-offer','verified') RETURNING id", uuid.UUID(tenant))
+        campaign = await admin.fetchval(
+            "INSERT INTO tenant_messaging_campaigns (tenant_id, brand_id, provider, provider_campaign_id, status, "
+            "status_ok_at) VALUES ($1,$2,'telnyx','C-offer','approved',now()) RETURNING id", uuid.UUID(tenant), brand)
+        await admin.execute("UPDATE messaging_routes SET campaign_id=$2, provider_account_id=$3 WHERE tenant_id=$1",
+                            uuid.UUID(tenant), campaign, account)
+        await admin.execute(
+            "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind, state, provider_ref, detail) "
+            "VALUES ($1,$2,'telnyx','10dlc_number_assignment','attached','PN-offer',$3::jsonb)",
+            uuid.UUID(tenant), agent.agent_id,
+            '{"campaign_id": "C-offer", "phone_number": "+13025550181", "assignment_status": "ASSIGNED"}')
         offer = await tool_offer.for_turn(agent, "client")
         assert "draft_sms" in offer.offered
         # Calls: the number is verified, but its rail is Plivo and no Plivo account exists.

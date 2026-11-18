@@ -108,8 +108,8 @@ def test_a_route_without_a_campaign_says_what_is_missing(monkeypatch, tenant_cam
 
 def test_the_fingerprint_never_carries_the_key(monkeypatch):
     monkeypatch.delenv("TELNYX_API_KEY", raising=False)
-    fp = md.account_fingerprint({"api_key": "KEY0123456789abcdef"})
-    assert fp.startswith("tk:") and "KEY" not in fp and len(fp) == 19
+    fp = md.account_fingerprint({"api_key": "KEY-test-fixture"})
+    assert fp.startswith("tk:") and "KEY" not in fp and "fixture" not in fp and len(fp) == 19
     assert md.account_fingerprint({}) is None
     monkeypatch.setenv("TELNYX_API_KEY", "PLATFORM")
     assert md.account_fingerprint(None) == md.account_fingerprint({"api_key": "PLATFORM"})
