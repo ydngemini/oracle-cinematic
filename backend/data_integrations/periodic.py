@@ -873,6 +873,10 @@ async def _retention_cleanup_task() -> dict:
         result = json.loads(result)
     clean = dict(result or {})
     clean["oauth_states_deleted"] = int(oauth_states_deleted or 0)
+    # Sealed invitation links no job will send (21.5).
+    import brokerage_onboarding
+
+    clean["invitation_links_cleared"] = await brokerage_onboarding.sweep_stale_invitation_links()
     logger.info(
         "ORACLE_METRIC retention_cleanup source_payloads=%d transcripts=%d cache_rows=%d oauth_states=%d",
         int(clean.get("source_payloads_purged") or 0),

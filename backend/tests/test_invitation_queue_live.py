@@ -152,6 +152,17 @@ async def _scenario(monkeypatch):
         jobs = await admin.fetch("SELECT queue_name FROM automation_jobs WHERE tenant_id=$1 AND job_type=$2",
                                  uuid.UUID(T), bo.INVITATION_JOB_TYPE)
         assert {j["queue_name"] for j in jobs} == {"default"}   # not the chat workers
+
+        # A job that died without clearing its link (lease lost on the last
+        # attempt): the janitor's sweep clears it; a live job's link is kept.
+        await admin.execute("UPDATE automation_jobs SET state='dead_letter' WHERE tenant_id=$1 "
+                            "AND idempotency_key = 'invitation-email:' || $2::text", uuid.UUID(T), str(mine[1]["id"]))
+        live_one = [r for r in await invites() if r["sealed"] and r["id"] != mine[1]["id"]]
+        assert live_one                                     # still has a running job
+        assert await bo.sweep_stale_invitation_links() >= 1
+        after = {r["id"]: r for r in await invites()}
+        assert not after[mine[1]["id"]]["sealed"] and after[mine[1]["id"]]["delivery_status"] == "failed"
+        assert all(after[r["id"]]["sealed"] for r in live_one)
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

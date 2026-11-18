@@ -39,24 +39,48 @@ def test_the_last_attempt_comes_from_the_claimed_job(monkeypatch, attempt, last)
 ])
 def test_each_send_error_is_recorded_by_type_with_its_retry_decision(monkeypatch, error, status, terminal, cleared):
     marks = []
-
-    async def prepared(*_a, **_k):
-        return None
-
-    async def mark(ctx, invitation_id, status_, err, *, clear_link):
-        marks.append((status_, err, clear_link))
+    _patch_prepared(monkeypatch, marks)
 
     def send(**_kw):
         raise error
 
+    monkeypatch.setattr(smtp_mailer, "send", send)
+    with pytest.raises(bo.InvitationDeliveryError) as exc:
+        asyncio.run(bo.deliver_invitation_email("t1", "i1"))
+    assert exc.value.job_terminal is terminal
+    assert str(exc.value) == type(error).__name__ and "x.test" not in str(exc.value)   # no address stored
+    assert marks == [(status, type(error).__name__, cleared)]
+
+
+def test_a_recovery_mode_block_is_dead_lettered_by_the_worker_not_retried(monkeypatch):
+    """The worker's own RecoveryModeBlocked clause must see the original
+    exception (dead letter), and the link is cleared (21.5 re-review)."""
+    import recovery_mode
+
+    marks = []
+    _patch_prepared(monkeypatch, marks)
+
+    def send(**_kw):
+        raise recovery_mode.RecoveryModeBlocked("send email")
+
+    monkeypatch.setattr(smtp_mailer, "send", send)
+    with pytest.raises(recovery_mode.RecoveryModeBlocked):
+        asyncio.run(bo.deliver_invitation_email("t1", "i1"))
+    assert marks == [("failed", "RecoveryModeBlocked", True)]
+
+
+def _patch_prepared(monkeypatch, marks):
+    """An invitation ready to send, with every database touch faked."""
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timedelta, timezone
+
+    import crypto
+
     class _Conn:
         async def fetchrow(self, *_a):
-            from datetime import datetime, timedelta, timezone
             return {"email": "agent@x.test", "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
                     "pending_link_ciphertext": b"x", "consumed_at": None, "revoked_at": None,
                     "invited_by_agent_id": "owner@x.test", "expired": False, "brokerage": "B"}
-
-    from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def tx(_ctx):
@@ -65,15 +89,10 @@ def test_each_send_error_is_recorded_by_type_with_its_retry_decision(monkeypatch
     async def decrypt(*_a):
         return "/accept-invite?token=abc"
 
-    import crypto
+    async def mark(ctx, invitation_id, status_, err, *, clear_link):
+        marks.append((status_, err, clear_link))
 
     monkeypatch.setattr(bo, "tenant_tx", tx)
     monkeypatch.setattr(crypto, "decrypt_pii", decrypt)
     monkeypatch.setattr(bo, "_invitation_key", lambda _t: "k")
     monkeypatch.setattr(bo, "_mark_invitation", mark)
-    monkeypatch.setattr(smtp_mailer, "send", send)
-    with pytest.raises(bo.InvitationDeliveryError) as exc:
-        asyncio.run(bo.deliver_invitation_email("t1", "i1"))
-    assert exc.value.job_terminal is terminal
-    assert str(exc.value) == type(error).__name__ and "x.test" not in str(exc.value)   # no address stored
-    assert marks == [(status, type(error).__name__, cleared)]

@@ -566,6 +566,7 @@ async def deliver_invitation_email(tenant_id: str, invitation_id: str, *, last_a
     the job has given up."""
     import asyncio
 
+    import recovery_mode
     import smtp_mailer
     from crypto import decrypt_pii
 
@@ -602,6 +603,12 @@ async def deliver_invitation_email(tenant_id: str, invitation_id: str, *, last_a
         log.error("Invitation email outcome unknown: %s", type(exc).__name__)
         await _mark_invitation(ctx, invitation_id, "unconfirmed", type(exc).__name__, clear_link=True)
         raise InvitationDeliveryError(type(exc).__name__, terminal=True, code="DELIVERY_UNCONFIRMED") from None
+    except recovery_mode.RecoveryModeBlocked:
+        # Recovery mode refused the send: dead-letter it (the worker's own
+        # clause), never retry — a retry would send the moment recovery lifts.
+        log.error("Invitation email not sent: recovery mode")
+        await _mark_invitation(ctx, invitation_id, "failed", "RecoveryModeBlocked", clear_link=True)
+        raise
     except smtp_mailer.SmtpConfigurationError as exc:
         log.error("Invitation email not sent: mail server not configured")
         await _mark_invitation(ctx, invitation_id, "failed", type(exc).__name__, clear_link=True)
@@ -612,6 +619,25 @@ async def deliver_invitation_email(tenant_id: str, invitation_id: str, *, last_a
         raise InvitationDeliveryError(type(exc).__name__) from None
     await _mark_invitation(ctx, invitation_id, "sent", None, clear_link=True)
     return {"status": "sent"}
+
+
+async def sweep_stale_invitation_links() -> int:
+    """Clear sealed links the delivery job will never send: the invitation
+    expired, or its job ended without clearing it (dead-lettered after a lost
+    lease, or no worker had the handler). Run by the retention janitor."""
+    ctx = TenantContext(agent_id="invitation-janitor", tenant_id="00000000-0000-0000-0000-000000000000",
+                        role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(ctx) as conn:
+        status_ = await conn.execute(
+            "UPDATE brokerage_invitations i SET pending_link_ciphertext = NULL, "
+            "       delivery_status = CASE WHEN i.delivery_status = 'queued' THEN 'failed' ELSE i.delivery_status END, "
+            "       delivery_error = COALESCE(i.delivery_error, 'not_delivered') "
+            " WHERE i.pending_link_ciphertext IS NOT NULL "
+            "   AND (i.expires_at <= now() OR NOT EXISTS ("
+            "        SELECT 1 FROM automation_jobs j "
+            "         WHERE j.tenant_id = i.tenant_id AND j.idempotency_key = 'invitation-email:' || i.id::text "
+            "           AND j.state IN ('queued', 'leased', 'running', 'failed')))")
+    return int(status_.split()[-1]) if status_ else 0
 
 
 async def _invitation_job(payload: dict, reporter) -> dict:
@@ -951,7 +977,8 @@ async def resend_invitation(
     """Resend issues a NEW link and retires the old one.
 
     It cannot do otherwise: only the digest of the original token identifies
-    it, and its sealed copy (held only until the email is sent) is not reused. Anyone holding the old
+    it, and its sealed copy (held only until the email is sent) is not
+    reused. Anyone holding the old
     email finds a dead link, which is the correct outcome for a credential
     that has just been reissued.
     """
