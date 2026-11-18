@@ -237,7 +237,7 @@ def map_capabilities(
     if setup is None and not reg.get("rejected"):
         out["messaging"] = unread
     elif reg.get("rejected"):
-        out["messaging"] = _cap(NEEDS_ATTENTION, "Texting registration (10DLC) was rejected")
+        out["messaging"] = _cap(NEEDS_ATTENTION, "Texting registration (10DLC) was rejected, suspended or expired")
     elif texting == "READY":
         out["messaging"] = _cap(READY, "Texting active")
     elif texting == "IN_PROGRESS":
@@ -424,7 +424,8 @@ _CREDENTIALS_SQL = """
 _REGISTRATION_SQL = """
     SELECT b.tenant_id, b.status AS brand_status,
            (SELECT count(*) FROM tenant_messaging_campaigns c
-             WHERE c.tenant_id = b.tenant_id AND c.status IN ('rejected','failed'))::int AS campaigns_rejected,
+             WHERE c.tenant_id = b.tenant_id
+               AND c.status IN ('rejected','failed','suspended','expired'))::int AS campaigns_rejected,
            (SELECT count(*) FROM tenant_messaging_campaigns c
              WHERE c.tenant_id = b.tenant_id AND c.status = 'pending')::int             AS campaigns_pending
       FROM tenant_messaging_brands b
@@ -840,7 +841,7 @@ async def _diag_messaging(conn, tid: str) -> dict:
     )
     reg = {
         "rejected": bool(brand and brand["status"] == "failed")
-                    or any(c["status"] in ("rejected", "failed") for c in campaigns),
+                    or any(c["status"] in ("rejected", "failed", "suspended", "expired") for c in campaigns),
         "pending": bool(brand and brand["status"] in ("pending", "unverified"))
                    or any(c["status"] == "pending" for c in campaigns),
     }
@@ -1576,8 +1577,9 @@ async def comms(ctx: TenantContext = Depends(require_platform_admin)) -> dict[st
             problems.append("call routing or caller-ID verification failed")
         if m["needs_action"]:
             problems.append("texting number needs action")
-        if m["brand_10dlc"] == "failed" or m["campaigns_10dlc"].get("rejected") or m["campaigns_10dlc"].get("failed"):
-            problems.append("10DLC registration rejected")
+        if m["brand_10dlc"] == "failed" or any(
+                m["campaigns_10dlc"].get(k) for k in ("rejected", "failed", "suspended", "expired")):
+            problems.append("10DLC registration rejected, suspended or expired")
         fails = e["failures_24h"]
         if fails["sms_failed"] and fails["sms_failed"] * 5 >= max(fails["sms_outbound"], 1):
             problems.append("many texts failing in the last 24h")

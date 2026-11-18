@@ -201,22 +201,34 @@ _SENDABLE = {"agent_id": "a", "active": True, "provider": "telnyx", "hosted_orde
              "brand_status": "verified", "sender_assigned": True}
 
 
+_NO_CAMPAIGN_YET = {**_SENDABLE, "campaign_id": None, "campaign_status": None, "sender_assigned": False}
+
+
 @pytest.mark.parametrize(
-    "counts,routes,expected",
+    "counts,routes,latest,expected",
     [
-        ({"active": 0, "working": 0, "total": 0}, [], "NOT_STARTED"),
-        ({"active": 1, "working": 0, "total": 1}, [_SENDABLE], "READY"),
-        # hosting live is not carrier-ready (25.1)
-        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "campaign_status": "pending"}], "IN_PROGRESS"),
-        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "campaign_status": "rejected"}], "NEEDS_ACTION"),
-        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "sender_assigned": False}], "NEEDS_ACTION"),
-        ({"active": 0, "working": 1, "total": 1}, [], "IN_PROGRESS"),
-        ({"active": 0, "working": 0, "total": 1}, [], "NEEDS_ACTION"),
+        ({"active": 0, "working": 0, "total": 0}, [], None, "NOT_STARTED"),
+        ({"active": 1, "working": 0, "total": 1}, [_SENDABLE], None, "READY"),
+        # hosting live is not carrier-ready (25.1). A route carries a campaign
+        # only after assignment, so "pending" is the brokerage's own campaign.
+        ({"active": 1, "working": 0, "total": 1}, [_NO_CAMPAIGN_YET],
+         {"campaign": "pending", "brand": "verified"}, "IN_PROGRESS"),
+        ({"active": 1, "working": 0, "total": 1}, [_NO_CAMPAIGN_YET],
+         {"campaign": None, "brand": "pending"}, "IN_PROGRESS"),
+        ({"active": 1, "working": 0, "total": 1}, [_NO_CAMPAIGN_YET],
+         {"campaign": "rejected", "brand": "verified"}, "NEEDS_ACTION"),
+        ({"active": 1, "working": 0, "total": 1}, [_NO_CAMPAIGN_YET],
+         {"campaign": "approved", "brand": "verified"}, "NEEDS_ACTION"),   # assign the number
+        ({"active": 1, "working": 0, "total": 1}, [{**_SENDABLE, "sender_assigned": False}],
+         {"campaign": "approved", "brand": "verified"}, "NEEDS_ACTION"),
+        ({"active": 0, "working": 1, "total": 1}, [], None, "IN_PROGRESS"),
+        ({"active": 0, "working": 0, "total": 1}, [], None, "NEEDS_ACTION"),
     ],
 )
-def test_messaging_status_is_tracked_apart_from_calls(counts, routes, expected, monkeypatch):
+def test_messaging_status_is_tracked_apart_from_calls(counts, routes, latest, expected, monkeypatch):
     monkeypatch.setenv("ORACLE_MESSAGING_PROVIDER", "telnyx")
-    conn = FakeConn(rows={"FROM messaging_routes": counts}, fetch_rows={"sender_assigned": routes})
+    conn = FakeConn(rows={"FROM messaging_routes": counts, "AS campaign": latest},
+                    fetch_rows={"sender_assigned": routes})
     assert asyncio.run(bo._messaging_status(conn, TENANT_A)) == expected
 
 

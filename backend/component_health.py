@@ -51,7 +51,7 @@ ROLE = {
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
-    "inbound_calls", "billing_meter", "usage_reporting",
+    "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration",
 )
 
 
@@ -204,6 +204,15 @@ async def _db_components() -> dict[str, dict]:
             " WHERE reported_at IS NULL AND report_state IS NULL AND metric = 'lead_engaged' AND "
             + BILLABLE_PREDICATE + " AND occurred_at <= now() - make_interval(days => $1)",
             REPORT_AGING_ALERT_DAYS)
+        # 25.2: 10DLC registrations the status sync found lost (suspended or
+        # expired), could not read for a day, or that have waited two weeks.
+        registration = await conn.fetchrow(
+            "SELECT count(*) FILTER (WHERE status IN ('suspended','expired')) AS lost, "
+            "       count(*) FILTER (WHERE status_check_error IS NOT NULL "
+            "                          AND status_checked_at > now() - interval '1 day') AS unreadable, "
+            "       count(*) FILTER (WHERE status = 'pending' "
+            "                          AND submitted_at < now() - interval '14 days') AS stalled "
+            "  FROM tenant_messaging_campaigns WHERE provider_campaign_id IS NOT NULL")
         harvest = await conn.fetchrow(
             """
             SELECT count(*) FILTER (WHERE enabled) AS enabled,
@@ -255,6 +264,7 @@ async def _db_components() -> dict[str, dict]:
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
     out["usage_reporting"] = _usage_reporting(usage_rep)
+    out["messaging_registration"] = _messaging_registration(dict(registration))
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
     out["valuation_providers"] = _valuation_providers(providers)
@@ -315,6 +325,23 @@ def _usage_reporting(row: dict) -> dict:
         return _c(DEGRADED, "usage is nearing the age Stripe refuses (35 days) and is still unreported",
                   aging=aging)
     return _c(HEALTHY, "usage reaching Stripe")
+
+
+def _messaging_registration(row: dict) -> dict:
+    """25.2: a texting campaign that stopped being able to send (suspended or
+    expired at the carrier), one whose status could not be read in the last
+    day, or one still pending after 14 days."""
+    lost, unreadable = int(row.get("lost") or 0), int(row.get("unreadable") or 0)
+    stalled = int(row.get("stalled") or 0)
+    if lost:
+        return _c(DEGRADED, "a texting campaign (10DLC) was suspended or expired; its texts are refused",
+                  lost=lost, unreadable=unreadable, stalled=stalled)
+    if unreadable:
+        return _c(DEGRADED, "10DLC registration status could not be read from the provider",
+                  unreadable=unreadable, stalled=stalled)
+    if stalled:
+        return _c(DEGRADED, "a texting campaign (10DLC) has been pending for over 14 days", stalled=stalled)
+    return _c(HEALTHY, "10DLC registrations current")
 
 
 def _syncs_paused() -> bool:

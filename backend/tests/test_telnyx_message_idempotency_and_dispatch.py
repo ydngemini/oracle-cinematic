@@ -145,7 +145,7 @@ def test_sms_branch_fails_closed_when_telnyx_route_not_ready():
     else_idx = branch.index("else:", telnyx_idx)
     telnyx_block = branch[telnyx_idx:else_idx]
     # carrier readiness, not hosting alone (25.1)
-    assert 'messaging_send_readiness(owner_ctx, provider="telnyx")' in telnyx_block
+    assert 'owner_ctx, provider="telnyx", account=account_fingerprint(telnyx_credentials))' in telnyx_block
     assert 'if not readiness["ready"]' in telnyx_block
     # A configuration refusal: a clean failure (never "uncertain"), and terminal
     # for the job worker, so it is not retried into a later, unannounced send.

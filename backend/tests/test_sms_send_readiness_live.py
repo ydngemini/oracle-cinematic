@@ -46,8 +46,10 @@ async def _scenario(monkeypatch):
     admin = await asyncpg.connect(DSN)
     await connection.init_pool(min_size=1, max_size=3)
 
-    async def readiness():
-        return await md.messaging_send_readiness(ctx, provider="telnyx")
+    ACCOUNT = md.account_fingerprint({"api_key": "KEY-A"})
+
+    async def readiness(account=ACCOUNT):
+        return await md.messaging_send_readiness(ctx, provider="telnyx", account=account)
 
     async def blockers():
         return (await readiness())["blockers"]
@@ -64,11 +66,12 @@ async def _scenario(monkeypatch):
             "forward_on_request, forward_when_ai_unavailable) "
             "VALUES ($1,$2,$3,'plivo','MAsrlive',$3,true,'verified',true,false,false)", T, owner, NUMBER)
         route = await admin.fetchval(
-            "INSERT INTO messaging_routes (tenant_id, agent_id, provider, hosted_order_status, active) "
-            "VALUES ($1,$2,'telnyx','active',true) RETURNING id", T, owner)
+            "INSERT INTO messaging_routes (tenant_id, agent_id, provider, provider_account_id, "
+            "hosted_order_status, active) VALUES ($1,$2,'telnyx',$3,'active',true) RETURNING id",
+            T, owner, ACCOUNT)
 
         # Active hosting, verified number, no campaign: the old gate sent this.
-        assert await blockers() == ["no_campaign_assigned"]
+        assert await blockers() == ["no_campaign"]
 
         brand = await admin.fetchval("INSERT INTO tenant_messaging_brands (tenant_id, provider, provider_brand_id, "
                                      "status) VALUES ($1,'telnyx','B1','verified') RETURNING id", T)
@@ -99,6 +102,18 @@ async def _scenario(monkeypatch):
 
         # The valid case.
         assert await readiness() == {"ready": True, "blockers": [], "sender": NUMBER}
+
+        # The hosting must belong to the account the send uses.
+        other_account = md.account_fingerprint({"api_key": "KEY-B"})
+        assert (await readiness(other_account))["blockers"] == ["wrong_account"]
+        # The voice route switched off, or a toll-free sender: not sendable.
+        await admin.execute("UPDATE telephony_routes SET active=false WHERE tenant_id=$1", T)
+        assert "no_verified_number" in await blockers()
+        await admin.execute("UPDATE telephony_routes SET active=true WHERE tenant_id=$1", T)
+        await admin.execute("UPDATE telephony_routes SET voice_caller_id_e164='+18885550177' WHERE tenant_id=$1", T)
+        assert "toll_free_not_supported" in await blockers()
+        await admin.execute("UPDATE telephony_routes SET voice_caller_id_e164=$2 WHERE tenant_id=$1", T, NUMBER)
+        assert (await readiness())["ready"]
 
         # Another brokerage's campaign cannot be put on this route at all.
         other_brand = await admin.fetchval("INSERT INTO tenant_messaging_brands (tenant_id, provider, status) "
@@ -132,7 +147,10 @@ async def _scenario(monkeypatch):
         monkeypatch.setattr(billing, "entitlement_refusal", nothing)
         monkeypatch.setattr(ca, "_requester_may_contact", yes)
         monkeypatch.setattr(ca, "guard_outreach", allowed)
-        monkeypatch.setattr(ca, "_load_provider_credential", nothing)
+        async def telnyx_key(_ctx, provider, **_k):
+            return json.dumps({"api_key": "KEY-A"}) if provider == "telnyx" else None
+
+        monkeypatch.setattr(ca, "_load_provider_credential", telnyx_key)
         monkeypatch.setattr(messaging_provider, "get_messaging_provider", lambda _name: _Adapter())
 
         class Reporter:

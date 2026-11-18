@@ -150,10 +150,12 @@ def test_per_agent_phone_setup_is_resolved_for_the_agent_who_staged_it():
     (killer-demo run, 2026-10-04). They resolve for command["created_by"]."""
     source = inspect.getsource(ca._execute_command_job)
     assert 'agent_id=str(command["created_by"] or "command-worker")' in source
-    for lookup in ("get_verified_caller_id", "get_telephony_route",
-                   "get_messaging_route", "get_public_business_number"):
+    for lookup in ("get_verified_caller_id", "get_telephony_route"):
         assert f"{lookup}(owner_ctx)" in source, lookup
         assert f"{lookup}(ctx)" not in source, lookup
+    # texts: the send-readiness gate (25.1) reads the staging agent's route and number
+    assert "messaging_send_readiness(owner_ctx" in source
+    assert "messaging_send_readiness(ctx" not in source
 
 
 def test_call_branch_never_falls_back_to_an_unverified_or_default_from_number():

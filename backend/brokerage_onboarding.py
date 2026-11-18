@@ -250,15 +250,27 @@ async def _messaging_status(conn, tenant_id: str) -> Status:
         # Hosting is live; READY only when a route may actually send (25.1:
         # approved campaign and this number's committed assignment too).
         import messaging_data
-        from messaging_provider import messaging_provider_name
+        from messaging_provider import MessagingProviderError, messaging_provider_name
 
+        try:
+            provider = messaging_provider_name()
+        except MessagingProviderError:
+            return "NEEDS_ACTION"
         # Same tables as the count above (0108/0123/0139), so no tolerance
         # needed; a failure here aborts the transaction like any other query.
         routes = await messaging_data.send_readiness_rows(conn, tenant_id)
-        provider = messaging_provider_name()
         if any(not messaging_data.send_blockers(r, provider) for r in routes):
             return "READY"
-        if any(r.get("campaign_status") == "pending" for r in routes):
+        # A route carries a campaign only once a number is assigned, which
+        # needs approval — so "waiting for the carrier" is read from the
+        # brokerage's own registration, not the route.
+        latest = await conn.fetchrow(
+            "SELECT (SELECT status FROM tenant_messaging_campaigns WHERE tenant_id=$1::uuid "
+            "         ORDER BY created_at DESC LIMIT 1) AS campaign, "
+            "       (SELECT status FROM tenant_messaging_brands WHERE tenant_id=$1::uuid) AS brand",
+            tenant_id)
+        if latest and (latest["campaign"] == "pending"
+                       or (latest["campaign"] is None and latest["brand"] == "pending")):
             return "IN_PROGRESS"      # waiting for the carrier's 10DLC decision
         return "NEEDS_ACTION"         # campaign, assignment or brand needs the brokerage
     return "IN_PROGRESS" if row["working"] else "NEEDS_ACTION"

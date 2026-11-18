@@ -3731,13 +3731,8 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # fails cleanly. Hosting alone is not carrier-ready (25.1): the
                 # brokerage's approved 10DLC campaign and the committed
                 # assignment of this exact sender are required too.
-                from messaging_data import describe_blockers, messaging_send_readiness
+                from messaging_data import account_fingerprint, describe_blockers, messaging_send_readiness
 
-                readiness = await messaging_send_readiness(owner_ctx, provider="telnyx")
-                if not readiness["ready"]:
-                    raise ProviderConfigurationError(
-                        "Text message blocked: " + describe_blockers(readiness["blockers"]) + "."
-                    )
                 telnyx_raw = await _load_provider_credential(ctx, "telnyx")
                 telnyx_credentials = None
                 if telnyx_raw:
@@ -3745,6 +3740,13 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         telnyx_credentials = json.loads(telnyx_raw)
                     except (TypeError, ValueError):
                         pass
+                # ...and the hosting must belong to the account this send uses.
+                readiness = await messaging_send_readiness(
+                    owner_ctx, provider="telnyx", account=account_fingerprint(telnyx_credentials))
+                if not readiness["ready"]:
+                    raise ProviderConfigurationError(
+                        "Text message blocked: " + describe_blockers(readiness["blockers"]) + "."
+                    )
                 await reporter.progress(45, "submitting approved text message")
                 submission_started = True
                 from messaging_provider import get_messaging_provider

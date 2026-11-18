@@ -22,10 +22,12 @@ OWNER = TenantContext(agent_id="owner@tenant.test", tenant_id=AGENT.tenant_id, r
 def world(monkeypatch):
     """A brokerage with nothing set up; tests switch pieces on."""
     state = {"credentials": set(), "google": set(), "messaging_route": None, "business_number": None,
-             "verified_caller_id": None, "telephony_route": None, "calls": []}
+             "verified_caller_id": None, "telephony_route": None, "calls": [],
+             "send_readiness": {"ready": False, "blockers": ["not_connected"], "sender": None}}
     for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY", "TWILIO_API_SECRET",
                  "PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "ORACLE_SMTP_FROM_EMAIL", "ORACLE_SMTP_USERNAME",
-                 "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_MESSAGING_PROVIDER", "ORACLE_EMAIL_PROVIDER"):
+                 "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_MESSAGING_PROVIDER", "ORACLE_EMAIL_PROVIDER",
+                 "TWILIO_SMS_FROM_NUMBER", "TWILIO_SMS_SENDER_TYPE"):
         monkeypatch.delenv(name, raising=False)
 
     async def has_credential(ctx, provider, *, account_label=None):
@@ -42,6 +44,9 @@ def world(monkeypatch):
     async def business_number(_ctx):
         return state["business_number"]
 
+    async def send_readiness(_ctx, *, provider, account=None):
+        return state["send_readiness"]
+
     async def verified(_ctx):
         return state["verified_caller_id"]
 
@@ -52,6 +57,7 @@ def world(monkeypatch):
     monkeypatch.setattr(commands_api, "has_google_calendar", has_google)
     monkeypatch.setattr(messaging_data, "get_messaging_route", messaging_route)
     monkeypatch.setattr(messaging_data, "get_public_business_number", business_number)
+    monkeypatch.setattr(messaging_data, "messaging_send_readiness", send_readiness)
     monkeypatch.setattr(inbound_voice, "get_verified_caller_id", verified)
     monkeypatch.setattr(inbound_voice, "get_telephony_route", telephony_route)
     return state
@@ -74,15 +80,17 @@ def test_with_nothing_set_up_every_channel_names_what_it_needs(world):
 
 # ── sms ─────────────────────────────────────────────────────────────────────
 
-def test_texting_on_the_telnyx_rail_needs_an_active_hosted_order_on_a_verified_number(world):
+def test_texting_on_the_telnyx_rail_needs_the_send_gate_not_hosting_alone(world):
     world["business_number"] = {"voice_caller_id_e164": "+13025550100"}
     world["messaging_route"] = {"hosted_order_status": "processing"}
     assert "still being set up (processing)" in gaps()["sms"]
+    # Hosting live but the campaign not approved: the send would refuse, so
+    # the AI must not offer or draft a text (25.1).
     world["messaging_route"] = {"hosted_order_status": "active"}
+    world["send_readiness"] = {"ready": False, "blockers": ["campaign_not_approved"], "sender": None}
+    assert "texting campaign (10DLC) is not approved" in gaps()["sms"]
+    world["send_readiness"] = {"ready": True, "blockers": [], "sender": "+13025550100"}
     assert "sms" not in gaps()
-    # Twilio-era route fields never decide this rail.
-    world["business_number"] = None
-    assert "sms" in gaps()
 
 
 def test_texting_on_the_twilio_rail_needs_an_account_somewhere(world, monkeypatch):
@@ -93,6 +101,10 @@ def test_texting_on_the_twilio_rail_needs_an_account_somewhere(world, monkeypatc
     world["credentials"].clear()
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "0" * 32)
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "t" * 32)
+    # the platform sender must declare its registration, as the send requires (25.1)
+    assert "TWILIO_SMS_SENDER_TYPE" in gaps()["sms"]
+    monkeypatch.setenv("TWILIO_SMS_FROM_NUMBER", "+13025550100")
+    monkeypatch.setenv("TWILIO_SMS_SENDER_TYPE", "twilio_registered")
     assert "sms" not in gaps()
 
 

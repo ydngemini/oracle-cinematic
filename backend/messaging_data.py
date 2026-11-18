@@ -15,6 +15,7 @@ Same invariants as the voice side:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,16 @@ def _tenant_context(tenant_id: str, agent_id: str) -> TenantContext:
     # Matching a phone number to a client is a brokerage function: the message
     # or call belongs on the client's record whoever's line it came in on (0131).
     return brokerage_scope(TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.AGENT))
+
+
+def account_fingerprint(credentials: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """An opaque id of the Telnyx account a credential acts as (25.1): the
+    same key resolution the adapter uses (the credential, else the platform
+    key), hashed — never the key or a prefix of it."""
+    import hashlib
+
+    key = str((credentials or {}).get("api_key") or os.getenv("TELNYX_API_KEY", "")).strip()
+    return "tk:" + hashlib.sha256(key.encode()).hexdigest()[:16] if key else None
 
 
 async def get_public_business_number(ctx: TenantContext) -> Optional[dict[str, Any]]:
@@ -250,7 +261,7 @@ async def connect_messaging(
             messaging_profile_id=route.get("messaging_profile_id"), credentials=credentials,
         )
 
-    attached = await _attach_hosted_order(ctx, purchase_id, order_ref)
+    attached = await _attach_hosted_order(ctx, purchase_id, order_ref, account_fingerprint(credentials))
     if attached is None:
         return await get_messaging_route(ctx) or route
     try:
@@ -369,7 +380,8 @@ async def _submit_hosted_order(
     return str(order.reference)
 
 
-async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: str) -> Optional[dict[str, Any]]:
+async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: str,
+                               account: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Put the order on the route and close its ledger row in one transaction.
     None if the route already carries an order (the ledger row is left
     `confirmed` for an operator rather than claimed by the wrong route)."""
@@ -378,13 +390,16 @@ async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: 
             f"""
             UPDATE messaging_routes
                SET hosted_order_id=$3, hosted_order_status='pending_verification',
-                   verification_method='sms', hosted_order_failure_reason=NULL, updated_at=now()
+                   verification_method='sms', hosted_order_failure_reason=NULL, updated_at=now(),
+                   -- the account that holds this hosting (25.1 send gate)
+                   provider_account_id=COALESCE($4, provider_account_id)
              WHERE tenant_id=$1::uuid AND agent_id=$2 AND hosted_order_id IS NULL
              RETURNING {_ROUTE_COLUMNS},created_at,updated_at
             """,
             ctx.tenant_id,
             ctx.agent_id,
             order_ref,
+            account,
         )
         if row is None:
             logger.warning("hosted order %s not attached: route already has an order", purchase_id)
@@ -436,9 +451,13 @@ async def refresh_hosted_order_status(ctx: TenantContext, *, credentials: Mappin
     route = await get_messaging_route(ctx)
     if route is None or not route.get("hosted_order_id"):
         raise MessagingDataError("No hosted-messaging order to check")
-    if route.get("hosted_order_status") in ("active", "disconnected"):
+    account = account_fingerprint(credentials)
+    if route.get("hosted_order_status") in ("active", "disconnected") and route.get("provider_account_id") == account:
         return route
 
+    # Also the upgrade path for a route hosted before 25.1 recorded the
+    # account: reading the order with this credential proves the account
+    # holds it.
     adapter = get_messaging_provider(str(route["provider"]))
     status = await adapter.get_hosted_order_status(str(route["hosted_order_id"]), credentials=credentials)
     provider_status = str(status.get("status") or "")
@@ -457,6 +476,8 @@ async def refresh_hosted_order_status(ctx: TenantContext, *, credentials: Mappin
         "deleted": "disconnected",
     }.get(provider_status, "processing")
     updates: dict[str, Any] = {"hosted_order_status": mapped}
+    if account:
+        updates["provider_account_id"] = account
     if mapped == "pending_documents":
         updates["loa_document_state"] = "required"
         updates["invoice_document_state"] = "required"
@@ -830,9 +851,12 @@ SEND_BLOCKERS = {
     "not_connected": "connect text messages for your business number",
     "disconnected": "text messages were disconnected for this number",
     "wrong_provider": "this number is set up with a different text-message provider",
+    "wrong_account": ("this number's text hosting belongs to a different provider account than the one "
+                      "Neoh would send with — refresh the hosting status with your current credential"),
     "hosting_not_active": "finish hosting your business number for text messages",
     "no_verified_number": "verify your business number for calls first",
     "toll_free_not_supported": "toll-free numbers need toll-free verification, which is not available here yet",
+    "no_campaign": "register your texting brand and campaign (10DLC)",
     "no_campaign_assigned": "assign your business number to your approved texting campaign (10DLC)",
     "campaign_not_approved": "your texting campaign (10DLC) is not approved yet",
     "brand_not_registered": "your texting brand (10DLC) is not registered or was rejected",
@@ -840,11 +864,11 @@ SEND_BLOCKERS = {
 }
 
 _SEND_READINESS_SQL = """
-    SELECT r.agent_id, r.active, r.provider, r.hosted_order_status, r.campaign_id,
+    SELECT r.agent_id, r.active, r.provider, r.provider_account_id, r.hosted_order_status, r.campaign_id,
            t.voice_caller_id_e164 AS sender,
            COALESCE(t.voice_caller_id_verified, false) AS sender_verified,
            c.status AS campaign_status, c.provider AS campaign_provider,
-           c.provider_campaign_id, b.status AS brand_status,
+           c.provider_campaign_id, b.status AS brand_status, b.provider AS brand_provider,
            EXISTS (
                SELECT 1 FROM provider_purchases p
                 WHERE p.tenant_id = r.tenant_id AND p.provider = r.provider
@@ -863,8 +887,11 @@ _SEND_READINESS_SQL = """
 """
 
 
-def send_blockers(row: Optional[Mapping[str, Any]], provider: str) -> list[str]:
-    """Why this route may not send business texts yet ([] = it may). Pure."""
+def send_blockers(row: Optional[Mapping[str, Any]], provider: str,
+                  account: Optional[str] = None) -> list[str]:
+    """Why this route may not send business texts yet ([] = it may). Pure.
+    `account`: the fingerprint of the credential the send would use; when
+    given, the route's hosting must belong to that account."""
     if row is None:
         return ["not_connected"]
     blockers: list[str] = []
@@ -874,6 +901,8 @@ def send_blockers(row: Optional[Mapping[str, Any]], provider: str) -> list[str]:
         blockers.append("wrong_provider")
     if row.get("hosted_order_status") != "active":
         blockers.append("hosting_not_active")
+    elif account is not None and row.get("provider_account_id") != account:
+        blockers.append("wrong_account")
     sender = str(row.get("sender") or "")
     if not sender or not row.get("sender_verified"):
         blockers.append("no_verified_number")
@@ -886,7 +915,8 @@ def send_blockers(row: Optional[Mapping[str, Any]], provider: str) -> list[str]:
             blockers.append("campaign_not_approved")
         if row.get("campaign_provider") != row.get("provider") and "wrong_provider" not in blockers:
             blockers.append("wrong_provider")
-        if row.get("brand_status") in (None, "failed", "not_started"):
+        if row.get("brand_status") in (None, "failed", "not_started") or (
+                row.get("brand_provider") not in (None, row.get("provider"))):
             blockers.append("brand_not_registered")
         if not row.get("sender_assigned"):
             blockers.append("number_not_assigned")
@@ -897,19 +927,222 @@ async def send_readiness_rows(conn: Any, tenant_id: str, agent_id: Optional[str]
     return [dict(r) for r in await conn.fetch(_SEND_READINESS_SQL, tenant_id, agent_id)]
 
 
-async def messaging_send_readiness(ctx: TenantContext, *, provider: str) -> dict[str, Any]:
+async def messaging_send_readiness(ctx: TenantContext, *, provider: str,
+                                   account: Optional[str] = None) -> dict[str, Any]:
     """{"ready", "blockers", "sender"} for this agent's business texts."""
     async with tenant_tx(ctx) as conn:
         rows = await send_readiness_rows(conn, ctx.tenant_id, ctx.agent_id)
-    ready = [r for r in rows if not send_blockers(r, provider)]
+        tenant_campaign = await conn.fetchval(
+            "SELECT status FROM tenant_messaging_campaigns WHERE tenant_id=$1::uuid "
+            "ORDER BY created_at DESC LIMIT 1", ctx.tenant_id)
+    ready = [r for r in rows if not send_blockers(r, provider, account)]
     row = ready[0] if ready else (rows[0] if rows else None)
-    blockers = send_blockers(row, provider)
+    blockers = send_blockers(row, provider, account)
+    if "no_campaign_assigned" in blockers and tenant_campaign != "approved":
+        # Nothing to assign yet: say what is actually missing.
+        blockers[blockers.index("no_campaign_assigned")] = (
+            "campaign_not_approved" if tenant_campaign else "no_campaign")
     return {"ready": not blockers, "blockers": blockers,
             "sender": str(row["sender"]) if row and not blockers else None}
 
 
 def describe_blockers(blockers: Sequence[str]) -> str:
     return "; ".join(SEND_BLOCKERS.get(b, b) for b in blockers)
+
+
+# ── Registration status sync (external audit 25.2) ─────────────────────────
+# The brand and campaign rows used to keep the status their submission
+# answered (pending) forever: nothing asked the provider again. The provider's
+# own values are mapped here, value by value; an unrecognised value changes
+# nothing (it is recorded as a check error), and nothing is marked approved
+# because a submission was accepted — only MNO_PROVISIONED is "approved".
+_TELNYX_CAMPAIGN_STATUS = {
+    "MNO_PROVISIONED": "approved",
+    "TCR_PENDING": "pending", "TCR_ACCEPTED": "pending", "TELNYX_ACCEPTED": "pending",
+    "MNO_PENDING": "pending", "MNO_ACCEPTED": "pending",
+    "TCR_FAILED": "rejected", "TELNYX_FAILED": "rejected", "MNO_REJECTED": "rejected",
+    "MNO_PROVISIONING_FAILED": "failed",
+    "TCR_SUSPENDED": "suspended", "TCR_EXPIRED": "expired",
+}
+_TELNYX_BRAND_REGISTRATION = {"REGISTRATION_PENDING": "pending", "REGISTRATION_FAILED": "failed"}
+_TELNYX_BRAND_IDENTITY = {"VERIFIED": "verified", "VETTED_VERIFIED": "verified",
+                          "SELF_DECLARED": "verified", "UNVERIFIED": "unverified"}
+_PROBLEM_CAMPAIGN_STATUSES = ("rejected", "failed", "suspended", "expired")
+
+
+def map_campaign_status(provider_status: str) -> Optional[str]:
+    return _TELNYX_CAMPAIGN_STATUS.get(str(provider_status or "").strip().upper())
+
+
+def map_brand_status(registration: str, identity: str) -> Optional[str]:
+    reg = str(registration or "").strip().upper()
+    if reg in _TELNYX_BRAND_REGISTRATION:
+        return _TELNYX_BRAND_REGISTRATION[reg]
+    if reg == "OK":
+        return _TELNYX_BRAND_IDENTITY.get(str(identity or "").strip().upper())
+    return None
+
+
+def _not_found(exc: BaseException) -> bool:
+    return getattr(exc, "status_code", None) == 404 or type(exc).__name__ == "NotFoundError"
+
+
+async def _read_status(read: Any) -> tuple[Optional[dict[str, Any]], Optional[str], bool]:
+    """(answer, error, gone). Never raises: a failed read changes no status."""
+    try:
+        return await read(), None, False
+    except Exception as exc:  # noqa: BLE001 — recorded on the row
+        return None, f"{type(exc).__name__}: {exc}"[:500], _not_found(exc)
+
+
+_APPLY_BRAND_SQL = """
+    UPDATE tenant_messaging_brands
+       SET status = COALESCE($3, status),
+           provider_status = COALESCE($4, provider_status),
+           failure_reason = CASE WHEN $3 IS NULL THEN failure_reason
+                                 WHEN $3 = 'failed' THEN $5 ELSE NULL END,
+           approved_at = CASE WHEN $3 = 'verified' THEN COALESCE(approved_at, now()) ELSE approved_at END,
+           status_check_error = $6,
+           status_checked_at = $7
+     WHERE id = $1::uuid AND tenant_id = $2::uuid
+       AND (status_checked_at IS NULL OR status_checked_at <= $7)
+    RETURNING status"""
+
+_APPLY_CAMPAIGN_SQL = """
+    UPDATE tenant_messaging_campaigns
+       SET status = COALESCE($3, status),
+           provider_status = COALESCE($4, provider_status),
+           failure_reason = CASE WHEN $3 IS NULL THEN failure_reason
+                                 WHEN $3 IN ('rejected','failed','suspended','expired') THEN $5
+                                 ELSE NULL END,
+           approved_at = CASE WHEN $3 = 'approved' THEN COALESCE(approved_at, now()) ELSE approved_at END,
+           status_check_error = $6,
+           status_checked_at = $7
+     WHERE id = $1::uuid AND tenant_id = $2::uuid
+       AND (status_checked_at IS NULL OR status_checked_at <= $7)
+    RETURNING status"""
+
+
+async def refresh_registration_status(
+    ctx: TenantContext, *, provider: str, credentials: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Read the brokerage's 10DLC brand and campaign status from the provider
+    and apply it (25.2). Safe to race: each write carries the time its read
+    was sent and an older read never overwrites a newer one. No lock is held
+    across the provider call. Registrations of another provider are skipped.
+    """
+    from datetime import datetime, timezone
+
+    from messaging_provider import get_messaging_provider
+
+    async with tenant_tx(ctx) as conn:
+        brand = await conn.fetchrow(
+            "SELECT id, provider, provider_brand_id, status FROM tenant_messaging_brands WHERE tenant_id=$1::uuid",
+            ctx.tenant_id)
+        campaigns = await conn.fetch(
+            "SELECT id, provider, provider_campaign_id, status FROM tenant_messaging_campaigns "
+            "WHERE tenant_id=$1::uuid AND provider_campaign_id IS NOT NULL ORDER BY created_at",
+            ctx.tenant_id)
+    adapter = get_messaging_provider(provider)
+    out: dict[str, Any] = {"brand": None, "campaigns": []}
+
+    if brand is not None and brand["provider_brand_id"] and brand["provider"] == provider:
+        sent_at = datetime.now(timezone.utc)
+        answer, error, _gone = await _read_status(
+            lambda: adapter.get_brand_status(str(brand["provider_brand_id"]), credentials=credentials))
+        new = raw = reason = None
+        if answer is not None:
+            raw = f"{answer.get('status') or ''}/{answer.get('identity_status') or ''}"
+            new = map_brand_status(answer.get("status"), answer.get("identity_status"))
+            reason = str(answer.get("failure_reason") or "")[:500] or None
+            if new is None:
+                error = f"unrecognised brand status {raw!r}; status left unchanged"
+        async with tenant_tx(ctx) as conn:
+            applied = await conn.fetchval(_APPLY_BRAND_SQL, brand["id"], ctx.tenant_id, new, raw,
+                                          reason, error, sent_at)
+        out["brand"] = {"brand_id": str(brand["id"]), "status": applied or brand["status"],
+                        "previous": brand["status"], "error": error}
+
+    for campaign in campaigns:
+        if campaign["provider"] != provider:
+            continue
+        sent_at = datetime.now(timezone.utc)
+        answer, error, gone = await _read_status(
+            lambda c=campaign: adapter.get_campaign_status(str(c["provider_campaign_id"]), credentials=credentials))
+        new = raw = reason = None
+        if answer is not None:
+            raw = str(answer.get("status") or "")
+            new = map_campaign_status(raw)
+            reason = str(answer.get("failure_reason") or "")[:500] or None
+            if new is None:
+                error = f"unrecognised campaign status {raw!r}; status left unchanged"
+        elif gone:
+            # The provider no longer knows a campaign it registered: it cannot
+            # carry traffic. Recorded as expired, never left 'approved'.
+            new, raw, reason = "expired", "NOT_FOUND", "the campaign is no longer found at the provider"
+        async with tenant_tx(ctx) as conn:
+            applied = await conn.fetchval(_APPLY_CAMPAIGN_SQL, campaign["id"], ctx.tenant_id, new, raw,
+                                          reason, error, sent_at)
+        if new and applied and applied != campaign["status"]:
+            logger.info("10DLC campaign %s: %s -> %s (%s)", campaign["id"], campaign["status"], applied, raw)
+        out["campaigns"].append({"campaign_id": str(campaign["id"]), "status": applied or campaign["status"],
+                                 "previous": campaign["status"], "error": error})
+    # Committed number assignments: a number unassigned (or moved) at the
+    # provider stops being sendable here. A failed read changes nothing.
+    async with tenant_tx(ctx) as conn:
+        assignments = await conn.fetch(
+            "SELECT id, detail->>'campaign_id' AS campaign_ref, detail->>'phone_number' AS phone "
+            "FROM provider_purchases WHERE tenant_id=$1::uuid AND provider=$2 "
+            "AND kind='10dlc_number_assignment' AND state='attached'", ctx.tenant_id, provider)
+    out["assignments"] = []
+    for assignment in assignments:
+        answer, error, gone = await _read_status(
+            lambda a=assignment: adapter.get_number_campaign(str(a["phone"]), credentials=credentials))
+        held = answer if answer is not None or gone else None
+        released = (answer is None and gone) or (answer is not None and answer != assignment["campaign_ref"])
+        if error and not gone:
+            released = False
+        if released:
+            async with tenant_tx(ctx) as conn:
+                await conn.execute(
+                    "UPDATE provider_purchases SET state='released', updated_at=now(), "
+                    "detail = detail || jsonb_build_object('released_reason', $2::text) "
+                    "WHERE id=$1::uuid AND state='attached'",
+                    assignment["id"], f"now assigned to {held}" if held else "no longer assigned at the provider")
+            logger.warning("10DLC assignment %s released: the number is no longer on its campaign",
+                           assignment["id"])
+        out["assignments"].append({"assignment_id": str(assignment["id"]), "released": bool(released),
+                                   "error": None if gone else error})
+    # A registration the provider confirmed but that never reached its row is
+    # for an operator (L10-09), never attached by a refresh.
+    out["unattached_submissions"] = len(await open_registration_submissions(ctx))
+    return out
+
+
+async def registrations_to_sync(*, limit: int = 200) -> list[str]:
+    """Brokerages with a 10DLC registration whose status can still change
+    (pending, or approved/suspended that may be revoked), least recently read first."""
+    async with tenant_tx(_platform_context()) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT tenant_id::text AS tenant_id, min(COALESCE(status_checked_at, 'epoch')) AS oldest
+              FROM (SELECT tenant_id, status_checked_at FROM tenant_messaging_campaigns
+                     WHERE provider_campaign_id IS NOT NULL AND status IN ('pending','approved','suspended')
+                    UNION ALL
+                    SELECT tenant_id, status_checked_at FROM tenant_messaging_brands
+                     WHERE provider_brand_id IS NOT NULL AND status IN ('pending','unverified')) r
+             GROUP BY tenant_id ORDER BY 2 LIMIT $1
+            """, max(1, min(1000, int(limit))))
+    return [r["tenant_id"] for r in rows]
+
+
+async def tenant_for_registration(provider_id: str) -> Optional[str]:
+    """The brokerage a provider brand/campaign id belongs to (webhook routing)."""
+    async with tenant_tx(_platform_context()) as conn:
+        return await conn.fetchval(
+            "SELECT tenant_id::text FROM tenant_messaging_campaigns WHERE provider_campaign_id=$1 "
+            "UNION ALL SELECT tenant_id::text FROM tenant_messaging_brands WHERE provider_brand_id=$1 LIMIT 1",
+            provider_id)
 
 
 NO_APPROVED_CAMPAIGN = "No approved Campaign to assign this number to."

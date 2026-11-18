@@ -7,6 +7,7 @@ paths (matches /api/telephony's pattern for voice).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -30,6 +31,7 @@ from messaging_data import (
     get_public_business_number,
     open_registration_submissions,
     record_hosted_document,
+    refresh_registration_status,
     refresh_hosted_order_status,
     register_messaging_brand,
     register_messaging_campaign,
@@ -132,15 +134,29 @@ async def get_business_messaging_status(
             "hosted_order_status": "not_started",
             "ready": False,
         }
-    payload = _route_json(route, business_number)
-    # Ready means carrier-ready (25.1): hosting AND the approved campaign AND
-    # the committed assignment of this number — not hosting alone.
-    from messaging_data import messaging_send_readiness
-    from messaging_provider import messaging_provider_name
+    return await _with_readiness(ctx, _route_json(route, business_number))
 
-    readiness = await messaging_send_readiness(ctx, provider=messaging_provider_name())
-    payload["ready"] = readiness["ready"]
-    payload["send_blockers"] = readiness["blockers"]
+
+async def _with_readiness(ctx: TenantContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """Ready means carrier-ready (25.1): hosting AND the approved campaign AND
+    the committed assignment of this number on the account Neoh sends with —
+    not hosting alone. Adds ready, send_blockers and their wording."""
+    from messaging_data import SEND_BLOCKERS, account_fingerprint, messaging_send_readiness
+    from messaging_provider import MessagingProviderError, messaging_provider_name
+
+    try:
+        provider = messaging_provider_name()
+    except MessagingProviderError:
+        blockers = ["wrong_provider"]
+    else:
+        try:
+            account = account_fingerprint(await _telnyx_credentials(ctx))
+        except HTTPException:
+            account = "unusable-credential"   # never matches: not ready, says why
+        blockers = (await messaging_send_readiness(ctx, provider=provider, account=account))["blockers"]
+    payload["ready"] = not blockers
+    payload["send_blockers"] = blockers
+    payload["send_blocker_messages"] = [SEND_BLOCKERS.get(b, b) for b in blockers]
     return payload
 
 
@@ -206,7 +222,7 @@ async def refresh_business_number_messaging(
         route = await refresh_hosted_order_status(ctx, credentials=credentials)
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _route_json(route, await get_public_business_number(ctx))
+    return await _with_readiness(ctx, _route_json(route, await get_public_business_number(ctx)))
 
 
 @router.post("/business-number/documents/{doc_type}")
@@ -294,14 +310,16 @@ async def get_business_registration(ctx: TenantContext = Depends(require_context
 
     async with tenant_tx(ctx) as conn:
         brand = await conn.fetchrow(
-            "SELECT id,status,provider_brand_id,failure_reason FROM tenant_messaging_brands WHERE tenant_id=$1::uuid",
+            "SELECT id,status,provider_brand_id,failure_reason,provider_status,status_checked_at,"
+            "status_check_error FROM tenant_messaging_brands WHERE tenant_id=$1::uuid",
             ctx.tenant_id,
         )
         campaign = None
         if brand is not None:
             campaign = await conn.fetchrow(
                 """
-                SELECT id,status,provider_campaign_id,failure_reason
+                SELECT id,status,provider_campaign_id,failure_reason,provider_status,
+                       status_checked_at,status_check_error,approved_at
                   FROM tenant_messaging_campaigns
                  WHERE tenant_id=$1::uuid AND brand_id=$2::uuid
                  ORDER BY created_at DESC LIMIT 1
@@ -374,6 +392,19 @@ async def register_campaign(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Telnyx rejected the campaign submission: {exc}") from exc
+
+
+@router.post("/business/registration/refresh")
+async def refresh_registration(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+    """Read the brokerage's 10DLC brand and campaign status from the provider
+    now (25.2). A broker owner only; reads, never submits. Two owners racing
+    are safe: the newer provider answer wins."""
+    require_role(ctx, Role.BROKER_OWNER)
+    from messaging_provider import messaging_provider_name
+
+    credentials = await _telnyx_credentials(ctx)
+    result = await refresh_registration_status(ctx, provider=messaging_provider_name(), credentials=credentials)
+    return {**result, "messaging": await _with_readiness(ctx, {})}
 
 
 @router.post("/business/registration/campaign/assign-number", dependencies=[Depends(require_active_subscription)])
@@ -536,8 +567,64 @@ async def telnyx_webhook(request: Request) -> Response:
                 return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"})
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    if event_type in ("10dlc.brand.update", "10dlc.campaign.update"):
+        # The event is only a nudge (25.2): its status is not trusted. The
+        # brokerage's registration is re-read from the provider, in the
+        # background so the acknowledgement is not held up; the periodic sync
+        # is the backstop if this process stops first.
+        payload = getattr(getattr(event, "data", None), "payload", None) or {}
+        get = payload.get if isinstance(payload, dict) else (lambda k: getattr(payload, k, None))
+        provider_id = str(get("campaignId") or get("campaign_id") or get("brandId") or get("brand_id") or "")
+        if provider_id:
+            asyncio.ensure_future(_refresh_for_provider_id(provider_id))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     # Hosted-order / number-order status events and anything else this
     # endpoint does not specifically act on: acknowledge without acting, so
     # Telnyx does not retry indefinitely on an event Neoh does not need.
     logger.info("Telnyx webhook event acknowledged: type=%s", event_type or "unknown")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _refresh_for_provider_id(provider_id: str) -> None:
+    """Re-read one brokerage's 10DLC status after a provider event (25.2)."""
+    from messaging_data import tenant_for_registration
+    from messaging_provider import messaging_provider_name
+
+    try:
+        tenant_id = await tenant_for_registration(provider_id)
+        if not tenant_id:
+            logger.info("10DLC event for an unknown registration %s ignored", provider_id[:64])
+            return
+        await sync_registration_for_tenant(tenant_id, provider=messaging_provider_name())
+    except Exception:  # noqa: BLE001 — the periodic sync retries
+        logger.warning("10DLC status refresh after an event failed", exc_info=True)
+
+
+async def sync_registration_for_tenant(tenant_id: str, *, provider: str) -> dict[str, Any]:
+    ctx = TenantContext(agent_id="10dlc-status-sync", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    try:
+        credentials = await _telnyx_credentials(ctx)
+    except HTTPException as exc:
+        raise RuntimeError(f"Telnyx credential unusable: {exc.detail}") from exc
+    return await refresh_registration_status(ctx, provider=provider, credentials=credentials)
+
+
+async def sync_open_registrations(*, limit: int = 200) -> dict[str, Any]:
+    """Periodic 10DLC status sync (25.2): every brokerage whose registration
+    can still change, least recently read first. One brokerage's failure is
+    recorded and the sweep goes on."""
+    from messaging_data import registrations_to_sync
+    from messaging_provider import messaging_provider_name
+
+    provider = messaging_provider_name()
+    synced = failed = 0
+    for tenant_id in await registrations_to_sync(limit=limit):
+        try:
+            await sync_registration_for_tenant(tenant_id, provider=provider)
+            synced += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+            logger.warning("10DLC status sync failed for tenant %s", tenant_id, exc_info=True)
+    logger.info("ORACLE_METRIC messaging_registration_sync synced=%d failed=%d", synced, failed)
+    return {"synced": synced, "failed": failed}

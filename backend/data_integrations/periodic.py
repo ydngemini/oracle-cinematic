@@ -774,6 +774,14 @@ async def _provider_reconciliation_task() -> dict:
     return await run_sweep()
 
 
+async def _messaging_registration_sync_task() -> dict:
+    """Read pending/approved 10DLC brand and campaign status back from the
+    provider (external audit 25.2: nothing else ever did)."""
+    from messaging_api import sync_open_registrations
+
+    return await sync_open_registrations()
+
+
 async def _privacy_lifecycle_task() -> dict:
     """Start erasure for brokerages whose closure grace period has ended, and
     delete export archives past their expiry (privacy_lifecycle.py)."""
@@ -1101,6 +1109,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="provider_reconciliation",
         interval_s=900,
         run=_provider_reconciliation_task,
+    ))
+    sched.register(PeriodicTask(
+        name="messaging_registration_sync",
+        interval_s=max(3600, float(os.getenv("ORACLE_10DLC_SYNC_INTERVAL_HOURS", "6")) * 3600),
+        run=_messaging_registration_sync_task,
     ))
     sched.register(PeriodicTask(
         name="privacy_lifecycle",
