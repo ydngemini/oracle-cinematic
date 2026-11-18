@@ -127,6 +127,14 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # a contact kept before sealing: matched on its client's details
         assert (await commands_api.create_command(
             cmd(CommandType.SMS, "legacy", phone="+13025550177", contact_id=legacy_contact), ctx=ctx))["created"]
+        # a lead of Pat's plus someone else's contact: refused too
+        pat_lead = uuid.uuid4()
+        await admin.execute("INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, address, "
+                            "seller_client_id) VALUES ($1,$2,$3,'DE',50,'Pat St',$4)",
+                            pat_lead, tenant, f"P2-{tag}", client)
+        assert await status_of(commands_api.create_command(
+            cmd(CommandType.SMS, "lead-pair", phone="+13025550188", lead_id=pat_lead,
+                contact_id=stranger_contact), ctx=ctx)) == 422
         # an email about a lead with no client names a record: refused like a text
         assert await status_of(commands_api.create_command(
             cmd(CommandType.EMAIL, "pool-mail", email="stranger@else.test", lead_id=pool_lead), ctx=ctx)) == 422

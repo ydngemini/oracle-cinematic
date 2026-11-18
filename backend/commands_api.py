@@ -884,6 +884,11 @@ async def _destination_problem(conn: Any, tenant_id: str, command_type: CommandT
     if client_id is None and lead_id is not None:
         seller = await conn.fetchval(_LEAD_SELLER, lead_id, tenant_id)
         client_id = str(seller) if seller else None
+        # the lead's client and a contact named beside it: one person's records too
+        if client_id is not None and contact_id is not None and not await conn.fetchval(
+                _PAIR_LINKED, client_id, contact_id, tenant_id):
+            return ("unlinked", "The lead's client and the contact named are not the same person's "
+                                "records: the message would be filed under one and reach the other.")
     if client_id is None and contact_id is None:
         return ("no_record", f"No client or contact holding a {noun} is linked to this, so nothing vouches "
                              f"for the destination. Link it to a client with that {noun} first.")
