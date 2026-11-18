@@ -220,9 +220,14 @@ async def test_drain_stops_cleanly_when_the_tenant_has_no_stripe_customer(monkey
         return None
 
     monkeypatch.setattr(billing_usage, "_stripe_customer_for", _no_customer)
+    calls: list = []
+    monkeypatch.setattr(billing_usage, "tenant_tx", _fake_tx([], calls))
     result = await billing_usage.drain_usage_to_stripe(_ctx())
-    # Rows stay unreported rather than being dropped or marked reported.
-    assert result == {"state": "no_customer", "reported": 0}
+    # Rows stay unreported rather than being dropped or marked reported; only
+    # rows too old for Stripe are quarantined (24.6), and nothing is claimed.
+    assert result == {"state": "no_customer", "reported": 0,
+                      "quarantined": {"expired": 0, "uncertain": 0}}
+    assert [sql for sql, _ in calls if "report_claimed_until = now() +" in sql] == []
 
 
 def test_metering_configured_reflects_the_env(monkeypatch):
@@ -270,6 +275,10 @@ class _FetchConn:
     async def fetchrow(self, sql, *args):
         self.calls.append((sql, args))
         return self._rows[0] if self._rows else None
+
+    async def fetchval(self, sql, *args):
+        self.calls.append((sql, args))
+        return 0
 
     async def execute(self, sql, *args):
         self.calls.append((sql, args))
@@ -378,9 +387,11 @@ async def test_the_drain_scopes_every_statement_to_the_tenant_explicitly(monkeyp
 
     await billing_usage.drain_usage_to_stripe(_ctx())
 
-    select_sql, select_args = calls[0]
-    assert "tenant_id=$3::uuid" in select_sql
-    assert TENANT_ID in select_args
+    # quarantine, claim, aging count: each names the tenant itself
+    assert len(calls) == 3
+    for sql, args in calls:
+        assert "tenant_id = $1::uuid" in sql
+        assert args[0] == TENANT_ID
 
 
 @pytest.mark.parametrize("quantity", ["abc", "NaN", float("nan"), "Infinity", float("inf"), -1, None, object()])
