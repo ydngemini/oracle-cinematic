@@ -53,6 +53,27 @@ describe('AccountDataPanel', () => {
     expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
   });
 
+  it('says when some photos or documents could not be included (29.5)', async () => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, operations: [
+      { id: 'op1', kind: 'export', state: 'succeeded', artifact_expires_at: future,
+        result: { completeness: 'partial_media' } }] });
+    render(<AccountDataPanel />);
+    expect(await screen.findByText(/Some photos or documents could not be included/)).toBeTruthy();
+  });
+
+  it('does not say "try again" when an export was refused for missing data (29.5)', async () => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, operations: [
+      { id: 'op1', kind: 'export', state: 'failed', error: 'export failed: master_key_missing' }] });
+    render(<AccountDataPanel />);
+    expect(await screen.findByText(/contact Neoh support/)).toBeTruthy();
+    expect(screen.queryByText(/Try again/)).toBeNull();
+    cleanup();
+    api.crmGet.mockResolvedValue({ ...ACTIVE, operations: [
+      { id: 'op2', kind: 'export', state: 'failed', error: 'export failed: TimeoutError' }] });
+    render(<AccountDataPanel />);
+    expect(await screen.findByText(/The last export failed. Try again./)).toBeTruthy();
+  });
+
   it('closes only after the exact brokerage name, a reason and the password', async () => {
     api.crmGet.mockImplementation((path) => Promise.resolve(path.endsWith('/closure/preview')
       ? { highlights: { clients: 120, agent_contacts: 80, sms_messages: 900, inbound_voice_calls: 12,

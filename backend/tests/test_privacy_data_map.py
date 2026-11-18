@@ -156,7 +156,9 @@ def test_export_excludes_secrets_and_tokens():
     ("name_search_tokens", "text[]", True), ("audio", "bytea", True), ("payload_digest", "text", True),
     ("full_name", "text", False), ("body", "text", False), ("created_at", "timestamptz", False),
 ])
-def test_export_column_omission(column, dtype, omitted):
+def test_columns_never_exported_as_stored(column, dtype, omitted):
+    """_omit: not exported as the stored value. A binary column is exported
+    only through DECRYPT / BINARY (base64), or refuses the export (29.5)."""
     assert privacy_export._omit(column, dtype) is omitted
 
 
@@ -181,3 +183,87 @@ def test_contact_hmac_is_keyed_per_tenant(monkeypatch):
     two = pl.contact_hmac("22222222-2222-2222-2222-222222222222", "+13025550100")
     assert one != two and len(one) == 64
     assert pl.contact_hmac("11111111-1111-1111-1111-111111111111", " +13025550100 ") == one
+
+
+def test_an_export_without_the_master_key_refuses_before_writing(monkeypatch):
+    """Audit 29.5: no key used to mean a 'succeeded' archive missing every
+    sealed column. Now nothing is written and the job is not retried."""
+    import asyncio
+    import contextlib
+    import tempfile
+
+    import object_storage
+
+    class Conn:
+        async def fetchrow(self, sql, *a):
+            return {"id": "op", "kind": "export", "state": "running", "tenant_id": "t", "params": "{}"}
+
+    @contextlib.asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    def no_write(*a, **k):
+        raise AssertionError("nothing may be written")
+
+    monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY", raising=False)
+    monkeypatch.setattr(privacy_export, "tenant_tx", tx)
+    monkeypatch.setattr(tempfile, "mkstemp", no_write)
+    monkeypatch.setattr(object_storage, "put_file", no_write)
+    with pytest.raises(privacy_export.ExportIncomplete) as exc:
+        asyncio.run(privacy_export.build_export("op"))
+    assert exc.value.job_error_code == "master_key_missing" and exc.value.job_terminal is True
+
+
+
+
+def _fake_table(monkeypatch, table, cols):
+    """Run _export_table against a fake connection with these columns; return
+    the SQL it would stream and its prefetch, or raise what it raises."""
+    import asyncio
+    import contextlib
+
+    seen = {}
+
+    class Cursor:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class Conn:
+        async def fetchval(self, sql, *a):
+            return "11111111-1111-1111-1111-111111111111"
+
+        async def fetch(self, sql, *a):
+            return [{"attname": n, "t": t} for n, t in cols]
+
+        def cursor(self, sql, *a, prefetch=None):
+            seen["sql"], seen["prefetch"] = sql, prefetch
+            return Cursor()
+
+    @contextlib.asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    class Archive:
+        @contextlib.contextmanager
+        def open(self, *a, **k):
+            yield type("Member", (), {"write": lambda self, b: None})()
+
+    monkeypatch.setattr(privacy_export, "tenant_tx", tx)
+    asyncio.run(privacy_export._export_table(None, "op", table, "k", Archive()))
+    return seen
+
+
+def test_an_unmapped_binary_column_refuses_the_export(monkeypatch):
+    """29.5: a sealed column nobody mapped is not silently left out."""
+    with pytest.raises(privacy_export.ExportIncomplete) as exc:
+        _fake_table(monkeypatch, "clients", [("id", "uuid"), ("tenant_id", "uuid"), ("new_secret_blob", "bytea")])
+    assert exc.value.job_error_code == "unexported_column" and "clients.new_secret_blob" in str(exc.value)
+
+
+def test_recorded_audio_is_exported_base64_a_few_rows_at_a_time(monkeypatch):
+    seen = _fake_table(monkeypatch, "voice_walkthrough_jobs", [("id", "uuid"), ("tenant_id", "uuid"), ("audio", "bytea")])
+    assert "encode(\"audio\", 'base64') AS \"audio_base64\"" in seen["sql"]
+    assert seen["prefetch"] == 4
