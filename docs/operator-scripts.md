@@ -207,6 +207,35 @@ pgcrypto per row, so 10,000 rows take about 5 s.
 **Rollback:** `--unseal` writes the plaintext back. Run it before rolling the
 code back to a release older than 0152 (or 0154 for its five fields).
 
+## `backend/crm_suppression_backfill.py` — CRM do-not-contact flags into the outreach ledger (26.1)
+
+### When this is needed
+
+Once per environment, after deploying the 26.1 change (PR #118). Since then a
+contact's CRM do-not-contact flags reach `outreach_suppression` in the edit's
+own transaction; flags set before it live only in `agent_contacts.suppression`,
+which no send gate reads. This copies them, for the contact's own phone/email
+and every linked client's (L04-07).
+
+### Running it
+
+Requires `ORACLE_ENCRYPTION_MASTER_KEY` (to open sealed contacts) plus the usual
+`ORACLE_DB_*` vars (it runs in each tenant's platform context).
+
+```bash
+docker compose run --rm --no-deps \
+  -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
+  backend python /app/crm_suppression_backfill.py [--count]
+```
+
+Optional: `ORACLE_CRM_SUPPRESSION_BATCH` (default `200`, range 1–2000).
+
+### What to expect
+
+Insert-only and idempotent (a second run adds 0 rows; it never lifts an
+opt-out). Keyset batches per tenant, each one short transaction. Prints flagged
+contact counts and ledger rows added per tenant — never phones or emails.
+
 ## `backend/client_contact_index.py` — keyed lookup hashes and name tokens for clients (0156)
 
 ### When this is needed
