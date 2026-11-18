@@ -2145,6 +2145,32 @@ next_task: "25.4 (per-tenant Telnyx webhook keys)."
 updated: 2026-11-18
 ```
 
+#### L10-18 Telnyx webhooks are authenticated by an authorized signing key and act only for the brokerages it speaks for (external audit 25.4)
+```yaml
+id: L10-18
+status: tests_pass
+env: local
+evidence_shas: [27ee904]   # base (L10-17 final); fix in the commits that add and update this row
+files: [backend/telnyx_signing.py, backend/messaging_api.py, backend/messaging_data.py, .env.prod.example, .env.example, backend/tests/test_telnyx_signing.py, backend/tests/test_telnyx_signing_live.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read telnyx_webhook, TelnyxMessagingProvider.validate_webhook, the SDK's webhooks.unwrap and every path that stores a provider credential at c716180", result: "confirmed: one process-wide TELNYX_PUBLIC_KEY verified every event and nothing tied the signing key to the brokerage acted for; no rotation path. Found: no brokerage can store a Telnyx credential today (the provider endpoints accept google/smtp/twilio and provider_credentials_provider_check refuses 'telnyx'), so every brokerage is on the platform account and the cross-account case does not occur on this deployment. The SDK already rejects a timestamp more than 300 s off", date: 2026-11-18}
+  - {cmd: "test_telnyx_signing (real Ed25519 keys: platform, platform-previous, brokerage A and B accounts, a stranger)", result: "15 pass: account A/B keys speak only for their brokerage; the platform key not for a brokerage with its own account; previous platform key accepted only while configured; unknown key, tampered body, replayed and future timestamps refused; a newly saved key picked up on a miss; webhook: crossed destination 403, reassigned number follows the new account only, orphan STOP only for brokerages the key speaks for, delivery receipt from another account not applied", date: 2026-11-18}
+  - {cmd: "red: test_telnyx_signing against c716180's messaging_api.py", result: "6 webhook tests fail", date: 2026-11-18}
+  - {cmd: "independent review of 43d857d (REQUEST_CHANGES: a STOP on a refused route was dropped (403); 'own account' disagreed with _telnyx_credentials (api_key-only or the platform's own key); every request ran every key through an 8-entry client cache (latent DoS); a brokerage-supplied key trusted as typed (latent); the live test could not fail; failed loads cached as 'no keys'; receipt check/update race) -> a STOP is never dropped (recorded for the holders the key may act for, and for any holder when the platform key signed it; ORACLE_ALERT lines); own account = own api_key that is not the platform's AND an own public_key, an unreadable credential fails closed except for STOPs; prebuilt nacl VerifyKeys, one timestamp check, first match wins, one SDK parse; a failed load keeps the last good set (retried in 5 s), reloads serialized; a receipt for an unwritten message is retried (503) instead of applied unchecked; rotation logs an alert while TELNYX_PUBLIC_KEY_PREVIOUS is set", result: "23 unit pass (added: STOP on refused route, platform STOP for an own-account brokerage, unwritten-message receipt 503, 10DLC nudge binding, credential shapes, shared key, failed load, 12 keys + forged flood build no clients)", date: 2026-11-18}
+  - {cmd: "live test_telnyx_signing_live (on this host's dev DB; the local image lacks pynacl, so the registry build is unit-tested)", result: "pass: the schema refuses a stored Telnyx credential; the registry's own query (_decrypt_all, which raises) reads the real table and finds no brokerage key", date: 2026-11-18}
+  - {cmd: "full suite at 3ff1498; independent re-review APPROVE (should-fix: two ledger sentences out of date; low: an unreadable credential made non-STOP messages a permanent 403; nit: registry rebuilt per request) -> ledger corrected; such refusals are 503 (retried); the registry is built once per load and platform-key setting", result: "6804 passed at 3ff1498; after: 25 signing tests + 217 selected pass", date: 2026-11-18}
+authz_checked: "Authentication is the raw-body Ed25519 signature over timestamp|body against an authorized key (platform TELNYX_PUBLIC_KEY / TELNYX_PUBLIC_KEY_PREVIOUS, or a brokerage's stored public_key / public_key_previous). Authorization: the verifying key must be the brokerage's own, or the platform's for a brokerage with no Telnyx account of its own; message.received (route by number), delivery receipts (the message's brokerage; an unwritten message is retried with 503) and 10DLC nudges are each checked; a refusal is 403 and applies nothing — except that a STOP is never dropped: on a refused route or with no active route it is recorded for the number's holders the key may suppress for (its own brokerages, or any holder when the platform key signed it). A refusal caused only by an unreadable stored credential is a 503 (retried), not a verdict. The destination number never authenticates."
+blockers:
+  - "Today only the platform keys exist (see the read above): the new value now is safe platform key rotation (set TELNYX_PUBLIC_KEY_PREVIOUS during a rotation, clear it after; an ORACLE_ALERT line reminds while it is set). The per-brokerage registry and binding take effect when a Telnyx credential can be stored (widening provider_credentials_provider_check is a deliberate change the live test pins)."
+  - "BLOCKER before widening that CHECK: a brokerage's public_key must be controlled — fetched from Telnyx with the brokerage's own api_key, or approved by an operator — never trusted as typed; otherwise a brokerage could sign its own inbound messages, STOPs and delivery receipts (receipts drive lead_engaged metering)."
+  - "Brokerage keys are decrypted from provider_credentials and cached 60 s (the registry is built once per load); a miss reloads at most every 30 s; a failed load keeps the last good set and retries in 5 s (before any load has succeeded, only the platform keys exist — recheck when the CHECK is widened). Replay inside the 300 s window is not deduplicated here; inbound messages are idempotent on the provider message id."
+  - "Compliance/security change: independent review + owner approval before merge. Not deployed (C4.4). Stacked on L10-16/L10-17."
+audit_refs: [25.4]
+decision_refs: []
+next_task: "25.6-25.8; 21.5."
+updated: 2026-11-18
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

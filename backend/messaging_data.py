@@ -1782,6 +1782,14 @@ async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, lim
     return counts
 
 
+async def tenant_for_provider_message(provider: str, provider_message_id: str) -> Optional[str]:
+    """The brokerage an outbound message belongs to (webhook authorization, 25.4)."""
+    async with tenant_tx(_platform_context()) as conn:
+        return await conn.fetchval(
+            "SELECT tenant_id::text FROM sms_messages WHERE provider=$1 AND provider_message_id=$2 LIMIT 1",
+            provider, provider_message_id)
+
+
 async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,
                                  error_reason: Optional[str]) -> bool:
     """Monotonic status update. Returns False only when no such message row
