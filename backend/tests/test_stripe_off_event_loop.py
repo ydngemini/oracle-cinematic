@@ -27,16 +27,16 @@ CTX = TenantContext(agent_id="usage-drain", tenant_id=T, role=Role.PLATFORM_ADMI
 class _Conn:
     """Scripted drain conversation: one claimable row, then none."""
 
-    def __init__(self, log):
+    def __init__(self, log, rows=1):
         self.log = log
-        self.claimed = False
+        self.rows = rows
 
     async def fetch(self, sql, *args):
         return []                                    # nothing to quarantine
 
     async def fetchrow(self, sql, *args):
-        if "FOR UPDATE SKIP LOCKED" in sql and not self.claimed:
-            self.claimed = True
+        if "FOR UPDATE SKIP LOCKED" in sql and self.rows:
+            self.rows -= 1
             return {"id": str(uuid.uuid4()), "metric": "lead_engaged", "quantity": 1,
                     "occurred_at": datetime.now(timezone.utc), "idempotency_key": "lead-engaged:k1",
                     "attempt": 1, "prior_uncertain_since": None}
@@ -55,7 +55,7 @@ class _Conn:
 
 @pytest.fixture
 def drain_env(monkeypatch):
-    log: list = []
+    log = _Log()
     state = {"conn": _Conn(log)}
 
     @asynccontextmanager
@@ -68,7 +68,12 @@ def drain_env(monkeypatch):
     monkeypatch.setattr(billing_usage, "tenant_tx", tx)
     monkeypatch.setattr(billing_usage, "STRIPE_METERED_PRICE_ID", "price_x")
     monkeypatch.setattr(billing_usage, "_stripe_customer_for", customer)
+    log.state = state
     return log
+
+
+class _Log(list):
+    pass
 
 
 async def _with_heartbeat(coro, period=0.02):
@@ -110,11 +115,52 @@ def test_a_stripe_call_past_the_timeout_is_an_unknown_outcome(drain_env, monkeyp
     monkeypatch.setattr(billing_usage, "REPORT_SEND_TIMEOUT_SECONDS", 0.05)
     result, ticks = asyncio.run(_with_heartbeat(billing_usage.drain_usage_to_stripe(CTX)))
     assert result["reported"] == 0 and "acked" not in drain_env
-    # released keeping its uncertainty (it may still land): resent only inside
-    # Stripe's window, under the same identifier and idempotency key
-    release = [sql for sql in drain_env if isinstance(sql, str) and "report_claimed_until=NULL" in sql]
+    # released keeping its uncertainty (it may still land) AND its claim: the
+    # thread may still be sending, so no other drain takes the row until the
+    # lease lapses; then it is resent under the same identifier and key
+    release = [sql for sql in drain_env if isinstance(sql, str) and "report_error=$2" in sql]
     assert release and "COALESCE(report_uncertain_since, now())" in release[0]
-    assert ticks >= 1
+    assert "report_claimed_until=report_claimed_until" in release[0]
+    assert "report_claimed_until=NULL" not in release[0]
+    assert ticks >= 2
+
+
+def test_a_drain_stops_when_stripe_stops_answering(drain_env, monkeypatch):
+    """24.7 review: with heartbeats alive a hung Stripe no longer kills the job,
+    so the drain itself stops after a few unknown outcomes in a row instead of
+    spending the timeout on every pending row."""
+    drain_env.state["conn"] = _Conn(drain_env, rows=10)
+    sent = []
+
+    def down(**kw):
+        sent.append(kw["identifier"])
+        raise stripe.APIConnectionError("connection reset")
+
+    monkeypatch.setattr(stripe.billing.MeterEvent, "create", down)
+    result = asyncio.run(billing_usage.drain_usage_to_stripe(CTX))
+    assert result["state"] == "stripe_unresponsive" and result["reported"] == 0
+    assert len(sent) == billing_usage.REPORT_MAX_CONSECUTIVE_UNKNOWN
+
+
+def test_the_sweep_stops_when_stripe_stops_answering(monkeypatch):
+    @asynccontextmanager
+    async def tx(_ctx):
+        class _C:
+            async def fetch(self, *_a):
+                return [{"tenant_id": T, "pending": 5}, {"tenant_id": str(uuid.uuid4()), "pending": 5}]
+        yield _C()
+
+    drained = []
+
+    async def drain(ctx, **_k):
+        drained.append(ctx.tenant_id)
+        return {"state": "stripe_unresponsive", "reported": 0}
+
+    monkeypatch.setattr(billing_usage, "tenant_tx", tx)
+    monkeypatch.setattr(billing_usage, "STRIPE_METERED_PRICE_ID", "price_x")
+    monkeypatch.setattr(billing_usage, "drain_usage_to_stripe", drain)
+    result = asyncio.run(billing_usage.drain_all_tenants())
+    assert drained == [T] and result["by_state"] == {"stripe_unresponsive": 1}
 
 
 def test_closing_a_brokerage_changes_its_subscription_off_the_event_loop(monkeypatch):
@@ -140,5 +186,46 @@ def test_closing_a_brokerage_changes_its_subscription_off_the_event_loop(monkeyp
     monkeypatch.setattr(stripe, "api_key", "sk_test_x")
     monkeypatch.setattr(stripe.Subscription, "modify", slow_modify)
     result, ticks = asyncio.run(_with_heartbeat(pl._set_cancel_at_period_end(T, True)))
-    assert result == "renewal_cancelled" and calls == [("sub_123", {"cancel_at_period_end": True})]
+    assert result == "renewal_cancelled"
+    assert calls == [("sub_123", {"cancel_at_period_end": True, "max_network_retries": 0})]
     assert ticks >= 8, f"the loop froze for the Stripe call ({ticks} heartbeats in 0.4 s)"
+
+
+def test_a_timed_out_close_cannot_overtake_a_later_withdrawal(monkeypatch):
+    """24.7 review: a cancel-at-period-end that timed out is still running in
+    its thread; the owner's withdrawal right after must reach Stripe AFTER it,
+    or the late cancel silently stops an active brokerage's renewal."""
+    import privacy_lifecycle as pl
+    import recovery_mode
+
+    class _SubConn:
+        async def fetchval(self, *_a):
+            return "sub_order"
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _SubConn()
+
+    landed = []
+
+    def modify(sub, **kw):
+        if kw["cancel_at_period_end"]:
+            time.sleep(0.3)                          # the close is slow
+        landed.append(kw["cancel_at_period_end"])
+
+    monkeypatch.setattr(pl, "tenant_tx", tx)
+    monkeypatch.setattr(pl, "STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(recovery_mode, "guard", lambda *_a, **_k: None)
+    monkeypatch.setattr(stripe, "api_key", "sk_test_x")
+    monkeypatch.setattr(stripe.Subscription, "modify", modify)
+
+    async def close_then_withdraw():
+        closed = await pl._set_cancel_at_period_end(T, True)
+        monkeypatch.setattr(pl, "STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS", 5)
+        withdrawn = await pl._set_cancel_at_period_end(T, False)
+        return closed, withdrawn
+
+    closed, withdrawn = asyncio.run(close_then_withdraw())
+    assert closed == "failed:TimeoutError"          # reported to the owner as a failure
+    assert withdrawn == "renewal_resumed"
+    assert landed == [True, False]                  # Stripe ends on the owner's last word

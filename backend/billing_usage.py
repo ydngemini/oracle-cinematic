@@ -337,11 +337,17 @@ REPORT_AGING_ALERT_DAYS = 28
 REPORT_CLAIM_LEASE_SECONDS = 300
 # The Stripe call runs in a worker thread (24.7: the SDK's synchronous client
 # would block the event loop that also runs job heartbeats and, all-in-one,
-# live calls). Waited on for at most this long: a timeout is an unknown outcome
-# (the thread may still finish), handled like any other. The SDK's own timeout
-# (80 s) ends the thread well inside the lease, so nobody re-claims the row
-# while it can still land.
+# live calls). Waited on for at most this long. A timeout is an unknown outcome
+# and the thread may still finish, so the row KEEPS its claim until the lease
+# lapses (no other drain sends it meanwhile). The SDK's timeout is per socket
+# read (80 s), not per call, so a send could in principle outlive even the
+# lease; then the resend reuses the identifier and Idempotency-Key and Stripe
+# de-duplicates it (24 h) — that, not the lease, is the final guarantee.
 REPORT_SEND_TIMEOUT_SECONDS = 30
+# This many unknown outcomes in a row means Stripe is not answering: the drain
+# stops instead of spending REPORT_SEND_TIMEOUT_SECONDS on every pending row
+# of every brokerage (and the sweep stops with it).
+REPORT_MAX_CONSECUTIVE_UNKNOWN = 3
 # The resolutions a person may record for a quarantined row (0175).
 REPORT_RESOLUTIONS = frozenset({"billed", "credited", "written_off"})
 
@@ -502,6 +508,7 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
         return {"state": "no_customer", "reported": 0, "quarantined": quarantined}
 
     reported = 0
+    unknown_streak = 0
     seen: list[str] = []
     for _ in range(max(0, int(limit))):
         async with tenant_tx(ctx) as conn:
@@ -535,9 +542,13 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
                 # not prove the first send failed).
                 await _release_report(ctx, row, _error_text(exc), row["prior_uncertain_since"])
                 logger.warning("Usage report refused for %s: %s", row["id"], exc)
+                unknown_streak = 0
                 continue
         except Exception as exc:  # noqa: BLE001 — the outcome is unknown; recorded, drain continues
-            await _release_report(ctx, row, _error_text(exc), keep_uncertain=True)
+            # A timed-out send may still be running in its thread: the row
+            # keeps its claim until the lease lapses.
+            await _release_report(ctx, row, _error_text(exc), keep_uncertain=True,
+                                  keep_claim=isinstance(exc, TimeoutError))
             if isinstance(exc, stripe.IdempotencyError):
                 # The key was used with other parameters inside Stripe's 24 h
                 # idempotency window: the brokerage's Stripe customer changed
@@ -546,6 +557,15 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
                 logger.warning("Usage %s: Stripe customer changed between sends; held as uncertain", row["id"])
             else:
                 logger.warning("Usage report outcome unknown for %s: %s", row["id"], exc)
+            unknown_streak += 1
+            if unknown_streak >= REPORT_MAX_CONSECUTIVE_UNKNOWN:
+                logger.warning(
+                    "ORACLE_ALERT usage_meter_stripe_unresponsive tenant=%s unknown_in_a_row=%d"
+                    " (drain stopped; the rows stay uncertain and are resent inside Stripe's window)",
+                    tenant_id, unknown_streak,
+                )
+                return {"state": "stripe_unresponsive", "reported": reported, "considered": len(seen),
+                        "quarantined": quarantined}
             continue
         try:
             async with tenant_tx(ctx) as conn:
@@ -577,6 +597,7 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
             logger.info("Usage %s: a later claim took over before this report was acknowledged", row["id"])
             continue
         reported += 1
+        unknown_streak = 0
 
     async with tenant_tx(ctx) as conn:
         aging = await _aging_count(conn, tenant_id)
@@ -591,20 +612,23 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
 
 
 async def _release_report(ctx: TenantContext, row: Any, error: str,
-                          prior_uncertain_since: Any = None, *, keep_uncertain: bool = False) -> None:
+                          prior_uncertain_since: Any = None, *, keep_uncertain: bool = False,
+                          keep_claim: bool = False) -> None:
     """End a claim without a report: stamp the error and free the row.
 
     keep_uncertain: the send may have landed, so report_uncertain_since stays
     set (COALESCE: never cleared here). Otherwise it goes back to what it was
     before this claim. Tied to this claim's attempt, so a send that outlived
-    its lease cannot touch a later claim's row. Best effort: if this write
-    fails too, the lease lapses.
+    its lease cannot touch a later claim's row. keep_claim: the send may still
+    be in flight (a timeout), so the lease is left to lapse instead of being
+    cleared. Best effort: if this write fails too, the lease lapses.
     """
+    claim = "report_claimed_until" if keep_claim else "NULL"
     try:
         async with tenant_tx(ctx) as conn:
             if keep_uncertain:
                 await conn.execute(
-                    "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=NULL,"
+                    "UPDATE billing_usage_events SET report_error=$2, report_claimed_until=" + claim + ","
                     " report_uncertain_since=COALESCE(report_uncertain_since, now()), updated_at=now()"
                     " WHERE id=$1::uuid AND tenant_id=$3::uuid AND report_attempts=$4"
                     " AND reported_at IS NULL",
@@ -713,6 +737,11 @@ async def drain_all_tenants(
             continue
         state = str(result.get("state") or "unknown")
         states[state] = states.get(state, 0) + 1
+        if state == "stripe_unresponsive":
+            # Stripe is not answering: every other brokerage would time out too.
+            reported += int(result.get("reported") or 0)
+            drained += 1
+            break
         reported += int(result.get("reported") or 0)
         for kind, n in (result.get("quarantined") or {}).items():
             quarantined[kind] = quarantined.get(kind, 0) + int(n or 0)
