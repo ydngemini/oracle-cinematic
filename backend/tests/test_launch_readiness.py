@@ -424,3 +424,37 @@ def test_expectations_come_from_the_renderer():
     assert exp["sizes"]["api"] == (2, "apps-s-1vcpu-1gb")
     assert exp["clusters"] == {"neoh-postgres": "neoh-postgres-staging", "neoh-redis": "neoh-redis-staging"}
     assert copy.deepcopy(lr._FALLBACK_EXPECTED["staging"]["sizes"]["api"]) == exp["sizes"]["api"]
+
+
+def _health(world, components):
+    world.http["/api/admin/health/components"] = (
+        200, {}, json.dumps({"components": {k: {"state": v, "summary": ""} for k, v in components.items()}}).encode())
+
+
+@pytest.mark.parametrize("state", ["UNAVAILABLE", "AUTH_FAILED", "STALE", "UNKNOWN"])
+def test_a_core_service_not_working_blocks_production(state):
+    """Audit 30.2: readiness looked for DOWN/UNHEALTHY/FAILED, which nothing emits."""
+    w = World()
+    _health(w, {"database": "HEALTHY", "workers": state})
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.BLOCKED
+    assert f"workers={state}" in c["component_health"].reason
+
+
+def test_reduced_function_warns_and_healthy_passes():
+    w = World()
+    _health(w, {"database": "HEALTHY", "ai": "DEGRADED", "market_data": "UNAVAILABLE"})
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.WARN
+    _health(w, {"database": "HEALTHY", "workers": "HEALTHY", "valuation_providers": "NOT_CONFIGURED"})
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.PASS
+
+
+def test_an_unreachable_health_endpoint_blocks_production_and_warns_staging():
+    w = World()  # no /api/admin/health/components route: 404
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.BLOCKED
+    s = World("staging")
+    _, c = audit(s, token="t")
+    assert c["component_health"].status == lr.WARN

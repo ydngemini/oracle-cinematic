@@ -324,3 +324,48 @@ def test_messaging_registration_reports_the_most_severe_first_with_every_count()
     assert "suspended or expired" in out["summary"]
     assert out["detail"]["receipt_contradictions"] == 2 and out["detail"]["hosting_stalled"] == 3
     assert ch._messaging_registration({})["detail"]["lost"] == 0
+
+
+# ── Launch policy over every state the module emits (audit 30.2) ──────────
+
+_ROLE_OF = {"core": "database", "important": "mls", "optional": "market_data", "unlisted": "a_future_component"}
+_EXPECTED = {
+    #             core        important   optional    unlisted (= important)
+    ch.HEALTHY:        ("ok",      "ok",      "ok",      "ok"),
+    ch.NOT_CONFIGURED: ("block",   "ok",      "ok",      "ok"),
+    ch.UNAVAILABLE:    ("block",   "block",   "warn",    "block"),
+    ch.AUTH_FAILED:    ("block",   "block",   "warn",    "block"),
+    ch.STALE:          ("block",   "block",   "warn",    "block"),
+    ch.UNKNOWN:        ("block",   "warn",    "warn",    "warn"),
+    ch.DEGRADED:       ("warn",    "warn",    "warn",    "warn"),
+    ch.RATE_LIMITED:   ("warn",    "warn",    "warn",    "warn"),
+    ch.RECOVERING:     ("warn",    "warn",    "warn",    "warn"),
+    "DOWN":            ("block",   "block",   "block",   "block"),  # not a state this module defines
+}
+
+
+def test_the_table_covers_every_defined_state():
+    # Every module-level state constant, not just the hand-written set.
+    constants = {v for k, v in vars(ch).items()
+                 if k.isupper() and isinstance(v, str) and v == k and not k.startswith("_")}
+    assert constants == set(ch.KNOWN_STATES)
+    assert set(_EXPECTED) - {"DOWN"} == set(ch.KNOWN_STATES)
+
+
+def test_the_snapshot_and_the_gate_agree_on_every_component_role():
+    assert set(ch._DB_KEYS) | {"database", "realtime_fanout", "valkey", "outbound_opt_outs"} <= set(ch.ROLE)
+
+
+def test_a_malformed_health_body_blocks():
+    assert ch.launch_assessment(["not", "a", "dict"])["blocking"]
+    assert ch.launch_assessment({"workers": "UNAVAILABLE"})["blocking"] == ["workers=MISSING"]
+
+
+@pytest.mark.parametrize("state", sorted(_EXPECTED))
+@pytest.mark.parametrize("role_index,role", list(enumerate(_ROLE_OF)))
+def test_launch_assessment_by_state_and_role(state, role_index, role):
+    name = _ROLE_OF[role]
+    assert ch.ROLE.get(name, "important") == ("important" if role == "unlisted" else role)
+    verdict = ch.launch_assessment({name: {"state": state}})
+    got = ("block" if verdict["blocking"] else "warn" if verdict["warning"] else "ok")
+    assert got == _EXPECTED[state][role_index], (state, role, verdict)

@@ -225,6 +225,15 @@ def _all_envs(spec: dict, names=("api", "worker")) -> dict:
     return {n: _envs(comps[n]) for n in names if n in comps}
 
 
+def _component_health():
+    """backend/component_health.py, loaded by path: the readiness gate uses the
+    states and launch policy the backend reports with (audit 30.2)."""
+    spec_ = importlib.util.spec_from_file_location("neoh_component_health", REPO / "backend" / "component_health.py")
+    module = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(module)
+    return module
+
+
 def _present(envs: dict, key: str) -> bool:
     return bool(envs.get(key, (False, None))[0])
 
@@ -680,17 +689,21 @@ class Audit:
                      "MLS feeds and billing exceptions", warn=True)
             return
         st, _, d = self._get("/api/admin/health/components", auth=True)
-        if st == 200 and isinstance(d, dict):
-            comps = d.get("components") or {}
-            down = sorted(k for k, v in comps.items() if str((v or {}).get("state", "")).upper() in ("DOWN", "UNHEALTHY", "FAILED"))
-            degraded = sorted(k for k, v in comps.items() if str((v or {}).get("state", "")).upper() == "DEGRADED")
-            self.add("component_health", "operations", "Component health", not down and not degraded,
-                     "all components healthy" if not (down or degraded) else
-                     f"down: {', '.join(down) or '-'}; degraded: {', '.join(degraded) or '-'}",
-                     blocking=bool(down))
+        if st == 200 and isinstance(d, dict) and d.get("components"):
+            # The backend's own state model and launch policy (audit 30.2).
+            verdict = _component_health().launch_assessment(d["components"])
+            blocking, warning = verdict["blocking"], verdict["warning"]
+            self.add("component_health", "operations", "Component health", not blocking and not warning,
+                     "all components healthy" if not (blocking or warning) else
+                     f"blocks go-live: {', '.join(blocking) or '-'}; reduced or unknown: {', '.join(warning) or '-'}",
+                     blocking=bool(blocking))
         else:
+            # A token was given and the health endpoint did not answer with
+            # components: production cannot be shown healthy (audit 30.2).
             self.add("component_health", "operations", "Component health", False,
-                     f"/api/admin/health/components → {st or 'unreachable'}", warn=True)
+                     f"/api/admin/health/components → {st or 'unreachable'}"
+                     + (" (no components reported)" if st == 200 else ""),
+                     blocking=self.env == "production", warn=self.env != "production")
         st, _, d = self._get("/api/admin/mls/feeds", auth=True)
         if st == 200:
             feeds = d if isinstance(d, list) else (d or {}).get("feeds") or []
