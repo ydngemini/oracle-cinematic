@@ -845,25 +845,35 @@ async def update_contact(
                 await outreach_compliance.record_crm_suppression(
                     conn, ctx.tenant_id, phone=merged_phone, email=merged_email,
                     flags=flags or {}, source="CRM contact updated")
-                # ...and on the linked client's own details, should they differ
-                # (the send path reads the client): one person, both numbers.
-                linked_phone, linked_email = _row_get(current, "legacy_phone"), _row_get(current, "legacy_email")
-                if linked_phone or linked_email:
+            if pii_fields.intersection(fields):
+                # The linked client takes the new details whoever edits: an
+                # editor of the contact may not see its client, and the send
+                # path reads the client (26.1 review). Same person's record.
+                async with _BrokerageScope(conn):
+                    await conn.execute(
+                        """
+                        UPDATE clients
+                           SET full_name=$2, email=$3, phone=$4
+                         WHERE contact_id=$1::uuid
+                        """,
+                        contact_id,
+                        pii["full_name"],
+                        pii["email"],
+                        pii["phone"],
+                    )
+            if "suppression" in fields or pii_fields.intersection(fields):
+                # ...and the flags reach every linked client's own details,
+                # should they differ (drift from before): one person, all numbers.
+                async with _BrokerageScope(conn):
+                    linked = await conn.fetch(
+                        "SELECT c.phone, c.email FROM clients c JOIN agent_contacts ac ON ac.id=$1::uuid "
+                        " WHERE c.tenant_id=$2::uuid AND (c.contact_id=ac.id OR c.id=ac.legacy_client_id)",
+                        contact_id, ctx.tenant_id)
+                for client_row in linked:
                     await outreach_compliance.record_crm_suppression(
-                        conn, ctx.tenant_id, phone=linked_phone, email=linked_email,
+                        conn, ctx.tenant_id, phone=client_row["phone"], email=client_row["email"],
                         flags=flags or {}, source="CRM contact updated (client details)")
             if pii_fields.intersection(fields):
-                await conn.execute(
-                    """
-                    UPDATE clients
-                       SET full_name=$2, email=$3, phone=$4
-                     WHERE contact_id=$1::uuid
-                    """,
-                    contact_id,
-                    pii["full_name"],
-                    pii["email"],
-                    pii["phone"],
-                )
                 if pii["phone"] and pii["phone"] != current_json["phone"]:
                     # A new number's earlier unlinked texts and calls join the
                     # contact, as on creation (L04-06).
@@ -906,8 +916,11 @@ class _BrokerageScope:
         await self.conn.execute("SELECT set_config('app.record_scope', 'brokerage', true)")
         return self.conn
 
-    async def __aexit__(self, *_exc):
-        await self.conn.execute("SELECT set_config('app.record_scope', $1, true)", self.prev)
+    async def __aexit__(self, exc_type, *_exc):
+        # Transaction-local either way; after an error the transaction may be
+        # aborted, and restoring would hide the real error (review).
+        if exc_type is None:
+            await self.conn.execute("SELECT set_config('app.record_scope', $1, true)", self.prev)
         return False
 
 

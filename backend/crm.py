@@ -950,6 +950,9 @@ async def update_client(
                 # order update_contact uses), so the two edits cannot deadlock.
                 import contacts_api
 
+                # Authorised first (a read), so an unauthorised caller never
+                # reaches the scoped contact lock.
+                await require_client_edit(conn, client_id)
                 linked_contact = await contacts_api.lock_linked_contact(conn, ctx.tenant_id, client_id)
             current = await conn.fetchrow(
                 "SELECT id, full_name, stage, lead_score, email, phone FROM clients WHERE id = $1 FOR UPDATE",

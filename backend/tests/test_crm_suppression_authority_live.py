@@ -211,6 +211,23 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         await asyncio.gather(
             contacts_api.update_contact(d["id"], ContactPatch(phone="+13025550352"), ctx=ctx),
             crm.update_client(str(dc), crm.ClientPatch(phone="+13025550353"), ctx=ctx))
+        # The mirror: an agent who may edit the contact but not its client
+        # (an edit share on the contact only): the client takes the new
+        # number, and a later do-not-contact blocks it (review round 3).
+        mc, mk = uuid.uuid4(), uuid.uuid4()
+        mirror = (await contacts_api.create_contact(person("Mia", "+13025550370"), ctx=ctx))["contact"]
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id, contact_id, phone) "
+                            "VALUES ($1,$2,'Mia C',$3,$4,'+13025550370')", mc, tenant, agent_b, uuid.UUID(mirror["id"]))
+        await admin.execute("UPDATE agent_contacts SET assigned_agent_id=$2, assigned_user_id=$3 WHERE id=$1",
+                            uuid.UUID(mirror["id"]), agent_b, ids[agent_b])
+        await admin.execute(
+            "INSERT INTO record_shares (tenant_id, resource_kind, resource_id, grantee_user_id, permission, "
+            "granted_by) VALUES ($1,'contact',$2,$3,'edit',$4)", tenant, uuid.UUID(mirror["id"]), ids[agent_a], agent_b)
+        await contacts_api.update_contact(mirror["id"], ContactPatch(phone="+13025550371"), ctx=ctx_a)
+        assert await admin.fetchval("SELECT phone FROM clients WHERE id=$1", mc) == "+13025550371"
+        await contacts_api.update_contact(mirror["id"], ContactPatch(suppression={"dnc": True}), ctx=ctx_a)
+        assert await gate_blocks("+13025550371", Channel.SMS)
+        assert mk  # (unused id kept for symmetry)
         # The same capture instant written with another offset is not new consent.
         q = (await contacts_api.create_contact(person("Quin", "+13025550360"), ctx=ctx))["contact"]
         stored_at = datetime.fromisoformat(q["consent"]["sms"]["captured_at"].replace("Z", "+00:00"))
