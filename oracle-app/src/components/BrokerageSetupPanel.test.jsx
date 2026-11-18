@@ -132,6 +132,23 @@ describe('BrokerageSetupPanel', () => {
     expect(await screen.findByText(/already on your team/)).toBeTruthy();
   });
 
+  it('says invitations are queued and why an address was skipped (21.5)', async () => {
+    api.crmPost.mockResolvedValue({
+      created: [{ id: 'x' }, { id: 'y' }],
+      skipped: [{ email: 'nat@lockwood.test', reason: 'already_a_member' },
+                { email: 'kim@lockwood.test', reason: 'already_invited' }],
+    });
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    fireEvent.change(screen.getByLabelText('Email addresses to invite'),
+      { target: { value: 'a@b.test c@d.test nat@lockwood.test kim@lockwood.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send 4 invitations' }));
+    const notice = await screen.findByText(/queued to be emailed/);
+    expect(notice.textContent).toBe(
+      "2 invitations queued to be emailed · 1 already on your team · 1 already invited — use Resend if it didn't arrive");
+    expect(screen.queryByText(/invitations sent/)).toBeNull();
+  });
+
   it('resends a pending invitation', async () => {
     api.crmPost.mockResolvedValue({ created: [], skipped: [] });
     render(<BrokerageSetupPanel />);
