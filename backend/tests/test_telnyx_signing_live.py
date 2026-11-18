@@ -32,6 +32,10 @@ async def _scenario(monkeypatch):
     from crypto import derive_tenant_key, encrypt_pii
     from db import connection
 
+    # CI's database job sets no master key; any key serves here (nothing is
+    # stored, and the registry query finds no rows to decrypt).
+    if not os.environ.get("ORACLE_ENCRYPTION_MASTER_KEY"):
+        monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "live-test-master-key-" + secrets.token_hex(16))
     s = secrets.token_hex(5)
     T = str(uuid.uuid4())
     key_material = f"live-public-key-{s}"
