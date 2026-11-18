@@ -52,6 +52,8 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
     owner = f"owner-{tag}@dest.test"
     ctx = TenantContext(agent_id=owner, tenant_id=tenant, role=Role.BROKER_OWNER)
     client, bare, contact = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    stranger_contact, legacy_contact, legacy_client = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    pool_lead = uuid.uuid4()
 
     def cmd(kind: CommandType, key: str, **target) -> CommandCreate:
         draft = {"subject": "Hello", "body": "Following up."} if kind is CommandType.EMAIL else {"body": "Hi"}
@@ -82,6 +84,20 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             "phone_lookup_hash, email_lookup_hash) VALUES ($1,$2,$3,'matrix','pending_encryption',$4,$5)",
             contact, tenant, owner, contact_truth.lookup_hash(tenant, "phone", "+13025550199"),
             contact_truth.lookup_hash(tenant, "email", "kim@example.test"))
+        # the contact is Pat's own record; another contact is someone else's
+        await admin.execute("UPDATE clients SET contact_id=$2 WHERE id=$1", client, contact)
+        await admin.execute(
+            "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state, phone_lookup_hash) "
+            "VALUES ($1,$2,$3,'matrix','pending_encryption',$4)", stranger_contact, tenant, owner,
+            contact_truth.lookup_hash(tenant, "phone", "+13025550188"))
+        # a contact kept before sealing (no hashes): its details live on its client
+        await admin.execute(
+            "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state) "
+            "VALUES ($1,$2,$3,'matrix','pending_encryption')", legacy_contact, tenant, owner)
+        await admin.execute("INSERT INTO clients (id, tenant_id, full_name, phone, contact_id) "
+                            "VALUES ($1,$2,'Old Record','302-555-0177',$3)", legacy_client, tenant, legacy_contact)
+        await admin.execute("INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, address) "
+                            "VALUES ($1,$2,$3,'DE',50,'Pool St')", pool_lead, tenant, f"P-{tag}")
 
         # ── staging ────────────────────────────────────────────────────────
         ok = await commands_api.create_command(cmd(CommandType.SMS, "ok", phone="+13025550100", client_id=client),
@@ -100,10 +116,20 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
             cmd(CommandType.SMS, "contact", phone="+13025550199", contact_id=contact), ctx=ctx))["created"]
         assert await status_of(commands_api.create_command(
             cmd(CommandType.SMS, "contact-no", phone="+13025550100", contact_id=contact), ctx=ctx)) == 422
-        # both named: either record's own number will do (the contact's here)
+        # both named: either record's own number will do (the contact's here)...
         assert (await commands_api.create_command(
             cmd(CommandType.SMS, "both", phone="+13025550199", client_id=client, contact_id=contact),
             ctx=ctx))["created"]
+        # ...but only when they are the same person's records
+        assert await status_of(commands_api.create_command(
+            cmd(CommandType.SMS, "pair", phone="+13025550188", client_id=client, contact_id=stranger_contact),
+            ctx=ctx)) == 422
+        # a contact kept before sealing: matched on its client's details
+        assert (await commands_api.create_command(
+            cmd(CommandType.SMS, "legacy", phone="+13025550177", contact_id=legacy_contact), ctx=ctx))["created"]
+        # an email about a lead with no client names a record: refused like a text
+        assert await status_of(commands_api.create_command(
+            cmd(CommandType.EMAIL, "pool-mail", email="stranger@else.test", lead_id=pool_lead), ctx=ctx)) == 422
         # email: normalised (case), and an address that is not theirs is refused
         mail = await commands_api.create_command(
             cmd(CommandType.EMAIL, "mail", email="pat@example.test", client_id=client), ctx=ctx)
@@ -137,11 +163,28 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
 
         payload = {"command_id": ok["command"]["id"], "command_type": "SMS", "target": target,
                    "draft": {"body": "Hi"}, "tenant_id": tenant}
-        with pytest.raises(RuntimeError, match="Not sent: That phone number is not the one"):
+        with pytest.raises(commands_api.DestinationNotOnRecord, match="Not sent: That phone number is not the one") as exc:
             await commands_api._execute_command_job(payload, _Reporter())
+        # terminal: no retry may send it once the record changes back
+        assert exc.value.job_terminal is True and exc.value.job_error_code == "DESTINATION_CHANGED"
         after = await admin.fetchrow("SELECT state, provider_reference FROM command_executions WHERE id=$1",
                                      uuid.UUID(ok["command"]["id"]))
         assert after["state"] == "failed" and after["provider_reference"] is None
+        # approval itself checks the record: the contact's number changed -> 422
+        contact_cmd = await admin.fetchrow("SELECT id, target FROM command_executions WHERE idempotency_key=$1",
+                                           f"dest-{tag}-contact")
+        await admin.execute("UPDATE agent_contacts SET phone_lookup_hash=$2 WHERE id=$1", contact,
+                            contact_truth.lookup_hash(tenant, "phone", "+13025550198"))
+        assert "not the one" in await commands_api._destination_still_on_record(
+            tenant, CommandType.SMS, contact_cmd["target"])
+        assert await status_of(commands_api.approve_command(
+            str(contact_cmd["id"]), commands_api.ApprovalDecision(reason="checking"), ctx=ctx)) == 422
+        # a record that is gone vouches for nothing
+        legacy_cmd = await admin.fetchval("SELECT target FROM command_executions WHERE idempotency_key=$1",
+                                          f"dest-{tag}-legacy")
+        await admin.execute("UPDATE clients SET archived_at=now() WHERE id=$1", legacy_client)
+        assert await commands_api._destination_still_on_record(tenant, CommandType.SMS, legacy_cmd) is not None
+        await admin.execute("UPDATE agent_contacts SET deleted_at=now() WHERE id=$1", stranger_contact)
         # the record's email removed: the approved email is not sent either
         await admin.execute("UPDATE clients SET email=NULL WHERE id=$1", client)
         assert "No email address is on" in await commands_api._destination_still_on_record(
