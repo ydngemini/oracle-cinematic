@@ -416,6 +416,75 @@ def _tombstone_hash(tenant_id: str, normalized: str) -> Optional[str]:
         return None
 
 
+# ── The CRM's flags and the outreach ledger (external audit 26.1) ───────────
+# The outreach ledger (outreach_suppression) is the one suppression authority:
+# every send gate reads it. A contact's CRM "do not contact" flags are written
+# into it in the CRM edit's own transaction, and nurture reads it. Insert-only:
+# turning a CRM flag off never lifts an opt-out (the stricter decision wins;
+# lifting one is its own reviewed path).
+_CRM_SUPPRESS = """
+    INSERT INTO outreach_suppression (tenant_id, contact, channel, reason, source_text)
+    VALUES ($1::uuid, $2, $3, 'manual_dnc', $4)
+    ON CONFLICT (tenant_id, contact, channel) WHERE lifted_at IS NULL DO NOTHING
+"""
+_LEDGER_SUPPRESSED = """
+    SELECT EXISTS(SELECT 1 FROM outreach_suppression
+                   WHERE contact = $1 AND channel IN ($2, '*') AND lifted_at IS NULL)
+        OR ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM suppression_tombstones
+                   WHERE contact_hmac = $3 AND channel IN ($2, '*')))
+"""
+
+
+def crm_suppression_rows(phone: Optional[str], email: Optional[str],
+                         flags: dict) -> list[tuple[str, str]]:
+    """(contact, channel) ledger rows for a contact's CRM suppression flags:
+    global -> every channel of the phone and the email; dnc (do not contact
+    by phone) -> every channel of the phone; sms / voice -> that channel of
+    the phone; email -> the email."""
+    p = normalize_contact(phone, Channel.SMS) if phone else None
+    e = normalize_contact(email, Channel.EMAIL) if email else None
+    rows: set[tuple[Optional[str], str]] = set()
+    if flags.get("global"):
+        rows |= {(p, "*"), (e, "*")}
+    if flags.get("dnc"):
+        rows.add((p, "*"))
+    if flags.get("sms"):
+        rows.add((p, "sms"))
+    if flags.get("voice"):
+        rows.add((p, "voice"))
+    if flags.get("email"):
+        rows.add((e, "email"))
+    return sorted((c, ch) for c, ch in rows if c)
+
+
+async def record_crm_suppression(conn, tenant_id: str, *, phone: Optional[str], email: Optional[str],
+                                 flags: dict, source: str) -> int:
+    """Write a contact's CRM suppression flags into the outreach ledger on the
+    caller's connection (same transaction as the CRM edit). Returns rows added."""
+    added = 0
+    for contact, channel in crm_suppression_rows(phone, email, flags):
+        status = await conn.execute(_CRM_SUPPRESS, tenant_id, contact, channel, source[:500])
+        added += int(str(status).split()[-1] or 0)
+    return added
+
+
+async def ledger_suppressed(conn, tenant_id: str, contact: Optional[str], channel: Channel | str) -> bool:
+    """Is this destination suppressed for this channel in the outreach ledger
+    (an opt-out, a CRM do-not-contact, an erased person's tombstone)? The same
+    rule the send gate applies (ConsentLedger.gather_state)."""
+    if not contact:
+        return False
+    channel = Channel(channel)
+    norm = normalize_contact(contact, channel)
+    if channel is not Channel.EMAIL:
+        # A spoken STOP still spooled (not yet written) blocks, as at the gate.
+        import voice_opt_out
+
+        if voice_opt_out.pending_opt_out(tenant_id, normalize_contact(contact, Channel.VOICE)):
+            return True
+    return bool(await conn.fetchval(_LEDGER_SUPPRESSED, norm, channel.value, _tombstone_hash(tenant_id, norm)))
+
+
 # ── Persistence layer ────────────────────────────────────────────────────────
 class ConsentLedger:
     """Async accessor for the 0015 consent / suppression / attempt tables. All

@@ -109,6 +109,20 @@ class _IntakeConn:
         raise AssertionError(f"unexpected fetchrow: {query}")
 
 
+def _destination_on_file(monkeypatch, *, suppressed=False):
+    """The contact's shown details give an email; the outreach ledger answers."""
+    import outreach_compliance
+
+    async def shown(_conn, _ctx, _row):
+        return {"email": "pat@example.test", "phone": "+13025550100"}
+
+    async def ledger(*_a, **_k):
+        return suppressed
+
+    monkeypatch.setattr(contacts_api, "_contact_json", shown)
+    monkeypatch.setattr(outreach_compliance, "ledger_suppressed", ledger)
+
+
 class _NurtureConn:
     def __init__(self, *, duplicate=False, consent=True):
         self.duplicate = duplicate
@@ -119,6 +133,8 @@ class _NurtureConn:
         self.fetchrow_calls.append((query, args))
         if "app_contact_access" in query:  # record_access edit check (0134)
             return {"can_edit": True}
+        if "FROM agent_contacts AS contact" in query:   # the destination (26.1)
+            return {"id": CONTACT_ID}
         if "SELECT id,birthday_month,birthday_day" in query:
             return {
                 "id": CONTACT_ID,
@@ -378,6 +394,7 @@ def test_question_endpoint_exposes_no_tools():
 
 
 def test_nurture_reservation_is_exact_once_and_parameterized(monkeypatch):
+    _destination_on_file(monkeypatch)
     conn = _NurtureConn(duplicate=True)
     monkeypatch.setattr(contacts_api, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(contacts_api, "datetime", _FrozenDatetime)
@@ -410,6 +427,7 @@ def test_nurture_reservation_is_exact_once_and_parameterized(monkeypatch):
 
 
 def test_nurture_without_consent_does_not_create_a_job(monkeypatch):
+    _destination_on_file(monkeypatch)
     conn = _NurtureConn(consent=False)
     monkeypatch.setattr(contacts_api, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(contacts_api, "datetime", _FrozenDatetime)
@@ -476,3 +494,14 @@ def test_contact_writes_check_access_before_touching_anything(monkeypatch, can_e
             assert "view only" in exc.value.detail
         else:
             assert exc.value.detail == "contact not found"  # existence is not revealed
+
+
+def test_nurture_is_suppressed_by_the_outreach_ledger(monkeypatch):
+    """An opt-out in the ledger outranks the contact's own flags (26.1)."""
+    _destination_on_file(monkeypatch, suppressed=True)
+    conn = _NurtureConn()
+    monkeypatch.setattr(contacts_api, "tenant_tx", _fake_tenant_tx(conn))
+    monkeypatch.setattr(contacts_api, "datetime", _FrozenDatetime)
+    result = asyncio.run(contacts_api.reserve_nurture_job(
+        CONTACT_ID, NurtureJobRequest(event_type="birthday", channel="email"), CTX))
+    assert result["decision"]["reason"] == "suppressed"
