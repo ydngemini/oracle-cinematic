@@ -23,6 +23,7 @@ Proves, through the real routes and the application roles:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import time
 import uuid
@@ -239,9 +240,52 @@ async def _scenario(monkeypatch):
         await refused(brokerage_onboarding.reset_member_two_step(agent_id, reason, octx), 409)
 
         # ── the brokerage-wide switch holds agents on setup ───────────────
-        await brokerage_onboarding.put_security_settings(
+        # An agent without two-step signed in while it was optional; the
+        # switch ends that session at once (audit 28.2). The owner, who uses
+        # it, stays signed in; owner2 was already held on setup.
+        result, agent_open = await login(agent_email)
+        assert result.mfa_enrolment_required is False
+        # A second agent who uses two-step stays signed in; an agent of
+        # another brokerage without it is untouched.
+        enrolled_id, outsider_id = uuid.uuid4(), uuid.uuid4()
+        for uid, email, tid in ((enrolled_id, f"agent2-{stamp}@mfa.test", tenant),
+                                (outsider_id, f"agent3-{stamp}@mfa.test", other_tenant)):
+            await admin.execute(
+                "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+                "VALUES ($1,$2,$3,'agent',$3,$4)", uid, tid, email, pw_hash)
+        await admin.execute(
+            "INSERT INTO user_mfa_factors (user_id, tenant_id, totp_secret_ciphertext, confirmed_at) "
+            "VALUES ($1, $2, '\\x00'::bytea, now())", enrolled_id, tenant)
+        # A revoked owner token (an older epoch) cannot change the rule.
+        stale_owner = dataclasses.replace(octx, session_epoch=int(octx.session_epoch) - 1)
+        await refused(brokerage_onboarding.put_security_settings(
+            brokerage_onboarding.SecuritySettings(require_mfa=True), stale_owner), 401)
+        assert await admin.fetchval("SELECT require_mfa FROM tenants WHERE id=$1::uuid", tenant) is False
+        agent_open_ctx = tenancy.require_context(f"Bearer {agent_open}")
+        assert (await brokerage_onboarding.get_security_settings(agent_open_ctx))["require_mfa"] is False
+        epochs = {r["id"]: r["session_epoch"] for r in await admin.fetch(
+            "SELECT id, session_epoch FROM users WHERE tenant_id = $1::uuid", tenant)}
+        other_epochs = await admin.fetch("SELECT id, session_epoch FROM users WHERE tenant_id = $1::uuid",
+                                         other_tenant)
+        switched = await brokerage_onboarding.put_security_settings(
             brokerage_onboarding.SecuritySettings(require_mfa=True), octx)
+        assert switched["members_signed_out"] == 1
+        # 28000 is the revoked-session signal server.py answers with 401.
+        with pytest.raises(asyncpg.exceptions.InvalidAuthorizationSpecificationError):
+            await brokerage_onboarding.get_security_settings(agent_open_ctx)
         assert (await brokerage_onboarding.get_security_settings(octx))["require_mfa"] is True
+        after = {r["id"]: r["session_epoch"] for r in await admin.fetch(
+            "SELECT id, session_epoch FROM users WHERE tenant_id = $1::uuid", tenant)}
+        assert after[agent_id] == epochs[agent_id] + 1
+        assert after[owner_id] == epochs[owner_id] and after[owner2_id] == epochs[owner2_id]
+        assert after[enrolled_id] == epochs[enrolled_id], "a member who uses two-step stays signed in"
+        assert await admin.fetch("SELECT id, session_epoch FROM users WHERE tenant_id = $1::uuid",
+                                 other_tenant) == other_epochs, "another brokerage's sessions are untouched"
+        # Saving the same setting again ends nothing.
+        again = await brokerage_onboarding.put_security_settings(
+            brokerage_onboarding.SecuritySettings(require_mfa=True), octx)
+        assert again["members_signed_out"] == 0
+        assert await admin.fetchval("SELECT session_epoch FROM users WHERE id=$1", agent_id) == after[agent_id]
         await refused(brokerage_onboarding.put_security_settings(
             brokerage_onboarding.SecuritySettings(require_mfa=False), actx_now), 403)
         result, agent_token = await login(agent_email)

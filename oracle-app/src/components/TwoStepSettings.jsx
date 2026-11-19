@@ -117,10 +117,14 @@ export function TwoStepSettings({ isOwner }) {
   async function toggleBrokerage(next) {
     setError('');
     try {
-      setBrokerage(await apiPut('/api/brokerage/security', { require_mfa: next }, { retries: 0 }));
-      setNotice(next
-        ? 'Everyone in your brokerage will set up two-step sign-in at their next sign-in.'
-        : 'Two-step sign-in is optional for agents again. Owners still use it.');
+      const saved = await apiPut('/api/brokerage/security', { require_mfa: next }, { retries: 0 });
+      setBrokerage(saved);
+      const signedOut = Number(saved?.members_signed_out) || 0;
+      setNotice(!next
+        ? 'Two-step sign-in is optional for agents again. Owners still use it.'
+        : signedOut > 0
+          ? `Two-step sign-in is now required. ${signedOut === 1 ? '1 member' : `${signedOut} members`} without it ${signedOut === 1 ? 'was' : 'were'} signed out and will set it up at their next sign-in.`
+          : 'Two-step sign-in is now required. Everyone in your brokerage already uses it.');
     } catch (err) {
       setError(twoStepError(err, 'The brokerage setting could not be saved.'));
     }
@@ -202,7 +206,7 @@ export function TwoStepSettings({ isOwner }) {
             checked={brokerage.require_mfa === true}
             onChange={(e) => toggleBrokerage(e.target.checked)}
           />
-          <span>Require two-step sign-in for everyone in my brokerage (owners always use it).</span>
+          <span>Require two-step sign-in for everyone in my brokerage (owners always use it). Turning this on signs out members who have not set it up.</span>
         </label>
       )}
     </section>
