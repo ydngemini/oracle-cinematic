@@ -353,10 +353,24 @@ def delete_object(key: str) -> bool:
     client = _s3_client()
     try:
         client.head_object(Bucket=S3_BUCKET, Key=key)
-    except Exception:  # noqa: BLE001 - absent (404) or unreadable: nothing to delete
-        return False
+    except Exception as exc:  # noqa: BLE001 - classified below
+        # Only a definite "not found" means there is nothing to delete. A
+        # denied or failing call proves nothing and must not read as absent
+        # (audit 29.6): erasure and export expiry would record a deletion
+        # that never happened.
+        if _s3_not_found(exc):
+            return False
+        raise StorageError(f"could not check {type(exc).__name__}") from exc
     client.delete_object(Bucket=S3_BUCKET, Key=key)
     return True
+
+
+def _s3_not_found(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None) or {}
+    error = response.get("Error") or {}
+    code = str(error.get("Code") or "")
+    status_code = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code in ("404", "NoSuchKey", "NotFound") or status_code == 404
 
 
 def list_prefix(prefix: str, limit: int = 100_000) -> list[str]:

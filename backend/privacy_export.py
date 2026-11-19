@@ -313,7 +313,12 @@ async def export_download(ctx: TenantContext, operation_id: str) -> dict:
 
 
 async def expire_exports() -> int:
-    """Delete archives past their expiry. Idempotent."""
+    """Delete archives past their expiry. Idempotent.
+
+    The row forgets its archive (artifact_key NULL, 'expired_and_deleted') only
+    after storage confirmed the delete or a definite not-found (audit 29.6).
+    Storage not configured, or a delete that fails, leaves the key in place,
+    records why in result.artifact_delete_pending, and is retried next hour."""
     import object_storage
 
     async with tenant_tx(_platform_ctx()) as conn:
@@ -322,16 +327,27 @@ async def expire_exports() -> int:
             "AND artifact_key IS NOT NULL AND artifact_expires_at <= now() LIMIT 200")
     expired = 0
     for row in rows:
-        try:
-            if object_storage.is_configured():
+        reason = None
+        if not object_storage.is_configured():
+            reason = "storage_not_configured"
+        else:
+            try:
                 await asyncio.to_thread(object_storage.delete_object, row["artifact_key"])
-        except Exception:  # noqa: BLE001 - retried next hour
-            log.warning("export %s could not be deleted yet", row["id"])
+            except Exception as exc:  # noqa: BLE001 - retried next hour
+                reason = type(exc).__name__
+        if reason:
+            log.warning("export %s could not be deleted yet (%s)", row["id"], reason)
+            async with tenant_tx(_platform_ctx()) as conn:
+                await conn.execute(
+                    "UPDATE privacy_operations SET result = result || jsonb_build_object("
+                    "'artifact_delete_pending', $2::text, 'artifact_delete_checked_at', now()), "
+                    "updated_at=now() WHERE id=$1", row["id"], reason)
             continue
         async with tenant_tx(_platform_ctx()) as conn:
             await conn.execute(
                 "UPDATE privacy_operations SET artifact_key=NULL, "
-                "result = result || '{\"artifact\":\"expired_and_deleted\"}'::jsonb, updated_at=now() "
+                "result = (result - 'artifact_delete_pending' - 'artifact_delete_checked_at') "
+                "|| '{\"artifact\":\"expired_and_deleted\"}'::jsonb, updated_at=now() "
                 "WHERE id=$1", row["id"])
         expired += 1
     return expired

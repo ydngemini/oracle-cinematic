@@ -4355,6 +4355,29 @@ next_task: "28.3 (owner decision on the operator session registry migration); 28
 updated: 2026-11-18
 ```
 
+#### L17-49 An expired export forgets its archive only after storage confirmed the delete; a denied S3 check is not "already gone" (external audit 29.6; 29.7 already closed)
+```yaml
+id: L17-49
+status: tests_pass
+env: local
+evidence_shas: [8d0c427]   # base; fix in the commit that adds this row
+files: [backend/privacy_export.py, backend/object_storage.py, backend/tests/test_object_storage.py, backend/tests/test_privacy_export_expiry_live.py]
+tests_run:
+  - {cmd: "read privacy_export.expire_exports and object_storage.delete_object at 8d0c427", result: "confirmed 29.6: with storage not configured the delete was skipped but artifact_key was cleared and the row marked expired_and_deleted; on S3 any head_object error (403, 500, network) returned False as if absent", date: 2026-11-18}
+  - {cmd: "read privacy_lifecycle._phase_verify at 8d0c427", result: "29.7 already closed by L17-33 (22.2): a failed list_prefix is collected in objects_unverified and the operation is not clean; no change needed", date: 2026-11-18}
+  - {cmd: "the new tests against 8d0c427's privacy_export.py + object_storage.py", result: "red: S3 AccessDenied / InternalError read as absent (2 of 5); live: the key was cleared with storage not configured", date: 2026-11-18}
+  - {cmd: "after: test_object_storage + test_privacy_periodic 42 passed; live test_privacy_export_expiry_live + test_privacy_lifecycle_live 2 passed", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. expire_exports clears artifact_key only after delete_object returned (deleted or a definite not-found); storage not configured or a failed delete keeps the key, records result.artifact_delete_pending (reason) and artifact_delete_checked_at, and is retried by the hourly privacy task; a later confirmed delete removes those keys. delete_object on S3 returns False only for 404 / NoSuchKey / NotFound and raises StorageError otherwise; every caller (erasure media and prefix loops, space_assets, privacy_requests directive cleanup) already catches and counts it as failed, so erasure now reports a denied delete instead of 'missing'."
+blockers:
+  - "Not done from the audit's list: an alert for a delete that keeps failing, and a periodic orphan-object scan of privacy/exports/ (an archive whose row is gone is not found). artifact_delete_pending is visible in the operation's result only."
+  - "Privacy: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [29.6, 29.7]
+decision_refs: []
+next_task: "29.6 follow-up: alert on artifact_delete_pending older than a day, and an orphan scan of privacy/exports/."
+updated: 2026-11-18
+```
+
 ### L18
 Billing, seats and analytics.
 
