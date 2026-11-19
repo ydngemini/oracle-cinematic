@@ -527,3 +527,20 @@ def test_an_unreachable_health_endpoint_blocks_production_and_warns_staging():
     s = World("staging")
     _, c = audit(s, token="t")
     assert c["component_health"].status == lr.WARN
+
+
+
+@pytest.mark.parametrize("body", [{"components": ["db"]}, {"components": {"database": "HEALTHY"}}])
+def test_a_malformed_health_body_blocks_and_does_not_crash(body):
+    """30.7 review: the evidence line must not crash the gate the policy blocks."""
+    w = World()
+    w.http["/api/admin/health/components"] = (200, {}, json.dumps(body).encode())
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.BLOCKED
+
+
+def test_an_unapplied_waiver_is_not_recorded(passing_gates):
+    w = World()
+    _operator_endpoints(w)
+    a, _ = audit(w, gates_root=passing_gates, token="t", charging=False, operator_waiver="owner: not needed")
+    assert lr.report_json(a, a.checks)["operator_waiver"] is None

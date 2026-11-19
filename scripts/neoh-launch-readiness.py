@@ -226,6 +226,15 @@ def _all_envs(spec: dict, names=("api", "worker")) -> dict:
     return {n: _envs(comps[n]) for n in names if n in comps}
 
 
+def _component_states(components) -> str:
+    """'name=STATE, ...' for the report; tolerant of a malformed body, which
+    launch_assessment has already turned into a BLOCK (30.7 review)."""
+    if not isinstance(components, dict):
+        return "MALFORMED"
+    return ", ".join(f"{k}={(v if isinstance(v, dict) else {}).get('state', '?')}"
+                     for k, v in sorted(components.items(), key=lambda kv: str(kv[0])))
+
+
 def _waiver_well_formed(text: str) -> bool:
     """'who: why', both parts present (audit 30.7 review)."""
     who, sep, why = text.partition(":")
@@ -733,8 +742,7 @@ class Audit:
                      ("all components healthy" if not (blocking or warning) else
                       f"blocks go-live: {', '.join(blocking) or '-'}; reduced or unknown: {', '.join(warning) or '-'}")
                      + f" (operator snapshot answered in {took}" + (f", release {release}" if release else "")
-                     + "; states: " + ", ".join(f"{k}={str((v or {}).get('state', '?'))}"
-                                               for k, v in sorted(d["components"].items())) + ")",
+                     + "; states: " + _component_states(d["components"]) + ")",
                      blocking=bool(blocking))
         else:
             # A token was given and the health endpoint did not answer with
@@ -913,7 +921,11 @@ def report_json(audit: Audit, checks: list) -> dict:
         "generated_at": audit.now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "summary": summarize(checks),
         # A deliberate skip of the operator-only checks, as given (audit 30.7).
-        "operator_waiver": audit.red.scrub(audit.operator_waiver) if audit.operator_waiver else None,
+        # Recorded only when it was applied: no token, production, not charging.
+        "operator_waiver": (audit.red.scrub(audit.operator_waiver)
+                            if audit.operator_waiver and any(
+                                c.id == "operator_console" and "WAIVED" in c.reason for c in checks)
+                            else None),
         "checks": [c.as_dict() for c in checks],
     }
 
