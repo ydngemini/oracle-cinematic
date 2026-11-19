@@ -70,17 +70,20 @@ function ContactLiving({ living, clientId, contactId }) {
 // through every contact (audit 33.3: the tab searched only the first 200).
 export const CONTACT_PAGE = 100;
 const SEARCH_DEBOUNCE_MS = 300;
+const SEARCH_MAX_CHARS = 160;  // the API refuses a longer q
 
 function matchesLocally(contact, needle) {
   return [contact.full_name, contact.email, contact.phone, contact.source]
     .some((value) => String(value || '').toLowerCase().includes(needle));
 }
 
-/** Server-side search of the whole contact book, newest answer only. */
-function useContactSearch(query) {
-  const [found, setFound] = useState({ query: '', contacts: [], error: null });
+/** Server-side search of the whole contact book, newest answer only.
+ * `generation` changes on every refresh, so an edit or a Refresh re-runs it. */
+function useContactSearch(query, generation) {
+  const [found, setFound] = useState({ key: '', contacts: [], more: false, error: null });
   const latest = useRef(0);
-  const trimmed = query.trim();
+  const trimmed = query.trim().slice(0, SEARCH_MAX_CHARS);
+  const key = `${generation}:${trimmed}`;
   useEffect(() => {
     if (!trimmed) return undefined;
     const request = latest.current + 1;
@@ -89,37 +92,54 @@ function useContactSearch(query) {
       crmGet(`/api/crm/contacts?q=${encodeURIComponent(trimmed)}&limit=${CONTACT_PAGE}`).then(
         (payload) => {
           if (latest.current !== request) return;  // a newer search is under way
-          setFound({ query: trimmed, contacts: Array.isArray(payload?.contacts) ? payload.contacts : [], error: null });
+          setFound({ key, contacts: Array.isArray(payload?.contacts) ? payload.contacts : [],
+            more: Boolean(payload?.next_cursor), error: null });
         },
         (reason) => {
           if (latest.current !== request) return;
-          setFound({ query: trimmed, contacts: [], error: reason });
+          setFound({ key, contacts: [], more: false, error: reason });
         },
       );
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [trimmed]);
-  const current = found.query === trimmed && trimmed !== '';
-  return { results: current ? found.contacts : [], searched: current, error: current ? found.error : null };
+  }, [key, trimmed]);
+  const current = found.key === key && trimmed !== '';
+  return { results: current ? found.contacts : [], more: current && found.more, searched: current,
+    error: current ? found.error : null };
+}
+
+function searchStatus(search, count, searching) {
+  if (searching) return 'Searching all your contacts…';
+  if (search.error) return `Full search unavailable; ${count} ${count === 1 ? 'match' : 'matches'} among loaded contacts.`;
+  if (search.more) return `First ${count} matches. Keep typing to narrow the search.`;
+  return `${count} ${count === 1 ? 'match' : 'matches'} across all your contacts.`;
 }
 
 function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities, openId, onOpen, onChanged,
-  hasMore, loadingMore, onLoadMore }) {
+  hasMore, loadingMore, loadMoreError, onLoadMore, generation }) {
   const [query, setQuery] = useState('');
-  const search = useContactSearch(query);
+  const search = useContactSearch(query, generation);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return contacts || [];
     // Every contact the server found, plus partial email / phone matches
     // among the loaded ones (the server matches whole emails and phones).
+    // A loaded copy is the freshest after an edit, so it replaces the found one.
+    const loaded = new Map((contacts || []).map((c) => [c.id, c]));
     const seen = new Set();
     const merged = [];
     for (const contact of [...search.results, ...(contacts || []).filter((c) => matchesLocally(c, needle))]) {
-      if (!seen.has(contact.id)) { seen.add(contact.id); merged.push(contact); }
+      if (!seen.has(contact.id)) { seen.add(contact.id); merged.push(loaded.get(contact.id) || contact); }
     }
     return merged;
   }, [contacts, query, search.results]);
-  const living = useLivingForContacts(visible);
+  // Living lines for the loaded contacts and the server's matches: these
+  // change on a load or a search answer, not on every keystroke.
+  const livingSet = useMemo(() => {
+    const seen = new Set();
+    return [...(contacts || []), ...search.results].filter((c) => !seen.has(c.id) && seen.add(c.id));
+  }, [contacts, search.results]);
+  const living = useLivingForContacts(livingSet);
   const searching = query.trim() !== '' && !search.searched;
 
   return (
@@ -145,17 +165,21 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
         <label className={styles.search}>
           <span className={styles.srOnly}>Search contacts</span>
           <Search aria-hidden="true" />
-          <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, email, phone…" />
+          <input type="search" value={query} maxLength={SEARCH_MAX_CHARS} aria-describedby="contact-search-hint"
+            onChange={(event) => setQuery(event.target.value)} placeholder="Search name, email, phone…" />
         </label>
       ) : null}
       {!loading && !error && (contacts || []).length > 0 ? (
-        <p className={styles.listNote} role="status">
-          {query.trim()
-            ? (searching ? 'Searching all your contacts…'
-              : search.error ? 'The full search is unavailable right now; showing matches among loaded contacts.'
-                : 'Searched all your contacts by name, full email or full phone; partial email or phone matches loaded contacts only.')
-            : `${(contacts || []).length} contacts loaded${hasMore ? ' — more below' : ''}`}
-        </p>
+        <>
+          <p id="contact-search-hint" className={styles.listNote}>
+            Search finds any contact by name, full email or full phone; part of an email or phone matches loaded contacts.
+          </p>
+          <p className={styles.listNote} role="status">
+            {query.trim()
+              ? searchStatus(search, visible.length, searching)
+              : `${(contacts || []).length} contacts loaded${hasMore ? ' — more below' : ''}`}
+          </p>
+        </>
       ) : null}
 
       {loading ? (
@@ -218,9 +242,12 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
           ))}
         </ul>
       )}
+      {!loading && !error && !query.trim() && loadMoreError ? (
+        <p className={styles.listNote} role="alert">The next contacts could not be loaded. Try again.</p>
+      ) : null}
       {!loading && !error && !query.trim() && hasMore ? (
         <button type="button" className={styles.loadMore} onClick={onLoadMore} disabled={loadingMore}>
-          {loadingMore ? 'Loading…' : 'Load more contacts'}
+          {loadingMore ? 'Loading…' : loadMoreError ? 'Try loading more again' : 'Load more contacts'}
         </button>
       ) : null}
     </section>
@@ -237,12 +264,23 @@ export default function PeopleTab() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [nextCursor, setNextCursor] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(null);
+  // Bumped by every refresh: a page still in flight from before it is
+  // dropped, and an open search re-runs (33.3 review).
+  const [generation, setGeneration] = useState(0);
+  const generationRef = useRef(0);
   const selectedByUser = useRef(false);
 
   const load = useCallback(() => {
     setRefreshing(true);
+    generationRef.current += 1;
+    const mine = generationRef.current;
+    setGeneration(mine);
+    setLoadingMore(false);
+    setLoadMoreError(null);
     return crmGet(`/api/crm/contacts?limit=${CONTACT_PAGE}`).then(
       (payload) => {
+        if (generationRef.current !== mine) return;
         setContacts(Array.isArray(payload?.contacts) ? payload.contacts : []);
         setNextCursor(payload?.next_cursor || null);
         setError(null);
@@ -250,6 +288,7 @@ export default function PeopleTab() {
         setUpdatedAt(new Date());
       },
       (reason) => {
+        if (generationRef.current !== mine) return;  // a newer refresh decides
         setError(reason);
         setRefreshing(false);
         if (!selectedByUser.current) setView('opportunities');
@@ -264,9 +303,12 @@ export default function PeopleTab() {
 
   const loadMore = useCallback(() => {
     if (!nextCursor) return undefined;
+    const mine = generationRef.current;
     setLoadingMore(true);
+    setLoadMoreError(null);
     return crmGet(`/api/crm/contacts?limit=${CONTACT_PAGE}&cursor=${encodeURIComponent(nextCursor)}`).then(
       (payload) => {
+        if (generationRef.current !== mine) return;  // a refresh replaced the list meanwhile
         const page = Array.isArray(payload?.contacts) ? payload.contacts : [];
         setContacts((current) => {
           const seen = new Set((current || []).map((c) => c.id));
@@ -275,7 +317,11 @@ export default function PeopleTab() {
         setNextCursor(payload?.next_cursor || null);
         setLoadingMore(false);
       },
-      (reason) => { setError(reason); setLoadingMore(false); },
+      (reason) => {
+        if (generationRef.current !== mine) return;
+        setLoadMoreError(reason);  // the loaded contacts stay on screen
+        setLoadingMore(false);
+      },
     );
   }, [nextCursor]);
 
@@ -330,7 +376,9 @@ export default function PeopleTab() {
           onChanged={load}
           hasMore={Boolean(nextCursor)}
           loadingMore={loadingMore}
+          loadMoreError={loadMoreError}
           onLoadMore={loadMore}
+          generation={generation}
         />
       ) : (
         <Suspense fallback={<div className={styles.skeleton} aria-hidden="true"><span /><span /><span /></div>}>

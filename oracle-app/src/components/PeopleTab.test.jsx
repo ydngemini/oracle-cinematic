@@ -49,7 +49,7 @@ describe('PeopleTab contact book', () => {
     render(<PeopleTab />);
     await screen.findByText('2 contacts loaded');
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: '0142' } });
-    await screen.findByText(/Searched all your contacts/);
+    await screen.findByText('1 match across all your contacts.');
     expect(screen.getByText('Ana')).toBeTruthy();
     expect(screen.queryByText('Bo')).toBeNull();
   });
@@ -82,6 +82,60 @@ describe('PeopleTab contact book', () => {
     releaseSlow();
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText('Sam Old')).toBeNull();
+  });
+
+  it('says when a search found more matches than it shows (33.3 review)', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('q=')
+      ? { contacts: [{ id: 's1', full_name: 'Smith One' }], next_cursor: 'more' }
+      : { contacts: [{ id: 'x', full_name: 'Xavier' }] }));
+    render(<PeopleTab />);
+    await screen.findByText('Xavier');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Smith' } });
+    expect(await screen.findByText('First 1 matches. Keep typing to narrow the search.')).toBeTruthy();
+    expect(screen.getByRole('searchbox').getAttribute('maxlength')).toBe('160');
+  });
+
+  it('keeps the loaded contacts when the next page fails, and offers to try again', async () => {
+    api.crmGet.mockImplementation((path) => (path.includes('cursor=')
+      ? Promise.reject(new Error('down'))
+      : Promise.resolve({ contacts: [{ id: 'c1', full_name: 'One' }], next_cursor: 'cur-2' })));
+    render(<PeopleTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more contacts' }));
+    expect(await screen.findByText('The next contacts could not be loaded. Try again.')).toBeTruthy();
+    expect(screen.getByText('One')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try loading more again' })).toBeTruthy();
+  });
+
+  it('drops a page that was still loading when the list was refreshed', async () => {
+    let releasePage;
+    let firstLoad = true;
+    api.crmGet.mockImplementation((path) => {
+      if (path.includes('cursor=')) return new Promise((resolve) => { releasePage = () => resolve({ contacts: [{ id: 'old2', full_name: 'Stale Page Two' }] }); });
+      if (firstLoad) { firstLoad = false; return Promise.resolve({ contacts: [{ id: 'c1', full_name: 'One' }], next_cursor: 'cur-2' }); }
+      return Promise.resolve({ contacts: [{ id: 'c0', full_name: 'Fresh Zero' }, { id: 'c1', full_name: 'One' }] });
+    });
+    render(<PeopleTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more contacts' }));
+    await waitFor(() => expect(releasePage).toBeTypeOf('function'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh contacts' }));
+    expect(await screen.findByText('Fresh Zero')).toBeTruthy();
+    releasePage();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText('Stale Page Two')).toBeNull();
+  });
+
+  it('re-runs an open search after a refresh, so an edited contact is current', async () => {
+    let name = 'Zed Old';
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('q=')
+      ? { contacts: [{ id: 'z', full_name: name }] }
+      : { contacts: [{ id: 'x', full_name: 'Xavier' }] }));
+    render(<PeopleTab />);
+    await screen.findByText('Xavier');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Zed' } });
+    expect(await screen.findByText('Zed Old')).toBeTruthy();
+    name = 'Zed New';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh contacts' }));
+    expect(await screen.findByText('Zed New')).toBeTruthy();
   });
 });
 
