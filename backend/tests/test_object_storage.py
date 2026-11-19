@@ -393,3 +393,35 @@ def test_a_mount_cannot_hand_out_a_write_url(files_backend):
     can refuse the job up front instead of computing a result with nowhere to
     put it."""
     assert files_backend.presigned_put_url("recon-outputs/job/model.sog") is None
+
+
+class _HeadError(Exception):
+    def __init__(self, code, status):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}}
+
+
+@pytest.mark.parametrize("code,status,outcome", [
+    ("404", 404, False), ("NoSuchKey", 404, False), ("NotFound", None, False),
+    ("AccessDenied", 403, "raises"), ("InternalError", 500, "raises"),
+])
+def test_s3_delete_reads_only_a_definite_not_found_as_absent(monkeypatch, code, status, outcome):
+    """Audit 29.6: a denied or failing head_object used to read as 'already
+    gone', so a deletion was recorded that never happened."""
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="s3", RECON_S3_BUCKET="b")
+    deleted = []
+
+    class Client:
+        def head_object(self, Bucket, Key):  # noqa: N803
+            raise _HeadError(code, status)
+
+        def delete_object(self, Bucket, Key):  # noqa: N803
+            deleted.append(Key)
+
+    monkeypatch.setattr(mod, "_s3_client", lambda: Client())
+    if outcome == "raises":
+        with pytest.raises(mod.StorageError):
+            mod.delete_object("privacy/exports/t/op.zip")
+    else:
+        assert mod.delete_object("privacy/exports/t/op.zip") is False
+    assert deleted == []

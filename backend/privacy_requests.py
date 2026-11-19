@@ -615,7 +615,14 @@ async def expire_subject_directives() -> int:
         except Exception:  # noqa: BLE001 - unreadable: left for reapply to report
             continue
         if _directive_expired(d):
-            await asyncio.to_thread(object_storage.delete_object, key)
+            try:
+                await asyncio.to_thread(object_storage.delete_object, key)
+            except Exception as exc:  # noqa: BLE001 - one refusal must not stop the rest; retried next run
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "subject directive %s could not be deleted (%s)", key, type(exc).__name__)
+                continue
             removed += 1
     return removed
 
