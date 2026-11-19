@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../../state/useCrmApi';
+import AlertDeliveryCard from './AlertDeliveryCard';
 import BrokerageDiagnostics from './BrokerageDiagnostics';
 import StateTag from './StateTag';
 import {
@@ -475,6 +476,9 @@ export default function OperatorOverview() {
         </Card>
         <Card id="op-billing" title="Billing exceptions">
           <Feed slot={feeds.billing} label="billing exceptions" onRetry={refetch}>{(d) => <BillingCard data={d} />}</Feed>
+        </Card>
+        <Card id="op-alert-delivery" title="Alert delivery">
+          <AlertDeliveryCard />
         </Card>
       </div>
 

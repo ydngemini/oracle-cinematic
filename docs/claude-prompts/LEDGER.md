@@ -5345,6 +5345,32 @@ next_task: "27.6 / 27.7 (realtime fan-out size and slow writers)."
 updated: 2026-11-19
 ```
 
+#### L19-21 Go-live needs a test alert a person confirmed, not only a set ORACLE_ALERT_EMAIL (external audit 30.3, remainder)
+```yaml
+id: L19-21
+status: tests_pass
+env: local
+evidence_shas: [84e04fb]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0180_ops_alert_tests.sql, backend/ops_alert_test.py, backend/admin_ops.py, backend/privacy_data_map.py, scripts/neoh-launch-readiness.py, oracle-app/src/components/admin/AlertDeliveryCard.jsx, oracle-app/src/components/admin/operatorModel.js, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.module.css, docs/deploy-digitalocean.md, docs/runbooks/README.md]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_providers at 84e04fb", result: "confirmed the L19-16 open blocker: alert_routing passes when ORACLE_ALERT_EMAIL is merely present on api and worker, so a mistyped address or a broken relay passes until the first real incident", date: 2026-11-19}
+  - {cmd: "test_go_live_needs_a_confirmed_test_alert against 84e04fb's readiness script", result: "red: no alert_delivery_proof check", date: 2026-11-19}
+  - {cmd: "live (real PostgreSQL, as oracle_app, rolled back): test_ops_alert_test_live + test_ops_alert_recipient_live", result: "2 passed: no recipient is recorded and nothing is proven; one test a minute; the code and the address are never stored; a code works once, case- and dash-insensitive; proof is per recipient; a confirmation older than 14 days is stale; a relay-refused send cannot be confirmed; 5 wrong codes end the test even for the right code; an unconfirmed code expires after 24 h", date: 2026-11-19}
+  - {cmd: "test_ops_alert_test_routes (4), test_launch_readiness + storage readiness + privacy map + migration tests (156); vitest admin (20), full vitest 1112 passed; eslint clean; build ok", result: "pass", date: 2026-11-19}
+authz_checked: "GET/POST /api/admin/alerts/test and POST /api/admin/alerts/test/confirm are platform-admin only (require_platform_admin, which also checks the session is current; asserted by test). The code is emailed only to ORACLE_ALERT_EMAIL and never returned by the API, written to the audit ledger or stored (only an HMAC keyed by the server secret, so a backup copy cannot be reversed into it); the address is stored as a 16-hex SHA-256 prefix. A code confirms only the latest test sent to today's recipient. Sends and confirmations are recorded in the audit ledger (outcome/result only). One test a minute across operators (advisory lock); 5 tries per code."
+blockers:
+  - "Independent review r1: APPROVE; follow-ups applied: a code confirms only a test sent to today's recipient (an old mailbox could confirm after the address changed); the code hash is now an HMAC keyed by the server secret (an unkeyed SHA-256 of a 40-bit code is reversible from a table copy); a newer send stuck in 'sending' (crash) no longer hides an older confirmable test and is described as 'not recorded'; two confirmations of the same code serialize on the latest row (the second gets no_pending_test instead of spending an older test's tries); any code length is accepted (a short code counts as wrong, not a 422). Live test extended for each; 1 passed."
+  - "Relay acceptance is not delivery; only the typed-back code is proof, and it proves the api replica's ORACLE_ALERT_EMAIL. The worker's value is checked for presence only (alert_routing), so a worker with a different, wrong address is not caught."
+  - "Still open from 30.3: an independent out-of-band uptime monitor and a backup paging channel (owner: provider choice and spend)."
+  - "A non-charging production waiver (--waive-operator-checks) skips this check like every operator-console check (30.7 policy)."
+  - "Locally the bundle check is already over budget on main (+6.6 KB) while CI passes; this adds about 7 KB raw. CI decides."
+  - "Not deployed (C4.4)."
+audit_refs: [30.3]
+decision_refs: []
+next_task: "29.6 alert + orphan scan of privacy/exports/; 30.9 single worker."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
