@@ -1726,6 +1726,33 @@ def _question_choices(bundle: dict) -> list[dict]:
             for c in (getattr(question, "choices", None) or ()) if c.clickable]
 
 
+MEMORY_MIRROR_RETRY_SECONDS = 0.5
+
+
+async def _mirror_turn_to_memory(ctx, user_id: str, assistant_id: str, user_text: str, answer: str) -> bool:
+    """Copy a completed turn into the rolling session memory (user_interactions).
+
+    Secondary to the chat history itself (ai_chat_messages already holds the
+    turn): each write is retried once, then given up with a log line that
+    names the turn and the error class, never the text. Never raises
+    (AI32-01). Returns whether both writes landed."""
+    sessions = SessionManager(ctx)
+    ok = True
+    for role, text in (("user", user_text), ("assistant", answer)):
+        for attempt in (1, 2):
+            try:
+                await sessions.record_interaction(user_id, role, text)
+                break
+            except Exception as exc:  # noqa: BLE001 - memory is a mirror, not the record
+                if attempt == 2:
+                    ok = False
+                    logger.warning("AI chat turn %s: %s turn not mirrored to session memory (%s)",
+                                   assistant_id, role, type(exc).__name__)
+                else:
+                    await asyncio.sleep(MEMORY_MIRROR_RETRY_SECONDS)
+    return ok
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
@@ -1771,6 +1798,7 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     # after (T18.07, ai_budget). Reset in the finally below.
     scope = ai_budget.SpendScope(ctx, f"chat:{assistant_id}")
     scope_token = spend_scope.set(scope)
+    completed = False
     try:
         # One deadline for the whole turn. Each model call was bounded, but a
         # hung provider times three tool rounds times the fallback ladder kept
@@ -1788,30 +1816,59 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
             ctx, assistant_id, content=content, status_value="completed", model_id=model_id,
             choices=[{"type": c["type"], "id": c["id"]} for c in choices] if choices else None,
         )
-        await SessionManager(ctx).record_interaction(user_id, "user", bundle["messages"][-1]["content"])
-        await SessionManager(ctx).record_interaction(user_id, "assistant", content)
-        await ws_hub.broadcast_user(tenant_id, user_id, {
-            "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
-            "request_id": request_id, "model_id": model_id, "actions": actions,
-            "choices": choices,
-            # unlimited | ok | warning as of the turn's last hosted call; the
-            # chat shows one quiet line for "warning". None: no hosted call.
-            "budget_state": scope.state,
-        })
+        # The completion boundary (AI32-01): the answer is committed and any
+        # tool writes already happened. Nothing after this line may turn the
+        # turn into a failed one: the memory mirror and the completion frame
+        # are best-effort, and the except below leaves a completed row alone.
+        completed = True
+        # The frame first: the person is not kept waiting on the memory mirror.
+        try:
+            await ws_hub.broadcast_user(tenant_id, user_id, {
+                "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
+                "request_id": request_id, "model_id": model_id, "actions": actions,
+                "choices": choices,
+                # unlimited | ok | warning as of the turn's last hosted call; the
+                # chat shows one quiet line for "warning". None: no hosted call.
+                "budget_state": scope.state,
+            })
+        except Exception as exc:  # noqa: BLE001 - the answer is saved; a reload shows it
+            logger.warning("AI chat turn %s: completion frame not sent (%s)", assistant_id, type(exc).__name__)
+        await _mirror_turn_to_memory(ctx, user_id, assistant_id,
+                                     bundle["messages"][-1]["content"], content)
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
     except SpendRefused as refused:
         # The budget stopped the turn BEFORE a model call (T18.07). Said as
         # what it is, never as "unavailable": the person can act on it.
         return await _end_refused_turn(ctx, assistant_id, request_id, refused)
     except Exception as exc:  # noqa: BLE001
+        if completed:
+            # Past the completion boundary: the answer stands (AI32-01).
+            logger.warning("AI chat turn %s: error after completion ignored (%s)",
+                           assistant_id, type(exc).__name__, exc_info=True)
+            return {"message_id": assistant_id, "status": "completed"}
         # Product language only: provider errors ("HTTP 503", "1006", a
         # stack frame) used to reach the user verbatim.
         logger.warning("AI chat turn %s failed: %s", assistant_id, exc, exc_info=True)
         safe_message = "Neoh couldn't complete that response. Your work is saved — try again in a moment."
-        await update_assistant(
+        failed = await update_assistant(
             ctx, assistant_id, content=safe_message, status_value="failed",
-            model_id=MODEL_ID, error_code="AI_RESPONSE_UNAVAILABLE",
+            model_id=MODEL_ID, error_code="AI_RESPONSE_UNAVAILABLE", unless_status="completed",
         )
+        if not failed:
+            # The completed write committed even though its call raised (a
+            # lost COMMIT acknowledgement, a connection reset on release): the
+            # answer and its tool writes stand, so the person must not be told
+            # to try again (AI32-01 review).
+            logger.warning("AI chat turn %s: already completed; error after the commit ignored", assistant_id)
+            try:
+                await ws_hub.broadcast_user(tenant_id, user_id, {
+                    "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
+                    "request_id": request_id, "model_id": MODEL_ID, "actions": [], "choices": [],
+                })
+            except Exception as frame_exc:  # noqa: BLE001 - a reload shows the saved answer
+                logger.warning("AI chat turn %s: completion frame not sent (%s)",
+                               assistant_id, type(frame_exc).__name__)
+            return {"message_id": assistant_id, "status": "completed"}
         await ws_hub.broadcast_user(tenant_id, user_id, {
             "type": "AI_CHAT_ERROR", "version": 1, "message_id": assistant_id,
             "request_id": request_id, "code": "AI_RESPONSE_UNAVAILABLE",
@@ -1844,11 +1901,14 @@ async def _end_refused_turn(ctx: TenantContext, assistant_id: str, request_id: s
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
         await update_assistant(ctx, assistant_id, content=content, status_value="completed",
                                model_id=model_id, error_code=refused.code)
-        await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, {
-            "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
-            "request_id": request_id, "model_id": model_id, "actions": refused.applied,
-            "choices": [], "budget_state": refused.state, "code": refused.code,
-        })
+        try:  # past the completion boundary (AI32-01): the frame is best-effort
+            await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, {
+                "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
+                "request_id": request_id, "model_id": model_id, "actions": refused.applied,
+                "choices": [], "budget_state": refused.state, "code": refused.code,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AI chat turn %s: completion frame not sent (%s)", assistant_id, type(exc).__name__)
         return {"message_id": assistant_id, "status": "degraded", "code": refused.code}
     await update_assistant(ctx, assistant_id, content=refused.message, status_value="failed",
                            model_id=MODEL_ID, error_code=refused.code)
