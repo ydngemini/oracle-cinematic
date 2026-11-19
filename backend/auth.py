@@ -1035,11 +1035,18 @@ async def logout(request: Request, response: Response) -> Response:
     return response
 
 
+class SessionUnverifiable(Exception):
+    """The live-session check could not run (database unreachable)."""
+
+
 async def _session_still_current(payload: dict) -> Optional[bool]:
-    """Is this account token still its account's live session? None when it
-    cannot be checked (no users row, or the database is unreachable) — the
-    caller then trusts the signature, as before: a failed check must never
-    sign a person out (7ca8940)."""
+    """Is this account token still its account's live session?
+
+    None for a token with no users row (environment and demo identities,
+    which carry no uid; their revocation is audit 28.3). Raises
+    SessionUnverifiable when the database cannot be asked: unknowable is
+    neither "signed in" nor "signed out" (audit 28.6) — callers answer 503
+    and keep the cookie, so a failed check never signs a person out (7ca8940)."""
     uid, tenant = payload.get("uid"), payload.get("tenant_id")
     if not uid or not tenant:
         return None
@@ -1050,10 +1057,18 @@ async def _session_still_current(payload: dict) -> Optional[bool]:
             row = await conn.fetchrow(
                 "SELECT session_epoch, is_active FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid",
                 str(uid), str(tenant))
-    except Exception:  # noqa: BLE001 - unknowable is not "signed out"
-        log.warning("session probe could not reach the database; trusting the token")
-        return None
+    except Exception as exc:  # noqa: BLE001 - unknowable is not "signed out"
+        log.warning("session probe could not reach the database (%s)", type(exc).__name__)
+        raise SessionUnverifiable() from None
     return bool(row) and bool(row["is_active"]) and int(row["session_epoch"] or 0) == int(payload.get("sep") or 0)
+
+
+def _session_unverifiable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={"code": "session_unverifiable",
+                "message": "Your session could not be checked right now. Try again shortly."},
+    )
 
 
 @router.get("/session", response_model=SessionStatusResponse)
@@ -1072,7 +1087,17 @@ async def session_status(request: Request, response: Response) -> SessionStatusR
     except HTTPException:
         _clear_session_cookie(response)
         return SessionStatusResponse(authenticated=False)
-    if await _session_still_current(payload) is False:
+    if payload.get("purpose"):
+        # A single-purpose token (a password-reset link) is never a session.
+        _clear_session_cookie(response)
+        return SessionStatusResponse(authenticated=False)
+    try:
+        current = await _session_still_current(payload)
+    except SessionUnverifiable:
+        # Not "authenticated" (it was not proven) and not signed out: 503,
+        # cookie kept; the app retries, then says Neoh cannot be reached.
+        raise _session_unverifiable() from None
+    if current is False:
         _clear_session_cookie(response)
         return SessionStatusResponse(authenticated=False)
 
@@ -1590,16 +1615,20 @@ async def change_password(
 
 
 @router.post("/verify", response_model=VerifyResponse)
-def verify(
+async def verify(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> VerifyResponse:
     """
-    Decode and validate a Bearer JWT.
+    Verify a session token the way protected routes do (audit 28.5): a valid
+    signature, not a single-purpose token (password reset), and still the
+    account's live session (epoch, active). It used to check the signature
+    only, so a reset link or a logged-out session got an identity back.
 
-    Expects:  Authorization: Bearer <token>
+    Expects:  Authorization: Bearer <token> (or the session cookie)
     Returns:  { "agent_id": str, "issued_at": float, "expires_at": float }
-              or 401 on invalid / expired token.
+              401 when invalid, expired, single-purpose or revoked;
+              503 when the live-session check cannot run.
     """
     authorization = authorization or (
         f"Bearer {request.cookies.get('oracle_session')}"
@@ -1614,6 +1643,14 @@ def verify(
 
     raw_token = authorization.removeprefix("Bearer ").strip()
     payload = decode_token(raw_token)
+    if payload.get("purpose"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not a session token.")
+    try:
+        current = await _session_still_current(payload)
+    except SessionUnverifiable:
+        raise _session_unverifiable() from None
+    if current is False:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session has ended. Sign in again.")
 
     return VerifyResponse(
         agent_id=payload["sub"],

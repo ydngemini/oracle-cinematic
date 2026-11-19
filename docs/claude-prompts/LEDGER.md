@@ -4355,6 +4355,28 @@ next_task: "28.3 (owner decision on the operator session registry migration); 28
 updated: 2026-11-18
 ```
 
+#### L17-50 /auth/verify and /auth/session answer only for a live session: a reset link or a revoked session is refused, and an unreachable database is "cannot check", not "signed in" (external audit 28.5, 28.6)
+```yaml
+id: L17-50
+status: tests_pass
+env: local
+evidence_shas: [4e40f0e]   # base; fix in the commit that adds this row
+files: [backend/auth.py, backend/tests/test_auth.py, backend/tests/test_tenant_user_mfa.py]
+tests_run:
+  - {cmd: "read auth.verify and auth.session_status / _session_still_current at 4e40f0e", result: "confirmed 28.5: POST /auth/verify returned identity after decode_token only (no purpose, epoch or is_active check), so a password-reset token or a logged-out session got an answer. Confirmed 28.6: a database error made _session_still_current return None and /auth/session answered authenticated=true (test_session_probe_trusts_the_token_when_the_database_is_down pinned it)", date: 2026-11-18}
+  - {cmd: "the new tests against 4e40f0e's auth.py", result: "red: 3 of 3 (DB down -> authenticated; verify accepted a revoked / deactivated / reset token; session accepted a reset token)", date: 2026-11-18}
+  - {cmd: "after: test_auth + test_tenant_user_mfa 53 passed; related auth tests 115 passed", result: "pass", date: 2026-11-18}
+authz_checked: "/auth/verify now refuses (401) a single-purpose token and a session whose epoch moved or whose account is inactive, and answers 503 session_unverifiable when the check cannot run. /auth/session refuses a purpose token (cookie cleared) and answers 503 session_unverifiable, cookie kept, when the database cannot be reached; the frontend (useSessionRestore) already treats a non-401 as retry-then-'cannot reach Neoh', never as signed out (its 503 test). Tokens without a users row (environment / demo identities) are still trusted by signature here: their revocation is 28.3, open."
+blockers:
+  - "28.3 (environment operator JWTs not server-revocable) and 28.4 (member MFA reset without the actor's step-up) remain open; 28.7 (process-local session inventory) open."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.5, 28.6]
+decision_refs: []
+next_task: "28.7: label the session inventory as per-replica telemetry or replace it; 28.4 step-up for factor resets."
+updated: 2026-11-18
+```
+
 ### L18
 Billing, seats and analytics.
 

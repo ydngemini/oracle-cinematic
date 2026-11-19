@@ -271,7 +271,11 @@ def test_a_wrong_password_never_reaches_the_code_prompt(monkeypatch):
     assert exc.value.status_code == 401 and exc.value.detail == "Invalid agent credentials."
 
 
-def test_a_signed_in_session_status_says_when_setup_is_owed():
+def test_a_signed_in_session_status_says_when_setup_is_owed(monkeypatch):
+    async def live(_payload):
+        return True  # the live-session check itself is covered in test_auth
+
+    monkeypatch.setattr(auth, "_session_still_current", live)
     request = type("R", (), {"cookies": {"oracle_session": _token(mfa_enrolment=True)}})()
     status = asyncio.run(auth.session_status(request, Response()))
     assert status.authenticated is True and status.mfa_enrolment_required is True

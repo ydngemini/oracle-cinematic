@@ -21,6 +21,7 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 import jwt
+import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
@@ -188,7 +189,67 @@ def test_session_probe_rejects_a_deactivated_account(monkeypatch):
     assert result.authenticated is False
 
 
-def test_session_probe_trusts_the_token_when_the_database_is_down(monkeypatch):
-    """A failed check must never sign a person out (7ca8940)."""
-    result, _ = _probe_with_epoch(monkeypatch, db_error=ConnectionError("db down"))
-    assert result.authenticated is True
+def test_session_probe_neither_signs_in_nor_out_when_the_database_is_down(monkeypatch):
+    """Audit 28.6: unknowable is not "authenticated". A failed check still
+    never signs a person out (7ca8940): 503, cookie kept, the app retries."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        _probe_with_epoch(monkeypatch, db_error=ConnectionError("db down"))
+    assert exc.value.status_code == 503 and exc.value.detail["code"] == "session_unverifiable"
+
+
+def _verify_with_epoch(monkeypatch, db_row=None, db_error=None, token_epoch=3, extra=None):
+    from contextlib import asynccontextmanager
+
+    class _Conn:
+        async def fetchrow(self, sql, *args):
+            if db_error:
+                raise db_error
+            return db_row
+
+    @asynccontextmanager
+    async def fake_tx(ctx):
+        yield _Conn()
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+    token = auth._issue_jwt("a@x.test", "aaaaaaaa-0000-4000-8000-00000000000a", "agent",
+                            user_id="bbbbbbbb-0000-4000-8000-00000000000b", session_epoch=token_epoch, extra=extra)
+    return asyncio.run(auth.verify(_request_with_cookie(), authorization=f"Bearer {token}"))
+
+
+def test_verify_answers_only_for_a_live_session(monkeypatch):
+    """Audit 28.5: /auth/verify checked the signature only."""
+    from fastapi import HTTPException
+
+    ok = _verify_with_epoch(monkeypatch, {"session_epoch": 3, "is_active": True})
+    assert ok.agent_id == "a@x.test"
+    for row, extra in (({"session_epoch": 4, "is_active": True}, None),    # logged out elsewhere
+                       ({"session_epoch": 3, "is_active": False}, None),   # deactivated
+                       ({"session_epoch": 3, "is_active": True}, {"purpose": "password_reset"})):
+        with pytest.raises(HTTPException) as exc:
+            _verify_with_epoch(monkeypatch, row, extra=extra)
+        assert exc.value.status_code == 401, (row, extra)
+    with pytest.raises(HTTPException) as exc:
+        _verify_with_epoch(monkeypatch, db_error=ConnectionError("db down"))
+    assert exc.value.status_code == 503
+
+
+def test_session_probe_refuses_a_password_reset_token(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_tx(ctx):
+        raise AssertionError("a purpose token is refused before any lookup")
+        yield
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+    token = auth._issue_jwt("a@x.test", "aaaaaaaa-0000-4000-8000-00000000000a", "agent",
+                            user_id="bbbbbbbb-0000-4000-8000-00000000000b", extra={"purpose": "password_reset"})
+    response = Response()
+    result = asyncio.run(auth.session_status(_request_with_cookie(token), response))
+    assert result.authenticated is False and "Max-Age=0" in response.headers["set-cookie"]
