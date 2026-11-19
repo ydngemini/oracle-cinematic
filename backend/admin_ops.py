@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 import ws_hub
-from auth import active_sessions, DEMO_TENANCY
+from auth import SESSION_INVENTORY_SCOPE, active_sessions, DEMO_TENANCY
 from approval_service import create_approval, decide_approval
 from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
@@ -279,6 +279,7 @@ async def overview(ctx: TenantContext = Depends(require_platform_admin)):
         "totals": totals,
         "tenants": tenants,
         "sessions": active_sessions(),
+        "sessions_scope": SESSION_INVENTORY_SCOPE,
         "ws_groups": ws_hub.connection_counts(),
     }
 
@@ -477,7 +478,10 @@ async def users(ctx: TenantContext = Depends(require_platform_admin)):
                              profile=profile, is_active=None))
 
     merged.sort(key=lambda u: (not u["online"], u["agent_id"]))
-    return {"users": merged, "online": sum(1 for u in merged if u["online"])}
+    # "online" means a recent sign-in on this server (audit 28.7), not a live
+    # session anywhere; sessions_scope says so wherever it is shown.
+    return {"users": merged, "online": sum(1 for u in merged if u["online"]),
+            "sessions_scope": SESSION_INVENTORY_SCOPE}
 
 
 # ---------------------------------------------------------------------------
@@ -790,4 +794,5 @@ async def system(ctx: TenantContext = Depends(require_platform_admin)):
         "firehose_watchers": ws_hub.connection_counts().get(ws_hub.FIREHOSE_TENANT_ID, 0),
         "active_sessions": len(sessions),
         "sessions": sessions,
+        "sessions_scope": SESSION_INVENTORY_SCOPE,
     }
