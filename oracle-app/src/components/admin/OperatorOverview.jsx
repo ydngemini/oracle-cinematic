@@ -19,6 +19,15 @@ import styles from './OperatorOverview.module.css';
 
 const POLL_MS = 60000;
 
+
+// notified_at is set only when an alert email went out (audit 30.3).
+function notificationNote(alert) {
+  if (alert.notified_at) return '';
+  if (alert.notify_error === 'recipient_missing') return ' · nobody was emailed: no alert recipient is set';
+  if (alert.notify_error) return ' · alert email not delivered; it is resent while the problem is still detected';
+  return '';
+}
+
 function useOperatorFeeds() {
   const [feeds, setFeeds] = useState({});
   const fetchAll = useCallback(() => {
@@ -112,7 +121,7 @@ function HealthCard({ data }) {
               <li key={`${a.component}-${a.opened_at}`} className={styles.item}>
                 <span>{componentLabel(a.component)} — {a.summary}</span>
                 <span className={styles.sub}>
-                  opened {relTime(a.opened_at) ?? '—'}{a.notify_error ? ' · alert delivery failed' : ''}
+                  opened {relTime(a.opened_at) ?? '—'}{notificationNote(a)}
                 </span>
               </li>
             ))}
