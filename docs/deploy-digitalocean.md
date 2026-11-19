@@ -42,18 +42,23 @@ deciding facts, from auditing the actual code:
 - The durable job queue (`automation_jobs.py`) claims work with
   `FOR UPDATE SKIP LOCKED` and idempotency-keyed enqueue — already safe
   across replicas.
-- **But** `voice_intel.py` and `reconstruction_worker.py` hold their job
-  queues in an in-process `asyncio.Queue` with **no** cross-replica
-  coordination — a job submitted to one API replica is invisible to
-  another. Scaling the API naively (as App Platform's whole pitch is) would
-  have silently dropped voice/reconstruction work.
+- `voice_intel.py` and `reconstruction_worker.py` used to hold their job
+  queues in an in-process `asyncio.Queue`, invisible to other replicas. They
+  now queue in their own tables (`voice_walkthrough_jobs`,
+  `reconstruction_jobs`), claimed with `FOR UPDATE SKIP LOCKED`.
+- **But** their boot recovery sweeps, the video claim and the hourly
+  disposition enforcer still assume a single background process: a second
+  worker would requeue (and, for reconstructions, release the GPU of) the
+  first one's live jobs. The inventory and the order of fixes are in
+  [worker-background-work-inventory.md](worker-background-work-inventory.md)
+  (audit 30.9).
 
-That last fact is why `ORACLE_PROCESS_ROLE` exists now (`backend/config.py`,
+That is why `ORACLE_PROCESS_ROLE` exists (`backend/config.py`,
 `backend/server.py`): `web` starts the API only; `worker` (or the old
 default, `all`) starts the API plus the scheduler, the durable job queue,
-and the voice/reconstruction/video-studio in-process workers. The worker
-component is pinned at `instance_count: 1` for exactly the reason those two
-subsystems are unsafe to duplicate.
+and the voice/reconstruction/video-studio workers. The worker component is
+pinned at `instance_count: 1` until those single-process assumptions are
+replaced by leases.
 
 ## What stays
 
@@ -364,9 +369,9 @@ applied independently of which image happens to be running.
 | API routes, WebSockets | `api` service (N replicas) | Yes — Postgres LISTEN/NOTIFY |
 | Periodic scheduler (MLS/Bridge sync, mission ticks, outcome attribution, etc.) | `worker` (1 replica) | Yes on its own (idempotency-keyed), but centralized anyway — no reason to run it per web replica |
 | Durable job queue (`automation_jobs.py`) | `worker` (1 replica) | Yes (`FOR UPDATE SKIP LOCKED`), centralized for the same reason |
-| Voice workers | `worker` (1 replica) | **No** — in-process `asyncio.Queue` |
-| Reconstruction workers | `worker` (1 replica) | **No** — in-process `asyncio.Queue` |
-| Video-studio workers | `worker` (1 replica) | Yes (DB-claimed + advisory lock), centralized for consistency |
+| Voice workers | `worker` (1 replica) | **No** — table queue with SKIP LOCKED claims, but the boot recovery sweep has no lease |
+| Reconstruction workers | `worker` (1 replica) | **No** — table queue, but the boot orphan sweep (which releases the recorded GPU) has no lease |
+| Video-studio workers | `worker` (1 replica), feature off | **No** — a queued row is claimed without leaving `queued`, so two claimers can take it; per-process provider semaphore |
 | GPU reconstruction compute | RunPod (external) | N/A — not a DO component |
 
 If load ever requires more than one worker instance, voice_intel.py and

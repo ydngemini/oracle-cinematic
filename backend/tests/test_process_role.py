@@ -1,12 +1,11 @@
 """ORACLE_PROCESS_ROLE — the switch that makes horizontal web scaling safe.
 
-voice_intel.py and reconstruction_worker.py hold their job queues in an
-in-process asyncio.Queue with no cross-replica coordination: a job submitted
-to one horizontally-scaled web replica is invisible to any other. Before this
-variable existed, every replica unconditionally started every worker and
-scheduler, so scaling the web tier on DigitalOcean App Platform (or anywhere
-else) would have silently dropped voice/reconstruction work depending on
-which replica happened to receive it.
+Background work (scheduler, job queue, voice/reconstruction/video workers)
+must not run on horizontally-scaled web replicas: the voice and
+reconstruction workers once held in-process queues, and their boot recovery
+sweeps still assume a single background process
+(docs/worker-background-work-inventory.md, audit 30.9). Before this variable
+existed, every replica unconditionally started every worker and scheduler.
 
 Run in a subprocess, matching test_config_weak_secrets.py: reloading `config`
 in-process cannot undo its module-level env side effects.

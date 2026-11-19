@@ -48,6 +48,10 @@ ROLE = {
     # an unfinalized call, unmetered usage or a lost texting campaign is real.
     "inbound_calls": "important", "billing_meter": "important", "usage_reporting": "important",
     "messaging_registration": "important",
+    # Voice walkthroughs and 3D reconstructions run in the single worker from
+    # their own job tables, which job_queue (automation_jobs) never looked at
+    # (audit 30.9): a dead loop, or a job hung with no lease, was invisible.
+    "media_jobs": "important",
     # Expired data-export archives whose delete keeps failing (audit 29.6).
     "export_cleanup": "important",
 }
@@ -104,8 +108,28 @@ def launch_assessment(components: dict) -> dict:
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
-    "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration", "export_cleanup",
+    "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration", "media_jobs",
+    "export_cleanup",
 )
+
+# Audit 30.9 thresholds. Voice: 2 worker loops, a walkthrough takes minutes;
+# reconstruction: 1 loop, a capture takes 15-60 min. A running job of either
+# kind bumps updated_at every 60 s (voice_intel / reconstruction_worker
+# HEARTBEAT_SECONDS), so 10 silent minutes means its worker loop stopped, not
+# that the work is long (a voice job waiting on the shared whisper lock keeps
+# beating). The intervals stay inside the SQL literals on purpose
+# (test_sql_string_literals_have_balanced_quotes).
+VOICE_QUEUED_MAX_S = 15 * 60
+RECON_QUEUED_MAX_S = 3 * 3600
+_SQL_MEDIA_JOBS = (
+    "SELECT (SELECT EXTRACT(EPOCH FROM now() - min(created_at))::int FROM voice_walkthrough_jobs "
+    "        WHERE status = 'queued') AS voice_oldest_queued_s, "
+    "       (SELECT count(*) FROM voice_walkthrough_jobs WHERE status = 'running' "
+    "        AND updated_at < now() - interval '10 minutes') AS voice_silent, "
+    "       (SELECT EXTRACT(EPOCH FROM now() - min(created_at))::int FROM reconstruction_jobs "
+    "        WHERE status = 'queued') AS recon_oldest_queued_s, "
+    "       (SELECT count(*) FROM reconstruction_jobs WHERE status = 'running' "
+    "        AND updated_at < now() - interval '10 minutes') AS recon_silent")
 
 # Expired export archives still held more than a day after their expiry: the
 # hourly expire_exports has failed to delete them ~24 times (audit 29.6).
@@ -203,6 +227,7 @@ async def _db_components() -> dict[str, dict]:
               FROM automation_jobs WHERE state IN ('queued','dead_letter')
             """)
         mls_rows = [dict(r) for r in await conn.fetch("SELECT * FROM mls_sync_status")]
+        media = dict(await conn.fetchrow(_SQL_MEDIA_JOBS))
         chat = await conn.fetchrow(
             "SELECT count(*) FILTER (WHERE status='failed') AS failed, count(*) AS total "
             "FROM ai_chat_messages WHERE role='assistant' AND created_at > now() - interval '15 minutes'")
@@ -327,6 +352,7 @@ async def _db_components() -> dict[str, dict]:
         out["job_queue"] = _c(DEGRADED, "many jobs failed permanently in the last hour", dead_letter_1h=dead)
     else:
         out["job_queue"] = _c(HEALTHY, "queue moving", ready=ready, oldest_ready_s=oldest, dead_letter_1h=dead)
+    out["media_jobs"] = _media_jobs(media, worker_live=bool(live))
     out["mls"] = _mls(mls_rows)
     failed, total = int(chat["failed"] or 0), int(chat["total"] or 0)
     out["ai"] = (_c(UNAVAILABLE if failed == total else DEGRADED, "Neoh responses are failing",
@@ -360,6 +386,30 @@ def _inbound_calls(unfinalized: int) -> dict:
         return _c(DEGRADED, "inbound calls were never finalized: review them for an unrecorded opt-out",
                   unfinalized=unfinalized)
     return _c(HEALTHY, "inbound calls finalized")
+
+
+def _media_jobs(row: dict, *, worker_live: bool) -> dict:
+    """Audit 30.9: the worker's heartbeat proves the process is up, not that
+    its voice and reconstruction loops are taking work. A backlog counts only
+    while a worker is alive (otherwise `workers` already pages); a job that
+    stopped moving counts either way."""
+    voice_wait = int(row.get("voice_oldest_queued_s") or 0)
+    recon_wait = int(row.get("recon_oldest_queued_s") or 0)
+    voice_silent, recon_silent = int(row.get("voice_silent") or 0), int(row.get("recon_silent") or 0)
+    detail = {"voice_oldest_queued_s": voice_wait, "voice_silent": voice_silent,
+              "recon_oldest_queued_s": recon_wait, "recon_silent": recon_silent}
+    problems = []
+    if voice_silent:
+        problems.append("voice walkthroughs running with no heartbeat (their worker loop stopped)")
+    if recon_silent:
+        problems.append("3D reconstructions running with no heartbeat (their worker loop stopped)")
+    if worker_live and voice_wait > VOICE_QUEUED_MAX_S:
+        problems.append("voice walkthroughs waiting too long")
+    if worker_live and recon_wait > RECON_QUEUED_MAX_S:
+        problems.append("3D reconstructions waiting too long")
+    if problems:
+        return _c(DEGRADED, "; ".join(problems), **detail)
+    return _c(HEALTHY, "voice and 3D jobs moving", **detail)
 
 
 def _export_cleanup(overdue: int) -> dict:

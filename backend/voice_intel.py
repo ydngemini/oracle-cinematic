@@ -3,9 +3,10 @@ Voice Intelligence — field walkthrough audio → transcript → structured dos
 
 Flow:
   mobile POST /api/voice/log-walkthrough/{lead_id}      → 202 immediately
-    → audio staged to local disk (uuid filename, extension whitelist, size cap)
-    → job on an in-process asyncio.Queue (no external broker; ws_hub has the
-      same single-process note — Redis is the seam if we ever scale out)
+    → audio and job stored in the voice_walkthrough_jobs row (migration 0114;
+      extension whitelist, size cap, per-tenant queue cap); the worker claims
+      it with FOR UPDATE SKIP LOCKED. Single-worker assumption: see
+      docs/worker-background-work-inventory.md (audit 30.9).
     → worker: faster-whisper transcription (lazy import, runs in a thread)
         → Bedrock extraction via the existing ml_forge client
         → interaction_logs INSERT through tenant_tx (RLS live, append-only —
@@ -1109,6 +1110,35 @@ async def recover_interrupted_jobs() -> None:
         )
 
 
+#: A running job bumps updated_at this often (audit 30.9), so the media_jobs
+#: health check can tell a long transcription (or one waiting on the shared
+#: whisper lock) from a job whose worker loop stopped.
+HEARTBEAT_SECONDS = max(10.0, float(os.getenv("ORACLE_VOICE_HEARTBEAT_SECONDS", "60") or 60))
+
+
+async def _heartbeat(job_id: str) -> None:
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            async with tenant_tx(_platform_ctx("voice-walkthrough-heartbeat")) as conn:
+                await conn.execute(
+                    "UPDATE voice_walkthrough_jobs SET updated_at = now() "
+                    "WHERE id = $1::uuid AND status = 'running'", job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a missed beat only delays nothing
+            logger.debug("voice walkthrough %s: heartbeat failed", job_id)
+
+
+async def _run_with_heartbeat(job: VoiceJob) -> None:
+    beat = asyncio.create_task(_heartbeat(job.job_id))
+    try:
+        await _run_job(job)
+    finally:
+        beat.cancel()
+        await asyncio.gather(beat, return_exceptions=True)
+
+
 async def _worker_loop(worker_id: int) -> None:
     logger.info("Voice worker %d online.", worker_id)
     while True:
@@ -1126,7 +1156,7 @@ async def _worker_loop(worker_id: int) -> None:
             except asyncio.TimeoutError:
                 pass
             continue
-        await _run_job(job)
+        await _run_with_heartbeat(job)
 
 
 async def start_voice_workers() -> None:
