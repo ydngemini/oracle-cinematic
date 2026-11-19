@@ -189,3 +189,45 @@ def test_realtime_failure_mid_call_hands_inbound_plivo_caller_to_agent(monkeypat
     with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
         asyncio.run(bridge.run())
     assert redirects == ["ai_unavailable"]
+
+
+# ── The approved reason reaches the Qwen engine (audit 34.3) ───────────────
+
+BRIEFING = "Ana asked about 12 Elm St; ask if she would like a showing this week."
+
+
+def _bridge_with_state(state):
+    bridge = PlivoQwenRealtimeBridge(_BridgeWebSocket(), CALL_UUID, _start_event(),
+                                     settings=QwenRealtimeSettings(api_key="secret", workspace_id="ws"))
+    bridge._call_state = state
+    return bridge
+
+
+def test_an_outbound_qwen_call_knows_its_approved_reason():
+    instructions = _bridge_with_state({"direction": "outbound", "briefing": BRIEFING})._session_instructions()
+    assert BRIEFING in instructions
+    assert "do not add to it" in instructions and "beyond what the reason above states" in instructions
+
+
+def test_an_outbound_qwen_call_without_a_briefing_stays_generic():
+    instructions = _bridge_with_state({"direction": "outbound"})._session_instructions()
+    assert instructions == qwen_omni_realtime._system_instructions()
+
+
+def test_an_inbound_call_never_carries_an_outbound_briefing(monkeypatch):
+    import inbound_voice
+
+    monkeypatch.setattr(inbound_voice, "build_inbound_intake_instructions", lambda state: "INBOUND")
+    assert _bridge_with_state({"direction": "inbound", "briefing": BRIEFING})._session_instructions() == "INBOUND"
+
+
+def test_both_engines_use_the_same_briefing_contract():
+    import call_briefing
+    import elevenlabs_realtime
+
+    state = {"direction": "outbound", "briefing": BRIEFING + " " + "x" * 1000}
+    eleven, _first = elevenlabs_realtime.outbound_instructions("BASE", state)
+    qwen = _bridge_with_state(state)._session_instructions()
+    addendum = call_briefing.briefing_instructions(state)
+    assert addendum in eleven and addendum in qwen
+    assert len(call_briefing.approved_briefing(state)) == call_briefing.BRIEFING_MAX_CHARS

@@ -348,6 +348,14 @@ class QwenOmniRealtimeBridge:
         await self.qwen_websocket.send(json.dumps(event, separators=(",", ":")))
 
     def _session_instructions(self) -> str:
+        """The base instructions, plus the approved reason on an outbound call
+        (audit 34.3: Qwen opened outbound calls without knowing why)."""
+        import voice_opt_out
+        from call_briefing import briefing_instructions
+
+        state = getattr(self, "_call_state", None)
+        if voice_opt_out.is_outbound(state):
+            return _system_instructions() + briefing_instructions(state)
         return _system_instructions()
 
     async def _on_transcript_completed(self, role: str, transcript: str) -> None:

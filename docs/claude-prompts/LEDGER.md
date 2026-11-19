@@ -1862,6 +1862,28 @@ decision_refs: []
 next_task: "27.2/27.8: voice socket lifecycle."
 updated: 2026-11-16
 ```
+#### L09-14 An outbound call on the Qwen engine knows its approved reason, by the same contract as ElevenLabs (external audit 34.3)
+```yaml
+id: L09-14
+status: tests_pass
+env: local
+evidence_shas: [f087e31]   # base; fix in the commit that adds this row
+files: [backend/call_briefing.py, backend/qwen_omni_realtime.py, backend/elevenlabs_realtime.py, backend/tests/test_plivo_qwen_realtime.py]
+tests_run:
+  - {cmd: "read qwen_omni_realtime._session_instructions, elevenlabs_realtime.outbound_instructions and plivo_call_handler at f087e31", result: "confirmed 34.3: plivo_call_handler stores the approved command's reason as state['briefing'] and ElevenLabs puts it in its prompt, but the Qwen bridges' outbound instructions were the generic _system_instructions(): a Qwen outbound call opened without knowing why it was calling", date: 2026-11-19}
+  - {cmd: "the new tests against f087e31's qwen_omni_realtime.py", result: "red: 2 of 4 (the outbound Qwen prompt lacked the briefing; the engines did not share it)", date: 2026-11-19}
+  - {cmd: "after: test_plivo_qwen_realtime + test_elevenlabs_realtime 40 passed; voice engine tests 64 passed before the new cases", result: "pass", date: 2026-11-19}
+authz_checked: "call_briefing.briefing_instructions is the one contract: the approved reason (capped at 800 characters), the goal (interest in the home, a showing) and a limit (nothing about the home, its price, terms or an offer beyond the approved reason). ElevenLabs and Qwen (base bridge; the Twilio and Plivo subclasses use it for every non-inbound call) append it only on an outbound call; inbound intake is unchanged; no briefing keeps the generic prompt. The ElevenLabs prompt gains the limit sentence."
+blockers:
+  - "Not tested on a live call: whether the model keeps to the briefing (no hallucinated facts or offers) is a prompt instruction, not enforced; a live Qwen outbound call needs the owner's approval (paid call to a real number)."
+  - "Twilio outbound calls carry no briefing in their state today (only the Plivo path stores it), so they stay generic."
+  - "Not deployed (C4.4)."
+audit_refs: [34.3]
+decision_refs: []
+next_task: "34.6: a durable finalization intent for inbound calls."
+updated: 2026-11-19
+```
+
 ### L10
 Communications and calendars.
 

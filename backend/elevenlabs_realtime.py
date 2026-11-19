@@ -155,14 +155,12 @@ def outbound_instructions(base: str, state: dict[str, Any]) -> tuple[str, Option
         "you have noted something or will pass it along; suggest they tell their agent directly. "
         "You cannot book or hold times: their agent will follow up to confirm."
     )
-    briefing = str(state.get("briefing") or "").strip()[:800]
-    if not briefing:
+    from call_briefing import briefing_instructions
+
+    addendum = briefing_instructions(state)  # the same contract as Qwen (34.3)
+    if not addendum:
         return prompt, None
-    prompt += (
-        f"\n\nWhy you are calling (approved by the agent; do not add to it): {briefing}\n"
-        "Goal: find out whether they are interested in the home and, if so, whether they "
-        "would like a showing."
-    )
+    prompt += addendum
     first = "Hi, thanks for picking up. I'm calling about a home that may be a good fit for you. Is now a good time?"
     return prompt, first
 
