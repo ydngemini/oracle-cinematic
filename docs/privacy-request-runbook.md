@@ -66,7 +66,9 @@ storage:
 
 Passwords, provider credentials, link tokens and lookup hashes are never
 included. Downloading needs the password again. The archive is deleted after
-7 days (`expire_exports`). Every request and download is in the audit
+7 days (`expire_exports`); an archive no request points to any more is
+deleted by the hourly orphan scan, and one still held a day past expiry
+raises the `export_cleanup` alert. Every request and download is in the audit
 ledger.
 
 ## 4. Closure and erasure (operators)

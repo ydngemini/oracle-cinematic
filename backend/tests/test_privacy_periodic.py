@@ -34,12 +34,17 @@ def test_privacy_task_enforces_the_published_schedule(monkeypatch):
     monkeypatch.setattr(connection, "tenant_tx", fake_tx)
     monkeypatch.setattr(privacy_lifecycle, "start_due_erasures", no_erasures)
     monkeypatch.setattr(privacy_export, "expire_exports", no_exports)
+
+    async def orphans():
+        return {"orphans_deleted": 2}
+
+    monkeypatch.setattr(privacy_export, "sweep_orphan_exports", orphans)
     monkeypatch.setenv("ORACLE_AUDIT_RETENTION_DAYS", "800")
     monkeypatch.setenv("ORACLE_EXPIRED_TOKEN_RETENTION_DAYS", "30")
 
     out = asyncio.run(periodic._privacy_lifecycle_task())
-    assert out == {"erasures_started": 1, "exports_expired": 1, "swept": {"client_portals": 2},
-                   "audit_rows_expired": 5}
+    assert out == {"erasures_started": 1, "exports_expired": 1, "export_orphans": {"orphans_deleted": 2},
+                   "swept": {"client_portals": 2}, "audit_rows_expired": 5}
     sweep = next(a for s, a in calls if "privacy_retention_sweep" in s)
     assert sweep == (30, 90, 1826, 2557)
     audit = next(a for s, a in calls if "privacy_expire_audit" in s)

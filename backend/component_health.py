@@ -48,6 +48,8 @@ ROLE = {
     # an unfinalized call, unmetered usage or a lost texting campaign is real.
     "inbound_calls": "important", "billing_meter": "important", "usage_reporting": "important",
     "messaging_registration": "important",
+    # Expired data-export archives whose delete keeps failing (audit 29.6).
+    "export_cleanup": "important",
 }
 
 # Launch readiness reads these same states (external audit 30.2): it used to
@@ -102,8 +104,14 @@ def launch_assessment(components: dict) -> dict:
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
-    "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration",
+    "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration", "export_cleanup",
 )
+
+# Expired export archives still held more than a day after their expiry: the
+# hourly expire_exports has failed to delete them ~24 times (audit 29.6).
+_SQL_EXPORT_CLEANUP = (
+    "SELECT count(*) AS overdue FROM privacy_operations WHERE kind = 'export' "
+    "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '1 day'")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -221,6 +229,7 @@ async def _db_components() -> dict[str, dict]:
             "SELECT count(*) AS unfinalized FROM inbound_voice_calls "
             "WHERE transcript_status='active' AND (ended_at < now() - interval '10 minutes' "
             "OR started_at < now() - interval '2 hours')")
+        exports = await conn.fetchrow(_SQL_EXPORT_CLEANUP)
         # BILL-001: delivered speed-to-lead engagements still unmetered an hour
         # on — the sweep re-meters every 15 minutes, so these are ones it
         # could not fix.
@@ -332,6 +341,7 @@ async def _db_components() -> dict[str, dict]:
     out["email_outbox"] = (_c(DEGRADED, "emails waiting or with unknown delivery", unknown=unknown, stuck=stuck)
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
+    out["export_cleanup"] = _export_cleanup(int(exports["overdue"] or 0))
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
     out["usage_reporting"] = _usage_reporting(usage_rep)
     out["messaging_registration"] = _messaging_registration(dict(registration))
@@ -350,6 +360,16 @@ def _inbound_calls(unfinalized: int) -> dict:
         return _c(DEGRADED, "inbound calls were never finalized: review them for an unrecorded opt-out",
                   unfinalized=unfinalized)
     return _c(HEALTHY, "inbound calls finalized")
+
+
+def _export_cleanup(overdue: int) -> dict:
+    """Audit 29.6: an export archive past its expiry is personal data kept
+    longer than promised. expire_exports retries hourly; a day of failures
+    means storage refuses the delete and a person must look."""
+    if overdue:
+        return _c(DEGRADED, "expired data exports could not be deleted for over a day "
+                  "(the archives still hold personal data)", overdue=overdue)
+    return _c(HEALTHY, "expired data exports deleted")
 
 
 def _outbound_opt_outs() -> dict:

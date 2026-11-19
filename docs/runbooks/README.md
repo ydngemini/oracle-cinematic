@@ -23,6 +23,7 @@ To prove alerts reach a person (required before go-live, audit 30.3): Operator o
 | `email_outbox` | "Some emails are waiting to send." | [email-provider-down](email-provider-down.md) | outbox `queued` drains; no `delivery_unknown` growth |
 | `valuation_providers` · `property_harvesters` · `market_data` | Valuations, public-record facts or market figures say "unavailable" for a source | [property-data-down](property-data-down.md) | the component is HEALTHY (valuations: a recorded successful call) |
 | `platform_email_relay` | "Some emails may not be sending right now." | [email-provider-down](email-provider-down.md) | a send succeeds; `consecutive_failures` back to 0 |
+| `export_cleanup` | Nothing visible. An expired data-export archive is still in storage a day past expiry, so personal data is kept longer than promised | [object-storage-down](object-storage-down.md): the hourly delete is refused (credentials, bucket policy). The operation's `result.artifact_delete_pending` names the error | `export_cleanup` HEALTHY: the next hourly run deleted it |
 | `mls` | "Listing data may be out of date." | [mls-provider-down](mls-provider-down.md) (legacy, MLS out of scope) · [MLS production runbook](../mls-production-runbook.md) | the feed shows READY; `last_success_at` recent |
 
 ## Failures without a dedicated alert component

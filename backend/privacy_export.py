@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -451,6 +452,75 @@ async def expire_exports() -> int:
                 "WHERE id=$1", row["id"])
         expired += 1
     return expired
+
+
+EXPORT_PREFIX = "privacy/exports/"
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# An export archive, or the staging copy a filesystem backend leaves behind
+# when it dies mid-write (object_storage.put_file: <key>.partial).
+_EXPORT_KEY = re.compile(rf"privacy/exports/({_UUID})/({_UUID})\.zip(\.partial)?")
+ORPHAN_SCAN_LIMIT = 5000
+
+
+async def sweep_orphan_exports() -> dict:
+    """Delete export archives that no operation row points to (audit 29.6).
+
+    expire_exports finds an archive only through its row, so an archive whose
+    row was swept by retention, or whose build failed after the upload, would
+    hold personal data with no expiry. This lists privacy/exports/ and deletes
+    an archive only when all of these hold:
+      * the session really has platform power (app_is_platform_admin()): a
+        platform context that fell back to the request pool sees no rows, and
+        would otherwise read every live archive as an orphan;
+      * the key's tenant exists in THIS database, so a bucket shared with, or
+        mistakenly pointed at, another environment loses nothing;
+      * no row points to the key, and the export is not requested or running
+        (an export still being built may have uploaded before its row records
+        the key). Kept rows past expiry are expire_exports' job.
+    A key that does not look like an export archive is counted, never deleted."""
+    import object_storage
+
+    if not object_storage.is_configured():
+        return {"skipped": "storage_not_configured"}
+    keys = await asyncio.to_thread(object_storage.list_prefix, EXPORT_PREFIX, ORPHAN_SCAN_LIMIT)
+    parsed = {k: (m.group(1), m.group(2)) for k in keys if (m := _EXPORT_KEY.fullmatch(k))}
+    rows: dict[str, Any] = {}
+    known_tenants: set[str] = set()
+    if parsed:
+        async with tenant_tx(_platform_ctx()) as conn:
+            if not await conn.fetchval("SELECT app_is_platform_admin()"):
+                log.error("export orphan scan skipped: the platform context has no platform power "
+                          "(platform database login unavailable?); deleting now could remove live archives")
+                return {"skipped": "no_platform_power", "scanned": len(keys)}
+            known_tenants = {r["id"] for r in await conn.fetch(
+                "SELECT id::text AS id FROM tenants WHERE id = ANY($1::uuid[])",
+                sorted({t for t, _ in parsed.values()}))}
+            for r in await conn.fetch(
+                    "SELECT id::text AS id, artifact_key, state IN ('requested','running') AS building "
+                    "FROM privacy_operations WHERE id = ANY($1::uuid[])",
+                    sorted({op for _, op in parsed.values()})):
+                rows[r["id"]] = r
+    deleted = failed = kept = unknown_tenant = 0
+    for key, (tenant_id, op_id) in parsed.items():
+        if tenant_id not in known_tenants:
+            unknown_tenant += 1
+            continue
+        row = rows.get(op_id)
+        if row is not None and (row["artifact_key"] == key or row["building"]):
+            kept += 1
+            continue
+        try:
+            await asyncio.to_thread(object_storage.delete_object, key)
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001 - retried on the next scan
+            failed += 1
+            log.warning("orphaned export archive could not be deleted yet (%s)", type(exc).__name__)
+    out = {"scanned": len(keys), "kept": kept, "orphans_deleted": deleted, "orphans_failed": failed,
+           "unknown_tenant": unknown_tenant, "unrecognised": len(keys) - len(parsed),
+           "truncated": len(keys) >= ORPHAN_SCAN_LIMIT}
+    if deleted or failed or unknown_tenant or out["unrecognised"] or out["truncated"]:
+        log.warning("export orphan scan: %s", json.dumps(out))
+    return out
 
 
 async def _export_job(payload: dict, reporter) -> dict:

@@ -804,13 +804,19 @@ async def _privacy_lifecycle_task() -> dict:
     import json as _json
 
     from db.connection import tenant_tx
-    from privacy_export import expire_exports
+    from privacy_export import expire_exports, sweep_orphan_exports
     from privacy_lifecycle import _platform_ctx, start_due_erasures
     from retention_policy import RetentionCategory as R
     from retention_policy import policy_for
 
     started = await start_due_erasures()
     expired = await expire_exports()
+    # Archives no row points to (audit 29.6): expire_exports cannot see them.
+    try:
+        orphans = await sweep_orphan_exports()
+    except Exception as exc:  # noqa: BLE001 - storage trouble must not skip the retention sweep
+        logger.warning("export orphan scan failed (%s)", type(exc).__name__)
+        orphans = {"error": type(exc).__name__}
     from privacy_requests import expire_subject_directives
 
     try:
@@ -832,9 +838,10 @@ async def _privacy_lifecycle_task() -> dict:
     from privacy_lifecycle import emit_event
 
     emit_event("retention.purge_executed", exports_expired=expired, audit_rows_expired=int(audit_expired or 0),
+               export_orphans_deleted=int(orphans.get("orphans_deleted") or 0),
                subject_directives_expired=directives_expired,
                **{f"swept_{k}": int(v) for k, v in (swept or {}).items()})
-    return {"erasures_started": len(started), "exports_expired": expired,
+    return {"erasures_started": len(started), "exports_expired": expired, "export_orphans": orphans,
             "swept": swept, "audit_rows_expired": audit_expired}
 
 
