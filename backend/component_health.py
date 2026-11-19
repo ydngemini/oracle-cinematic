@@ -44,7 +44,58 @@ ROLE = {
     "property_harvesters": "optional", "market_data": "optional", "valuation_providers": "optional",
     # The platform email relay's own last sends (0164, L10-11 / L19-06).
     "platform_email_relay": "optional",
+    # Listed so the snapshot and the launch gate agree on them (30.2 review):
+    # an unfinalized call, unmetered usage or a lost texting campaign is real.
+    "inbound_calls": "important", "billing_meter": "important", "usage_reporting": "important",
+    "messaging_registration": "important",
 }
+
+# Launch readiness reads these same states (external audit 30.2): it used to
+# look for DOWN / UNHEALTHY / FAILED, which nothing here emits, so a core
+# service reporting UNAVAILABLE, AUTH_FAILED or STALE passed the gate.
+KNOWN_STATES = frozenset({HEALTHY, DEGRADED, UNAVAILABLE, RATE_LIMITED, AUTH_FAILED, STALE,
+                          RECOVERING, UNKNOWN, NOT_CONFIGURED})
+NOT_WORKING = frozenset({UNAVAILABLE, AUTH_FAILED, STALE})
+REDUCED = frozenset({DEGRADED, RATE_LIMITED, RECOVERING})
+
+
+def role_of(name: str) -> str:
+    """A component's role; one default for the snapshot and the launch gate."""
+    return ROLE.get(name, "important")
+
+
+def launch_assessment(components: dict) -> dict:
+    """Which components stop a go-live and which only warn, by state and role.
+
+    Blocking: a core or important component that is not working
+    (UNAVAILABLE / AUTH_FAILED / STALE); a core one that is UNKNOWN or
+    NOT_CONFIGURED; any state this module does not define. Warning: reduced
+    function (DEGRADED / RATE_LIMITED / RECOVERING) anywhere; an optional
+    component not working or UNKNOWN; an important one UNKNOWN. A component
+    without a ROLE entry counts as important. Labels are "name=STATE"."""
+    blocking: list[str] = []
+    warning: list[str] = []
+    if not isinstance(components, dict):
+        return {"blocking": ["components=MALFORMED"], "warning": []}
+    for name, comp in sorted(components.items()):
+        state = str((comp if isinstance(comp, dict) else {}).get("state") or "").upper()
+        role = role_of(name)
+        label = f"{name}={state or 'MISSING'}"
+        if state == HEALTHY:
+            continue
+        if state not in KNOWN_STATES:
+            blocking.append(label)
+        elif state == NOT_CONFIGURED:
+            if role == "core":
+                blocking.append(label)
+        elif state in NOT_WORKING:
+            (warning if role == "optional" else blocking).append(label)
+        elif state == UNKNOWN:
+            (blocking if role == "core" else warning).append(label)
+        else:  # REDUCED
+            warning.append(label)
+    return {"blocking": blocking, "warning": warning}
+
 
 #: The components read from Postgres in _db_components, in one place (the
 #: unknown/unavailable fallbacks used to repeat this list three times).
@@ -502,7 +553,7 @@ async def _snapshot() -> dict:
     components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
                   "outbound_opt_outs": _outbound_opt_outs()}
     for name, comp in components.items():
-        comp["role"] = ROLE.get(name, "optional")
+        comp["role"] = role_of(name)
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]
     # An optional component that cannot be observed (valuation providers keep
     # no outcome record) is reported, not counted against the whole system.

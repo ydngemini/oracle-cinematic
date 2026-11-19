@@ -6,8 +6,12 @@ What goes in: every table privacy_data_map classifies as the brokerage's
 rows point at, plus a manifest with row counts and a SHA-256 per file.
 
 What never goes in: secrets (provider credentials, webhook secrets, OAuth
-verifiers), capability-token hashes, password hashes, HMAC lookup indexes,
-raw binary columns. The manifest lists every omission and why.
+verifiers), capability-token hashes, password hashes, HMAC lookup indexes.
+The manifest lists every omission and why. Binary columns go in base64-encoded
+(BINARY) or decrypted (DECRYPT); one that is neither refuses the export, as
+does a missing master key (audit 29.5): an archive that silently lacks sealed
+customer data is not an export. The manifest's `completeness` is `complete`,
+or `partial_media` when some media could not be included.
 
 Where it goes: private object storage under privacy/exports/{tenant}/, never
 a public URL; downloaded only by a brokerage owner who re-enters their
@@ -28,6 +32,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
+
+import asyncpg
 
 from db.connection import tenant_tx
 from privacy_data_map import TABLES, Disposition
@@ -79,7 +85,34 @@ DECRYPT: dict[str, dict[str, str]] = {
     # 0168 (T11.03): the reason for a decision that a public record is a
     # linked client's house, only ever stored sealed.
     "property_match_decisions": {"reason_ciphertext": "sealed_reason"},
+    # 0006: sealed contact blobs (audit 29.5: these were dropped from every
+    # export as plain binary columns). clients.encrypted_contact has no writer
+    # today; a row that ever holds one is exported, not silently skipped.
+    "leads": {"encrypted_payload": "sealed_payload"},
+    "clients": {"encrypted_contact": "sealed_contact"},
+    "ai_record_attachments": {"extracted_text_ciphertext": "extracted_text"},
 }
+# Binary columns exported base64-encoded: table -> {column: (output name, sealed)}.
+# A sealed one is decrypted with pgp_sym_decrypt_bytea first.
+BINARY: dict[str, dict[str, tuple[str, bool]]] = {
+    "ai_record_attachments": {"bytes_ciphertext": ("data_base64", True)},
+    "voice_walkthrough_jobs": {"audio": ("audio_base64", False)},
+}
+
+
+class ExportIncomplete(RuntimeError):
+    """The archive would leave out customer data it should hold (audit 29.5):
+    no master key to open sealed columns, or a binary column nobody decided
+    how to export, or a sealed value the key cannot open. A missing key is
+    refused before anything is written; the others stop mid-archive and the
+    temporary file is deleted, so nothing is ever uploaded. Terminal, because
+    a retry cannot fix configuration, code or stored data."""
+
+    job_terminal = True
+
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(f"{code}: {detail}" if detail else code)
+        self.job_error_code = code
 _MAX_MEDIA_BYTES = int(os.getenv("ORACLE_EXPORT_MAX_MEDIA_BYTES", str(2 * 1024 ** 3)))
 
 
@@ -89,10 +122,15 @@ def exported_tables() -> list[str]:
     return sorted(set(names) | set(_EXTRA_TABLES))
 
 
+def _omit_by_name(column: str) -> bool:
+    """Never exported, by policy: hashes, secrets, verifiers, lease tokens."""
+    return column in _OMIT_COLUMNS or column.endswith(_OMIT_SUFFIXES)
+
+
 def _omit(column: str, dtype: str) -> bool:
-    if column in _OMIT_COLUMNS or column.endswith(_OMIT_SUFFIXES):
-        return True
-    return dtype == "bytea"
+    """Not exported as stored: omitted by policy, or binary (a binary column is
+    exported only through DECRYPT / BINARY; any other one refuses the export)."""
+    return _omit_by_name(column) or dtype == "bytea"
 
 
 def _default(value: Any) -> Any:
@@ -151,9 +189,13 @@ async def build_export(operation_id: str) -> dict:
     tenant_id = str(op["tenant_id"])
     params = json.loads(op["params"]) if isinstance(op["params"], str) else (op["params"] or {})
     master = os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "")
+    if not master:
+        # Without it every sealed column (contacts, notes, chat, transcripts)
+        # would be left out of an archive that still said "succeeded".
+        raise ExportIncomplete("master_key_missing", "sealed customer data cannot be opened")
     from crypto import derive_tenant_key
 
-    key = derive_tenant_key(tenant_id, master) if master else None
+    key = derive_tenant_key(tenant_id, master)
 
     manifest: dict[str, Any] = {
         "format": "neoh-brokerage-export/1", "operation_id": operation_id, "tenant_id": tenant_id,
@@ -166,7 +208,6 @@ async def build_export(operation_id: str) -> dict:
 
     fd, path = tempfile.mkstemp(prefix="neoh-export-", suffix=".zip")
     os.close(fd)
-    media_keys: list[str] = []
     try:
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             for table in exported_tables():
@@ -176,12 +217,27 @@ async def build_export(operation_id: str) -> dict:
                 manifest["files"][f"tables/{table}.jsonl"] = {"rows": info["rows"], "sha256": info["sha256"]}
                 if info["omitted"]:
                     manifest["omitted_columns"][table] = info["omitted"]
-                media_keys.extend(info.get("media_keys", []))
+            # The files erasure would delete are the files the export carries
+            # (one discovery, privacy_lifecycle._object_keys): photos, hosted
+            # messaging documents, reconstructions, and contract PDFs in the
+            # vault. property_media alone left the documents out (29.5 review).
+            from privacy_lifecycle import _object_keys
+
+            async with tenant_tx(pctx) as conn:
+                await conn.fetchval("SELECT privacy_begin_read($1)", operation_id)
+                media_keys, vault_keys = await _object_keys(conn, tenant_id)
             if params.get("include_media", True) and object_storage.is_configured():
-                manifest["media"] = await asyncio.to_thread(_export_media, archive, sorted(set(media_keys)))
-            elif media_keys:
-                manifest["media"] = {"included": 0, "not_included": len(media_keys),
+                manifest["media"] = await asyncio.to_thread(_export_media, archive, media_keys, vault_keys)
+            elif media_keys or vault_keys:
+                manifest["media"] = {"included": 0, "not_included": len(media_keys) + len(vault_keys),
                                      "reason": "media export disabled or storage unavailable"}
+            # Every table and column is in, or the export refused above. What
+            # can still be short is media: say so instead of implying a whole
+            # archive (audit 29.5).
+            media = manifest["media"] or {}
+            short = (media.get("not_included") or 0) + (media.get("skipped_over_size_cap") or 0) \
+                + (media.get("unreadable") or 0)
+            manifest["completeness"] = "partial_media" if short else "complete"
             manifest_bytes = json.dumps(manifest, indent=2, default=_default).encode()
             archive.writestr("manifest.json", manifest_bytes)
             archive.writestr("README.txt", _README)
@@ -203,15 +259,16 @@ async def build_export(operation_id: str) -> dict:
             operation_id, artifact_key, expires)
         await _finish_operation(conn, operation_id, state="succeeded",
                                 result={"rows": rows, "tables": len(manifest["files"]), "bytes": size,
-                                        "sha256": digest, "media": manifest["media"]},
+                                        "sha256": digest, "media": manifest["media"],
+                                        "completeness": manifest["completeness"]},
                                 receipt={"sha256": digest, "expires_at": expires.isoformat()})
     from privacy_lifecycle import emit_event
 
     emit_event("export.completed", operation_id=operation_id, tenant_id=tenant_id, rows=rows, bytes=size)
-    return {"state": "succeeded", "rows": rows, "sha256": digest}
+    return {"state": "succeeded", "rows": rows, "sha256": digest, "completeness": manifest["completeness"]}
 
 
-async def _export_table(pctx, operation_id: str, table: str, key: Optional[str], archive) -> Optional[dict]:
+async def _export_table(pctx, operation_id: str, table: str, key: str, archive) -> Optional[dict]:
     async with tenant_tx(pctx) as conn:
         await conn.fetchval("SELECT privacy_begin_read($1)", operation_id)
         cols = await conn.fetch(
@@ -220,61 +277,101 @@ async def _export_table(pctx, operation_id: str, table: str, key: Optional[str],
             "AND NOT a.attisdropped ORDER BY a.attnum", table)
         if not cols or not any(c["attname"] == "tenant_id" for c in cols):
             return None
-        decrypt = DECRYPT.get(table, {}) if key else {}
+        decrypt = DECRYPT.get(table, {})
+        binary = BINARY.get(table, {})
         select, omitted = [], []
+        uses_key = False
         for c in cols:
             name, dtype = c["attname"], c["t"]
             if name in decrypt:
+                uses_key = True
                 select.append(f"CASE WHEN {_q(name)} IS NULL THEN NULL ELSE "
                               f"pgp_sym_decrypt({_q(name)}, $2) END AS {_q(decrypt[name])}")
-            elif _omit(name, dtype):
+            elif name in binary:
+                out, sealed = binary[name]
+                uses_key = uses_key or sealed
+                value = f"pgp_sym_decrypt_bytea({_q(name)}, $2)" if sealed else _q(name)
+                select.append(f"encode({value}, 'base64') AS {_q(out)}")
+            elif _omit_by_name(name):
                 omitted.append(name)
+            elif dtype == "bytea":
+                # A sealed or binary column nobody mapped: refuse rather than
+                # ship an archive that silently lacks it (audit 29.5).
+                raise ExportIncomplete("unexported_column", f"{table}.{name}")
             else:
                 select.append(_q(name))
         tid_type = next(c["t"] for c in cols if c["attname"] == "tenant_id")
         sql = f"SELECT {', '.join(select)} FROM public.{_q(table)} WHERE tenant_id = $1::{tid_type}"
         args: list[Any] = [str(await conn.fetchval("SELECT app_current_tenant()"))]
-        if decrypt:
+        if uses_key:
             args.append(key)
-        else:
-            sql = sql.replace("$2", "NULL")
         hasher = hashlib.sha256()
         rows = 0
-        media_keys: list[str] = []
+        # A binary row can be ~16 MiB once base64-encoded (12 MiB attachments,
+        # 25 MiB audio): fetch those tables a few rows at a time, not 1000.
+        prefetch = 4 if binary else 1000
         with archive.open(f"tables/{table}.jsonl", "w", force_zip64=True) as member:
-            async for record in conn.cursor(sql, *args, prefetch=1000):
-                data = dict(record)
-                if table == "property_media" and data.get("s3_key"):
-                    media_keys.append(str(data["s3_key"]))
-                line = (json.dumps(data, default=_default, ensure_ascii=False) + "\n").encode()
-                member.write(line)
-                hasher.update(line)
-                rows += 1
-    return {"rows": rows, "sha256": hasher.hexdigest(), "omitted": omitted, "media_keys": media_keys}
+            try:
+                async for record in conn.cursor(sql, *args, prefetch=prefetch):
+                    line = (json.dumps(dict(record), default=_default, ensure_ascii=False) + "\n").encode()
+                    member.write(line)
+                    hasher.update(line)
+                    rows += 1
+            except asyncpg.PostgresError as exc:
+                # pgcrypto's "Wrong key or corrupt data" (39000): a sealed value
+                # this key cannot open. Name where, and do not retry (29.5).
+                if getattr(exc, "sqlstate", None) == "39000":
+                    sealed = sorted(set(decrypt) | {c for c, (_, s_) in binary.items() if s_})
+                    raise ExportIncomplete("undecryptable", f"{table}: {', '.join(sealed)}") from None
+                raise
+    return {"rows": rows, "sha256": hasher.hexdigest(), "omitted": omitted}
 
 
 def _q(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _export_media(archive, keys: list[str]) -> dict:
+def _vault_reader():
+    """Read a contract-vault PDF: the vault's own S3 client when it has one
+    (legacy AWS), otherwise object storage, where BotoCompatibleStore puts it."""
+    import object_storage
+
+    try:
+        from contract_vault import SovereignVault
+
+        vault = SovereignVault()
+    except Exception:  # noqa: BLE001 - every vault key is then counted unreadable
+        return None
+    client = vault.s3_client
+    if hasattr(client, "get_object"):
+        return lambda key: client.get_object(Bucket=vault.bucket_name, Key=key)["Body"].read()
+    return object_storage.get_bytes
+
+
+def _export_media(archive, keys: list[str], vault_keys: tuple[str, ...] | list[str] = ()) -> dict:
     import object_storage
 
     included = skipped = failed = 0
     total = 0
-    for key in keys:
+    read_vault = _vault_reader() if vault_keys else None
+    sources = [(key, f"media/{key}", object_storage.get_bytes) for key in keys]
+    sources += [(key, f"documents/{key}", read_vault) for key in vault_keys]
+    for key, member, read in sources:
         try:
-            data = object_storage.get_bytes(key)
+            if read is None:
+                raise OSError("contract vault unavailable")
+            data = read(key)
         except Exception:  # noqa: BLE001 - listed, never silently dropped
             failed += 1
             continue
         if total + len(data) > _MAX_MEDIA_BYTES:
             skipped += 1
             continue
-        archive.writestr(f"media/{key}", data)
+        archive.writestr(member, data)
         total += len(data)
         included += 1
-    return {"included": included, "bytes": total, "skipped_over_size_cap": skipped, "unreadable": failed}
+    return {"included": included, "bytes": total, "skipped_over_size_cap": skipped, "unreadable": failed,
+            "documents": len(vault_keys)}
 
 
 def _sha256_file(path: str) -> str:
@@ -347,10 +444,11 @@ async def _export_job(payload: dict, reporter) -> dict:
 
         from privacy_lifecycle import emit_event
 
+        reason = getattr(exc, "job_error_code", None) or type(exc).__name__
         async with tenant_tx(_platform_ctx()) as conn:
             await _finish_operation(conn, op_id, state="failed", result={},
-                                    error=f"export failed: {type(exc).__name__}")
-        emit_event("export.failed", operation_id=op_id, reason_code=type(exc).__name__)
+                                    error=f"export failed: {reason}")
+        emit_event("export.failed", operation_id=op_id, reason_code=reason)
         raise
 
 
@@ -375,11 +473,15 @@ _README = """Neoh brokerage data export
 
 tables/<name>.jsonl   One JSON object per line, one file per table. Encrypted
                       contact details, chat messages and call transcripts are
-                      decrypted. Timestamps are ISO-8601 UTC.
+                      decrypted; attachment bytes and recorded audio are
+                      base64 text. Timestamps are ISO-8601 UTC.
 media/<key>           Photos, video and documents the records point at.
+documents/<key>       Contract PDFs from the contract vault.
 manifest.json         Row counts, a SHA-256 per file, and every column or table
                       deliberately left out (passwords, provider credentials,
                       link tokens, lookup hashes) with the reason.
+                      "completeness" is "complete", or "partial_media" when
+                      some media files could not be included (see "media").
 
 This archive contains personal information about your clients. Store it as
 securely as you store your CRM. Neoh deletes its copy of this archive after 7
