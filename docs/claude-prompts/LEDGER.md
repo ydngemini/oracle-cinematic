@@ -1568,6 +1568,28 @@ next_task: "AI32-03 (staged approvals in the cross-provider failure guard)."
 updated: 2026-11-19
 ```
 
+#### L07-09 The tool executor never falls back to the role-only offer: a turn whose remembered offer is gone is enforced with the full offer recomputed with live channel state (external audit AI32-04)
+```yaml
+id: L07-09
+status: tests_pass
+env: local
+evidence_shas: [e741672]   # base; fix in the commit that adds this row
+files: [backend/tool_offer.py, backend/ai_chat_store.py, backend/tests/test_tool_offer.py, backend/tests/test_frame_constraints_live.py]
+tests_run:
+  - {cmd: "read tool_offer.current and ai_chat_store._execute_safe_tool at e741672; grep execute_safe_tool callers", result: "confirmed AI32-04: with no remembered offer for the turn (or another record) the executor enforced for_actor(ctx, context_type) without channel gaps, so a channel tool the model was told needs setup (draft_sms/draft_email/call_contact/schedule_event) passed the offer check. Practically narrow: every caller runs inside the turn's own job, in the process that remembered the offer (2,048-turn cache)", date: 2026-11-19}
+  - {cmd: "after: test_tool_offer (37) + executor unit tests (605 with tool-offer) + live test_tool_offer_live + test_frame_constraints_live", result: "pass: a remembered offer is used as before; a turn never remembered, or the same turn on another record, is enforced with the offer recomputed with live channel gaps (draft_sms refused); the frame-constraints live test now remembers its offer as a real turn does", date: 2026-11-19}
+  - {cmd: "after review r1: test_tool_offer (39) + executor unit tests (608) + both live tests", result: "pass: a miss whose channel state cannot be read withholds the four channel tools ('could not be checked; ask again') and is not remembered; execute_safe_tool itself refuses draft_sms on an unremembered turn with an SMS gap; a recomputed offer with known state is remembered for the rest of the turn; current() removed", date: 2026-11-19}
+authz_checked: "Tightens the executor's offer check only: a cache miss now withholds channel tools the brokerage has not set up, as the turn's prompt said. Owner-only tools stay role-gated; channel dispatch keeps its own compliance and setup checks."
+blockers:
+  - "Not done (the audit's stronger option): persisting the offered set with the assistant message. On a miss the offer is recomputed with today's policy (a channel set up mid-turn would be allowed, harmless); only unknown channel state fails closed, for the channel tools."
+  - "Independent review r1 (REQUEST CHANGES), fixed: a miss with unreadable channel state (timeout, no pool) recomputed exactly the role-only offer; no test covered the executor wiring; current() was dead in production; the recomputed offer was re-read on every call."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-04]
+decision_refs: []
+next_task: "AI32-03 (after AI32-01 merges: same file)."
+updated: 2026-11-19
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
