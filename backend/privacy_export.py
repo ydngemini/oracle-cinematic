@@ -324,7 +324,10 @@ async def expire_exports() -> int:
     async with tenant_tx(_platform_ctx()) as conn:
         rows = await conn.fetch(
             "SELECT id, artifact_key FROM privacy_operations WHERE kind='export' "
-            "AND artifact_key IS NOT NULL AND artifact_expires_at <= now() LIMIT 200")
+            "AND artifact_key IS NOT NULL AND artifact_expires_at <= now() "
+            # Never-tried and longest-waiting first: rows stuck on a refused
+            # delete cannot crowd out ones that would succeed (29.6 review).
+            "ORDER BY (result->>'artifact_delete_checked_at') NULLS FIRST, artifact_expires_at LIMIT 200")
     expired = 0
     for row in rows:
         reason = None
