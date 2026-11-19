@@ -1513,7 +1513,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # brokerage has not set up are withheld from every provider's tool list
     # below and named here, so the model says "texting needs setup" instead of
     # staging a text that can go nowhere. execute_safe_tool refuses the same
-    # names with the same reason (tool_offer.current).
+    # names with the same reason (tool_offer.for_execution).
     import tool_offer
 
     offer = await tool_offer.for_turn(ctx, bundle["assistant"].get("context_type"))
