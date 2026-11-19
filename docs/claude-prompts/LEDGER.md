@@ -4594,6 +4594,33 @@ next_task: "28.4: the actor re-proves password and second factor before resettin
 updated: 2026-11-18
 ```
 
+#### L17-53 Orphaned export archives are found and deleted, and an expired archive storage keeps refusing to delete raises an alert (external audit 29.6, remainder of L17-49)
+```yaml
+id: L17-53
+status: tests_pass
+env: local
+evidence_shas: [5bf2831]   # base; fix in the commit that adds this row
+files: [backend/privacy_export.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/tests/test_privacy_export_orphans_live.py, backend/tests/test_component_health.py, backend/tests/test_privacy_periodic.py, docs/data-retention-policy.md, docs/privacy-request-runbook.md, docs/runbooks/README.md]
+tests_run:
+  - {cmd: "read privacy_export.expire_exports and periodic._privacy_lifecycle_task at 5bf2831", result: "confirmed the L17-49 open items: expire_exports finds an archive only through its row, so an archive whose row was swept, whose build failed after the upload, or whose key was cleared by a delete that reported not-found elsewhere is never found; a delete that keeps failing is visible only in that operation's result", date: 2026-11-19}
+  - {cmd: "test_an_export_archive_kept_past_expiry_for_a_day_alerts against 5bf2831's component_health", result: "red: no export_cleanup component", date: 2026-11-19}
+  - {cmd: "live (real PostgreSQL, local storage): test_privacy_export_orphans_live + test_privacy_export_expiry_live + test_messaging_hardening_live (runs every component query)", result: "5 passed (after review r1): with the platform pool removed (a platform context on the request pool) the scan skips and deletes nothing; kept = the archive its row points to, one still building, one stuck 'running' for 3 days, a .partial of a running export and one past expiry (expire_exports' job); deleted = a failed build's archive and its .partial, and one with no row; an archive under a tenant this database does not know is counted, not deleted; a non-archive key counted, not deleted; the export_cleanup query counts the archive held 2 days past expiry", date: 2026-11-19}
+  - {cmd: "test_component_health + test_privacy_periodic", result: "75 passed", date: 2026-11-19}
+  - {cmd: "full unit suite after review r2", result: "6952 passed, 1 failed (test_sql_string_literals_have_balanced_quotes: the alert SQL split its interval literal across concatenated strings); literal inlined, quote-balance + component + periodic tests 78 passed", date: 2026-11-19}
+authz_checked: "No access change. The scan runs in the hourly platform privacy task under the platform context (same as expire_exports), and first checks app_is_platform_admin() in its own transaction: outside production a platform context whose login failed falls back to the request pool and sees no rows, which would read every live archive as an orphan, so it skips. It lists only privacy/exports/, deletes only keys of the exact form privacy/exports/<uuid>/<uuid>.zip[.partial] whose tenant exists in this database, that no operation row points to and whose export is not requested or running; it logs counts only. The alert component reports a count, never ids or keys."
+blockers:
+  - "The scan lists at most 5000 keys per run (truncated flag in the task result); export archives live 7 days, so that is far above expected volume."
+  - "An orphan whose delete fails is logged and retried hourly; it does not raise the export_cleanup alert (that counts rows past expiry only). An archive of an export stuck in requested/running is kept indefinitely (safety over cleanup)."
+  - "Independent review r2: APPROVE. Residual (needs two misconfigurations at once): a database cloned from production AND pointed at production's bucket would know production's tenants but not its newer export rows, so the scan there would delete those archives. Never point a cloned database at a live bucket. Archives under a deleted tenants row are not cleaned by the scan (tenant erasure deletes privacy/exports/<tenant>/)."
+  - "Independent review r1 (REQUEST CHANGES), fixed: HIGH, a platform context without platform power (platform login down outside production, or a login not in platform_admin_role) saw no rows and would have deleted every live archive; MEDIUM, a bucket shared with another environment would lose that environment's archives (now only tenants this database knows); LOW, a slow export could lose its archive to a 2-day grace (now never for requested/running), .partial leftovers were never deleted, the docstring claimed it caught a misconfigured bucket's deletes."
+  - "Privacy: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [29.6]
+decision_refs: []
+next_task: "30.9 single worker."
+updated: 2026-11-19
+```
+
 ### L18
 Billing, seats and analytics.
 
@@ -5315,6 +5342,32 @@ blockers:
 audit_refs: [30.6]
 decision_refs: []
 next_task: "27.6 / 27.7 (realtime fan-out size and slow writers)."
+updated: 2026-11-19
+```
+
+#### L19-21 Go-live needs a test alert a person confirmed, not only a set ORACLE_ALERT_EMAIL (external audit 30.3, remainder)
+```yaml
+id: L19-21
+status: tests_pass
+env: local
+evidence_shas: [84e04fb]   # base; fix in the commit that adds this row
+files: [backend/db/migrations/0180_ops_alert_tests.sql, backend/ops_alert_test.py, backend/admin_ops.py, backend/privacy_data_map.py, scripts/neoh-launch-readiness.py, oracle-app/src/components/admin/AlertDeliveryCard.jsx, oracle-app/src/components/admin/operatorModel.js, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.module.css, docs/deploy-digitalocean.md, docs/runbooks/README.md]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_providers at 84e04fb", result: "confirmed the L19-16 open blocker: alert_routing passes when ORACLE_ALERT_EMAIL is merely present on api and worker, so a mistyped address or a broken relay passes until the first real incident", date: 2026-11-19}
+  - {cmd: "test_go_live_needs_a_confirmed_test_alert against 84e04fb's readiness script", result: "red: no alert_delivery_proof check", date: 2026-11-19}
+  - {cmd: "live (real PostgreSQL, as oracle_app, rolled back): test_ops_alert_test_live + test_ops_alert_recipient_live", result: "2 passed: no recipient is recorded and nothing is proven; one test a minute; the code and the address are never stored; a code works once, case- and dash-insensitive; proof is per recipient; a confirmation older than 14 days is stale; a relay-refused send cannot be confirmed; 5 wrong codes end the test even for the right code; an unconfirmed code expires after 24 h", date: 2026-11-19}
+  - {cmd: "test_ops_alert_test_routes (4), test_launch_readiness + storage readiness + privacy map + migration tests (156); vitest admin (20), full vitest 1112 passed; eslint clean; build ok", result: "pass", date: 2026-11-19}
+authz_checked: "GET/POST /api/admin/alerts/test and POST /api/admin/alerts/test/confirm are platform-admin only (require_platform_admin, which also checks the session is current; asserted by test). The code is emailed only to ORACLE_ALERT_EMAIL and never returned by the API, written to the audit ledger or stored (only an HMAC keyed by the server secret, so a backup copy cannot be reversed into it); the address is stored as a 16-hex SHA-256 prefix. A code confirms only the latest test sent to today's recipient. Sends and confirmations are recorded in the audit ledger (outcome/result only). One test a minute across operators (advisory lock); 5 tries per code."
+blockers:
+  - "Independent review r1: APPROVE; follow-ups applied: a code confirms only a test sent to today's recipient (an old mailbox could confirm after the address changed); the code hash is now an HMAC keyed by the server secret (an unkeyed SHA-256 of a 40-bit code is reversible from a table copy); a newer send stuck in 'sending' (crash) no longer hides an older confirmable test and is described as 'not recorded'; two confirmations of the same code serialize on the latest row (the second gets no_pending_test instead of spending an older test's tries); any code length is accepted (a short code counts as wrong, not a 422). Live test extended for each; 1 passed."
+  - "Relay acceptance is not delivery; only the typed-back code is proof, and it proves the api replica's ORACLE_ALERT_EMAIL. The worker's value is checked for presence only (alert_routing), so a worker with a different, wrong address is not caught."
+  - "Still open from 30.3: an independent out-of-band uptime monitor and a backup paging channel (owner: provider choice and spend)."
+  - "A non-charging production waiver (--waive-operator-checks) skips this check like every operator-console check (30.7 policy)."
+  - "Locally the bundle check is already over budget on main (+6.6 KB) while CI passes; this adds about 7 KB raw. CI decides."
+  - "Not deployed (C4.4)."
+audit_refs: [30.3]
+decision_refs: []
+next_task: "29.6 alert + orphan scan of privacy/exports/; 30.9 single worker."
 updated: 2026-11-19
 ```
 

@@ -52,6 +52,8 @@ ROLE = {
     # their own job tables, which job_queue (automation_jobs) never looked at
     # (audit 30.9): a dead loop, or a job hung with no lease, was invisible.
     "media_jobs": "important",
+    # Expired data-export archives whose delete keeps failing (audit 29.6).
+    "export_cleanup": "important",
 }
 
 # Launch readiness reads these same states (external audit 30.2): it used to
@@ -107,6 +109,7 @@ _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
     "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration", "media_jobs",
+    "export_cleanup",
 )
 
 # Audit 30.9 thresholds. Voice: 2 worker loops, a walkthrough takes minutes;
@@ -127,6 +130,12 @@ _SQL_MEDIA_JOBS = (
     "        WHERE status = 'queued') AS recon_oldest_queued_s, "
     "       (SELECT count(*) FROM reconstruction_jobs WHERE status = 'running' "
     "        AND updated_at < now() - interval '10 minutes') AS recon_silent")
+
+# Expired export archives still held more than a day after their expiry: the
+# hourly expire_exports has failed to delete them ~24 times (audit 29.6).
+_SQL_EXPORT_CLEANUP = (
+    "SELECT count(*) AS overdue FROM privacy_operations WHERE kind = 'export' "
+    "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '1 day'")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -245,6 +254,7 @@ async def _db_components() -> dict[str, dict]:
             "SELECT count(*) AS unfinalized FROM inbound_voice_calls "
             "WHERE transcript_status='active' AND (ended_at < now() - interval '10 minutes' "
             "OR started_at < now() - interval '2 hours')")
+        exports = await conn.fetchrow(_SQL_EXPORT_CLEANUP)
         # BILL-001: delivered speed-to-lead engagements still unmetered an hour
         # on — the sweep re-meters every 15 minutes, so these are ones it
         # could not fix.
@@ -357,6 +367,7 @@ async def _db_components() -> dict[str, dict]:
     out["email_outbox"] = (_c(DEGRADED, "emails waiting or with unknown delivery", unknown=unknown, stuck=stuck)
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
+    out["export_cleanup"] = _export_cleanup(int(exports["overdue"] or 0))
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
     out["usage_reporting"] = _usage_reporting(usage_rep)
     out["messaging_registration"] = _messaging_registration(dict(registration))
@@ -399,6 +410,16 @@ def _media_jobs(row: dict, *, worker_live: bool) -> dict:
     if problems:
         return _c(DEGRADED, "; ".join(problems), **detail)
     return _c(HEALTHY, "voice and 3D jobs moving", **detail)
+
+
+def _export_cleanup(overdue: int) -> dict:
+    """Audit 29.6: an export archive past its expiry is personal data kept
+    longer than promised. expire_exports retries hourly; a day of failures
+    means storage refuses the delete and a person must look."""
+    if overdue:
+        return _c(DEGRADED, "expired data exports could not be deleted for over a day "
+                  "(the archives still hold personal data)", overdue=overdue)
+    return _c(HEALTHY, "expired data exports deleted")
 
 
 def _outbound_opt_outs() -> dict:

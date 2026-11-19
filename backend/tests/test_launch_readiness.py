@@ -163,6 +163,37 @@ def _operator_endpoints(world):
         "backend": "s3", "ok": True, "ms": 90, "steps": {"put": True, "get": True, "match": True, "private": True,
                                                          "listing_private": True, "delete": True,
                                                          "absent": True}}).encode())
+    world.http["/api/admin/alerts/test"] = (200, {}, json.dumps(_ALERT_PROVEN).encode())
+
+
+_ALERT_PROVEN = {"recipient_configured": True, "proven": True, "confirmed_at": "2026-11-18T10:00:00+00:00",
+                 "stale": False, "max_age_days": 14, "awaiting_code": False,
+                 "last_attempt": {"outcome": "sent", "requested_at": "2026-11-18T09:59:00+00:00", "confirmed": True}}
+
+
+def test_go_live_needs_a_confirmed_test_alert(passing_gates):
+    """Audit 30.3: a set ORACLE_ALERT_EMAIL is not proof that an alert reaches
+    a person; only a test alert whose code was typed back is."""
+    def gate(body, status=200, env="production"):
+        w = World(env)
+        _operator_endpoints(w)
+        w.http["/api/admin/alerts/test"] = (status, {}, json.dumps(body).encode())
+        _, c = audit(w, gates_root=passing_gates, token="t")
+        return c["alert_delivery_proof"]
+
+    assert gate(_ALERT_PROVEN).status == lr.PASS
+    unconfirmed = {**_ALERT_PROVEN, "proven": False, "confirmed_at": None, "awaiting_code": True}
+    assert gate(unconfirmed).status == lr.BLOCKED and "code has not been entered" in gate(unconfirmed).reason
+    stale = {**_ALERT_PROVEN, "proven": False, "stale": True}
+    assert gate(stale).status == lr.BLOCKED and "older than 14 days" in gate(stale).reason
+    nobody = {**_ALERT_PROVEN, "proven": False, "recipient_configured": False, "confirmed_at": None,
+              "last_attempt": {"outcome": "recipient_missing", "requested_at": "x", "confirmed": False}}
+    assert "not set on the api replica" in gate(nobody).reason
+    failed = {**_ALERT_PROVEN, "proven": False, "confirmed_at": None,
+              "last_attempt": {"outcome": "SmtpConfigurationError", "requested_at": "x", "confirmed": False}}
+    assert gate(failed).status == lr.BLOCKED and "SmtpConfigurationError" in gate(failed).reason
+    assert gate({}, status=404).status == lr.BLOCKED, "an older release without the endpoint proves nothing"
+    assert gate(unconfirmed, env="staging").status == lr.WARN
 
 
 def test_a_correct_production_has_no_blockers(passing_gates):

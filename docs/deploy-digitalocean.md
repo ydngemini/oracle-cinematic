@@ -188,7 +188,7 @@ sourced as follows:
 | `ORACLE_ADMIN_ID`, `ORACLE_ADMIN_PASSPHRASE` | The operator/platform-admin login — choose, don't reuse a personal password. |
 | `ORACLE_ADMIN_TOTP_SECRET` or `ORACLE_ADMIN_OTP_EMAIL` | Operator second factor — production refuses to boot with neither. TOTP: `scripts/generate-operator-totp.py`. |
 | `ORACLE_DB_PLATFORM_PASSWORD` | Password of `oracle_platform_login` (migration 0120). Same value on the app AND the GitHub environment — the migration step creates the role with it. `openssl rand -hex 24`. |
-| `ORACLE_ALERT_EMAIL` | Where `[Neoh] <component> <STATE>` alerts go (`backend/ops_alerts.py`). Unset = alerts reach only the logs. Set on api AND worker. |
+| `ORACLE_ALERT_EMAIL` | Where `[Neoh] <component> <STATE>` alerts go (`backend/ops_alerts.py`). Unset = alerts reach only the logs. Set on api AND worker. Before go-live, prove it: **Operator overview > Alert delivery > Send test alert**, then enter the code from that email. The launch check (`alert_delivery_proof`) credits only a confirmed code for the address set today, for 14 days (audit 30.3). |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Twilio console. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe dashboard — the webhook secret is per-endpoint, generated when you register the DO backend's `/billing/webhook` URL in Stripe. The key is needed on the **worker** too (account erasure stops renewal there). |
 | `STRIPE_PRICE_ID` | The plan's `price_…` (test-mode price on staging, live price on production). Checkout refuses to run without it. |

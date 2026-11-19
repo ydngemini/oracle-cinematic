@@ -223,6 +223,8 @@ TABLES: dict[str, TableEntry] = {
     "api_rate_limit_windows": TableEntry(C.OPERATIONAL, G, "minutes-long windows"),
     "process_heartbeats": TableEntry(C.OPERATIONAL, G),
     "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),
+    "ops_alert_tests": TableEntry(C.OPERATIONAL, G, "operator test alerts (0180): operator ids, a hash "
+                                                     "of the alert address and of the code; no customer data"),
     "provider_health": TableEntry(C.OPERATIONAL, G, "last outcome per property-data provider (0160); "
                                                      "no tenant, no customer data"),
     "platform_spend_controls": TableEntry(C.OPERATIONAL, G, "platform kill switch per spend channel (0170); "

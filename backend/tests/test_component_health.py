@@ -435,3 +435,14 @@ def test_media_jobs_alert_on_a_backlog_or_a_job_that_stopped_moving():
     hung = ch._media_jobs({**calm, "voice_silent": 1, "recon_silent": 2}, worker_live=False)
     assert hung["state"] == ch.DEGRADED and hung["detail"]["recon_silent"] == 2
     assert "media_jobs" in ch._DB_KEYS and ch.role_of("media_jobs") == "important"
+
+
+def test_an_export_archive_kept_past_expiry_for_a_day_alerts():
+    """Audit 29.6: a delete that keeps failing must reach a person."""
+    import component_health as ch
+
+    assert ch._export_cleanup(0)["state"] == ch.HEALTHY
+    bad = ch._export_cleanup(2)
+    assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING and bad["detail"]["overdue"] == 2
+    assert "export_cleanup" in ch._DB_KEYS and ch.role_of("export_cleanup") == "important"
+    assert "interval '1 day'" in ch._SQL_EXPORT_CLEANUP and "artifact_key IS NOT NULL" in ch._SQL_EXPORT_CLEANUP

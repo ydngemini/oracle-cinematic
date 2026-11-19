@@ -794,6 +794,34 @@ class Audit:
             self.add("storage_round_trip", "data", "Storage stores, returns, stays private and deletes", False,
                      f"{why}; /health/storage: {probe_state or 'no answer'} (degraded / not_probed is not proof)",
                      blocking=self.env == "production", warn=self.env != "production")
+        # Alert delivery (audit 30.3): ORACLE_ALERT_EMAIL being set proves
+        # nothing about a mistyped address or a broken relay. Credit only a
+        # test alert whose one-time code a person typed back, for the
+        # recipient set today, recently.
+        st, _, d = self._get("/api/admin/alerts/test", auth=True)
+        title = "A test alert reached a person"
+        if st == 200 and isinstance(d, dict) and d.get("proven") is True:
+            self.add("alert_delivery_proof", "operations", title, True,
+                     f"a test alert to today's ORACLE_ALERT_EMAIL was confirmed with its code at "
+                     f"{d.get('confirmed_at')} (accepted for {d.get('max_age_days', '?')} days)")
+        else:
+            d = d if isinstance(d, dict) else {}
+            last = d.get("last_attempt") or {}
+            if st != 200:
+                why = f"/api/admin/alerts/test → {st or 'unreachable'}"
+            elif not d.get("recipient_configured"):
+                why = "ORACLE_ALERT_EMAIL is not set on the api replica"
+            elif d.get("stale"):
+                why = (f"the last confirmed test alert ({d.get('confirmed_at')}) is older than "
+                       f"{d.get('max_age_days', '?')} days")
+            elif d.get("awaiting_code"):
+                why = "a test alert was sent but its code has not been entered yet"
+            else:
+                why = "no confirmed test alert for today's recipient" + (
+                    f" (last attempt: {last.get('outcome')})" if last.get("outcome") else "")
+            self.add("alert_delivery_proof", "operations", title, False,
+                     why + " — send one from Operator overview > Alert delivery and enter the code it carries",
+                     blocking=self.env == "production", warn=self.env != "production")
         st, _, d = self._get("/api/admin/mls/feeds", auth=True)
         if st == 200:
             feeds = d if isinstance(d, list) else (d or {}).get("feeds") or []
