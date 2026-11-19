@@ -189,3 +189,105 @@ def test_realtime_failure_mid_call_hands_inbound_plivo_caller_to_agent(monkeypat
     with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
         asyncio.run(bridge.run())
     assert redirects == ["ai_unavailable"]
+
+
+# ── The approved reason reaches the Qwen engine (audit 34.3) ───────────────
+
+BRIEFING = "Ana asked about 12 Elm St; ask if she would like a showing this week."
+
+
+def _bridge_with_state(state):
+    bridge = PlivoQwenRealtimeBridge(_BridgeWebSocket(), CALL_UUID, _start_event(),
+                                     settings=QwenRealtimeSettings(api_key="secret", workspace_id="ws"))
+    bridge._call_state = state
+    return bridge
+
+
+def test_an_outbound_qwen_call_knows_its_approved_reason():
+    instructions = _bridge_with_state({"direction": "outbound", "briefing": BRIEFING})._session_instructions()
+    assert BRIEFING in instructions
+    assert "do not add to it" in instructions and "beyond what the reason above states" in instructions
+
+
+def test_an_outbound_qwen_call_without_a_briefing_stays_generic():
+    instructions = _bridge_with_state({"direction": "outbound"})._session_instructions()
+    assert instructions == qwen_omni_realtime._system_instructions()
+
+
+def test_an_inbound_call_never_carries_an_outbound_briefing(monkeypatch):
+    import inbound_voice
+
+    monkeypatch.setattr(inbound_voice, "build_inbound_intake_instructions", lambda state: "INBOUND")
+    assert _bridge_with_state({"direction": "inbound", "briefing": BRIEFING})._session_instructions() == "INBOUND"
+
+
+def test_both_engines_use_the_same_briefing_contract():
+    import call_briefing
+    import elevenlabs_realtime
+
+    state = {"direction": "outbound", "briefing": BRIEFING + " " + "x" * 1000}
+    eleven, _first = elevenlabs_realtime.outbound_instructions("BASE", state)
+    qwen = _bridge_with_state(state)._session_instructions()
+    addendum = call_briefing.briefing_instructions(state)
+    assert addendum in eleven and addendum in qwen
+    assert len(call_briefing.approved_briefing(state)) == call_briefing.BRIEFING_MAX_CHARS
+
+
+def test_the_briefing_comes_from_every_approved_field_not_only_reason():
+    """34.3 review: a typed command writes objective / property, never `reason`;
+    openings and scripts in the agent's own voice are never passed."""
+    import call_briefing
+
+    typed = {"opening": "Hi Ana, this is Sam Lee from Lockwood Realty.", "objective": "Call Ana about 12 Elm St",
+             "property_address": "12 Elm St, Dover DE", "agent_phone": "+13025550100",
+             "script": "Hi Ana, this is Sam Lee from Lockwood Realty."}
+    briefing = call_briefing.briefing_from_draft(typed, on_behalf_of="Sam Lee of Lockwood Realty")
+    assert "Request: Call Ana about 12 Elm St" in briefing and "Property: 12 Elm St, Dover DE" in briefing
+    assert "Calling on behalf of: Sam Lee of Lockwood Realty" in briefing
+    assert "this is Sam Lee" not in briefing, "the AI never speaks as the agent"
+    assert "+13025550100" not in briefing
+    assert call_briefing.briefing_from_draft({"reason": "She asked for a callback"}) == "She asked for a callback"
+    assert call_briefing.briefing_from_draft({"script": "Hi, is this Ana? This is Sam."}, on_behalf_of="Sam") == ""
+    assert len(call_briefing.briefing_from_draft({"reason": "x" * 2000})) == call_briefing.BRIEFING_MAX_CHARS
+
+
+def test_the_assistant_never_speaks_as_the_agent():
+    import call_briefing
+
+    rules = call_briefing.briefing_instructions({"briefing": "a showing"})
+    assert "never say you are the agent" in rules and "on their behalf" in rules
+
+
+def test_both_engines_say_they_cannot_book():
+    import call_briefing
+
+    assert "cannot book or hold times" in call_briefing.briefing_instructions({"briefing": "a showing"})
+
+
+def test_the_plivo_call_is_placed_with_the_draft_briefing():
+    import inspect
+
+    import commands_api
+
+    source = inspect.getsource(commands_api)
+    assert "briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of)" in source
+    assert 'briefing=str(draft.get("reason")' not in source
+
+
+def test_the_on_behalf_line_survives_a_long_reason():
+    import call_briefing
+
+    briefing = call_briefing.briefing_from_draft({"reason": "y" * 2000}, on_behalf_of="Sam Lee of Lockwood Realty")
+    assert briefing.startswith("Calling on behalf of: Sam Lee of Lockwood Realty")
+    assert len(briefing) == call_briefing.BRIEFING_MAX_CHARS
+
+
+def test_the_on_behalf_name_is_never_the_login():
+    import call_briefing
+
+    assert call_briefing.on_behalf_of({"name": "Sam Lee", "brokerage": "Lockwood Realty"}, "sam@x.test") == \
+        "Sam Lee of Lockwood Realty"
+    assert call_briefing.on_behalf_of({"name": "sam@x.test", "brokerage": "Lockwood Realty"}, "SAM@x.test") == \
+        "Lockwood Realty"
+    assert call_briefing.on_behalf_of({"name": "Sam <sam@x.test>", "brokerage": ""}, "other") == ""
+    assert call_briefing.on_behalf_of({}, "sam@x.test") == ""

@@ -300,14 +300,15 @@ def test_the_provisioned_agent_matches_what_the_bridge_relies_on(monkeypatch):
     assert mod.agent_config("staging", ["a", "b"])["conversation_config"]["agent"]["prompt"]["tool_ids"] == ["a", "b"]
 
 
-def test_the_approved_call_carries_its_reason_as_the_briefing():
+def test_the_approved_call_carries_its_approved_fields_as_the_briefing():
+    """The approved command's reason, request, property and opening (34.3)."""
     import inspect
 
     import commands_api
 
     src = inspect.getsource(commands_api)
     at = src.index("await initialize_outbound_plivo_call_state(")
-    assert 'briefing=str(draft.get("reason") or "")' in src[at:at + 400]
+    assert "briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of)" in src[at:at + 500]
 
 
 # ── A spoken "stop" on an outbound call (L09-05, AC09.05) ───────────────────
