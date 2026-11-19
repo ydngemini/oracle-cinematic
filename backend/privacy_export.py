@@ -103,8 +103,10 @@ BINARY: dict[str, dict[str, tuple[str, bool]]] = {
 class ExportIncomplete(RuntimeError):
     """The archive would leave out customer data it should hold (audit 29.5):
     no master key to open sealed columns, or a binary column nobody decided
-    how to export. Refused before anything is written; terminal, because a
-    retry cannot fix configuration or code."""
+    how to export, or a sealed value the key cannot open. A missing key is
+    refused before anything is written; the others stop mid-archive and the
+    temporary file is deleted, so nothing is ever uploaded. Terminal, because
+    a retry cannot fix configuration, code or stored data."""
 
     job_terminal = True
 
