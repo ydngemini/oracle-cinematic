@@ -146,13 +146,13 @@ describe('TwoStepSettings', () => {
     api.apiGet
       .mockResolvedValueOnce({ available: true, enabled: false, required: false, recovery_codes_remaining: 0 })
       .mockResolvedValueOnce({ require_mfa: false, owners_always_required: true });
-    api.apiPut.mockResolvedValueOnce({ require_mfa: true, owners_always_required: true });
+    api.apiPut.mockResolvedValueOnce({ require_mfa: true, owners_always_required: true, members_signed_out: 2 });
     render(<TwoStepSettings isOwner />);
     expect(await screen.findByRole('button', { name: 'Turn on two-step sign-in' })).toBeTruthy();
     const toggle = screen.getByLabelText(/Require two-step sign-in for everyone/);
     fireEvent.click(toggle);
     await waitFor(() => expect(api.apiPut).toHaveBeenCalledWith('/api/brokerage/security', { require_mfa: true }, { retries: 0 }));
-    expect(await screen.findByText(/at their next sign-in/)).toBeTruthy();
+    expect(await screen.findByText(/2 members without it were signed out and will set it up at their next sign-in/)).toBeTruthy();
   });
 
   it('an agent sees no brokerage switch', async () => {
