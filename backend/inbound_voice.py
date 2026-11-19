@@ -8,8 +8,10 @@ contacts by tenant-keyed lookup hash, and creates an idempotent callback task.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -30,6 +32,9 @@ from db.connection import tenant_tx
 from outreach_compliance import AI_VOICE_DISCLOSURE, STOP_KEYWORDS
 from pan_redaction import PAYMENT_CARD_RULE, redact as _redact_pan, report as _report_pan
 from tenancy import Role, TenantContext, brokerage_scope
+
+logger = logging.getLogger("oracle.inbound_voice")
+_PLATFORM_TENANT_ID = os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000")
 
 INTAKE_ROUTING_QUESTION = "Are you calling about buying a home or selling a property?"
 
@@ -836,8 +841,13 @@ async def finalize_inbound_voice_call(
     call_sid: str,
     transcript: Sequence[Mapping[str, Any]],
     state: Optional[Mapping[str, Any]] = None,
+    *,
+    recovered: bool = False,
 ) -> None:
-    """Encrypt transcript/answers and create one callback or compliance task."""
+    """Encrypt transcript/answers and create one callback or compliance task.
+
+    `recovered`: run by the reconciliation sweep for a call whose bridge never
+    finalized it (audit 34.6); there is no transcript, and the task says so."""
     if not _looks_like_call_id(call_sid):
         return
     state = state or {}
@@ -985,6 +995,9 @@ async def finalize_inbound_voice_call(
             if opted_out:
                 title = "Process inbound do-not-contact request"
                 priority = "urgent"
+            elif recovered:
+                title = "Call back: an inbound AI call ended without a saved transcript"
+                priority = "high"
             elif row["contact_id"] or row["client_id"]:
                 title = "Follow up on inbound AI intake"
                 priority = "high"
@@ -1043,6 +1056,66 @@ async def finalize_inbound_voice_call(
             intake_session_id,
             intake_handoff_task_id,
         )
+
+
+_FINALIZE_RETRY_DELAYS = (0.5, 2.0)
+
+
+async def finalize_inbound_voice_call_with_retry(
+    call_sid: str,
+    transcript: Sequence[Mapping[str, Any]],
+    state: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """finalize_inbound_voice_call, retried twice while the bridge still holds
+    the transcript (audit 34.6): a database blip at hang-up used to lose the
+    transcript and the callback task. Finalize is one transaction and skips a
+    task that already exists, so a retry never doubles anything. Raises the
+    last error; the reconciliation sweep is the backstop for a call that still
+    ends up unfinalized (recover_unfinalized_calls)."""
+    for delay in (*_FINALIZE_RETRY_DELAYS, None):
+        try:
+            await finalize_inbound_voice_call(call_sid, transcript, state)
+            return
+        except Exception:
+            if delay is None:
+                raise
+            logger.warning("inbound finalize failed; retrying in %.1fs", delay)
+            await asyncio.sleep(delay)
+
+
+# A call still 'active' this long after it ended (or this long after it
+# started) was never finalized; the same thresholds as component health.
+_UNFINALIZED_SQL = """
+    SELECT c.provider_call_sid, c.tenant_id::text AS tenant_id, r.agent_id
+      FROM inbound_voice_calls c
+      JOIN telephony_routes r ON r.id = c.route_id AND r.tenant_id = c.tenant_id
+     WHERE c.transcript_status = 'active' AND c.direction = 'inbound'
+       AND (c.ended_at < now() - interval '10 minutes' OR c.started_at < now() - interval '2 hours')
+       AND ($2::uuid IS NULL OR c.tenant_id = $2)
+     ORDER BY c.started_at
+     LIMIT $1
+"""
+
+
+async def recover_unfinalized_calls(*, only_tenant: Optional[str] = None, limit: int = 50) -> dict[str, int]:
+    """Finalize inbound calls their bridge never finalized (a process killed
+    at hang-up, a database outage through every retry) — audit 34.6. Each
+    gets its one callback task (or the do-not-contact task when an opt-out was
+    recorded mid-call), its status leaves 'active', and the opt-out backstop
+    runs. The transcript is gone; the task says so. Idempotent."""
+    platform = TenantContext(agent_id="reconciliation", tenant_id=_PLATFORM_TENANT_ID, role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        rows = await conn.fetch(_UNFINALIZED_SQL, limit, only_tenant)
+    recovered = failed = 0
+    for row in rows:
+        state = {"direction": "inbound", "tenant_id": row["tenant_id"], "agent_id": row["agent_id"]}
+        try:
+            await finalize_inbound_voice_call(str(row["provider_call_sid"]), [], state, recovered=True)
+            recovered += 1
+        except Exception:  # noqa: BLE001 - counted; health keeps showing it
+            failed += 1
+            logger.exception("unfinalized inbound call could not be recovered")
+    return {"recovered": recovered, "failed": failed}
 
 
 async def update_inbound_call_status(call_sid: str, call_status: str) -> None:

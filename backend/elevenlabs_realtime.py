@@ -267,9 +267,9 @@ class PlivoElevenLabsBridge:
                 await self._deliver_notes()
             if inbound:
                 try:
-                    from inbound_voice import finalize_inbound_voice_call
+                    from inbound_voice import finalize_inbound_voice_call_with_retry
 
-                    await finalize_inbound_voice_call(self.call_uuid, self._transcript, self._call_state)
+                    await finalize_inbound_voice_call_with_retry(self.call_uuid, self._transcript, self._call_state)
                 except Exception:
                     logger.exception("Inbound transcript handoff failed: uuid=%s", self.call_uuid)
 

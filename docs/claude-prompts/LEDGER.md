@@ -1886,6 +1886,28 @@ decision_refs: []
 next_task: "27.2/27.8: voice socket lifecycle."
 updated: 2026-11-16
 ```
+#### L09-14 An inbound call whose finalization failed is retried at hang-up and recovered by the reconciliation sweep: its callback task always exists (external audit 34.6)
+```yaml
+id: L09-14
+status: tests_pass
+env: local
+evidence_shas: [358abb4]   # base; fix in the commit that adds this row
+files: [backend/inbound_voice.py, backend/qwen_omni_realtime.py, backend/elevenlabs_realtime.py, backend/reconciliation.py, backend/tests/test_inbound_voice.py, backend/tests/test_inbound_finalize_recovery_live.py]
+tests_run:
+  - {cmd: "read the Twilio / Plivo Qwen and ElevenLabs bridges and inbound_voice.finalize_inbound_voice_call at 358abb4", result: "confirmed 34.6: every bridge logged and swallowed a finalize failure; a process killed at hang-up or a database outage left the call 'active' with no transcript, no callback task and nothing that would ever finalize it (component health 'inbound_calls' showed it DEGRADED, nothing acted)", date: 2026-11-19}
+  - {cmd: "live: main's reconciliation.run_sweep over two unfinalized calls", result: "red: the call stayed 'active' with no task", date: 2026-11-19}
+  - {cmd: "after: live test_inbound_finalize_recovery_live 1 passed (two calls ended 30 min ago recovered: the plain one gets 'Call back: an inbound AI call ended without a saved transcript', the one with a mid-call opt-out gets the do-not-contact task; a call that ended 2 min ago is left to its bridge; a second sweep recovers nothing and makes no new task); unit: finalize retried twice then succeeds, three failures raise; voice and reconciliation tests 94 passed", result: "pass", date: 2026-11-19}
+authz_checked: "No access-control change. finalize_inbound_voice_call_with_retry (used by the Twilio / Plivo Qwen bridges and ElevenLabs) retries a failed finalize after 0.5 s and 2 s while the transcript is still in memory; finalize is one transaction and skips an existing task, so a retry never doubles. reconciliation.run_sweep (every 15 minutes, also in recovery mode: it only creates an internal task) calls inbound_voice.recover_unfinalized_calls: calls still 'active' 10 minutes after they ended or 2 hours after they started (the component-health thresholds), joined to their route's agent, are finalized with no transcript under that agent's brokerage context — one callback task (or the do-not-contact task when the opt-out was recorded mid-call, plus the opt-out backstop), status 'failed', handoff set. Batch of 50."
+blockers:
+  - "The transcript of a call lost this way is gone: the audit's 'bounded transcript segments until confirmed' (durable checkpoints during the call) is not done; the task says no transcript was saved."
+  - "A recovered call's task is assigned to its route's agent even if that agent has since been offboarded (a parked route keeps its agent)."
+  - "Not run against a real call; not deployed (C4.4)."
+audit_refs: [34.6]
+decision_refs: []
+next_task: "34.4 / RUN-03 (owner decision on mid-call note writes)."
+updated: 2026-11-19
+```
+
 ### L10
 Communications and calendars.
 
