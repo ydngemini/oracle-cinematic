@@ -4355,6 +4355,28 @@ next_task: "28.3 (owner decision on the operator session registry migration); 28
 updated: 2026-11-18
 ```
 
+#### L17-52 Resetting someone else's two-step sign-in takes the actor's own fresh password and code, the operator's included (external audit 28.4)
+```yaml
+id: L17-52
+status: tests_pass
+env: local
+evidence_shas: [7eed35d]   # base; fix in the commit that adds this row
+files: [backend/mfa_api.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/tests/test_tenant_user_mfa_live.py, backend/tests/test_inline_platform_admin_checks.py, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/BrokerageSetupPanel.test.jsx]
+tests_run:
+  - {cmd: "read mfa_api.reset_member_mfa, brokerage_onboarding.reset_member_two_step, operator_api.reset_user_two_step at 7eed35d", result: "confirmed 28.4: both resets took a reason only; a live owner or platform-admin session alone removed another account's factor (unlike the user's own disable, which re-proves password and code)", date: 2026-11-18}
+  - {cmd: "mutant: drop the step-up call", result: "red: the live test's wrong-password reset went through (DID NOT RAISE)", date: 2026-11-18}
+  - {cmd: "after: live test_tenant_user_mfa_live 1 passed (wrong password 403 and no code 401 OTP_REQUIRED reset nothing; the operator's wrong passphrase 403); unit tests touching the routes 429 passed + governance tests 137 passed; vitest BrokerageSetupPanel 29 passed; eslint clean", result: "pass", date: 2026-11-18}
+authz_checked: "mfa_api.step_up runs before the target is looked up. A users-table actor (broker owner, database-backed platform admin) re-proves the live session (_account), the password (confirm_password: rate-limited like sign-in) and a current TOTP or recovery code (same counter and lockout as sign-in). The environment operator (no users row) re-proves the configured passphrase (constant-time, rate-limited) and its own second factor (TOTP, or an emailed code: leave code out once to have it sent). Role checks still run first; the target rules, audit and session ending are unchanged. The owner's Settings screen asks for 'Your password' and 'Your two-step code' before 'Confirm reset'."
+blockers:
+  - "Not done from the audit's suggestions: a second operator or ticket-backed break-glass approval for platform-admin resets of owners, and an out-of-band notice to the affected account."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.4]
+decision_refs: []
+next_task: "28.3 (owner decision on the operator session registry migration)."
+updated: 2026-11-18
+```
+
 #### L17-48 A brokerage export refuses rather than leave out sealed data: no master key, a column nobody mapped, or a value the key cannot open; documents and audio go in, and partial media is said (external audit 29.5)
 ```yaml
 id: L17-48

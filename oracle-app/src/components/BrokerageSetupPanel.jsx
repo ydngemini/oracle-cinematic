@@ -98,6 +98,10 @@ export function BrokerageSetupPanel() {
   const [inviteText, setInviteText] = useState('');
   const [editingProfile, setEditingProfile] = useState(false);
   const [offboarding, setOffboarding] = useState(null);
+  // Resetting someone's two-step sign-in takes the owner's own password and
+  // code (audit 28.4): a signed-in session alone is not enough.
+  const [resetting, setResetting] = useState(null);
+  const [resetProof, setResetProof] = useState({ password: '', code: '' });
   const [profileForm, setProfileForm] = useState({
     name: '', org_type: 'brokerage', primary_state: '', website: '', postal_address: '',
   });
@@ -330,12 +334,10 @@ export function BrokerageSetupPanel() {
               )}
               {isOwner && m.role === 'agent' && (m.agent_id || '').toLowerCase() !== me && (
                 <span className={styles.rowActions}>
-                  {m.mfa_enabled === true && (
+                  {m.mfa_enabled === true && resetting !== m.id && (
                     <button
                       type="button" className={styles.link} disabled={busy}
-                      onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/mfa/reset`,
-                        { reason: 'Two-step sign-in reset by an owner from Settings' }),
-                      'Two-step sign-in reset. Their sessions ended; they set it up again when they next sign in.')}
+                      onClick={() => { setResetting(m.id); setResetProof({ password: '', code: '' }); }}
                     >
                       Reset two-step
                     </button>
@@ -361,6 +363,37 @@ export function BrokerageSetupPanel() {
                     Offboard…
                   </button>
                 </span>
+              )}
+              {resetting === m.id && (
+                <form
+                  className={styles.rowActions}
+                  aria-label={`Confirm resetting two-step sign-in for ${m.full_name || m.email}`}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    act(() => crmPost(`/api/brokerage/team/${m.id}/mfa/reset`, {
+                      reason: 'Two-step sign-in reset by an owner from Settings',
+                      password: resetProof.password, code: resetProof.code,
+                    }).then(() => setResetting(null)),
+                    'Two-step sign-in reset. Their sessions ended; they set it up again when they next sign in.');
+                  }}
+                >
+                  <label className={styles.field}>
+                    <span>Your password</span>
+                    <input
+                      type="password" autoComplete="current-password" required value={resetProof.password}
+                      onChange={(e) => setResetProof((p) => ({ ...p, password: e.target.value }))}
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span>Your two-step code</span>
+                    <input
+                      inputMode="numeric" autoComplete="one-time-code" required value={resetProof.code}
+                      onChange={(e) => setResetProof((p) => ({ ...p, code: e.target.value.trim() }))}
+                    />
+                  </label>
+                  <button type="submit" className={styles.link} disabled={busy}>Confirm reset</button>
+                  <button type="button" className={styles.link} onClick={() => setResetting(null)}>Cancel</button>
+                </form>
               )}
             </li>
           ))}
