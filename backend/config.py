@@ -306,6 +306,18 @@ def validate_or_die() -> None:
             "production instance. It exists only for staging/demo instances "
             "running in recovery mode; unset it."
         )
+    # Audit 34.7: the ACS EventGrid webhook acknowledges an event before its
+    # handler runs (asyncio.ensure_future), so a crash after the 200 loses
+    # the event. ACS is not in the deployed offering (no webhook secret in
+    # the app spec, so the route answers 503). Production may enable it only
+    # as an explicit, acknowledged experiment.
+    if (IS_PROD and os.environ.get("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
+            and os.environ.get("ORACLE_ACS_EXPERIMENTAL", "").strip() != "1"):
+        raise RuntimeError(
+            "Refusing to start: ORACLE_ACS_WEBHOOK_SECRET enables the ACS callback webhook in "
+            "production, and it acknowledges events before processing them (a crash loses them). "
+            "Unset it, or set ORACLE_ACS_EXPERIMENTAL=1 to accept that (audit 34.7)."
+        )
     # ACS readiness check — log warnings for missing telephony config (non-fatal)
     _acs_missing = []
     if not os.environ.get("ACS_CONNECTION_STRING"):
@@ -489,7 +501,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         # ORACLE_TWILIO_ACCOUNT_TIER is catalogued under "voice", which is where
         # it is read. Listing it twice made the catalogue self-contradicting
         # about which subsystem owns it.
-        "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET",
+        "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET", "ORACLE_ACS_EXPERIMENTAL",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",
         "ORACLE_CUSTOM_CALL_FROM_NUMBER",
