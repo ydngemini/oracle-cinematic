@@ -1926,7 +1926,7 @@ async def execute_safe_tool(
     # (tool_offer, T07.04, L07-03) — answered the way the prompt named it.
     import tool_offer
 
-    refused = tool_offer.current(ctx, message_id, context_type).refusal(tool_name)
+    refused = (await tool_offer.for_execution(ctx, message_id, context_type)).refusal(tool_name)
     if refused:
         return {"ok": False, "error": refused}
     ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS

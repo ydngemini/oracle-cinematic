@@ -433,3 +433,21 @@ def test_an_unreadable_membership_is_unknown_not_missing(monkeypatch):
 
     monkeypatch.setattr(connection, "get_pool", lambda: None)
     assert asyncio.run(ai_chat_agent._live_role(OWNER)) == ("unknown", None)
+
+
+def test_the_executor_never_falls_back_to_the_role_only_offer(monkeypatch):
+    """AI32-04: a turn whose remembered offer is gone is enforced with the
+    full offer recomputed now (channel gaps included), not role-only."""
+    import asyncio
+
+    async def gaps(ctx):
+        return {"sms": SMS_GAP}
+
+    monkeypatch.setattr(tool_offer, "channel_gaps", gaps)
+    remembered = tool_offer.for_actor(OWNER, "client", {})
+    tool_offer.remember(OWNER, "turn-exec-1", remembered)
+    assert asyncio.run(tool_offer.for_execution(OWNER, "turn-exec-1", "client")) is remembered
+    recomputed = asyncio.run(tool_offer.for_execution(OWNER, "turn-never-remembered", "client"))
+    assert "draft_sms" in recomputed.withheld and recomputed.refusal("draft_sms")
+    other_record = asyncio.run(tool_offer.for_execution(OWNER, "turn-exec-1", "lead"))
+    assert other_record is not remembered and other_record.refusal("draft_sms")

@@ -124,7 +124,13 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, top to bottom
             "SELECT metadata->'semantic_frame' FROM ai_chat_messages WHERE id=$1", assistant))
         assert again == stored
 
-        # The chokepoint refuses as A and records it in the ledger as A.
+        # The chokepoint refuses as A and records it in the ledger as A. A real
+        # turn remembers what it offered (tool_offer.remember); without that the
+        # executor recomputes the offer with live channel state (AI32-04), and
+        # this tenant has no texting set up.
+        import tool_offer
+
+        tool_offer.remember(ctx["a"], str(assistant), tool_offer.for_actor(ctx["a"], "client"))
         semantic_turn.bind(str(assistant), turn.active)
         receipt = await ai_chat_store.execute_safe_tool(
             ctx["a"], agent["a"], str(assistant), "draft_sms",

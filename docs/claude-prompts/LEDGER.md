@@ -1519,6 +1519,26 @@ next_task: "None until the owner decides the twin may influence ranking."
 updated: 2026-11-14
 ```
 
+#### L07-09 The tool executor never falls back to the role-only offer: a turn whose remembered offer is gone is enforced with the full offer recomputed with live channel state (external audit AI32-04)
+```yaml
+id: L07-09
+status: tests_pass
+env: local
+evidence_shas: [e741672]   # base; fix in the commit that adds this row
+files: [backend/tool_offer.py, backend/ai_chat_store.py, backend/tests/test_tool_offer.py, backend/tests/test_frame_constraints_live.py]
+tests_run:
+  - {cmd: "read tool_offer.current and ai_chat_store._execute_safe_tool at e741672; grep execute_safe_tool callers", result: "confirmed AI32-04: with no remembered offer for the turn (or another record) the executor enforced for_actor(ctx, context_type) without channel gaps, so a channel tool the model was told needs setup (draft_sms/draft_email/call_contact/schedule_event) passed the offer check. Practically narrow: every caller runs inside the turn's own job, in the process that remembered the offer (2,048-turn cache)", date: 2026-11-19}
+  - {cmd: "after: test_tool_offer (37) + executor unit tests (605 with tool-offer) + live test_tool_offer_live + test_frame_constraints_live", result: "pass: a remembered offer is used as before; a turn never remembered, or the same turn on another record, is enforced with the offer recomputed with live channel gaps (draft_sms refused); the frame-constraints live test now remembers its offer as a real turn does", date: 2026-11-19}
+authz_checked: "Tightens the executor's offer check only: a cache miss now withholds channel tools the brokerage has not set up, as the turn's prompt said. Owner-only tools stay role-gated; channel dispatch keeps its own compliance and setup checks."
+blockers:
+  - "Not done (the audit's stronger option): persisting the offered set with the assistant message and failing closed when it is missing. Recomputing applies today's policy, so a channel set up mid-turn would be allowed (harmless)."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-04]
+decision_refs: []
+next_task: "AI32-03 (after AI32-01 merges: same file)."
+updated: 2026-11-19
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 

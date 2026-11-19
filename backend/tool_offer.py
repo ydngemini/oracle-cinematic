@@ -145,6 +145,21 @@ def remember(ctx: Any, message_id: str, offer: ToolOffer) -> None:
         _TURNS.popitem(last=False)
 
 
+async def for_execution(ctx: Any, message_id: Optional[str], context_type: Optional[str]) -> ToolOffer:
+    """The offer the executor enforces (AI32-04): the one remembered for this
+    turn, or, when it is gone (evicted, another process, another record), the
+    full offer recomputed now with the live channel setup state. Never the
+    role-only offer: that would let a channel tool the brokerage has not set up
+    through an executor the model was told it could not use."""
+    offer = _TURNS.get((str(getattr(ctx, "tenant_id", "")), str(message_id)))
+    if offer is not None and offer.context_type == context_type:
+        return offer
+    if message_id:
+        logger.warning("tool offer for turn %s is not remembered here; recomputed with live channel state",
+                       message_id)
+    return await for_turn(ctx, context_type)
+
+
 def current(ctx: Any, message_id: Optional[str], context_type: Optional[str]) -> ToolOffer:
     """The offer the model was shown for this turn, or — for a call made outside
     a remembered turn — the role-only offer (channel state unknown)."""
