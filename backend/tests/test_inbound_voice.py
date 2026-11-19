@@ -854,3 +854,70 @@ def test_failed_redirect_keeps_the_ai_on_the_call(monkeypatch):
     assert asyncio.run(bridge._maybe_hand_off()) is False
     # Not latched: a later turn may retry rather than being stuck mid-handoff.
     assert bridge._handoff_started is False
+
+
+def test_finalize_is_retried_before_giving_up(monkeypatch):
+    """34.6: a database blip at hang-up no longer loses the transcript."""
+    import asyncio as _asyncio
+
+    import inbound_voice
+
+    calls = []
+
+    async def flaky(sid, transcript, state):
+        calls.append(sid)
+        if len(calls) < 3:
+            raise ConnectionError("db blip")
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", flaky)
+    monkeypatch.setattr(inbound_voice.asyncio, "sleep", no_sleep)
+    _asyncio.run(inbound_voice.finalize_inbound_voice_call_with_retry("CA1", [], {}))
+    assert calls == ["CA1", "CA1", "CA1"]
+
+    async def down(sid, transcript, state):
+        calls.append(sid)
+        raise ConnectionError("db down")
+
+    calls.clear()
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", down)
+    import pytest as _pytest
+
+    with _pytest.raises(ConnectionError):
+        _asyncio.run(inbound_voice.finalize_inbound_voice_call_with_retry("CA2", [], {}))
+    assert len(calls) == 3
+
+
+
+def test_only_an_unreachable_database_is_retried(monkeypatch):
+    """34.6 review: a query error is not worth a teardown delay."""
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    import inbound_voice
+
+    calls = []
+
+    async def broken(sid, transcript, state):
+        calls.append(sid)
+        raise ValueError("a bug, not an outage")
+
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", broken)
+    with _pytest.raises(ValueError):
+        _asyncio.run(inbound_voice.finalize_inbound_voice_call_with_retry("CA3", [], {}))
+    assert calls == ["CA3"]
+
+
+def test_every_bridge_finalizes_through_the_retry():
+    import inspect
+
+    import elevenlabs_realtime
+    import qwen_omni_realtime
+
+    qwen = inspect.getsource(qwen_omni_realtime)
+    assert qwen.count("await finalize_inbound_voice_call_with_retry(") == 2
+    assert "await finalize_inbound_voice_call(" not in qwen
+    assert "await finalize_inbound_voice_call_with_retry(" in inspect.getsource(elevenlabs_realtime)

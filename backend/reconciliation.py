@@ -177,6 +177,15 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
             "AND updated_at < now() - interval '10 minutes' AND ($2::uuid IS NULL OR tenant_id = $2) "
             "ORDER BY updated_at LIMIT $1", _BATCH, only_tenant)
     out["chat_turns_requeued"] = await _requeue_chat_turns(orphaned_turns)
+    # 34.6: an inbound call its bridge never finalized gets its callback task
+    # (internal only, so this also runs in recovery mode).
+    try:
+        from inbound_voice import recover_unfinalized_calls
+
+        out["inbound_calls"] = await recover_unfinalized_calls(only_tenant=only_tenant)
+    except Exception as exc:  # noqa: BLE001 - a failure here must not skip the steps below
+        log.exception("inbound call recovery failed")
+        out["inbound_calls"] = f"failed: {type(exc).__name__}"
     if recovery_mode.is_recovery_mode():
         # Nothing may leave a restored copy; re-enqueueing would only
         # dead-letter again every hour.
