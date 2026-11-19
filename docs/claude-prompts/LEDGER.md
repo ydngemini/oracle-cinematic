@@ -1886,9 +1886,9 @@ decision_refs: []
 next_task: "27.2/27.8: voice socket lifecycle."
 updated: 2026-11-16
 ```
-#### L09-14 An inbound call whose finalization failed is retried at hang-up and recovered by the reconciliation sweep: its callback task always exists (external audit 34.6)
+#### L09-15 An inbound call whose finalization failed is retried at hang-up and recovered by the reconciliation sweep: its callback task always exists (external audit 34.6)
 ```yaml
-id: L09-14
+id: L09-15
 status: tests_pass
 env: local
 evidence_shas: [358abb4]   # base; fix in the commit that adds this row
