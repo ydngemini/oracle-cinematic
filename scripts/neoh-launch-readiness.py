@@ -293,6 +293,7 @@ class Audit:
         self.env = env
         # Who skipped the authenticated operator checks, and why (audit 30.7).
         self.operator_waiver = operator_waiver.strip()
+        self.waiver_applied = False
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.manifest = manifest
@@ -720,6 +721,7 @@ class Audit:
                          f"not checked — waiver ({self.operator_waiver}) refused: production charges, so core "
                          "health and billing exceptions must be checked", blocking=True)
             elif prod and self.operator_waiver:
+                self.waiver_applied = True
                 self.add("operator_console", "operations", "Operator-console checks", False,
                          f"not checked — WAIVED (not charging): {self.operator_waiver}", warn=True)
             else:
@@ -922,10 +924,7 @@ def report_json(audit: Audit, checks: list) -> dict:
         "summary": summarize(checks),
         # A deliberate skip of the operator-only checks, as given (audit 30.7).
         # Recorded only when it was applied: no token, production, not charging.
-        "operator_waiver": (audit.red.scrub(audit.operator_waiver)
-                            if audit.operator_waiver and any(
-                                c.id == "operator_console" and "WAIVED" in c.reason for c in checks)
-                            else None),
+        "operator_waiver": audit.red.scrub(audit.operator_waiver) if audit.waiver_applied else None,
         "checks": [c.as_dict() for c in checks],
     }
 

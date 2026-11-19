@@ -544,3 +544,10 @@ def test_an_unapplied_waiver_is_not_recorded(passing_gates):
     _operator_endpoints(w)
     a, _ = audit(w, gates_root=passing_gates, token="t", charging=False, operator_waiver="owner: not needed")
     assert lr.report_json(a, a.checks)["operator_waiver"] is None
+
+
+
+def test_a_refused_waiver_is_not_recorded_as_applied(passing_gates):
+    a, c = audit(World(), gates_root=passing_gates, operator_waiver="owner: WAIVED twice")
+    assert c["operator_console"].status == lr.BLOCKED
+    assert lr.report_json(a, a.checks)["operator_waiver"] is None
