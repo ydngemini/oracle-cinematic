@@ -109,10 +109,9 @@ _DB_KEYS: tuple[str, ...] = (
 
 # Expired export archives still held more than a day after their expiry: the
 # hourly expire_exports has failed to delete them ~24 times (audit 29.6).
-EXPORT_CLEANUP_OVERDUE = "1 day"
 _SQL_EXPORT_CLEANUP = (
     "SELECT count(*) AS overdue FROM privacy_operations WHERE kind = 'export' "
-    "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '" + EXPORT_CLEANUP_OVERDUE + "'")
+    "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '1 day'")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
