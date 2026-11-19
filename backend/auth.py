@@ -1039,28 +1039,33 @@ class SessionUnverifiable(Exception):
     """The live-session check could not run (database unreachable)."""
 
 
-async def _session_still_current(payload: dict) -> Optional[bool]:
-    """Is this account token still its account's live session?
+async def _live_session(raw_token: str) -> dict:
+    """The token's claims, only if it is a live session by the same rules a
+    protected route applies (audits 28.5, 28.6): tenancy builds the context
+    (single-purpose tokens refused, claim formats, the MAX_SESSION_AGE cap on
+    auth_time, environment identities recognised), then verify_session_current
+    runs app_begin_session (account, role, is_active, epoch — by uid, or by
+    agent_id for a token without one). A session restricted to the policy or
+    two-step setup screens is still live and is answered.
 
-    None for a token with no users row (environment and demo identities,
-    which carry no uid; their revocation is audit 28.3). Raises
-    SessionUnverifiable when the database cannot be asked: unknowable is
-    neither "signed in" nor "signed out" (audit 28.6) — callers answer 503
-    and keep the cookie, so a failed check never signs a person out (7ca8940)."""
-    uid, tenant = payload.get("uid"), payload.get("tenant_id")
-    if not uid or not tenant:
-        return None
+    Raises HTTPException (401) when it is not a live session, and
+    SessionUnverifiable when the check cannot run: unknowable is neither
+    "signed in" nor "signed out" — callers answer 503 and keep the cookie, so
+    a failed check never signs a person out (7ca8940). Environment identities
+    (no users row) are trusted by signature; their revocation is audit 28.3."""
+    import tenancy
+
+    payload = decode_token(raw_token)
+    ctx = tenancy._context_from_authorization(
+        f"Bearer {raw_token}", allow_policy_pending=True, allow_stale_policy=True, allow_mfa_enrolment=True)
     try:
-        from db.connection import tenant_tx
-
-        async with tenant_tx(_admin_ctx()) as conn:
-            row = await conn.fetchrow(
-                "SELECT session_epoch, is_active FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid",
-                str(uid), str(tenant))
+        await tenancy.verify_session_current(ctx)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 - unknowable is not "signed out"
         log.warning("session probe could not reach the database (%s)", type(exc).__name__)
         raise SessionUnverifiable() from None
-    return bool(row) and bool(row["is_active"]) and int(row["session_epoch"] or 0) == int(payload.get("sep") or 0)
+    return payload
 
 
 def _session_unverifiable() -> HTTPException:
@@ -1083,21 +1088,13 @@ async def session_status(request: Request, response: Response) -> SessionStatusR
         return SessionStatusResponse(authenticated=False)
 
     try:
-        payload = decode_token(raw_token)
-    except HTTPException:
-        _clear_session_cookie(response)
-        return SessionStatusResponse(authenticated=False)
-    if payload.get("purpose"):
-        # A single-purpose token (a password-reset link) is never a session.
-        _clear_session_cookie(response)
-        return SessionStatusResponse(authenticated=False)
-    try:
-        current = await _session_still_current(payload)
+        payload = await _live_session(raw_token)
     except SessionUnverifiable:
         # Not "authenticated" (it was not proven) and not signed out: 503,
         # cookie kept; the app retries, then says Neoh cannot be reached.
         raise _session_unverifiable() from None
-    if current is False:
+    except HTTPException:
+        # Invalid, expired, single-purpose, too old or revoked.
         _clear_session_cookie(response)
         return SessionStatusResponse(authenticated=False)
 
@@ -1620,14 +1617,16 @@ async def verify(
     authorization: Optional[str] = Header(default=None),
 ) -> VerifyResponse:
     """
-    Verify a session token the way protected routes do (audit 28.5): a valid
-    signature, not a single-purpose token (password reset), and still the
-    account's live session (epoch, active). It used to check the signature
-    only, so a reset link or a logged-out session got an identity back.
+    Verify a session token by the rules protected routes apply (audit 28.5,
+    see _live_session): not a single-purpose token, within the session-age
+    cap, and still the account's live session. It used to check the
+    signature only, so a reset link or a logged-out session got an identity
+    back. A session held on the policy or two-step setup screens is live and
+    is answered (protected data routes refuse it with 403).
 
     Expects:  Authorization: Bearer <token> (or the session cookie)
     Returns:  { "agent_id": str, "issued_at": float, "expires_at": float }
-              401 when invalid, expired, single-purpose or revoked;
+              401 when invalid, expired, single-purpose, too old or revoked;
               503 when the live-session check cannot run.
     """
     authorization = authorization or (
@@ -1642,15 +1641,10 @@ async def verify(
         )
 
     raw_token = authorization.removeprefix("Bearer ").strip()
-    payload = decode_token(raw_token)
-    if payload.get("purpose"):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not a session token.")
     try:
-        current = await _session_still_current(payload)
+        payload = await _live_session(raw_token)
     except SessionUnverifiable:
         raise _session_unverifiable() from None
-    if current is False:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session has ended. Sign in again.")
 
     return VerifyResponse(
         agent_id=payload["sub"],
