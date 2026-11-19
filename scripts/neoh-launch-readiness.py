@@ -753,6 +753,28 @@ class Audit:
                      f"/api/admin/health/components → {st or 'unreachable'}"
                      + (" (no components reported)" if st == 200 else "") + f" after {took}",
                      blocking=self.env == "production", warn=self.env != "production")
+        # Go-live storage (audit 30.8): the release smoke test only asks
+        # whether storage answers, and lets "degraded" / "not_probed" pass so a
+        # provider blip cannot roll back a good release. A first brokerage's
+        # media, exports and deletion proofs need storage that stores, returns,
+        # stays private and deletes, with the app's own credentials.
+        st, _, d = self._get("/api/admin/storage/round-trip", auth=True)
+        _, _, probe = self._get("/health/storage")
+        probe_state = (probe or {}).get("state") if isinstance(probe, dict) else None
+        if st == 200 and isinstance(d, dict) and d.get("ok") is True:
+            steps = d.get("steps") or {}
+            self.add("storage_round_trip", "data", "Storage stores, returns, stays private and deletes", True,
+                     f"a temporary object was written, read back, found private ({steps.get('private')}) and "
+                     f"deleted in {d.get('ms', '?')} ms ({d.get('backend', '?')}); /health/storage: "
+                     f"{probe_state or 'no answer'}")
+        else:
+            steps = (d or {}).get("steps") if isinstance(d, dict) else None
+            failed = [k for k, v in (steps or {}).items() if v is not True and v != "not_applicable"]
+            why = (f"failed: {', '.join(failed) or '-'}" + (f" ({d.get('error')})" if isinstance(d, dict) and d.get("error") else "")
+                   if st == 200 else f"/api/admin/storage/round-trip → {st or 'unreachable'}")
+            self.add("storage_round_trip", "data", "Storage stores, returns, stays private and deletes", False,
+                     f"{why}; /health/storage: {probe_state or 'no answer'} (degraded / not_probed is not proof)",
+                     blocking=self.env == "production", warn=self.env != "production")
         st, _, d = self._get("/api/admin/mls/feeds", auth=True)
         if st == 200:
             feeds = d if isinstance(d, list) else (d or {}).get("feeds") or []
