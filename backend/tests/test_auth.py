@@ -161,23 +161,32 @@ def _token(*, epoch=3, extra=None, auth_age=0):
 
 
 def _live_check(monkeypatch, outcome):
-    """Stand in for tenancy.verify_session_current (app_begin_session):
-    'live' passes, 'revoked' is its 401, 'down' an unreachable database,
+    """Stand in for the tenant transaction that runs app_begin_session:
+    'live' passes, 'revoked' is its 28000 refusal, 'down' an unreachable
+    database, 'login' the app's own database login failing (also class 28),
     'never' fails the test if the check is reached at all."""
-    import tenancy
+    from contextlib import asynccontextmanager
+
+    import asyncpg
+
+    import db.connection
 
     seen = []
 
-    async def check(ctx):
+    @asynccontextmanager
+    async def tx(ctx):
         seen.append(ctx)
         if outcome == "never":
             raise AssertionError("refused before the live-session check")
         if outcome == "revoked":
-            raise HTTPException(status_code=401, detail="Your session has ended. Sign in again.")
+            raise asyncpg.exceptions.InvalidAuthorizationSpecificationError("session is no longer valid")
+        if outcome == "login":
+            raise asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "oracle_app"')
         if outcome == "down":
             raise ConnectionError("db down")
+        yield None
 
-    monkeypatch.setattr(tenancy, "verify_session_current", check)
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
     return seen
 
 
@@ -217,6 +226,18 @@ def test_session_probe_neither_signs_in_nor_out_when_the_database_is_down(monkey
         asyncio.run(auth.session_status(_request_with_cookie(_token()), response))
     assert exc.value.status_code == 503 and exc.value.detail["code"] == "session_unverifiable"
     assert "set-cookie" not in response.headers, "the cookie is kept"
+
+
+def test_a_database_login_failure_is_unknowable_not_a_sign_out(monkeypatch):
+    """28.5/28.6 review: a rotated database password raises the same SQLSTATE
+    class as a revoked session; it must not clear every visitor's cookie."""
+    _live_check(monkeypatch, "login")
+    with pytest.raises(HTTPException) as exc:
+        _probe(_token())
+    assert exc.value.status_code == 503
+    with pytest.raises(HTTPException) as exc:
+        _verify(_token())
+    assert exc.value.status_code == 503
 
 
 def test_session_probe_refuses_a_password_reset_token_and_an_over_age_session(monkeypatch):

@@ -272,12 +272,15 @@ def test_a_wrong_password_never_reaches_the_code_prompt(monkeypatch):
 
 
 def test_a_signed_in_session_status_says_when_setup_is_owed(monkeypatch):
-    import tenancy
+    from contextlib import asynccontextmanager
 
+    import db.connection
+
+    @asynccontextmanager
     async def live(_ctx):
-        return None  # the live-session check itself is covered in test_auth
+        yield None  # the live-session check itself is covered in test_auth
 
-    monkeypatch.setattr(tenancy, "verify_session_current", live)
+    monkeypatch.setattr(db.connection, "tenant_tx", live)
     request = type("R", (), {"cookies": {"oracle_session": _token(mfa_enrolment=True)}})()
     status = asyncio.run(auth.session_status(request, Response()))
     assert status.authenticated is True and status.mfa_enrolment_required is True

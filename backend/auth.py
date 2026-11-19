@@ -1043,9 +1043,9 @@ async def _live_session(raw_token: str) -> dict:
     """The token's claims, only if it is a live session by the same rules a
     protected route applies (audits 28.5, 28.6): tenancy builds the context
     (single-purpose tokens refused, claim formats, the MAX_SESSION_AGE cap on
-    auth_time, environment identities recognised), then verify_session_current
-    runs app_begin_session (account, role, is_active, epoch — by uid, or by
-    agent_id for a token without one). A session restricted to the policy or
+    auth_time, environment identities recognised), then app_begin_session runs
+    in a tenant transaction exactly as for a data route (account, role,
+    is_active, epoch — by uid, or by agent_id for a token without one). A session restricted to the policy or
     two-step setup screens is still live and is answered.
 
     Raises HTTPException (401) when it is not a live session, and
@@ -1058,14 +1058,33 @@ async def _live_session(raw_token: str) -> dict:
     payload = decode_token(raw_token)
     ctx = tenancy._context_from_authorization(
         f"Bearer {raw_token}", allow_policy_pending=True, allow_stale_policy=True, allow_mfa_enrolment=True)
+    if not ctx.verify_session:
+        return payload
+    import asyncpg
+    from db.connection import tenant_tx
+
     try:
-        await tenancy.verify_session_current(ctx)
-    except HTTPException:
-        raise
+        async with tenant_tx(ctx):
+            pass  # apply_rls_context runs app_begin_session
+    except asyncpg.exceptions.InvalidAuthorizationSpecificationError as exc:
+        # Only app_begin_session's own refusal means "signed out". The same
+        # SQLSTATE class also covers the app's database login failing (a
+        # rotated password, pg_hba): that is unknowable, not a revocation,
+        # and must not clear every visitor's cookie (28.5/28.6 review).
+        if not isinstance(exc, asyncpg.exceptions.InvalidPasswordError) and \
+                _REVOKED_MESSAGE in str(exc):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Your session has ended. Sign in again.") from None
+        log.warning("session probe could not log in to the database (%s)", type(exc).__name__)
+        raise SessionUnverifiable() from None
     except Exception as exc:  # noqa: BLE001 - unknowable is not "signed out"
         log.warning("session probe could not reach the database (%s)", type(exc).__name__)
         raise SessionUnverifiable() from None
     return payload
+
+
+# app_begin_session's refusal (0117_session_epoch.sql), raised with SQLSTATE 28000.
+_REVOKED_MESSAGE = "session is no longer valid"
 
 
 def _session_unverifiable() -> HTTPException:
