@@ -116,3 +116,50 @@ def test_an_empty_summary_deletes_nothing(world):
         return "   "
 
     assert _rollup(blank) is None and len(world["rows"]) == 6
+
+
+def _llm_reply(monkeypatch, finish_reason, content):
+    import io
+    import json
+    import urllib.request
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    body = json.dumps({"choices": [{"finish_reason": finish_reason, "message": {"content": content}}]}).encode()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: Resp(body))
+
+
+@pytest.mark.parametrize("finish_reason,content", [("length", "Prefers duplexes; also"), ("stop", None),
+                                                   ("stop", "   "), (None, "Prefers duplexes.")])
+def test_a_cut_off_or_empty_reply_is_not_a_summary(monkeypatch, finish_reason, content):
+    """AI32-02 review: max_tokens truncation and an empty reply are incomplete."""
+    _llm_reply(monkeypatch, finish_reason, content)
+    with pytest.raises(sm.SummaryUnavailable):
+        asyncio.run(sm._local_llm_summarize("[user] facts", "prior"))
+
+
+def test_the_default_summarizer_end_to_end_deletes_nothing_on_a_cut_off_reply(world, monkeypatch):
+    _llm_reply(monkeypatch, "length", "Prefers duplexes; also")
+    assert _rollup(None) is None
+    assert len(world["rows"]) == 6 and world["stored"] == []
+
+
+def test_a_complete_reply_is_used_and_the_commit_takes_the_per_user_lock(world, monkeypatch):
+    _llm_reply(monkeypatch, "stop", "Prefers duplexes; closes fast.")
+    assert _rollup(None) == "Prefers duplexes; closes fast."
+    assert any("pg_advisory_xact_lock" in q for q in world["executed"])
+    assert [r["id"] for r in world["rows"]] == [5, 6]
+
+
+def test_a_row_added_during_the_summary_survives(world):
+    async def summarize(transcript, prior):
+        world["rows"].append({"id": 7, "role": "user", "content": "new", "token_estimate": 1, "created_at": 7})
+        return "summary"
+
+    assert _rollup(summarize) == "summary"
+    assert [r["id"] for r in world["rows"]] == [5, 6, 7]

@@ -267,7 +267,8 @@ class SessionManager:
         #    rows holding everything past its first 1,500 characters were
         #    deleted.
         try:
-            new_summary = (await self._summarize(transcript, prior)).strip()
+            new_summary = await self._summarize(transcript, prior)
+            new_summary = new_summary.strip() if isinstance(new_summary, str) else ""
         except SummaryUnavailable as exc:
             log.warning("memory roll-up skipped: summarizer unavailable (%s); history kept", exc)
             return None
@@ -431,9 +432,18 @@ async def _local_llm_summarize(transcript: str, prior_summary: str) -> str:
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = (choice.get("message") or {}).get("content")
+            # A reply cut off at max_tokens ("length") is a truncation, and an
+            # empty one (a reasoning model's content trap) is nothing: neither
+            # may stand in for the rows the roll-up deletes (AI32-02 review).
+            if choice.get("finish_reason") != "stop" or not isinstance(content, str) or not content.strip():
+                raise SummaryUnavailable(f"incomplete summary (finish_reason={choice.get('finish_reason')!r})")
+            return content
 
         # Don't block the event loop on the synchronous HTTP call.
         return await asyncio.to_thread(_post)
+    except SummaryUnavailable:
+        raise
     except Exception as exc:
         raise SummaryUnavailable(type(exc).__name__) from exc
