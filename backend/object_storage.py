@@ -438,6 +438,72 @@ def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     )
 
 
+ROUND_TRIP_PREFIX = "health/round-trip/"
+
+
+def _anonymous_get_status(url: str) -> Optional[int]:
+    """HTTP status of an unsigned GET of `url`, or None when unreachable."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=8) as response:  # nosec B310 - our own bucket URL, scheme checked
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:  # noqa: BLE001 - unreachable proves nothing either way
+        return None
+
+
+def round_trip() -> dict:
+    """Prove the storage a first brokerage will use works end to end with the
+    app's own credentials (audit 30.8): write a temporary private object,
+    read it back byte for byte, check it is NOT readable anonymously, delete
+    it, and check it is gone. The release smoke test's probe answers "does it
+    respond"; a go-live needs "does it store, return, keep private and
+    delete". Never raises; returns no key, bucket or endpoint."""
+    import secrets as _secrets
+    import time as _time
+
+    started = _time.monotonic()
+    steps: dict[str, Any] = {"put": False, "get": False, "match": False, "private": None,
+                             "delete": False, "absent": False}
+    key = f"{ROUND_TRIP_PREFIX}{_secrets.token_hex(16)}.bin"
+    payload = _secrets.token_bytes(64)
+    error = None
+    try:
+        backend = _check_backend()
+        put_bytes(key, payload, "application/octet-stream")
+        steps["put"] = True
+        data = get_bytes(key)
+        steps["get"] = True
+        steps["match"] = data == payload
+        url = signed_url(key, expires_seconds=60)
+        if url is None:
+            steps["private"] = "not_applicable"  # a mount has no URL to fetch
+        else:
+            unsigned = url.split("?", 1)[0]
+            code = _anonymous_get_status(unsigned) if unsigned.startswith("https://") else None
+            # 401/403 (or a 404 that hides the object) means private; 200 means anyone can read it.
+            steps["private"] = None if code is None else code != 200
+        steps["delete"] = delete_object(key)
+        try:
+            get_bytes(key)
+        except Exception:  # noqa: BLE001 - any "cannot read it" is absent
+            steps["absent"] = True
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        backend = BACKEND
+        error = type(exc).__name__
+        try:
+            delete_object(key)
+        except Exception:  # noqa: BLE001 - best effort; the prefix is for these probes only
+            pass
+    ok = (steps["put"] and steps["get"] and steps["match"] and steps["delete"] and steps["absent"]
+          and steps["private"] in (True, "not_applicable"))
+    return {"backend": backend, "ok": bool(ok), "steps": steps, "error": error,
+            "ms": round((_time.monotonic() - started) * 1000)}
+
+
 def presigned_put_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     """A URL something outside this process can PUT one object to, or None.
 

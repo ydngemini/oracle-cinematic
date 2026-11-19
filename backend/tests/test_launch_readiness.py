@@ -479,3 +479,37 @@ def test_an_unreachable_health_endpoint_blocks_production_and_warns_staging():
     s = World("staging")
     _, c = audit(s, token="t")
     assert c["component_health"].status == lr.WARN
+
+
+def _storage_operator_endpoints(world):
+    world.http["/api/admin/health/components"] = (
+        200, {}, json.dumps({"components": {"database": {"state": "HEALTHY"}, "workers": {"state": "HEALTHY"}}}).encode())
+    world.http["/api/admin/billing/exceptions"] = (200, {}, b'{"exceptions": []}')
+
+
+def _round_trip(world, body, status=200):
+    world.http["/api/admin/storage/round-trip"] = (status, {}, json.dumps(body).encode())
+    world.http["/health/storage"] = (200, {}, b'{"backend": "s3", "state": "degraded"}')
+
+
+def test_go_live_storage_needs_a_full_round_trip(passing_gates):
+    """Audit 30.8: 'degraded' or 'not_probed' from the smoke probe is not proof."""
+    w = World()
+    _storage_operator_endpoints(w)
+    good = {"backend": "s3", "ok": True, "ms": 120, "steps": {"put": True, "get": True, "match": True,
+                                                              "private": True, "delete": True, "absent": True}}
+    _round_trip(w, good)
+    _, c = audit(w, gates_root=passing_gates, token="t")
+    assert c["storage_round_trip"].status == lr.PASS and "/health/storage: degraded" in c["storage_round_trip"].reason
+    public = {**good, "ok": False, "steps": {**good["steps"], "private": False}}
+    _round_trip(w, public)
+    _, c = audit(w, gates_root=passing_gates, token="t")
+    assert c["storage_round_trip"].status == lr.BLOCKED and "private" in c["storage_round_trip"].reason
+    _round_trip(w, {}, status=404)  # an older release without the probe
+    _, c = audit(w, gates_root=passing_gates, token="t")
+    assert c["storage_round_trip"].status == lr.BLOCKED
+    s = World("staging")
+    _storage_operator_endpoints(s)
+    _round_trip(s, public)
+    _, c = audit(s, gates_root=passing_gates, token="t")
+    assert c["storage_round_trip"].status == lr.WARN

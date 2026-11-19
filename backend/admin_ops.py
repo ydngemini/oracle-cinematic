@@ -98,6 +98,31 @@ async def health_components(ctx: TenantContext = Depends(require_platform_admin)
     return {**snap, "open_alerts": alerts, "alerts_status": alerts_status}
 
 
+_round_trip_cache: dict = {"at": 0.0, "body": None}
+
+
+@router.get("/storage/round-trip")
+async def storage_round_trip(ctx: TenantContext = Depends(require_platform_admin)):
+    """Write, read, privacy-check and delete a temporary object with the app's
+    own storage credentials (audit 30.8): the go-live storage gate the launch
+    readiness script reads. Operator-only, because it writes; cached 60 s so
+    repeated calls cost one probe. Returns no key, bucket or endpoint."""
+    import asyncio
+
+    import object_storage
+
+    now = time.monotonic()
+    body = _round_trip_cache["body"]
+    if body is None or now - _round_trip_cache["at"] > 60:
+        try:
+            async with asyncio.timeout(30.0):
+                body = await asyncio.to_thread(object_storage.round_trip)
+        except TimeoutError:
+            body = {"backend": object_storage.BACKEND, "ok": False, "steps": {}, "error": "TimeoutError"}
+        _round_trip_cache.update(at=now, body=body)
+    return body
+
+
 @router.get("/runtime-load")
 async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
     """What this replica is actually carrying, right now.

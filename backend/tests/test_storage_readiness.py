@@ -100,3 +100,50 @@ def test_the_smoke_test_fails_the_release_on_the_apps_own_storage_errors():
         line = next(ln for ln in smoke.splitlines() if ln.strip().startswith(f"{state})"))
         assert "fail " in line, line
     assert "warn " in next(ln for ln in smoke.splitlines() if ln.strip().startswith("degraded)"))
+
+
+# ── Go-live storage round trip (audit 30.8) ─────────────────────────────────
+
+def test_round_trip_on_a_local_mount_stores_returns_and_deletes(monkeypatch, tmp_path):
+    import object_storage
+
+    monkeypatch.setattr(object_storage, "BACKEND", "local")
+    monkeypatch.setattr(object_storage, "MEDIA_ROOT", tmp_path)
+    result = object_storage.round_trip()
+    assert result["ok"] is True and result["steps"] == {
+        "put": True, "get": True, "match": True, "private": "not_applicable", "delete": True, "absent": True}
+    assert not any(tmp_path.rglob("*.bin")), "the probe object is gone"
+
+
+def test_round_trip_fails_when_storage_cannot_delete(monkeypatch, tmp_path):
+    import object_storage
+
+    monkeypatch.setattr(object_storage, "BACKEND", "local")
+    monkeypatch.setattr(object_storage, "MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr(object_storage, "delete_object", lambda key: False)
+    result = object_storage.round_trip()
+    assert result["ok"] is False and result["steps"]["absent"] is False
+
+
+def test_round_trip_fails_for_a_publicly_readable_bucket(monkeypatch):
+    import object_storage
+
+    store = {}
+    monkeypatch.setattr(object_storage, "_check_backend", lambda: "s3")
+    monkeypatch.setattr(object_storage, "put_bytes", lambda key, data, ct="": store.__setitem__(key, data) or key)
+
+    def get(key):
+        if key not in store:
+            raise FileNotFoundError(key)
+        return store[key]
+
+    monkeypatch.setattr(object_storage, "get_bytes", get)
+    monkeypatch.setattr(object_storage, "delete_object", lambda key: bool(store.pop(key, None)))
+    monkeypatch.setattr(object_storage, "signed_url",
+                        lambda key, expires_seconds=60: f"https://bucket.example.test/{key}?X-Amz-Signature=x")
+    monkeypatch.setattr(object_storage, "_anonymous_get_status", lambda url: 200)
+    result = object_storage.round_trip()
+    assert result["ok"] is False and result["steps"]["private"] is False
+    monkeypatch.setattr(object_storage, "_anonymous_get_status", lambda url: 403)
+    assert object_storage.round_trip()["ok"] is True
+    assert not store, "every probe object was deleted"

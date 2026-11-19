@@ -5102,6 +5102,27 @@ next_task: "30.7: operator-only checks required in production; 30.6 / 30.8."
 updated: 2026-11-18
 ```
 
+#### L19-19 A production go-live needs storage that stores, returns, stays private and deletes with the app's own credentials; the release smoke test keeps tolerating provider blips (external audit 30.8)
+```yaml
+id: L19-19
+status: tests_pass
+env: local
+evidence_shas: [747fcd0]   # base; fix in the commit that adds this row
+files: [backend/object_storage.py, backend/admin_ops.py, scripts/neoh-launch-readiness.py, backend/tests/test_storage_readiness.py, backend/tests/test_launch_readiness.py]
+tests_run:
+  - {cmd: "read infra/digitalocean/smoke-test.sh section 4 and scripts/neoh-launch-readiness.py at 747fcd0", result: "confirmed 30.8: /health/storage 'degraded' only warned, 'not_probed' was info and an unknown state warned, so the smoke passed without working storage (deliberately, for release stability); nothing else gated a go-live on storage that actually stores, returns, stays private and deletes", date: 2026-11-18}
+  - {cmd: "after: object_storage.round_trip on a real local mount (stores, returns, deletes, gone; private not_applicable), a delete that fails -> not ok, a public bucket (anonymous GET 200) -> not ok, 403 -> ok, every probe object deleted; readiness: a full round trip PASS even when /health/storage says degraded, a public bucket or a missing endpoint BLOCKED in production, WARN on staging; test_storage_readiness + test_launch_readiness + operator-route + object storage tests 178 passed", result: "pass", date: 2026-11-18}
+authz_checked: "GET /api/admin/storage/round-trip is platform-admin only (the operator-route test enumerates it), writes one random 64-byte object under health/round-trip/ with the app's credentials, reads it back, checks an unsigned anonymous GET of its URL is not 200 (S3 / Azure blob; a mount has no URL: not_applicable), deletes it and confirms it is gone; cached 60 s; returns no key, bucket or endpoint. With an operator token the readiness gate requires ok=true for production (BLOCKED otherwise, including an older release without the endpoint) and records the /health/storage state beside it; 'degraded' or 'not_probed' alone is never proof. The release smoke test is unchanged: a provider blip still does not roll back a release."
+blockers:
+  - "Runs only with an operator token (production without one is BLOCKED by 30.7's change, PR #128; until that merges, a run without the token skips this gate with the other operator checks)."
+  - "Not run against real Spaces / Azure: the anonymous-read check relies on the provider answering an unsigned GET of the object URL with 401/403."
+  - "Not deployed (C4.4)."
+audit_refs: [30.8]
+decision_refs: []
+next_task: "30.6: per-environment gate evidence (owner-gates.json)."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
