@@ -13,7 +13,8 @@ PAYLOAD = {"tenant_id": "00000000-0000-0000-0000-0000000000aa", "user_id": "agen
            "assistant_id": "11111111-1111-1111-1111-111111111111", "request_id": "r1"}
 
 
-def _patch(monkeypatch, *, memory_failures=None, broadcast_fails=False, generate_fails=False):
+def _patch(monkeypatch, *, memory_failures=None, broadcast_fails=False, generate_fails=False,
+           commit_then_raise=False):
     calls = {"updates": [], "broadcasts": [], "memory": []}
     failures = dict(memory_failures or {})
 
@@ -27,6 +28,10 @@ def _patch(monkeypatch, *, memory_failures=None, broadcast_fails=False, generate
 
     async def update(_ctx, _aid, **kw):
         calls["updates"].append(kw)
+        if commit_then_raise and kw["status_value"] == "completed":
+            raise ConnectionResetError("lost after COMMIT")
+        if kw.get("unless_status") == "completed" and commit_then_raise:
+            return False  # the row is already completed
         return True
 
     async def broadcast(_t, _u, msg):
@@ -93,3 +98,27 @@ def test_a_failure_before_the_answer_is_saved_still_fails_but_cannot_overwrite_a
     failed = calls["updates"][-1]
     assert failed["status_value"] == "failed" and failed["unless_status"] == "completed"
     assert calls["broadcasts"][-1]["type"] == "AI_CHAT_ERROR"
+
+
+def test_a_completed_write_that_raised_after_committing_is_not_reported_as_failed(monkeypatch):
+    """AI32-01 review: the guarded failure update finds the row completed; the
+    person must get a completion, not "try again" after tool writes applied."""
+    calls = _patch(monkeypatch, commit_then_raise=True)
+    out = asyncio.run(ai_chat_agent.handle_ai_chat_job(PAYLOAD, reporter=None))
+    assert out["status"] == "completed"
+    assert calls["updates"][-1]["unless_status"] == "completed"
+    assert [b["type"] for b in calls["broadcasts"]] == ["AI_CHAT_COMPLETE"]
+
+
+def test_the_completion_frame_goes_out_before_the_memory_mirror(monkeypatch):
+    calls = _patch(monkeypatch)
+    order = []
+    original = ai_chat_agent._mirror_turn_to_memory
+
+    async def mirror(*a, **kw):
+        order.append(("mirror", len(calls["broadcasts"])))
+        return await original(*a, **kw)
+
+    monkeypatch.setattr(ai_chat_agent, "_mirror_turn_to_memory", mirror)
+    asyncio.run(ai_chat_agent.handle_ai_chat_job(PAYLOAD, reporter=None))
+    assert order == [("mirror", 1)], "AI_CHAT_COMPLETE was already sent when the mirror ran"

@@ -1821,8 +1821,7 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         # turn into a failed one: the memory mirror and the completion frame
         # are best-effort, and the except below leaves a completed row alone.
         completed = True
-        await _mirror_turn_to_memory(ctx, user_id, assistant_id,
-                                     bundle["messages"][-1]["content"], content)
+        # The frame first: the person is not kept waiting on the memory mirror.
         try:
             await ws_hub.broadcast_user(tenant_id, user_id, {
                 "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
@@ -1834,6 +1833,8 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
             })
         except Exception as exc:  # noqa: BLE001 - the answer is saved; a reload shows it
             logger.warning("AI chat turn %s: completion frame not sent (%s)", assistant_id, type(exc).__name__)
+        await _mirror_turn_to_memory(ctx, user_id, assistant_id,
+                                     bundle["messages"][-1]["content"], content)
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
     except SpendRefused as refused:
         # The budget stopped the turn BEFORE a model call (T18.07). Said as
@@ -1849,10 +1850,25 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         # stack frame) used to reach the user verbatim.
         logger.warning("AI chat turn %s failed: %s", assistant_id, exc, exc_info=True)
         safe_message = "Neoh couldn't complete that response. Your work is saved — try again in a moment."
-        await update_assistant(
+        failed = await update_assistant(
             ctx, assistant_id, content=safe_message, status_value="failed",
             model_id=MODEL_ID, error_code="AI_RESPONSE_UNAVAILABLE", unless_status="completed",
         )
+        if not failed:
+            # The completed write committed even though its call raised (a
+            # lost COMMIT acknowledgement, a connection reset on release): the
+            # answer and its tool writes stand, so the person must not be told
+            # to try again (AI32-01 review).
+            logger.warning("AI chat turn %s: already completed; error after the commit ignored", assistant_id)
+            try:
+                await ws_hub.broadcast_user(tenant_id, user_id, {
+                    "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
+                    "request_id": request_id, "model_id": MODEL_ID, "actions": [], "choices": [],
+                })
+            except Exception as frame_exc:  # noqa: BLE001 - a reload shows the saved answer
+                logger.warning("AI chat turn %s: completion frame not sent (%s)",
+                               assistant_id, type(frame_exc).__name__)
+            return {"message_id": assistant_id, "status": "completed"}
         await ws_hub.broadcast_user(tenant_id, user_id, {
             "type": "AI_CHAT_ERROR", "version": 1, "message_id": assistant_id,
             "request_id": request_id, "code": "AI_RESPONSE_UNAVAILABLE",
