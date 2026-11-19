@@ -817,6 +817,30 @@ decision_refs: []
 next_task: "26.1 / 26.9: one suppression and consent authority for CRM edits and the outreach ledger."
 updated: 2026-11-18
 ```
+#### L03-20 A realtime frame too large for one NOTIFY reaches the other replicas in parts, and one stalled browser no longer holds a broadcast up (external audit 27.6, 27.7)
+```yaml
+id: L03-20
+status: tests_pass
+env: local
+evidence_shas: [9564ffe]   # base; fix in the commit that adds this row
+files: [backend/ws_hub.py, backend/tests/test_ws_hub_fanout.py, backend/tests/test_ws_hub_parts_live.py]
+tests_run:
+  - {cmd: "read backend/ws_hub.py at 9564ffe", result: "confirmed 27.6: an envelope over 7,500 bytes was logged and not published, and json.dumps' ASCII escaping made a 4,000-character CJK / emoji transcript chunk ~24 KB, so other replicas never got it. Confirmed 27.7: _send_group / _send_user / _send_users awaited each socket's send_text in turn with no timeout", date: 2026-11-19}
+  - {cmd: "main's ws_hub, driven directly (a stalled socket first, a healthy one second; a 4,000-character CJK/emoji frame)", result: "red: the broadcast was still blocked after 2 s and the healthy socket had received nothing; the large frame produced 0 notifications", date: 2026-11-19}
+  - {cmd: "after: full unit suite 6923 passed + 1 failure (test_env_documentation: ORACLE_WS_SEND_TIMEOUT_SECONDS undocumented, fixed in .env.example); after review r1 test_ws_hub_fanout 7 passed; earlier: test_ws_hub_fanout 5 passed (a stalled socket is dropped and closed within one send timeout while three healthy sockets get the frame; a 4,000-character CJK/emoji frame crosses in parts and reassembles even out of order; an incomplete frame expires undelivered; a malformed part is ignored; a frame too big even in parts is refused); live test_ws_hub_parts_live + test_realtime_record_scope_live passed on real PostgreSQL (parts arrive in order through a real LISTEN connection, each under the server limit); ws_hub-related unit tests 87 passed", result: "pass", date: 2026-11-19}
+authz_checked: "Audience rules are unchanged: parts carry the same scoped envelope (group, user_ids, mirror) and are reassembled before the existing parse and delivery, so a part can never be delivered on its own. Envelopes are now UTF-8 (ensure_ascii=False), which roughly halves a non-ASCII frame. A frame over one NOTIFY is split into up to 32 parts of 1,500 characters, sent in one transaction (delivered together, in order); a part has no tenant_id, so a replica on the previous release drops it as malformed, as it dropped the oversized frame before. Receivers keep at most 64 incomplete frames for 30 s. Sends to a group run concurrently, each bounded by ORACLE_WS_SEND_TIMEOUT_SECONDS (5 s), so the delay one slow socket causes is bounded to that, not removed; a socket that times out is unregistered and closed (1013) in a tracked background task left to the websockets library's own close timeout, which drops a connection whose buffer is full. A frame whose text is not valid UTF-8 (a lone surrogate) falls back to ASCII escapes. A socket closed this way during hydration ends its handler quietly. Counts in ws_hub.send_stats()."
+blockers:
+  - "Not done from 27.7's repair: a per-socket bounded outbound queue. Concurrent bounded sends bound the head-of-line delay to one send timeout per broadcast (a broadcast still waits for its slowest socket, up to 5 s per group); two broadcasts can still reach one socket concurrently, as before; the timeout covers the socket's whole buffer, so a slow client mid-hydration can be dropped. send_stats() is not yet surfaced in an operator view."
+  - "27.6 ceiling: a frame over 32 parts of 1,500 characters (about 48k characters of envelope) is still logged and not published across replicas; transcript chunks (4,000 characters) are far below it."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the 2 s cap on close left a full-buffer socket half-closed, a lone surrogate could make a broadcast raise, the hydration path did not expect a closed socket, wording overstated; tests now bounded and cover targeted-send drops and surrogates."
+  - "Not run across two real backend replicas; the live test drives the real LISTEN/NOTIFY path from one process."
+  - "Not deployed (C4.4)."
+audit_refs: [27.6, 27.7]
+decision_refs: []
+next_task: "27.5 (platform firehose content: owner decision)."
+updated: 2026-11-19
+```
+
 ### L04
 CRM, contacts, leads and relationships.
 

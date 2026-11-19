@@ -1578,7 +1578,12 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         await restore_session(websocket, user_id, tenant_id)
         await push_deal_pipeline(websocket, ctx)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        # RuntimeError only when the socket is already closed: the hub closed
+        # it because it could not take a broadcast in time (27.7) and hydration
+        # then wrote to it. Any other RuntimeError is a real failure.
+        if isinstance(exc, RuntimeError) and websocket.application_state != WebSocketState.DISCONNECTED:
+            raise
         logger.info("WebSocket disconnected during hydration — %s", client_label)
         ws_hub.unregister(tenant_id, websocket, user_id)
         return
