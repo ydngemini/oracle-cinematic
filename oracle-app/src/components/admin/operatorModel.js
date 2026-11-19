@@ -158,3 +158,27 @@ export function fmtMoney(v) {
   const n = Number(v);
   return Number.isFinite(n) ? money.format(n) : '—';
 }
+
+// Alert delivery (audit 30.3): a confirmed test-alert code is the only proof.
+function lastAttemptWords(last) {
+  if (!last) return '';
+  if (last.outcome === 'recipient_missing') return 'The last test had nobody to go to.';
+  if (last.outcome === 'sending') return 'The result of the last test was not recorded (the server may have restarted while sending it).';
+  if (last.outcome === 'sent' && !last.confirmed) return 'The last test was sent but its code was not confirmed.';
+  if (last.outcome !== 'sent') return `The mail relay did not accept the last test (${last.outcome}).`;
+  return '';
+}
+
+export function alertDeliverySummary(data) {
+  if (!data) return '';
+  if (!data.recipient_configured) {
+    return 'No alert recipient is set (ORACLE_ALERT_EMAIL), so incidents reach only the logs.';
+  }
+  if (data.proven) {
+    return `A test alert to the current recipient was confirmed ${relTime(data.confirmed_at) ?? ''}. `
+      + `The launch check accepts it for ${data.max_age_days} days.`;
+  }
+  if (data.awaiting_code) return 'A test alert was sent. Enter the code from that email to confirm it arrived.';
+  if (data.stale) return `The last confirmed test is older than ${data.max_age_days} days. Send a new one.`;
+  return `No test alert has been confirmed for the current recipient. ${lastAttemptWords(data.last_attempt)}`.trim();
+}
