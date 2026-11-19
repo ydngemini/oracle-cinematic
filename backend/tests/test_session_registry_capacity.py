@@ -1,6 +1,6 @@
 """The in-process session registry must never refuse a sign-in.
 
-It exists for the admin "who is signed in" view. It used to raise 503 once it
+It exists for the admin "recent sign-ins on this server" view (28.7). It used to raise 503 once it
 held 100 agents — per process — which capped the whole platform at roughly
 100 signed-in agents per API replica (Mission 8 capacity audit).
 """
