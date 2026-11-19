@@ -4355,6 +4355,29 @@ next_task: "28.3 (owner decision on the operator session registry migration); 28
 updated: 2026-11-18
 ```
 
+#### L17-52 Resetting someone else's two-step sign-in takes the actor's own fresh password and code, the operator's included (external audit 28.4)
+```yaml
+id: L17-52
+status: tests_pass
+env: local
+evidence_shas: [7eed35d]   # base; fix in the commit that adds this row
+files: [backend/mfa_api.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/tests/test_tenant_user_mfa_live.py, backend/tests/test_inline_platform_admin_checks.py, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/BrokerageSetupPanel.test.jsx]
+tests_run:
+  - {cmd: "read mfa_api.reset_member_mfa, brokerage_onboarding.reset_member_two_step, operator_api.reset_user_two_step at 7eed35d", result: "confirmed 28.4: both resets took a reason only; a live owner or platform-admin session alone removed another account's factor (unlike the user's own disable, which re-proves password and code)", date: 2026-11-18}
+  - {cmd: "mutants: (a) drop the step-up call; (b) keep the password check but skip the code check", result: "red both: (a) the wrong-password reset went through; (b) a wrong code with the right password went through (DID NOT RAISE)", date: 2026-11-18}
+  - {cmd: "after: live test_tenant_user_mfa_live 1 passed (wrong password 403 and no code 401 OTP_REQUIRED reset nothing; the operator's wrong passphrase 403); full unit suite 6895 passed / 156 skipped; after the review follow-ups the live test (now with a wrong code) and vitest BrokerageSetupPanel 29 passed; eslint clean", result: "pass", date: 2026-11-18}
+authz_checked: "mfa_api.step_up runs before the target is looked up. A users-table actor (broker owner, database-backed platform admin) re-proves the live session (_account), the password (confirm_password: rate-limited like sign-in) and a current TOTP or recovery code (same counter and lockout as sign-in). The environment operator (no users row) re-proves the configured passphrase (constant-time, rate-limited) and its own second factor (TOTP, or an emailed code: leave code out once to have it sent); other environment (demo) identities have no factor, as at sign-in (production refuses demo logins). Role checks still run first; the target rules, audit and session ending are unchanged. The owner's Settings screen asks for 'Your password' and 'Your two-step code' before 'Confirm reset'."
+blockers:
+  - "Not done from the audit's suggestions: a second operator or ticket-backed break-glass approval for platform-admin resets of owners, and an out-of-band notice to the affected account."
+  - "Independent review r1: APPROVE; follow-ups applied (operator factor only for the operator account, password cleared from the form after every attempt and on cancel, wrong-code test). Residual, LOW: a failed operator step-up raises no security alert (sign-in does), and the emailed operator code's wording says 'sign-in'; step-up shares the per-account login rate-limit bucket (the existing confirm_password pattern), so failed logins from many networks can delay it; a valid code is consumed by a 404/409 target."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.4]
+decision_refs: []
+next_task: "28.3 (owner decision on the operator session registry migration)."
+updated: 2026-11-18
+```
+
 #### L17-48 A brokerage export refuses rather than leave out sealed data: no master key, a column nobody mapped, or a value the key cannot open; documents and audio go in, and partial media is said (external audit 29.5)
 ```yaml
 id: L17-48
@@ -5093,12 +5116,34 @@ tests_run:
 authz_checked: "No access-control change. One policy, component_health.launch_assessment, which the readiness script loads from backend/component_health.py by path (no second copy of the states). Blocks: a core or important component UNAVAILABLE / AUTH_FAILED / STALE; a core one UNKNOWN or NOT_CONFIGURED; any state the module does not define. Warns: DEGRADED / RATE_LIMITED / RECOVERING anywhere; an optional component not working or UNKNOWN; an important one UNKNOWN. inbound_calls, billing_meter, usage_reporting and messaging_registration are now listed in ROLE as important (they defaulted to optional in the snapshot and important in the gate); role_of() gives one default (important) for both. A malformed health body blocks. With an operator token, a health endpoint that does not answer with components blocks production and warns staging."
 blockers:
   - "Not exercised against a live degraded worker, queue or realtime listener (the audit asks for that): needs a deployed environment with an operator token; staging cannot run it until DigitalOcean access is restored (30.5)."
-  - "Without an operator token the operator checks stay an optional warning; that is audit 30.7 (operator-only checks optional for launch-critical subsystems), open."
+  - "Without an operator token the operator checks were an optional warning: audit 30.7, closed by L19-18 (production BLOCKED without the token)."
   - "Independent review r1: APPROVE with LOW follow-ups, applied (role agreement, coverage test reads the module constants, malformed body, wording). Residual, LOW: a configured Valkey that does not answer reports DEGRADED (component_health._valkey), so the gate only warns although calling is unavailable; the gate uses the operator checkout's ROLE, not the role the server reports, so it can drift if the checkout is not the deployed SHA."
   - "Not deployed (C4.4)."
 audit_refs: [30.2]
 decision_refs: []
 next_task: "30.7: operator-only checks required in production; 30.6 / 30.8."
+updated: 2026-11-18
+```
+
+#### L19-18 A production go-live needs the operator-only checks: without the operator token it is BLOCKED unless a named waiver is recorded, and unreachable billing exceptions block a charging production (external audit 30.7)
+```yaml
+id: L19-18
+status: tests_pass
+env: local
+evidence_shas: [7eed35d]   # base; fix in the commit that adds this row
+files: [scripts/neoh-launch-readiness.py, backend/tests/test_launch_readiness.py, docs/first-brokerage-launch.md]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_operator_console at 7eed35d", result: "confirmed 30.7: with no NEOH_OPERATOR_TOKEN the operator checks (component health, MLS feeds, billing exceptions) were one WARN in production too, and an unreachable billing-exceptions endpoint only warned", date: 2026-11-18}
+  - {cmd: "after: full unit suite 6897 passed / 156 skipped; after review r1 test_launch_readiness 43 passed (production without the token BLOCKED; a waiver refused while charging and when malformed, a recorded WARN when not charging, carried to the JSON through the CLI; staging WARN; unreachable billing exceptions BLOCKED when charging, WARN when not; a healthy snapshot PASS with its response time and states)", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. Production: no operator token -> operator_console BLOCKED. --waive-operator-checks 'who: why' is refused (still BLOCKED) while production charges, refused when not in 'who: why' form, and otherwise a WARN reading 'WAIVED (not charging): ...', also in the JSON report's top-level operator_waiver; billing exceptions unreachable -> BLOCKED when charging; MLS feeds stay a warning (MLS is not sold, D-2026-10-12-01). The component-health reason records the operator snapshot's response time (also on failure), the release SHA the /version check read, and every component's state. Staging is unchanged (warnings)."
+blockers:
+  - "Not run against a deployed production (none exists; 30.1). The saved docs/launch-readiness/*.json snapshots predate this and still show the old warning."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the waiver could clear a paid launch (now refused while charging), any text was accepted (now 'who: why'), the waiver was not a top-level JSON field, response time only on success, healthy states not kept, a null git_sha could raise, L19-17 and three runbooks still showed the old behaviour. The raw operator snapshot is not stored in the report (states are, in the reason). Round 2 (REQUEST CHANGES), fixed: the states list could crash on a malformed body the policy blocks (now guarded, tested), and a waiver given with a token was recorded though not applied (now only when applied)."
+  - "Not deployed (C4.4)."
+audit_refs: [30.7]
+decision_refs: []
+next_task: "30.6: per-environment gate evidence; 30.8: a go-live storage acceptance gate."
+updated: 2026-11-18
 updated: 2026-11-18
 ```
 

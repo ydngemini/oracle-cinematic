@@ -9,8 +9,12 @@ detailed documents and does not replace them. Anything machine-checkable is
 also checked live by:
 
 ```sh
-python3 scripts/neoh-launch-readiness.py --env production   # or --env staging
+NEOH_OPERATOR_TOKEN=<operator session token> python3 scripts/neoh-launch-readiness.py --env production   # or --env staging
 ```
+
+Production without the operator token is BLOCKED (component health and billing
+exceptions are operator-only, audit 30.7). While production is not charging,
+`--not-charging --waive-operator-checks 'who: why'` records a deliberate skip.
 
 The latest saved runs are in [`launch-readiness/`](launch-readiness/README.md).
 **State as of 2026-10-03 ~20:00 UTC.** Migration head is `0124_job_claim_aging.sql`.

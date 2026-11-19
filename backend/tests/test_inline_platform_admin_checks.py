@@ -308,7 +308,7 @@ GOVERNANCE_BODIES = {
     ("PATCH", "/api/brokerage/profile"): {"name": "Test Brokerage"},
     ("POST", "/api/brokerage/invitations"): {"emails": ["new@brokerage.test"]},
     ("POST", "/api/brokerage/team/{user_id}/suspend"): _MEMBER_CHANGE,
-    ("POST", "/api/brokerage/team/{user_id}/mfa/reset"): _MEMBER_CHANGE,
+    ("POST", "/api/brokerage/team/{user_id}/mfa/reset"): {"reason": "role test", "password": "x", "code": "123456"},
     ("POST", "/api/brokerage/team/{user_id}/reinstate"): _MEMBER_CHANGE,
     ("PUT", "/api/brokerage/setup/progress"): {"capability": "contact_import", "status": "READY"},
 }

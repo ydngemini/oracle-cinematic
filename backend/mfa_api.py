@@ -60,6 +60,15 @@ class ProtectedRequest(_Body):
     code: str = Field(min_length=6, max_length=32)
 
 
+class ResetRequest(_Body):
+    """Resetting someone else's two-step sign-in (audit 28.4): the reason,
+    plus fresh proof by the person doing it — their password and a current
+    code. `code` may be left out once to have an operator's email code sent."""
+    reason: str = Field(min_length=3, max_length=500)
+    password: str = Field(min_length=1, max_length=256)
+    code: Optional[str] = Field(default=None, max_length=32)
+
+
 def _raise(exc: user_mfa.MfaError) -> None:
     raise HTTPException(exc.status_code, exc.detail) from None
 
@@ -227,7 +236,38 @@ _SQL_RESET_TARGET = (
 )
 
 
-async def reset_member_mfa(ctx: TenantContext, user_id: UUID, reason: str) -> dict[str, Any]:
+async def step_up(ctx: TenantContext, password: str, code: Optional[str]) -> None:
+    """Fresh proof by the actor for a sensitive change to someone else's
+    account (audit 28.4): a stolen live session alone must not be able to
+    strip another account's second factor. A users-table account re-proves
+    its password and a current code (same counter, lockout and rate limit
+    as sign-in); the environment operator re-proves the configured
+    passphrase and its own second factor."""
+    import hmac
+
+    from auth import (_ADMIN_ID, DEMO_CREDENTIALS, _check_rate_limit, _operator_second_factor,
+                      _require_operator_email_otp, _require_operator_otp, confirm_password)
+
+    if not ctx.verify_session:  # an environment identity: no users row
+        await _check_rate_limit(ctx.agent_id)
+        expected = DEMO_CREDENTIALS.get(ctx.agent_id, "")
+        if not expected or not hmac.compare_digest(expected.encode(), (password or "").encode()):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Password is incorrect.")
+        # The configured second factor belongs to the operator account only,
+        # as at sign-in; other environment (demo) identities have none.
+        factor = _operator_second_factor() if ctx.agent_id == _ADMIN_ID else None
+        if factor == "totp":
+            await _require_operator_otp(ctx.agent_id, code)
+        elif factor == "email":
+            await _require_operator_email_otp(ctx.agent_id, code)
+        return
+    row = await _account(ctx)
+    await confirm_password(ctx, password)
+    await _check_code(row, code or "")
+
+
+async def reset_member_mfa(ctx: TenantContext, user_id: UUID, reason: str, *,
+                           password: Optional[str] = None, code: Optional[str] = None) -> dict[str, Any]:
     """Remove someone's two-step sign-in so they can set it up again (a lost
     phone, no recovery codes left). A broker owner may reset an agent of
     their own brokerage; a platform admin may reset anyone except another
@@ -241,6 +281,7 @@ async def reset_member_mfa(ctx: TenantContext, user_id: UUID, reason: str) -> di
 
     if not (ctx.is_broker_owner or ctx.is_platform_admin):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"Role {ctx.role.value} not permitted for this action.")
+    await step_up(ctx, password or "", code)  # the actor re-proves first (28.4)
     async with tenant_tx(ctx) as conn:
         target = await conn.fetchrow(_SQL_RESET_TARGET, user_id, ctx.is_platform_admin, ctx.agent_id)
     if target is None:

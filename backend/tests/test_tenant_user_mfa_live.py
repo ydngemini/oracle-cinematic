@@ -227,17 +227,28 @@ async def _scenario(monkeypatch):
         agent_team = await brokerage_onboarding.get_team(actx_now)
         assert all("mfa_enabled" not in m for m in agent_team["members"]), "an agent sees who lacks two-step"
         # An agent cannot reset anyone; an owner cannot reach another owner.
-        reason = brokerage_onboarding.MemberStatusChange(reason="lost phone")
-        await refused(brokerage_onboarding.reset_member_two_step(owner_id, reason, actx_now), 403)
-        await refused(brokerage_onboarding.reset_member_two_step(owner2_id, reason, octx), 404)
+        def reset_body(code, password=PASSWORD):
+            return mfa_api.ResetRequest(reason="lost phone", password=password, code=code)
+
+        await refused(brokerage_onboarding.reset_member_two_step(owner_id, reset_body(recovery[5]), actx_now), 403)
+        await refused(brokerage_onboarding.reset_member_two_step(owner2_id, reset_body(recovery[5]), octx), 404)
+        # The owner's live session alone is not enough (audit 28.4): a wrong
+        # password, or no code, resets nothing.
+        await refused(brokerage_onboarding.reset_member_two_step(
+            agent_id, reset_body(recovery[6], password="not my password"), octx), 403)
+        await refused(brokerage_onboarding.reset_member_two_step(agent_id, reset_body(None), octx), 401, "OTP_REQUIRED")
+        wrong_code = "000000" if code_at_offset(secret, 0) != "000000" else "111111"
+        await refused(brokerage_onboarding.reset_member_two_step(agent_id, reset_body(wrong_code), octx), 401)
+        await admin.execute("UPDATE user_mfa_factors SET failed_attempts = 0 WHERE user_id=$1", owner_id)
+        assert await admin.fetchval("SELECT count(*) FROM user_mfa_factors WHERE user_id=$1", agent_id) == 1
         agent_epoch = await admin.fetchval("SELECT session_epoch FROM users WHERE id=$1", agent_id)
-        done = await brokerage_onboarding.reset_member_two_step(agent_id, reason, octx)
+        done = await brokerage_onboarding.reset_member_two_step(agent_id, reset_body(recovery[6]), octx)
         assert done["mfa_enabled"] is False
         assert await admin.fetchval("SELECT count(*) FROM user_mfa_factors WHERE user_id=$1", agent_id) == 0
         assert await admin.fetchval("SELECT count(*) FROM user_mfa_recovery_codes WHERE user_id=$1", agent_id) == 0
         assert await admin.fetchval("SELECT session_epoch FROM users WHERE id=$1", agent_id) == agent_epoch + 1
         assert ("team.member.mfa_reset", "USER_STATE_CHANGE") in await audit_actions()
-        await refused(brokerage_onboarding.reset_member_two_step(agent_id, reason, octx), 409)
+        await refused(brokerage_onboarding.reset_member_two_step(agent_id, reset_body(recovery[7]), octx), 409)
 
         # ── the brokerage-wide switch holds agents on setup ───────────────
         # An agent without two-step signed in while it was optional; the
@@ -294,8 +305,11 @@ async def _scenario(monkeypatch):
 
         # ── the operator resets an owner (admin action) ───────────────────
         platform = TenantContext("ops@neoh.test", "00000000-0000-0000-0000-000000000000", Role.PLATFORM_ADMIN)
-        result_reset = await operator_api.reset_user_two_step(owner_id, operator_api.MfaResetBody(reason="ticket 42"),
-                                                              platform)
+        monkeypatch.setitem(auth.DEMO_CREDENTIALS, "ops@neoh.test", "operator-passphrase")
+        await refused(operator_api.reset_user_two_step(owner_id, operator_api.MfaResetBody(
+            reason="ticket 42", password="wrong"), platform), 403)  # the operator re-proves it too (28.4)
+        result_reset = await operator_api.reset_user_two_step(owner_id, operator_api.MfaResetBody(
+            reason="ticket 42", password="operator-passphrase"), platform)
         assert result_reset["mfa_enabled"] is False
         assert ("admin.user.mfa_reset", "ADMIN_ACTION") in await audit_actions()
         result, token = await login(owner_email)

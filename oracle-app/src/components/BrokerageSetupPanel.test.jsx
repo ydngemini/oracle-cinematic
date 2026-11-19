@@ -369,7 +369,22 @@ describe('BrokerageSetupPanel two-step sign-in (L17-19)', () => {
     const resets = screen.getAllByRole('button', { name: 'Reset two-step' });
     expect(resets).toHaveLength(1); // Avery only: Sam has none, the owner is not reset from here
     fireEvent.click(resets[0]);
-    await waitFor(() => expect(api.crmPost).toHaveBeenCalledWith(
-      '/api/brokerage/team/u2/mfa/reset', { reason: 'Two-step sign-in reset by an owner from Settings' }));
+    // The owner re-proves their own password and code first (audit 28.4).
+    expect(api.crmPost).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'owner-password' } });
+    fireEvent.change(screen.getByLabelText('Your two-step code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm reset' }));
+    await waitFor(() => expect(api.crmPost).toHaveBeenCalledWith('/api/brokerage/team/u2/mfa/reset', {
+      reason: 'Two-step sign-in reset by an owner from Settings', password: 'owner-password', code: '123456',
+    }));
+  });
+
+  it('cancelling a reset sends nothing', async () => {
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Avery');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset two-step' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByLabelText('Your password')).toBeNull();
+    expect(api.crmPost).not.toHaveBeenCalled();
   });
 });
