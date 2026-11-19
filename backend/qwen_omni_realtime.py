@@ -535,7 +535,7 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
         self._handoff_started = False
 
     async def run(self) -> None:
-        from inbound_voice import finalize_inbound_voice_call, mark_inbound_streaming
+        from inbound_voice import finalize_inbound_voice_call_with_retry, mark_inbound_streaming
         from twilio_call_handler import load_twilio_call_state
 
         state = await load_twilio_call_state(self.call_connection_id)
@@ -558,7 +558,7 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
         finally:
             if self._call_state.get("direction") == "inbound":
                 try:
-                    await finalize_inbound_voice_call(
+                    await finalize_inbound_voice_call_with_retry(  # 34.6
                         self.call_connection_id,
                         self._transcript,
                         self._call_state,
@@ -778,7 +778,7 @@ class PlivoQwenRealtimeBridge(QwenOmniRealtimeBridge):
         self._handoff_started = False
 
     async def run(self) -> None:
-        from inbound_voice import finalize_inbound_voice_call, mark_inbound_streaming
+        from inbound_voice import finalize_inbound_voice_call_with_retry, mark_inbound_streaming
         from plivo_call_handler import load_plivo_call_state
 
         state = await load_plivo_call_state(self.call_connection_id)
@@ -800,7 +800,7 @@ class PlivoQwenRealtimeBridge(QwenOmniRealtimeBridge):
         finally:
             if self._call_state.get("direction") == "inbound":
                 try:
-                    await finalize_inbound_voice_call(
+                    await finalize_inbound_voice_call_with_retry(  # 34.6
                         self.call_connection_id,
                         self._transcript,
                         self._call_state,
