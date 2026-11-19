@@ -4155,13 +4155,24 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # so a call keyed on that id had no state and its answer webhook
                 # refused it as "unmanaged". The URL is covered by the V3
                 # signature, so the reference cannot be forged onto a webhook.
+                from call_briefing import briefing_from_draft, on_behalf_of as _on_behalf_of
+
+                on_behalf_of = ""
+                try:
+                    from agent_profile import load_agent_identity
+
+                    on_behalf_of = _on_behalf_of(await load_agent_identity(owner_ctx), owner_ctx.agent_id)
+                except Exception:  # noqa: BLE001 - the call still carries its approved reason
+                    logger.warning("agent identity unavailable for a call briefing", exc_info=True)
                 correlation = str(uuid.uuid4())
                 await initialize_outbound_plivo_call_state(
                     correlation,
                     str(target.get("phone") or ""),
                     tenant_id=ctx.tenant_id,
                     account_id=account_id,
-                    briefing=str(draft.get("reason") or ""),
+                    # Every approved field that says why, about what and
+                    # from whom (34.3): not only the chat tool's `reason`.
+                    briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of),
                 )
                 ref_query = f"?{PLIVO_CORRELATION_PARAM}={correlation}"
                 provider_result = await adapter.place_call(
