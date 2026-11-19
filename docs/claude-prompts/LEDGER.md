@@ -5193,6 +5193,30 @@ next_task: "30.6: per-environment gate evidence (owner-gates.json)."
 updated: 2026-11-19
 ```
 
+#### L19-20 An owner gate is closed per environment: staging evidence no longer closes it for production (external audit 30.6)
+```yaml
+id: L19-20
+status: tests_pass
+env: local
+evidence_shas: [db7bdd0]   # base; fix in the commit that adds this row
+files: [scripts/neoh-launch-readiness.py, docs/launch-readiness/owner-gates.json, backend/tests/test_launch_readiness.py]
+tests_run:
+  - {cmd: "read docs/launch-readiness/owner-gates.json and check_gates at db7bdd0", result: "confirmed 30.6: privacy_erasure_role_on_do was 'done' for production and staging on evidence that names only neoh-postgres-staging, and check_gates credited any 'done' for every environment the gate lists", date: 2026-11-19}
+  - {cmd: "the new tests against db7bdd0's script and gates file", result: "red: 3 of 3 (staging evidence closed the production gate; status_by_env ignored; the repository's erasure-role gate passed for production)", date: 2026-11-19}
+  - {cmd: "after: full unit suite 6908 passed / 156 skipped on round 1; after review r1 test_launch_readiness 52 passed (a scoped gate's top-level 'done' is not credited; per-environment evidence passes only when it names this cluster and no other — 'production neoh-postgres not created yet' beside the staging name is refused; a missing environment entry is open; a non-database gate closes as before; the repository's erasure gates are per environment)", result: "pass", date: 2026-11-19}
+authz_checked: "No access-control change. A gate marked evidence_scope 'environment' (about one environment's own database) is closed per environment: only status_by_env.<env> counts (a top-level 'done' is ignored, a missing entry is open), and its evidence must name that environment's cluster (neoh-postgres / neoh-postgres-staging, matched whole) and not the other environment's. Other gates (spend alerts, support contact, ...) close as before. privacy_erasure_role_on_do records staging done (its 2026-10-03 evidence) and production open — production does not exist yet (30.1); privacy_erasure_live_on_do is per environment and open for both. Its how_to_close now carries the audit's full requirement: cluster, role, deployed migration head and an erasure run under FORCE RLS on a real non-production tenant in that cluster."
+blockers:
+  - "Owner record: this reopens privacy_erasure_role_on_do for production in docs/launch-readiness/owner-gates.json (the owner closes gates there) and makes privacy_erasure_live_on_do per environment."
+  - "The check reads what the owner recorded: it does not query DigitalOcean for the cluster, account, role or migration head (those are in how_to_close as what the evidence must state)."
+  - "The staging closure of privacy_erasure_role_on_do (2026-10-03) proves the gate's title (doadmin BYPASSRLS on neoh-postgres-staging) but predates the stricter how_to_close (migration head, FORCE RLS erasure on a real tenant); privacy_erasure_live_on_do staging is still open. Review r2: APPROVE; a guard test now requires evidence_scope on every multi-environment gate about a database."
+  - "Independent review r1 (REQUEST CHANGES), fixed: evidence naming both clusters passed production (now refused), the rule keyed on how many environments a gate lists (now an explicit evidence_scope), the audit's requirements only in the ledger (now in the gate's how_to_close), stale README / launch-state wording."
+  - "Not deployed (C4.4)."
+audit_refs: [30.6]
+decision_refs: []
+next_task: "27.6 / 27.7 (realtime fan-out size and slow writers)."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

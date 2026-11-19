@@ -1,6 +1,6 @@
 {
-  "__note": "Launch conditions no tool can verify. scripts/neoh-launch-readiness.py reports each one: an open 'blocker' is BLOCKED, an open 'warning' is WARN. Close one by setting status to \"done\" and adding evidence (who, when, where) in the same commit. Sources: docs/subprocessor-inventory.md, docs/privacy-data-map.md, docs/privacy-counsel-checklist.md, docs/resilience-drill-report.md, docs/security-launch-gate.json.",
-  "updated": "2026-10-03",
+  "__note": "Launch conditions no tool can verify. scripts/neoh-launch-readiness.py reports each one: an open 'blocker' is BLOCKED, an open 'warning' is WARN. Close one by setting status to \"done\" and adding evidence (who, when, where) in the same commit. Sources: docs/subprocessor-inventory.md, docs/privacy-data-map.md, docs/privacy-counsel-checklist.md, docs/resilience-drill-report.md, docs/security-launch-gate.json. A gate with \"evidence_scope\": \"environment\" is about one environment's own database: close it per environment under status_by_env.<env>, with evidence that names that environment's cluster (neoh-postgres or neoh-postgres-staging) and no other (audit 30.6).",
+  "updated": "2026-11-19",
   "gates": [
     {
       "id": "privacy_email_dpa",
@@ -37,20 +37,26 @@
       "area": "privacy",
       "class": "blocker",
       "environments": ["production", "staging"],
-      "status": "done",
       "title": "Erasure owner can see every row under FORCE RLS on DigitalOcean",
-      "how_to_close": "confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
-      "evidence": "2026-10-03, lead, on neoh-postgres-staging: doadmin (the migration role, owner of the DEFINER functions) has BYPASSRLS=true and is not superuser; oracle_app_login (doctl-created) has no superuser/BYPASSRLS/CREATEROLE/CREATEDB. Condition: doadmin only ever runs migrations, never the app."
+      "how_to_close": "per environment, on that environment's own cluster (audit 30.6): confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean; record the cluster, the role, the deployed migration head, and an erasure run under FORCE RLS on a real non-production tenant in that cluster",
+      "evidence_scope": "environment",
+      "status_by_env": {
+        "staging": {"status": "done", "evidence": "2026-10-03, lead, on neoh-postgres-staging: doadmin (the migration role, owner of the DEFINER functions) has BYPASSRLS=true and is not superuser; oracle_app_login (doctl-created) has no superuser/BYPASSRLS/CREATEROLE/CREATEDB. Condition: doadmin only ever runs migrations, never the app."},
+        "production": {"status": "open", "evidence": ""}
+      }
     },
     {
       "id": "privacy_erasure_live_on_do",
       "area": "privacy",
       "class": "warning",
       "environments": ["production", "staging"],
-      "status": "open",
       "title": "Live erasure test run against the DigitalOcean cluster",
-      "how_to_close": "run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against neoh-postgres-staging (throwaway tenant) and record the result in docs/launch-state.md",
-      "evidence": ""
+      "how_to_close": "per environment (audit 30.6): run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against that environment's own cluster (neoh-postgres-staging, then neoh-postgres; a throwaway non-production tenant) and record the result in docs/launch-state.md",
+      "evidence_scope": "environment",
+      "status_by_env": {
+        "staging": {"status": "open", "evidence": ""},
+        "production": {"status": "open", "evidence": ""}
+      }
     },
     {
       "id": "privacy_elevenlabs_training",
