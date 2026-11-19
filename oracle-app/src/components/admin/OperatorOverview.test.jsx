@@ -22,6 +22,10 @@ const caps = (over = {}) => ({
 });
 
 const FIXTURES = {
+  '/api/admin/alerts/test': {
+    recipient_configured: true, proven: true, confirmed_at: '2026-11-18T10:00:00Z', stale: false,
+    max_age_days: 14, awaiting_code: false, last_attempt: { outcome: 'sent', confirmed: true },
+  },
   '/api/admin/health/components': {
     state: 'DEGRADED',
     components: {

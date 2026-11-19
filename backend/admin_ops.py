@@ -123,6 +123,70 @@ async def storage_round_trip(ctx: TenantContext = Depends(require_platform_admin
     return body
 
 
+class AlertTestConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=4, max_length=32)
+
+
+@router.get("/alerts/test")
+async def alert_test_status(ctx: TenantContext = Depends(require_platform_admin)):
+    """Whether a test alert to today's ORACLE_ALERT_EMAIL was received and
+    confirmed recently (audit 30.3): the launch check reads `proven`."""
+    import ops_alert_test
+    import ops_alerts
+
+    async with tenant_tx(ctx) as conn:
+        return await ops_alert_test.status(conn, ops_alerts._recipient())
+
+
+@router.post("/alerts/test")
+async def send_alert_test(ctx: TenantContext = Depends(require_platform_admin)):
+    """Email a test alert carrying a one-time code to ORACLE_ALERT_EMAIL. The
+    code is never returned here: only the recipient can confirm it."""
+    import ops_alert_test
+    import ops_alerts
+
+    recipient = ops_alerts._recipient()
+    async with tenant_tx(ctx) as conn:
+        started = await ops_alert_test.begin(conn, ctx.agent_id, recipient)
+    if started.retry_after is not None:
+        raise HTTPException(status_code=429, detail="A test alert was sent less than a minute ago.",
+                            headers={"Retry-After": str(started.retry_after)})
+    if started.code is None:
+        outcome, error = ops_alerts.RECIPIENT_MISSING, ops_alerts.RECIPIENT_MISSING
+    else:
+        error = await ops_alerts.send_email(
+            ops_alert_test.SUBJECT, ops_alert_test.body(started.code), to=started.recipient)
+        async with tenant_tx(ctx) as conn:
+            await ops_alert_test.finish(conn, started.id, error)
+        outcome = "sent" if error is None else "delivery_failed"
+    await ledger.record(category=AuditCategory.ADMIN_ACTION, action="ops_alert_test_sent",
+                        tenant_id=ctx.tenant_id, user_id=ctx.agent_id, metadata={"outcome": outcome})
+    return {"outcome": outcome, "error": None if error is None else error}
+
+
+@router.post("/alerts/test/confirm")
+async def confirm_alert_test(body: AlertTestConfirm, ctx: TenantContext = Depends(require_platform_admin)):
+    """Confirm the code from the most recent test alert. A wrong code is
+    counted (at most ops_alert_test.MAX_ATTEMPTS tries per test)."""
+    import ops_alert_test
+
+    async with tenant_tx(ctx) as conn:
+        result = await ops_alert_test.confirm(conn, body.code, ctx.agent_id)
+    await ledger.record(category=AuditCategory.ADMIN_ACTION, action="ops_alert_test_confirm",
+                        tenant_id=ctx.tenant_id, user_id=ctx.agent_id, metadata={"result": result["result"]})
+    if result["result"] == "confirmed":
+        return result
+    detail = {
+        "wrong_code": "That code does not match the latest test alert.",
+        "too_many_attempts": "Too many wrong codes for this test alert. Send a new one.",
+        "no_pending_test": "No test alert is waiting for a code. Send a new one.",
+    }[result["result"]]
+    raise HTTPException(status_code=409 if result["result"] != "wrong_code" else 400,
+                        detail={"code": result["result"], "message": detail,
+                                "attempts_left": result.get("attempts_left")})
+
+
 @router.get("/runtime-load")
 async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
     """What this replica is actually carrying, right now.

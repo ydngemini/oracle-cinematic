@@ -2,6 +2,8 @@
 
 An alert arrives as an email titled **`[Neoh] <component> <STATE>`** (from `backend/ops_alerts.py`, sent to `ORACLE_ALERT_EMAIL`) and as a row in `ops_alerts`. Use the component name to find the runbook below.
 
+To prove alerts reach a person (required before go-live, audit 30.3): Operator overview > Alert delivery > **Send test alert**, then type the code from the email titled `[Neoh] Test alert: confirm you received it`. A code works once, for 24 hours, with 5 tries; one test a minute. Re-test after changing `ORACLE_ALERT_EMAIL` or the mail relay.
+
 1. **Confirm** what is affected: `GET /api/admin/health/components` (platform admin). It returns every component's state plus open alerts.
 2. **Open the runbook** for that component in the table.
 3. **Mitigate** using the runbook's *Do* steps.
