@@ -164,17 +164,21 @@ def test_the_owner_passes_the_gate_for_the_same_read(monkeypatch):
     assert receipt["ok"] is True
 
 
-def test_a_remembered_offer_is_used_only_for_its_own_turn_and_record():
+def test_a_remembered_offer_is_used_only_for_its_own_turn_and_record(monkeypatch):
+    async def all_set_up(ctx):
+        return {}
+
+    monkeypatch.setattr(tool_offer, "_known_channel_gaps", all_set_up)
     offer = tool_offer.for_actor(OWNER, "client", {"sms": SMS_GAP})
     tool_offer.remember(OWNER, "turn-2", offer)
-    assert tool_offer.current(OWNER, "turn-2", "client") is offer
-    # Another turn, or the same turn against another record, falls back to the
-    # role-only offer rather than reusing a stale channel verdict.
-    assert tool_offer.current(OWNER, "turn-3", "client").withheld == {}
-    assert tool_offer.current(OWNER, "turn-2", "lead").withheld == {}
+    assert asyncio.run(tool_offer.for_execution(OWNER, "turn-2", "client")) is offer
+    # Another turn, the same turn against another record, or another tenant is
+    # recomputed with the live channel state rather than reusing a stale verdict.
+    assert asyncio.run(tool_offer.for_execution(OWNER, "turn-3", "client")).withheld == {}
+    assert asyncio.run(tool_offer.for_execution(OWNER, "turn-2", "lead")).withheld == {}
     other = TenantContext(agent_id="owner@tenant.test", tenant_id="22222222-2222-2222-2222-222222222222",
                           role=Role.BROKER_OWNER)
-    assert tool_offer.current(other, "turn-2", "client").withheld == {}
+    assert asyncio.run(tool_offer.for_execution(other, "turn-2", "client")).withheld == {}
 
 
 def test_remembered_turns_are_bounded_oldest_first(monkeypatch):
@@ -374,7 +378,7 @@ def test_a_turn_names_the_gap_in_the_prompt_and_remembers_the_offer_for_the_exec
     assert "- get_tenant_health: limited to the broker-owner" in seen["prompt"]
     offer = seen["bundle"]["tool_offer"]
     assert "draft_sms" in offer.withheld and "draft_email" in offer.offered
-    assert tool_offer.current(AGENT, "assistant-offer-1", "client") is offer
+    assert asyncio.run(tool_offer.for_execution(AGENT, "assistant-offer-1", "client")) is offer
 
 
 # ── the turn runs as the person who asked ───────────────────────────────────
@@ -443,7 +447,7 @@ def test_the_executor_never_falls_back_to_the_role_only_offer(monkeypatch):
     async def gaps(ctx):
         return {"sms": SMS_GAP}
 
-    monkeypatch.setattr(tool_offer, "channel_gaps", gaps)
+    monkeypatch.setattr(tool_offer, "_known_channel_gaps", gaps)
     remembered = tool_offer.for_actor(OWNER, "client", {})
     tool_offer.remember(OWNER, "turn-exec-1", remembered)
     assert asyncio.run(tool_offer.for_execution(OWNER, "turn-exec-1", "client")) is remembered
@@ -451,3 +455,35 @@ def test_the_executor_never_falls_back_to_the_role_only_offer(monkeypatch):
     assert "draft_sms" in recomputed.withheld and recomputed.refusal("draft_sms")
     other_record = asyncio.run(tool_offer.for_execution(OWNER, "turn-exec-1", "lead"))
     assert other_record is not remembered and other_record.refusal("draft_sms")
+
+
+def test_unknown_channel_state_on_a_cache_miss_fails_closed_for_channel_tools(monkeypatch):
+    """AI32-04 review: a miss with unreadable channel state must not become
+    the role-only offer."""
+    async def unknown(ctx):
+        return None
+
+    monkeypatch.setattr(tool_offer, "_known_channel_gaps", unknown)
+    offer = asyncio.run(tool_offer.for_execution(OWNER, "turn-unknown-1", "client"))
+    for tool in ("draft_sms", "draft_email", "call_contact"):
+        assert tool in offer.withheld and "could not be checked" in offer.refusal(tool)
+    assert "get_tenant_health" in offer.offered, "non-channel tools are unaffected"
+    assert (TENANT, "turn-unknown-1") not in tool_offer._TURNS, "an unknown-state offer is not remembered"
+
+
+def test_the_executor_refuses_a_channel_tool_on_an_unremembered_turn_with_a_gap(monkeypatch):
+    """AI32-04 review: the wiring itself — execute_safe_tool, not for_execution."""
+    import ai_chat_store
+
+    async def gaps(ctx):
+        return {"sms": SMS_GAP}
+
+    async def dispatched(*_a, **_kw):
+        raise AssertionError("a withheld tool must not dispatch")
+
+    monkeypatch.setattr(tool_offer, "_known_channel_gaps", gaps)
+    monkeypatch.setattr(ai_chat_store, "_execute_safe_tool", dispatched)
+    receipt = asyncio.run(ai_chat_store.execute_safe_tool(
+        OWNER, OWNER.agent_id, "turn-never-remembered-2", "draft_sms",
+        {"client_id": "c", "body": "hi"}, "client", "c"))
+    assert receipt["ok"] is False and "texting isn't set up" in receipt["error"]

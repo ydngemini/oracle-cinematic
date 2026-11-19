@@ -110,21 +110,27 @@ def for_actor(ctx: Any, context_type: Optional[str],
     return ToolOffer(context_type, base - frozenset(withheld), withheld)
 
 
-async def channel_gaps(ctx: Any) -> dict[str, str]:
+async def _known_channel_gaps(ctx: Any) -> Optional[dict[str, str]]:
     """The channels this actor definitively cannot use yet, with the setup each
-    needs. {} when unknown — never raises, never blocks a turn for long."""
+    needs; None when the setup state could not be read. Never raises."""
     from db.connection import get_pool
 
     if get_pool() is None:
-        return {}
+        return None
     try:
         import channel_setup
 
         gaps = await asyncio.wait_for(channel_setup.gaps(ctx), timeout=_GAPS_TIMEOUT_S)
-    except Exception:  # noqa: BLE001 — unknown setup state withholds nothing
+    except Exception:  # noqa: BLE001
         logger.debug("channel setup state unavailable for this turn", exc_info=True)
-        return {}
+        return None
     return {str(k): str(v) for k, v in (gaps or {}).items() if v}
+
+
+async def channel_gaps(ctx: Any) -> dict[str, str]:
+    """For building a turn's offer: {} when unknown — unknown setup state
+    withholds nothing from the model, never blocks a turn for long."""
+    return await _known_channel_gaps(ctx) or {}
 
 
 async def for_turn(ctx: Any, context_type: Optional[str]) -> ToolOffer:
@@ -145,25 +151,30 @@ def remember(ctx: Any, message_id: str, offer: ToolOffer) -> None:
         _TURNS.popitem(last=False)
 
 
+UNKNOWN_CHANNEL_STATE = ("this conversation's tool offer is no longer known and the channel setup "
+                         "could not be checked; ask again.")
+
+
 async def for_execution(ctx: Any, message_id: Optional[str], context_type: Optional[str]) -> ToolOffer:
     """The offer the executor enforces (AI32-04): the one remembered for this
     turn, or, when it is gone (evicted, another process, another record), the
     full offer recomputed now with the live channel setup state. Never the
-    role-only offer: that would let a channel tool the brokerage has not set up
-    through an executor the model was told it could not use."""
-    offer = _TURNS.get((str(getattr(ctx, "tenant_id", "")), str(message_id)))
+    role-only offer: when the channel state cannot be read either, the channel
+    tools fail closed instead of slipping past an executor the model may have
+    been told it could not use."""
+    key = (str(getattr(ctx, "tenant_id", "")), str(message_id))
+    offer = _TURNS.get(key)
     if offer is not None and offer.context_type == context_type:
         return offer
     if message_id:
         logger.warning("tool offer for turn %s is not remembered here; recomputed with live channel state",
                        message_id)
-    return await for_turn(ctx, context_type)
-
-
-def current(ctx: Any, message_id: Optional[str], context_type: Optional[str]) -> ToolOffer:
-    """The offer the model was shown for this turn, or — for a call made outside
-    a remembered turn — the role-only offer (channel state unknown)."""
-    offer = _TURNS.get((str(getattr(ctx, "tenant_id", "")), str(message_id)))
-    if offer is None or offer.context_type != context_type:
-        offer = for_actor(ctx, context_type)
-    return offer
+    gaps = await _known_channel_gaps(ctx)
+    if gaps is None:
+        gaps = {channel: UNKNOWN_CHANNEL_STATE for channel in CHANNEL_TOOLS}
+        return for_actor(ctx, context_type, gaps)
+    recomputed = for_actor(ctx, context_type, gaps)
+    if offer is None and message_id:
+        # Later calls in this turn get the same answer, without re-reading.
+        remember(ctx, message_id, recomputed)
+    return recomputed
