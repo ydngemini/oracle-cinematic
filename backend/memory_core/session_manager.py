@@ -27,8 +27,11 @@ this module never requires a live DB or GPU.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
+
+log = logging.getLogger("oracle.memory")
 
 # tenancy is the project's single source of truth for the request identity. It's
 # imported for typing only — `from __future__ import annotations` makes the hints
@@ -47,7 +50,13 @@ DEFAULT_KEEP_RECENT = 5
 LOCAL_LLM_URL = os.getenv("ORACLE_LOCAL_LLM_URL", "http://127.0.0.1:8090/v1/chat/completions")
 
 # A summarizer is (older_messages_text, prior_summary) -> dense summary string.
+# It raises SummaryUnavailable when it cannot summarize: the roll-up then keeps
+# every row (AI32-02).
 Summarizer = Callable[[str, str], Awaitable[str]]
+
+
+class SummaryUnavailable(Exception):
+    """The summarizer could not produce a summary, so nothing may be deleted."""
 
 
 # --------------------------------------------------------------------------- #
@@ -219,8 +228,9 @@ class SessionManager:
         """If the user's live chat history exceeds the token threshold, compress
         everything older than the last `keep_recent` messages into a dense
         'Profile Summary' string, fold it into the user's profile summary, and
-        delete the archived rows. Returns the new summary, or None if no roll-up
-        was needed.
+        delete the archived rows. Returns the new summary, or None when no
+        roll-up happened: not needed, the summarizer could not summarize, or
+        the history changed while it ran (every row is then kept).
 
         Keeping only a short tail + one dense summary is what lets a single
         engine hold 100 operators without their histories ballooning the prompt
@@ -228,6 +238,8 @@ class SessionManager:
         from db.connection import tenant_tx  # lazy
         import sealed_text  # lazy: crypto pulls in tenancy
 
+        # 1. A short snapshot (AI32-07): the summarizer is a network call of
+        #    up to 30 s and must not hold a transaction or a pooled connection.
         async with tenant_tx(self.ctx) as conn:
             rows = await conn.fetch(
                 """
@@ -248,18 +260,35 @@ class SessionManager:
             older = rows[: -self.keep_recent]  # everything but the recent tail
             archived_ids = [r["id"] for r in older]
             transcript = "\n".join(f"[{r['role']}] {r['content']}" for r in older)
+            prior = await self._prior_summary(conn, user_id)
 
-            prior_rows = await sealed_text.open_rows(conn, await conn.fetch(
-                "SELECT profile_summary, profile_summary_ciphertext, "
-                "tenant_id AS profile_summary_ciphertext_tenant_id FROM user_profiles WHERE user_id = $1",
-                user_id,
-            ), sealed_text.PROFILE_SUMMARY)
-            prior = prior_rows[0]["profile_summary"] if prior_rows else ""
+        # 2. Summarize outside any transaction. No summary, no deletion
+        #    (AI32-02): a truncated fallback used to stand in for one and the
+        #    rows holding everything past its first 1,500 characters were
+        #    deleted.
+        try:
+            new_summary = (await self._summarize(transcript, prior)).strip()
+        except SummaryUnavailable as exc:
+            log.warning("memory roll-up skipped: summarizer unavailable (%s); history kept", exc)
+            return None
+        if not new_summary:
+            log.warning("memory roll-up skipped: empty summary; history kept")
+            return None
 
-            new_summary = await self._summarize(transcript, prior or "")
-            new_summary = new_summary.strip()
-
-            # Upsert the dense summary and purge the rows it now represents.
+        # 3. Commit only if nothing moved underneath (AI32-07): one roll-up
+        #    per user at a time, the prior summary unchanged and every archived
+        #    row still present. Otherwise keep everything; the next run retries.
+        async with tenant_tx(self.ctx) as conn:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                               f"memory-rollup:{self.ctx.tenant_id}:{user_id}")
+            if await self._prior_summary(conn, user_id) != prior:
+                log.info("memory roll-up skipped: the profile summary changed meanwhile")
+                return None
+            present = await conn.fetchval(
+                "SELECT count(*) FROM user_interactions WHERE id = ANY($1::bigint[])", archived_ids)
+            if present != len(archived_ids):
+                log.info("memory roll-up skipped: the archived history changed meanwhile")
+                return None
             await self.store_profile_summary(conn, user_id, new_summary)
             await conn.execute(
                 "DELETE FROM user_interactions WHERE id = ANY($1::bigint[])",
@@ -267,6 +296,16 @@ class SessionManager:
             )
 
         return new_summary
+
+    async def _prior_summary(self, conn, user_id: str) -> str:
+        import sealed_text  # lazy: crypto pulls in tenancy
+
+        prior_rows = await sealed_text.open_rows(conn, await conn.fetch(
+            "SELECT profile_summary, profile_summary_ciphertext, "
+            "tenant_id AS profile_summary_ciphertext_tenant_id FROM user_profiles WHERE user_id = $1",
+            user_id,
+        ), sealed_text.PROFILE_SUMMARY)
+        return (prior_rows[0]["profile_summary"] if prior_rows else "") or ""
 
     async def store_profile_summary(self, conn, user_id: str, summary: str) -> None:
         """Upsert the rolling summary. 0154 (A01): stored only sealed, under
@@ -359,8 +398,9 @@ def _profile_to_dict(profile) -> dict:
 async def _local_llm_summarize(transcript: str, prior_summary: str) -> str:
     """Default summarizer — POST to the local free Llama (:8090). Compresses the
     older transcript (plus any prior summary) into a single dense paragraph.
-    Falls back to a deterministic truncation if the local LLM is unreachable, so
-    a roll-up never silently fails to free space."""
+    Raises SummaryUnavailable when the local LLM cannot answer: a truncation
+    is not a summary, and the roll-up deletes what the summary replaces
+    (AI32-02)."""
     system = (
         "You compress a real-estate wholesaler's chat history into a dense, "
         "factual profile summary. Capture their deal criteria, target markets, "
@@ -395,7 +435,5 @@ async def _local_llm_summarize(transcript: str, prior_summary: str) -> str:
 
         # Don't block the event loop on the synchronous HTTP call.
         return await asyncio.to_thread(_post)
-    except Exception:
-        # Deterministic fallback: keep the prior summary + a truncated tail.
-        merged = (prior_summary + " " + transcript).strip()
-        return merged[:1500]
+    except Exception as exc:
+        raise SummaryUnavailable(type(exc).__name__) from exc

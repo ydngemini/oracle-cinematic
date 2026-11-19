@@ -1519,6 +1519,28 @@ next_task: "None until the owner decides the twin may influence ranking."
 updated: 2026-11-14
 ```
 
+#### L07-08 The memory roll-up deletes history only for a real summary, summarizes outside any transaction, and commits only if nothing moved (external audit AI32-02, AI32-07)
+```yaml
+id: L07-08
+status: tests_pass
+env: local
+evidence_shas: [ef9872d]   # base; fix in the commit that adds this row
+files: [backend/memory_core/session_manager.py, backend/tests/test_memory_rollup.py]
+tests_run:
+  - {cmd: "read memory_core/session_manager.py summarize_rolling_memory and _local_llm_summarize at ef9872d; grep callers", result: "confirmed both: on any summarizer error the default returned (prior + transcript)[:1500], which the roll-up stored as the summary before deleting every older row (facts past 1,500 characters lost: AI32-02); the 30 s network call ran inside the open tenant_tx holding the connection and the read rows (AI32-07). Conditional: nothing in production calls the roll-up (only test_sealed_text_two_live), and as the app role its DELETE is refused (no DELETE grant on user_interactions, L17-22)", date: 2026-11-19}
+  - {cmd: "test_memory_rollup against ef9872d's session_manager.py", result: "red: 5 failed", date: 2026-11-19}
+  - {cmd: "after: test_memory_rollup", result: "5 passed: a summarizer outage over a >5,000-character history deletes nothing; the default summarizer raises SummaryUnavailable instead of truncating; the summary is made with no transaction open and replaces only the older rows; history or summary that changed during the summary leaves everything in place; an empty summary deletes nothing", date: 2026-11-19}
+  - {cmd: "test_sealed_text_two_live (exercises the roll-up as the app role)", result: "fails at ef9872d and here alike before reaching the roll-up, on the shared dev database (interaction_logs rows sealed under another key); left to CI's fresh database", date: 2026-11-19}
+authz_checked: "No access change. Both transactions run as the same tenant context; the commit step takes a per-user advisory lock (pg_advisory_xact_lock(hashtextextended('memory-rollup:<tenant>:<user>'))) and re-checks the prior summary and the archived row count before writing."
+blockers:
+  - "Still conditional: nothing schedules the roll-up, and as the app role its DELETE remains refused (L17-22). Before scheduling it: a DELETE grant decision, a retention policy, and a source-linked summary that can be corrected or regenerated (audit AI32-02)."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-02, AI32-07]
+decision_refs: []
+next_task: "AI32-03 (staged approvals in the cross-provider failure guard)."
+updated: 2026-11-19
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
