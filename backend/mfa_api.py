@@ -245,7 +245,7 @@ async def step_up(ctx: TenantContext, password: str, code: Optional[str]) -> Non
     passphrase and its own second factor."""
     import hmac
 
-    from auth import (DEMO_CREDENTIALS, _check_rate_limit, _operator_second_factor,
+    from auth import (_ADMIN_ID, DEMO_CREDENTIALS, _check_rate_limit, _operator_second_factor,
                       _require_operator_email_otp, _require_operator_otp, confirm_password)
 
     if not ctx.verify_session:  # an environment identity: no users row
@@ -253,7 +253,9 @@ async def step_up(ctx: TenantContext, password: str, code: Optional[str]) -> Non
         expected = DEMO_CREDENTIALS.get(ctx.agent_id, "")
         if not expected or not hmac.compare_digest(expected.encode(), (password or "").encode()):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Password is incorrect.")
-        factor = _operator_second_factor()
+        # The configured second factor belongs to the operator account only,
+        # as at sign-in; other environment (demo) identities have none.
+        factor = _operator_second_factor() if ctx.agent_id == _ADMIN_ID else None
         if factor == "totp":
             await _require_operator_otp(ctx.agent_id, code)
         elif factor == "email":

@@ -370,9 +370,12 @@ export function BrokerageSetupPanel() {
                   aria-label={`Confirm resetting two-step sign-in for ${m.full_name || m.email}`}
                   onSubmit={(e) => {
                     e.preventDefault();
+                    const proof = resetProof;
+                    // The password never outlives the attempt; a refused code is cleared.
+                    setResetProof({ password: '', code: '' });
                     act(() => crmPost(`/api/brokerage/team/${m.id}/mfa/reset`, {
                       reason: 'Two-step sign-in reset by an owner from Settings',
-                      password: resetProof.password, code: resetProof.code,
+                      password: proof.password, code: proof.code,
                     }).then(() => setResetting(null)),
                     'Two-step sign-in reset. Their sessions ended; they set it up again when they next sign in.');
                   }}
@@ -392,7 +395,7 @@ export function BrokerageSetupPanel() {
                     />
                   </label>
                   <button type="submit" className={styles.link} disabled={busy}>Confirm reset</button>
-                  <button type="button" className={styles.link} onClick={() => setResetting(null)}>Cancel</button>
+                  <button type="button" className={styles.link} onClick={() => { setResetting(null); setResetProof({ password: '', code: '' }); }}>Cancel</button>
                 </form>
               )}
             </li>

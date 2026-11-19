@@ -237,6 +237,9 @@ async def _scenario(monkeypatch):
         await refused(brokerage_onboarding.reset_member_two_step(
             agent_id, reset_body(recovery[6], password="not my password"), octx), 403)
         await refused(brokerage_onboarding.reset_member_two_step(agent_id, reset_body(None), octx), 401, "OTP_REQUIRED")
+        wrong_code = "000000" if code_at_offset(secret, 0) != "000000" else "111111"
+        await refused(brokerage_onboarding.reset_member_two_step(agent_id, reset_body(wrong_code), octx), 401)
+        await admin.execute("UPDATE user_mfa_factors SET failed_attempts = 0 WHERE user_id=$1", owner_id)
         assert await admin.fetchval("SELECT count(*) FROM user_mfa_factors WHERE user_id=$1", agent_id) == 1
         agent_epoch = await admin.fetchval("SELECT session_epoch FROM users WHERE id=$1", agent_id)
         done = await brokerage_onboarding.reset_member_two_step(agent_id, reset_body(recovery[6]), octx)
