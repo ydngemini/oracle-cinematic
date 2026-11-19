@@ -589,3 +589,74 @@ def test_go_live_storage_needs_a_full_round_trip(passing_gates):
     _round_trip(s, public)
     _, c = audit(s, gates_root=passing_gates, token="t")
     assert c["storage_round_trip"].status == lr.WARN
+
+
+def _gates(root, gates):
+    (root / "docs" / "launch-readiness" / "owner-gates.json").write_text(json.dumps({"gates": gates}))
+
+
+def _scoped(status_by_env=None, **top):
+    gate = {"id": "erasure_role", "class": "blocker", "environments": ["production", "staging"],
+            "evidence_scope": "environment", **top}
+    if status_by_env is not None:
+        gate["status_by_env"] = status_by_env
+    return gate
+
+
+def test_staging_evidence_does_not_close_a_production_gate(passing_gates):
+    """Audit 30.6: 'done' named only neoh-postgres-staging, and the checker
+    credited it for production too. A database gate is closed per environment."""
+    _gates(passing_gates, [_scoped(status="done", evidence="2026-10-03 on neoh-postgres-staging: doadmin BYPASSRLS")])
+    for env in ("production", "staging"):
+        _, c = audit(World(env), gates_root=passing_gates)
+        assert c["gate:erasure_role"].status == lr.BLOCKED and "status_by_env" in c["gate:erasure_role"].reason
+
+
+def test_per_environment_evidence_names_this_cluster_and_no_other(passing_gates):
+    ok = {"staging": {"status": "done", "evidence": "2026-10-03 on neoh-postgres-staging"},
+          "production": {"status": "done", "evidence": "2026-12-01 on neoh-postgres: doadmin BYPASSRLS"}}
+    _gates(passing_gates, [_scoped(ok)])
+    for env in ("production", "staging"):
+        _, c = audit(World(env), gates_root=passing_gates)
+        assert c["gate:erasure_role"].status == lr.PASS, env
+    for evidence, why in (("copied: on neoh-postgres-staging", "does not name neoh-postgres"),
+                          ("on neoh-postgres-staging (production neoh-postgres not created yet)", "another environment"),
+                          ("not on neoh-postgres; on neoh-postgres-staging", "another environment")):
+        _gates(passing_gates, [_scoped({**ok, "production": {"status": "done", "evidence": evidence}})])
+        _, c = audit(World(), gates_root=passing_gates)
+        assert c["gate:erasure_role"].status == lr.BLOCKED and why in c["gate:erasure_role"].reason, evidence
+
+
+def test_a_missing_environment_entry_is_open(passing_gates):
+    _gates(passing_gates, [_scoped({"staging": {"status": "done", "evidence": "on neoh-postgres-staging"}})])
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["gate:erasure_role"].status == lr.BLOCKED
+
+
+def test_a_gate_that_is_not_about_a_database_closes_as_before(passing_gates):
+    """spend_alerts and the like need no cluster name in their evidence."""
+    _gates(passing_gates, [{"id": "spend_alerts", "class": "warning", "environments": ["production", "staging"],
+                            "status": "done", "evidence": "DO spend alert at $300 emails ops"}])
+    for env in ("production", "staging"):
+        _, c = audit(World(env), gates_root=passing_gates)
+        assert c["gate:spend_alerts"].status == lr.PASS, env
+
+
+def test_the_repository_s_erasure_gates_are_per_environment():
+    _, c = audit(World())
+    assert c["gate:privacy_erasure_role_on_do"].status == lr.BLOCKED
+    assert c["gate:privacy_erasure_live_on_do"].status == lr.WARN  # a warning gate, open
+    _, c = audit(World("staging"))
+    assert c["gate:privacy_erasure_role_on_do"].status == lr.PASS
+
+
+def test_every_multi_environment_database_gate_is_closed_per_environment():
+    """30.6 review: a database gate added without evidence_scope would fall
+    back to crediting one environment's evidence for all of them."""
+    data = json.loads((REPO / "docs" / "launch-readiness" / "owner-gates.json").read_text())
+    for g in data["gates"]:
+        about_a_database = any(w in (g.get("how_to_close", "") + " " + g.get("title", "")).lower()
+                               for w in ("cluster", "neoh-postgres", "database", "rls"))
+        if about_a_database and len(g.get("environments") or ["production", "staging"]) > 1:
+            assert g.get("evidence_scope") == "environment", g["id"]
+            assert isinstance(g.get("status_by_env"), dict), g["id"]

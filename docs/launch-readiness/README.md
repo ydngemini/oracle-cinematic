@@ -21,8 +21,10 @@ of the 30 blockers are "not verifiable: the app does not exist". The rest are:
 - the owner gates: email DPA, DashScope region, counsel sign-off, resilience drills on staging, support contact
 
 What passes: doctl access, the registry (both images pushed), the GitHub
-`production` environment with reviewers, the RLS gate, and the erasure-owner
-owner gate (doadmin has BYPASSRLS on DO).
+`production` environment with reviewers, the RLS gate, and (in this 2026-10-03
+snapshot) the erasure-owner owner gate. Superseded 2026-11-19 (audit 30.6):
+that gate's evidence came from neoh-postgres-staging only, so it is now open
+for production until proven on the production cluster.
 
 ## Staging: BLOCKED (25 PASS · 17 WARN · 4 BLOCKED)
 
