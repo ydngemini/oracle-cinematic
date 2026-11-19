@@ -4355,6 +4355,29 @@ next_task: "28.3 (owner decision on the operator session registry migration); 28
 updated: 2026-11-18
 ```
 
+#### L17-48 A brokerage export refuses rather than leave out sealed data: no master key, a column nobody mapped, or a value the key cannot open; documents and audio go in, and partial media is said (external audit 29.5)
+```yaml
+id: L17-48
+status: tests_pass
+env: local
+evidence_shas: [a68f5cd]   # base; fix in the commit that adds this row
+files: [backend/privacy_export.py, backend/tests/test_privacy_lifecycle_live.py, backend/tests/test_privacy_export_columns_live.py, backend/tests/test_privacy_data_map.py, oracle-app/src/components/AccountDataPanel.jsx, oracle-app/src/components/AccountDataPanel.test.jsx]
+tests_run:
+  - {cmd: "read privacy_export at a68f5cd", result: "confirmed 29.5: with no ORACLE_ENCRYPTION_MASTER_KEY the DECRYPT map was dropped, every sealed bytea column fell to _omit, and the archive was marked succeeded. Worse than reported: even WITH the key, leads.encrypted_payload, clients.encrypted_contact, ai_record_attachments.bytes_ciphertext / extracted_text_ciphertext (and voice_walkthrough_jobs.audio) were omitted as plain binary columns, and only property_media files went in: contract-vault PDFs, hosted messaging documents and reconstruction outputs that erasure deletes were never exported", date: 2026-11-18}
+  - {cmd: "live PostgreSQL: test_privacy_lifecycle_live (new export assertions) against a68f5cd's privacy_export.py", result: "red: a lead's sealed payload missing from the archive", date: 2026-11-18}
+  - {cmd: "after: test_privacy_lifecycle_live + test_privacy_export_columns_live 2 passed (no key -> failed 'master_key_missing', nothing written; sealed lead payload, attachment text + base64 bytes, audio, sealed contract text and the vault PDF in the archive; completeness complete; a value sealed with another key -> failed 'undecryptable: leads: encrypted_payload'); unit: refusal of an unmapped bytea column, audio base64 at prefetch 4, no-key refusal before any tempfile; vitest AccountDataPanel 9 passed; eslint clean", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change: the export stays owner-only behind a password check, written as the platform session pinned to the tenant. Refusals (ExportIncomplete, job_terminal, dead-lettered at once): master_key_missing before anything is written; unexported_column for a bytea column in no DECRYPT / BINARY / name-policy list; undecryptable (pgcrypto 39000) naming the table. Every bytea column of every exported table on the migrated schema has a decision (live guard). Files: the export reuses privacy_lifecycle._object_keys, so what erasure deletes is what the export carries or counts (media/<key>; contract vault PDFs under documents/<key>); a file that cannot be read, is over the size cap or media is off makes completeness 'partial_media', shown to the owner. Binary tables stream 4 rows at a time. The owner is told to contact support, not 'try again', when a refusal cannot succeed on retry."
+blockers:
+  - "Before deploying: count non-null leads.encrypted_payload and clients.encrypted_contact on staging (dev: 0). Neither has a writer in current code; rows from the 0006 design sealed with another secret would now refuse every export of that tenant (undecryptable) instead of being silently dropped."
+  - "Independent review r1 (REQUEST CHANGES), fixed: binary rows fetched 1000 at a time (now 4), documents missing while 'complete' was claimed (now the erasure key set, vault included), anonymous wrong-key retry loop (now undecryptable, terminal, table named), the screen ignoring completeness and offering 'try again' for a refusal, untested refusal / audio. Residual, LOW: an export that dies (e.g. out of memory) leaves its operation 'running' and request_export refuses new ones (pre-existing; no stuck-operation sweep); one corrupt sealed value blocks every export of the tenant until fixed; a subject-access request without the master key now fails 503 for any client match because clients.encrypted_contact joined DECRYPT (fail-closed); subject access never looks in ai_record_attachments (29.8 follow-up)."
+  - "Privacy/customer data: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [29.5]
+decision_refs: []
+next_task: "29.6 (expired exports marked deleted without a verified delete); 29.7 (erasure verification treats an unlistable prefix as empty)."
+updated: 2026-11-18
+```
+
 ### L18
 Billing, seats and analytics.
 

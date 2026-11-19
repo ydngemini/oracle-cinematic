@@ -12,6 +12,14 @@ const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, {
   year: 'numeric', month: 'long', day: 'numeric',
 }) : '');
 
+
+// Exports refused because data would be missing (audit 29.5): configuration or
+// stored data must be fixed first, so "try again" would only fail again.
+const EXPORT_SUPPORT_CODES = ['master_key_missing', 'undecryptable', 'unexported_column'];
+function exportNeedsSupport(error) {
+  return EXPORT_SUPPORT_CODES.some((code) => String(error || '').includes(code));
+}
+
 function retentionLabel(days) {
   if (days === null || days === undefined) return 'Kept until you delete it';
   if (days >= 365) return `${Math.round(days / 365)} years`;
@@ -105,8 +113,12 @@ export function AccountDataPanel() {
           <p className={styles.text} data-testid="export-status">
             {exportRunning && 'Your export is being prepared…'}
             {latest.state === 'succeeded' && exportReady && `Ready — available until ${fmtDate(latest.artifact_expires_at)}.`}
+            {latest.state === 'succeeded' && exportReady && latest.result?.completeness === 'partial_media'
+              && ' Some photos or documents could not be included; the archive\u2019s manifest lists how many.'}
             {latest.state === 'succeeded' && !exportReady && 'Your last export has expired.'}
-            {latest.state === 'failed' && 'The last export failed. Try again.'}
+            {latest.state === 'failed' && (exportNeedsSupport(latest.error)
+              ? 'The last export was stopped because it could not include all of your data. Trying again will not help: contact Neoh support.'
+              : 'The last export failed. Try again.')}
           </p>
         )}
         <div className={styles.actions}>
