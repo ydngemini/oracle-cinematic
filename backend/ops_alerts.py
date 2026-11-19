@@ -14,6 +14,9 @@ Delivery is best-effort and never on a request path:
     SMTP relay as everything else, in a thread with a timeout
   * ops_alerts table: open/last_seen/resolved/notified — MTTD is measured here
 A failure to deliver is recorded (notify_error) and logged; it never raises.
+notified_at means an email was handed to the relay, nothing less (audit 30.3):
+with no recipient configured the incident records `recipient_missing` and stays
+unsent, so it goes out once ORACLE_ALERT_EMAIL is set while it is still open.
 """
 
 from __future__ import annotations
@@ -33,6 +36,9 @@ EVALUATE_SECONDS = float(os.getenv("ORACLE_ALERT_EVALUATE_SECONDS", "60"))
 # paged: a single slow probe is not an incident.
 CONFIRMATIONS = 2
 _LOCK_KEY = 0x4F505341_4C525453  # "OPSALRTS"
+
+# notify_error when no recipient is configured: logged, not sent to anyone.
+RECIPIENT_MISSING = "recipient_missing"
 
 _task: Optional[asyncio.Task] = None
 _pending: dict[str, int] = {}
@@ -82,9 +88,11 @@ async def _record(conn, confirmed: dict, bad: dict, healthy_now: dict) -> dict:
             INSERT INTO ops_alerts (component, state, summary) VALUES ($1,$2,$3)
             ON CONFLICT (component) WHERE resolved_at IS NULL
             DO UPDATE SET last_seen_at=now(), state=EXCLUDED.state, summary=EXCLUDED.summary
-            RETURNING id, notified_at, (xmax = 0) AS inserted
+            RETURNING id, notified_at, notify_error, (xmax = 0) AS inserted
             """, name, comp["state"], comp["summary"][:300])
         if row["notified_at"] is None:
+            if row["notify_error"] == RECIPIENT_MISSING and not _recipient():
+                continue  # already logged as unsent; retried once a recipient exists
             error = await _notify(f"[Neoh] {name} {comp['state']}", _body(name, comp))
             await conn.execute("UPDATE ops_alerts SET notified_at=CASE WHEN $2::text IS NULL THEN now() END, "
                                "notify_error=$2 WHERE id=$1", row["id"], error)
@@ -130,13 +138,19 @@ async def _notify(subject: str, body: str) -> Optional[str]:
     return await send_email(subject, body)
 
 
+def _recipient() -> str:
+    return os.getenv("ORACLE_ALERT_EMAIL", "").strip()
+
+
 async def send_email(subject: str, body: str, *, to: Optional[str] = None) -> Optional[str]:
     """Email an alert without logging its body (security_alerts.py sends
     account ids and IP addresses here that must not reach the log). `to`
-    defaults to ORACLE_ALERT_EMAIL. Returns an error name or None; never raises."""
-    to = (to if to is not None else os.getenv("ORACLE_ALERT_EMAIL", "")).strip()
+    defaults to ORACLE_ALERT_EMAIL. Returns None only when the relay accepted
+    the message; RECIPIENT_MISSING when there is nobody to send to; otherwise
+    the error name. Never raises."""
+    to = (to if to is not None else _recipient()).strip()
     if not to:
-        return None
+        return RECIPIENT_MISSING
     try:
         import smtp_mailer
 
