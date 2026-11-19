@@ -4378,6 +4378,29 @@ next_task: "29.6 (expired exports marked deleted without a verified delete); 29.
 updated: 2026-11-18
 ```
 
+#### L17-50 /auth/verify and /auth/session answer only for a live session: a reset link or a revoked session is refused, and an unreachable database is "cannot check", not "signed in" (external audit 28.5, 28.6)
+```yaml
+id: L17-50
+status: tests_pass
+env: local
+evidence_shas: [4e40f0e]   # base; fix in the commit that adds this row
+files: [backend/auth.py, backend/tests/test_auth.py, backend/tests/test_tenant_user_mfa.py, backend/tests/test_auth_session_probe_live.py]
+tests_run:
+  - {cmd: "read auth.verify and auth.session_status / _session_still_current at 4e40f0e", result: "confirmed 28.5: POST /auth/verify returned identity after decode_token only (no purpose, epoch or is_active check), so a password-reset token or a logged-out session got an answer. Confirmed 28.6: a database error made _session_still_current return None and /auth/session answered authenticated=true (test_session_probe_trusts_the_token_when_the_database_is_down pinned it)", date: 2026-11-18}
+  - {cmd: "the new tests against main's auth.py (verify called sync or async, so the cases run on the old code)", result: "red: 6 unit tests (revoked session accepted, DB down -> authenticated, reset and over-age tokens accepted, verify answered for revoked / reset / over-age); live: a token claiming a role the account does not have was answered", date: 2026-11-18}
+  - {cmd: "after: unit test_auth + test_tenant_user_mfa + related auth tests 181 passed; live test_auth_session_probe_live 1 passed (live, uid-less token checked by agent_id, wrong role refused, epoch moved, deactivated); full unit suite 6836 passed / 154 skipped on the round-2 version; after the login-failure follow-up 182 related unit tests and both live tests passed", result: "pass", date: 2026-11-18}
+authz_checked: "Both routes judge the token by the protected-route rules (auth._live_session): tenancy._context_from_authorization (purpose tokens, claim formats, the MAX_SESSION_AGE cap on auth_time, environment identities) and tenancy.verify_session_current (app_begin_session: account by uid or agent_id, role, is_active, epoch). Not live -> 401 (verify) / authenticated=false with the cookie cleared (session); check cannot run -> 503 session_unverifiable, cookie kept. A session held on the policy or two-step setup screens is live and answered (data routes refuse it with 403); the frontend (useSessionRestore) already treats a non-401 as retry-then-'cannot reach Neoh', never as signed out (its 503 test). Tokens without a users row (environment / demo identities) are still trusted by signature here: their revocation is 28.3, open."
+blockers:
+  - "28.3 (environment operator JWTs not server-revocable) and 28.4 (member MFA reset without the actor's step-up) remain open; 28.7 (process-local session inventory) open."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the session-age cap and the non-environment uid-less path differed from protected routes (now the same code path), role not compared (now via app_begin_session), the verify test was red on the old code for the wrong reason (now calls it sync or async). Round 2: APPROVE; follow-up applied: only app_begin_session's own refusal ('session is no longer valid') reads as signed out; the app's database login failing (28P01, or a connection-time 28000 such as pg_hba) is 503, so a rotated database password cannot clear every visitor's cookie (test). Data routes still map any 28xxx to 401 (server.py), unchanged here."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.5, 28.6]
+decision_refs: []
+next_task: "28.7: label the session inventory as per-replica telemetry or replace it; 28.4 step-up for factor resets."
+updated: 2026-11-18
+```
+
 #### L17-51 The operator session inventory reports each sign-in's own tenant and role, and says it is this server's recent sign-ins, not every open session (external audit 28.7)
 ```yaml
 id: L17-51
