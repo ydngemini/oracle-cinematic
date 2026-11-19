@@ -530,28 +530,48 @@ _READ_ONLY_TOOL_NAMES = frozenset(_READ_ONLY_TOOLS)
 
 
 def _note_staged(bundle: dict, receipt: Any) -> None:
-    """Record a staged approval or command on the turn (AI32-03). A staged
-    text, email, call or event is a durable side effect like an applied
-    record change: once one exists, no later provider tier may regenerate the
-    turn and stage another."""
+    """Record a staged request on the turn (AI32-03). A staged text, email,
+    call, event or contract is a durable side effect like an applied record
+    change: once one exists, no later provider tier may regenerate the turn
+    and stage another."""
     if isinstance(receipt, dict) and receipt.get("ok") and (receipt.get("command_id") or receipt.get("approval_id")):
-        bundle.setdefault("staged_effects", []).append(str(receipt.get("command_id") or receipt.get("approval_id")))
+        bundle.setdefault("staged_effects", []).append({
+            "id": str(receipt.get("command_id") or receipt.get("approval_id")),
+            "action_type": str(receipt.get("action_type") or ""),
+        })
 
 
 def _turn_has_effects(bundle: dict, actions: list) -> bool:
-    """Applied record changes or staged approvals: either ends the provider
+    """Applied record changes or staged requests: either ends the provider
     ladder (a fall-through would replay the conversation and repeat them)."""
     return bool(actions) or bool(bundle.get("staged_effects"))
 
 
+_STAGED_WORDS = {
+    "draft_sms": "a text", "draft_email": "an email", "call_contact": "a call",
+    "schedule_event": "a calendar event", "draft_contract": "a contract draft",
+    "publish_to_marketplace": "a marketplace listing",
+}
+
+
 def _interrupted_reply(bundle: dict, actions: list) -> str:
-    staged = bool(bundle.get("staged_effects"))
-    if actions and staged:
-        return ("The requested record update was applied and the rest was staged for your approval, "
-                "but the assistant response was interrupted.")
-    if staged:
-        return "Your request was staged for your approval, but the assistant response was interrupted."
-    return "The requested record update was applied, but the assistant response was interrupted."
+    """Names only what this turn actually did (AI32-03 review): a request cut
+    short must not read as if all of it was staged."""
+    staged = bundle.get("staged_effects") or []
+    if not staged:
+        return "The requested record update was applied, but the assistant response was interrupted."
+    kinds = []
+    for effect in staged:
+        word = _STAGED_WORDS.get(effect.get("action_type", ""), "a request")
+        if word not in kinds:
+            kinds.append(word)
+    named = kinds[0] if len(kinds) == 1 else ", ".join(kinds[:-1]) + " and " + kinds[-1]
+    done = "A record update was applied and " if actions else ""
+    sentence = (f"{done}{named} {'was' if len(staged) == 1 else 'were'} prepared and "
+                f"{'is' if len(staged) == 1 else 'are'} waiting in Approvals; nothing was sent. The assistant "
+                "response was interrupted before the rest of the request, so check what is still missing and "
+                "ask again for it.")
+    return sentence[0].upper() + sentence[1:]
 
 
 def _is_record_change(name: str, receipt: dict) -> bool:
