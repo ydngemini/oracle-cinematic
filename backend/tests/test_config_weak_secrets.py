@@ -33,6 +33,7 @@ _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _CLEARED = (
     "ORACLE_ADMIN_PASSPHRASE",
     "ORACLE_ACS_WEBHOOK_SECRET",
+    "ORACLE_ACS_EXPERIMENTAL",
     "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
     "ORACLE_ENABLE_WEBHOOKS",
     "ORACLE_DOMAIN",
@@ -138,6 +139,9 @@ def test_an_unset_optional_secret_is_not_this_checks_complaint():
 def test_webhook_secrets_are_checked_once_webhooks_are_on():
     result = _validate(
         ORACLE_ENABLE_WEBHOOKS="1",
+        # The ACS secret is required (and its placeholder refused) only in the
+        # acknowledged ACS experiment (34.7).
+        ORACLE_ACS_EXPERIMENTAL="1",
         ORACLE_ACS_WEBHOOK_SECRET="REPLACE_ME",
         ORACLE_CUSTOM_CALL_WEBHOOK_SECRET="a-genuine-webhook-secret",
     )
