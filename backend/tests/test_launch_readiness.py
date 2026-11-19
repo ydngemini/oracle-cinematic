@@ -426,6 +426,27 @@ def test_expectations_come_from_the_renderer():
     assert copy.deepcopy(lr._FALLBACK_EXPECTED["staging"]["sizes"]["api"]) == exp["sizes"]["api"]
 
 
+def test_production_without_an_alert_recipient_blocks(passing_gates):
+    """Audit 30.3: an incident nobody is told about is not production-ready."""
+    w = World()
+    _set_env(w.spec, "api", "ORACLE_ALERT_EMAIL", None)
+    _, c = audit(w, gates_root=passing_gates)
+    assert c["alert_routing"].status == lr.BLOCKED
+    s = World("staging")
+    _set_env(s.spec, "api", "ORACLE_ALERT_EMAIL", None)
+    _, c = audit(s, gates_root=passing_gates)
+    assert c["alert_routing"].status == lr.WARN
+
+
+def test_a_worker_without_an_alert_recipient_blocks_production(passing_gates):
+    """The worker runs server.py too, so it can be the elected evaluator."""
+    w = World()
+    _set_env(w.spec, "worker", "ORACLE_ALERT_EMAIL", None)
+    _, c = audit(w, gates_root=passing_gates)
+    assert c["alert_routing"].status == lr.BLOCKED
+    assert "worker" in c["alert_routing"].reason and "api" not in c["alert_routing"].reason
+
+
 def _health(world, components):
     world.http["/api/admin/health/components"] = (
         200, {}, json.dumps({"components": {k: {"state": v, "summary": ""} for k, v in components.items()}}).encode())

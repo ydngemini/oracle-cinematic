@@ -55,7 +55,7 @@ def test_a_single_bad_probe_does_not_page(monkeypatch):
 
         async def fetchrow(self, sql, *a):
             calls.append(a[0])
-            return {"id": 1, "notified_at": None, "inserted": True}
+            return {"id": 1, "notified_at": None, "notify_error": None, "inserted": True}
 
         async def fetch(self, sql, *a):
             return []
@@ -324,6 +324,53 @@ def test_messaging_registration_reports_the_most_severe_first_with_every_count()
     assert "suspended or expired" in out["summary"]
     assert out["detail"]["receipt_contradictions"] == 2 and out["detail"]["hosting_stalled"] == 3
     assert ch._messaging_registration({})["detail"]["lost"] == 0
+
+
+def test_no_recipient_is_not_a_delivered_alert(monkeypatch):
+    """Audit 30.3: with no ORACLE_ALERT_EMAIL nothing was sent, so the
+    incident must not read as notified."""
+    monkeypatch.delenv("ORACLE_ALERT_EMAIL", raising=False)
+    assert asyncio.run(ops_alerts.send_email("s", "b")) == ops_alerts.RECIPIENT_MISSING
+    assert asyncio.run(ops_alerts._notify("[Neoh] x", "y")) == ops_alerts.RECIPIENT_MISSING
+
+
+def test_an_unsent_incident_goes_out_once_a_recipient_is_set(monkeypatch):
+    row = {"id": 4, "notified_at": None, "notify_error": None, "inserted": True}
+    sent, updates = [], []
+
+    class Conn:
+        async def fetchrow(self, sql, *a):
+            return dict(row)
+
+        async def fetch(self, sql, *a):
+            return []
+
+        async def execute(self, sql, *a):
+            if sql.startswith("UPDATE ops_alerts SET notified_at"):
+                updates.append(a[1])
+                row["notify_error"] = a[1]
+                if a[1] is None:
+                    row["notified_at"] = "now"
+
+    async def relay(subject, body, *, to=None):
+        sent.append(subject)
+        return None
+
+    def run():
+        return asyncio.run(ops_alerts._record(Conn(), {"workers": {"state": "UNAVAILABLE", "summary": "x"}},
+                                              {"workers": {}}, {}))
+
+    monkeypatch.delenv("ORACLE_ALERT_EMAIL", raising=False)
+    run()
+    assert updates == [ops_alerts.RECIPIENT_MISSING] and row["notified_at"] is None and sent == []
+    run()  # still nobody to send to: not re-attempted, not re-logged
+    assert updates == [ops_alerts.RECIPIENT_MISSING]
+    monkeypatch.setenv("ORACLE_ALERT_EMAIL", "ops@example.test")
+    monkeypatch.setattr(ops_alerts, "send_email", relay)
+    run()
+    assert sent == ["[Neoh] workers UNAVAILABLE"] and updates[-1] is None and row["notified_at"] == "now"
+    run()  # delivered once: not sent again
+    assert len(sent) == 1
 
 
 # ── Launch policy over every state the module emits (audit 30.2) ──────────

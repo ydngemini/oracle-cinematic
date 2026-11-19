@@ -1149,19 +1149,50 @@ async def get_security_settings(ctx: TenantContext = Depends(require_context)) -
     return {"require_mfa": bool(required), "owners_always_required": True}
 
 
+# Turning the rule on ends the open sessions of every member it now applies to
+# who has no confirmed second factor (audit 28.2). Their next sign-in holds them
+# on the setup screen. Owners and platform admins already had to use it, so
+# their sessions are unchanged. 0150 admits only the platform context to
+# user_mfa_factors, so this runs under it, scoped to the caller's brokerage.
+_SQL_END_UNPROTECTED_SESSIONS = (
+    "UPDATE users SET session_epoch = session_epoch + 1, updated_at = now() "
+    " WHERE tenant_id = $1::uuid AND is_active AND role <> ALL($2::text[]) "
+    "   AND NOT EXISTS (SELECT 1 FROM user_mfa_factors AS factor "
+    "                    WHERE factor.user_id = users.id AND factor.confirmed_at IS NOT NULL) "
+    "RETURNING id"
+)
+
+
 @router.put("/security")
 async def put_security_settings(
     body: SecuritySettings,
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
-    """Require two-step sign-in for every member of this brokerage. Members
-    without it are held on the setup screen at their next sign-in; sessions
-    already open are not ended."""
+    """Require two-step sign-in for every member of this brokerage.
+
+    Turning it on signs out, in the same transaction, every member without
+    two-step sign-in: an open session never carries on under the old rule
+    (audit 28.2). They are held on the setup screen at their next sign-in.
+    Members who already use it stay signed in."""
     require_role(ctx, Role.BROKER_OWNER)
-    async with tenant_tx(ctx) as conn:
-        before = await conn.fetchval("SELECT require_mfa FROM tenants WHERE id = $1::uuid", ctx.tenant_id)
+    import user_mfa
+    from auth import _admin_ctx
+    from tenancy import verify_session_current
+
+    # The write runs as the platform context (below), which skips the 0117
+    # session check a caller transaction would make: prove the caller's
+    # session first, so a logged-out, suspended or demoted owner's token cannot
+    # switch the rule off (or sign the brokerage out) for its last hours.
+    await verify_session_current(ctx)
+    ended: list[Any] = []
+    async with tenant_tx(_admin_ctx()) as conn:
+        before = await conn.fetchval(
+            "SELECT require_mfa FROM tenants WHERE id = $1::uuid FOR UPDATE", ctx.tenant_id)
         await conn.execute("UPDATE tenants SET require_mfa = $2 WHERE id = $1::uuid",
                            ctx.tenant_id, body.require_mfa)
+        if body.require_mfa and not before:
+            ended = await conn.fetch(_SQL_END_UNPROTECTED_SESSIONS, ctx.tenant_id,
+                                     sorted(user_mfa.REQUIRED_ROLES))
     if bool(before) != body.require_mfa:
         from audit_ledger import AuditCategory, ledger
 
@@ -1169,11 +1200,12 @@ async def put_security_settings(
             await ledger.record(
                 AuditCategory.USER_STATE_CHANGE, "brokerage.mfa_policy.changed",
                 tenant_id=ctx.tenant_id, user_id=ctx.agent_id, target_id=ctx.tenant_id,
-                metadata={"require_mfa": body.require_mfa},
+                metadata={"require_mfa": body.require_mfa, "members_signed_out": len(ended)},
             )
         except Exception:  # noqa: BLE001 — the setting already committed
             log.exception("audit record for brokerage.mfa_policy.changed failed")
-    return {"require_mfa": body.require_mfa, "owners_always_required": True}
+    return {"require_mfa": body.require_mfa, "owners_always_required": True,
+            "members_signed_out": len(ended)}
 
 
 @router.post("/team/{user_id}/reinstate")

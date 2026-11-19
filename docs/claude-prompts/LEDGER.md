@@ -3949,7 +3949,7 @@ tests_run:
 authz_checked: "Decide inside the transaction, commit, raise 401 after it closes; the attempt is counted in SQL (attempts = attempts + 1) with an explicit ::int cast; an expired code is refused (live test pins expires_at). The TOTP path was checked: a replayed step writes nothing, so its in-transaction raise loses no state."
 blockers:
   - {type: owner, note: "No account-level cool-down after a lockout (independent review of #86): a fresh code is issued at once, so a passphrase holder gets ~50 guesses/minute across new challenges. Decide: a cool-down (e.g. 15 min after a retired challenge) or alerting."}
-  - "28.3 (environment-operator JWTs cannot be revoked) and 28.2 (MFA policy change does not end non-MFA sessions) remain open."
+  - "28.3 (environment-operator JWTs cannot be revoked) remains open. 28.2: L17-47."
   - "Auth/security: independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [28.1]
@@ -4329,6 +4329,30 @@ audit_refs: [24.8]
 decision_refs: []
 next_task: "24.7 (after PR #109); 25.1/25.2."
 updated: 2026-11-17
+```
+
+#### L17-47 Turning on required two-step sign-in signs out, at once, every member it now applies to who lacks it (external audit 28.2)
+```yaml
+id: L17-47
+status: tests_pass
+env: local
+evidence_shas: [a68f5cd]   # base; fix in the commit that adds this row
+files: [backend/brokerage_onboarding.py, backend/tests/test_tenant_user_mfa_live.py, oracle-app/src/components/TwoStepSettings.jsx, oracle-app/src/components/TwoStep.test.jsx]
+tests_run:
+  - {cmd: "read brokerage_onboarding.put_security_settings at a68f5cd", result: "confirmed 28.2: PUT /api/brokerage/security set tenants.require_mfa and, by its own docstring, left open sessions running; a session minted while the rule was off has no mfa_enrol claim and every re-mint copies the claim forward, so an agent without two-step kept working until the token expired", date: 2026-11-18}
+  - {cmd: "live PostgreSQL: test_tenant_user_mfa_live against a68f5cd's brokerage_onboarding.py (members_signed_out asserts neutralised)", result: "red: DID NOT RAISE InvalidAuthorizationSpecificationError (the agent's pre-switch session still worked)", date: 2026-11-18}
+  - {cmd: "mutants: (a) drop the caller-session re-check; (b) drop the confirmed-factor clause", result: "red both: (a) a revoked owner token changed the rule (DID NOT RAISE HTTPException); (b) members_signed_out 2 != 1 (an enrolled agent was signed out)", date: 2026-11-18}
+  - {cmd: "after: live 1 passed (with the review-round-2 changes); full unit suite 6830 passed / 151 skipped (before round 2, which added only verify_session_current and test rows); after round 2 the 246 related unit tests passed; vitest TwoStep 14 passed; eslint clean; CI runs the full suite on the PR head", result: "pass", date: 2026-11-18}
+authz_checked: "The switch from off to on and the epoch bump commit in one transaction (tenants row FOR UPDATE). Bumped: active agents of the caller's brokerage with no confirmed factor; owners and platform admins already had to use it (their sessions are mfa_enrol-held at sign-in). Members who use two-step and other brokerages are untouched (live). user_mfa_factors is platform-only under RLS (0150), so the write runs as the platform context scoped to ctx.tenant_id, after verify_session_current(ctx) re-proves the caller's session (a revoked owner token gets 401 and the rule is unchanged, live). Re-saving 'on' ends nothing. Open sockets close on their next session re-check (server.py, about 60 s)."
+blockers:
+  - "Independent review r1 (REQUEST CHANGES): the platform-context write skipped the caller's session check (fixed: verify_session_current + live 401 test) and the test did not exercise the factor exclusion (fixed: an enrolled agent stays signed in, an agent of another brokerage is untouched). Residual, LOW, needs the member's own credentials and exact timing: disable / reset_password / accept_invite / change_password decide 'owes enrolment' outside the switch's lock, so a token minted in that window carries no hold until it expires. Optional follow-up: read tenants.require_mfa FOR SHARE inside those transactions."
+  - "members_signed_out counts members whose epoch was bumped, including members with no open session."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.2]
+decision_refs: []
+next_task: "28.3 (owner decision on the operator session registry migration); 28.4-28.7."
+updated: 2026-11-18
 ```
 
 ### L18
@@ -4940,6 +4964,28 @@ audit_refs: [35-07]
 decision_refs: []
 next_task: "Keep live tests self-contained (own tenant, generic tenant_id cleanup) so the glob stays safe to run together."
 updated: 2026-11-16
+```
+
+#### L19-16 An alert nobody was emailed about is not recorded as notified, and is sent once a recipient is set while the problem is still detected (external audit 30.3)
+```yaml
+id: L19-16
+status: tests_pass
+env: local
+evidence_shas: [f4365e2]   # base; fix in the commit that adds this row
+files: [backend/ops_alerts.py, scripts/neoh-launch-readiness.py, oracle-app/src/components/admin/OperatorOverview.jsx, oracle-app/src/components/admin/OperatorOverview.test.jsx, backend/tests/test_component_health.py, backend/tests/test_launch_readiness.py, backend/tests/test_ops_alert_recipient_live.py, docs/provider-failure-matrix.md, docs/admin-ai-neoh-design.md]
+tests_run:
+  - {cmd: "read ops_alerts at f4365e2", result: "confirmed 30.3: send_email returned None with ORACLE_ALERT_EMAIL empty, _record read None as delivered and set notified_at, and re-sends only happen while notified_at IS NULL, so an incident first seen with no recipient was never emailed even after one was set; readiness treated a missing recipient as a warning everywhere", date: 2026-11-18}
+  - {cmd: "live PostgreSQL: test_ops_alert_recipient_live against f4365e2's ops_alerts.py", result: "red: notified_at was set with no recipient", date: 2026-11-18}
+  - {cmd: "after: live 1 passed; full unit suite 6834 passed / 152 skipped (with the review-round fixes); vitest OperatorOverview 14 passed; eslint clean", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. notified_at now means the relay accepted the email; with no recipient the row records notify_error='recipient_missing', is not re-attempted (or re-logged) while there is still no recipient, and is sent once ORACLE_ALERT_EMAIL is set and the component is still confirmed bad (setting the variable redeploys, so about two evaluations later); a delivered incident is not sent twice (unit + live). security_alerts.deliver checks its recipient itself and passes to=, so it never sees RECIPIENT_MISSING. Readiness: ORACLE_ALERT_EMAIL missing on api or worker (both run server.py and either can be the elected evaluator) BLOCKS production, WARNs staging, in the spec and no-spec paths. The operator overview says 'nobody was emailed: no alert recipient is set' or 'alert email not delivered; it is resent while the problem is still detected'."
+blockers:
+  - "OPEN, part of 30.3: no delivered test alert is required before go-live. Readiness checks only that the variable is set, so a mistyped address or a broken relay passes until the first real incident. Next: an operator 'send test alert' action whose recorded outcome readiness checks."
+  - "Independent review r1 (REQUEST CHANGES): the test alert (above, recorded open), worker-side recipient (fixed), 'retrying' copy (fixed), stale doc line refs (fixed). Residual, LOW: incidents opened before this change with no recipient keep notified_at set and stay unsent (production never deployed; staging cannot send email in recovery mode); a 'recovered' email can reach someone who never got the opening alert and its outcome is not recorded; delivery failures (including SmtpUncertainError) retry every evaluation, so an uncertain send can arrive twice (pre-existing); 'logged'/'sent' stay implied by notified_at/notify_error rather than a status column; security_alerts.deliver still returns None with no recipient (nothing records it)."
+  - "Not deployed (C4.4)."
+audit_refs: [30.3]
+decision_refs: []
+next_task: "30.3 test-alert proof; 30.2 (readiness reads the canonical component-health states)."
+updated: 2026-11-18
 ```
 
 #### L19-17 Launch readiness judges component health by the states the backend emits: a core service unavailable, rejected or stale blocks go-live (external audit 30.2)

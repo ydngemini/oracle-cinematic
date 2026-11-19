@@ -143,6 +143,21 @@ describe('OperatorOverview', () => {
     expect(within(card).queryByText(/Open alerts \(/)).toBeNull();
   });
 
+  it('says when nobody was emailed about an open alert (30.3)', async () => {
+    const opened = new Date().toISOString();
+    const health = { ...FIXTURES['/api/admin/health/components'], open_alerts: [
+      { component: 'workers', summary: 'no background worker alive', opened_at: opened, notified_at: null, notify_error: 'recipient_missing' },
+      { component: 'scheduler', summary: 'scheduler stalled', opened_at: opened, notified_at: null, notify_error: 'SMTPException' },
+      { component: 'mls', summary: 'feed stale', opened_at: opened, notified_at: opened, notify_error: null },
+    ] };
+    respond({ '/api/admin/health/components': health });
+    render(<OperatorOverview />);
+    const card = (await screen.findByRole('heading', { name: 'Production health' })).closest('section');
+    expect(await within(card).findByText(/nobody was emailed: no alert recipient is set/)).toBeTruthy();
+    expect(within(card).getByText(/alert email not delivered; it is resent while the problem is still detected/)).toBeTruthy();
+    expect(within(card).getAllByText(/nobody was emailed|not delivered/)).toHaveLength(2);
+  });
+
   it('shows the release and warns when workers run another build', async () => {
     render(<OperatorOverview />);
     expect(await screen.findByText('Workers are not running the same build as this API')).toBeTruthy();

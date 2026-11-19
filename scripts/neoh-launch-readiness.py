@@ -586,7 +586,7 @@ class Audit:
             for i, t, b in (("billing", "Billing configured", self.charging), ("email", "Email configured", True),
                             ("ai_provider", "AI provider configured", True), ("voice", "Voice provider", False),
                             ("messaging", "Messaging provider", False), ("mls_credentials", "MLS feed credential", False),
-                            ("alert_routing", "Alerts reach a person", False)):
+                            ("alert_routing", "Alerts reach a person", self.env == "production")):
                 self._need_spec(i, "providers", t, blocking=b)
             return
         envs = _all_envs(self.spec)
@@ -623,9 +623,13 @@ class Audit:
                          unmet="no MLS feed credential — listing data unavailable (fine until a "
                                "brokerage needs MLS)")
         api_envs = envs.get("api") or {}
-        self.add("alert_routing", "operations", "Alerts reach a person", _present(api_envs, "ORACLE_ALERT_EMAIL"),
-                 "ORACLE_ALERT_EMAIL set" if _present(api_envs, "ORACLE_ALERT_EMAIL") else
-                 "ORACLE_ALERT_EMAIL unset — alerts go only to logs", blocking=False)
+        # Every replica that runs server.py (api and worker) may be the one the
+        # advisory lock elects to evaluate and email alerts (audit 30.3).
+        no_recipient = [c for c in ("api", "worker") if c in envs and not _present(envs[c], "ORACLE_ALERT_EMAIL")]
+        self.add("alert_routing", "operations", "Alerts reach a person", not no_recipient,
+                 "ORACLE_ALERT_EMAIL set on api and worker" if not no_recipient else
+                 f"ORACLE_ALERT_EMAIL unset on {', '.join(no_recipient)} — an incident that replica "
+                 "evaluates reaches only the logs", blocking=self.env == "production")
         absent = [label for label, keys in OPTIONAL_PROVIDERS.items()
                   if not all(_present(api_envs, k) for k in keys)]
         self.add("optional_providers", "providers", "Optional provider support", not absent,
