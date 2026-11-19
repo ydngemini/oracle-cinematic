@@ -134,7 +134,7 @@ def _login_with(monkeypatch, stored_hash, passphrase):
     monkeypatch.setattr("db.connection.tenant_tx", tx, raising=False)
     monkeypatch.setattr(auth, "_check_rate_limit", _ok)
     monkeypatch.setattr(auth, "_lookup_user", _user)
-    monkeypatch.setattr(auth, "_register_session", lambda _a: None)
+    monkeypatch.setattr(auth, "_register_session", lambda *_a: None)
     body = auth.LoginRequest(agent_id="agent@tenant.test", passphrase=passphrase)
     try:
         result = asyncio.run(auth.login(body, Response(), None))

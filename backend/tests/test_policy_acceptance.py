@@ -196,6 +196,9 @@ def test_registration_marks_the_new_account_policy_pending(monkeypatch):
     assert "policy_acceptance_required" in conn.user_insert
     assert result.policy_acceptance_required is True
     assert auth.decode_token(result.token)["policy_pending"] is True
+    # The session inventory records the sign-up's own tenant and role (28.7).
+    [entry] = auth.active_sessions()
+    assert (entry["tenant_id"], entry["role"]) == (TENANT_ID, "broker_owner")
 
 
 def test_account_security_esa_endpoint_returns_account_security_form():
