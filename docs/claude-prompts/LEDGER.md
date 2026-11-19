@@ -1519,6 +1519,55 @@ next_task: "None until the owner decides the twin may influence ranking."
 updated: 2026-11-14
 ```
 
+#### L07-07 A chat answer that committed stays completed: a failing session-memory write or a lost completion frame no longer turns it into a failed turn (external audit AI32-01)
+```yaml
+id: L07-07
+status: tests_pass
+env: local
+evidence_shas: [ef9872d]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/tests/test_ai_chat_completion_boundary.py, backend/tests/test_ai_chat_completed_guard_live.py]
+tests_run:
+  - {cmd: "read ai_chat_agent.handle_ai_chat_job at ef9872d", result: "confirmed AI32-01: after update_assistant(status completed) the two SessionManager.record_interaction writes and the AI_CHAT_COMPLETE broadcast ran inside the same try; any of them raising sent the turn to the generic except, which rewrote the saved answer as 'failed' with an error message and broadcast AI_CHAT_ERROR, after tool writes had already been applied", date: 2026-11-19}
+  - {cmd: "test_ai_chat_completion_boundary against ef9872d's ai_chat_agent.py", result: "red: 4 failed (the independent reviewer re-ran them against the base with the new retry constant added, so the failures are behavioural, not the monkeypatch's AttributeError: all 4 still fail)", date: 2026-11-19}
+  - {cmd: "after: test_ai_chat_completion_boundary (4) + interrupted-turn, budget and choices tests", result: "107 passed: a memory write that keeps failing is retried once and the turn stays completed with AI_CHAT_COMPLETE and no error frame; a write that fails once is mirrored on the retry; a lost completion frame does not fail the turn; a failure before the answer is saved still fails it, guarded by unless_status='completed'", date: 2026-11-19}
+  - {cmd: "live: test_ai_chat_completed_guard_live (app pool, as the agent)", result: "1 passed: a failure update with unless_status='completed' leaves a completed turn untouched and still fails a streaming one", date: 2026-11-19}
+  - {cmd: "after review r1: + test_a_completed_write_that_raised_after_committing_is_not_reported_as_failed, test_the_completion_frame_goes_out_before_the_memory_mirror", result: "109 passed: when the completed write committed but its call raised, the guarded failure update reports the row already completed and the person gets AI_CHAT_COMPLETE, not an error; the completion frame is sent before the memory mirror runs", date: 2026-11-19}
+authz_checked: "No access change. The guard is one more predicate on the same RLS-scoped UPDATE (tenant and user). The memory mirror logs the turn id and error class only, never text."
+blockers:
+  - "The memory mirror is retried once inline, not through a durable outbox (an automation_jobs mirror job carrying only the assistant id would be the next step): a turn whose mirror still fails is missing from rolling session memory (the chat history itself has it). Logged per turn. A write that committed but raised is retried and recorded twice (user_interactions has no idempotency key)."
+  - "Pre-existing, out of scope: _broadcast_chunks runs before the completed update, so a failed NOTIFY there still fails a turn whose tool writes applied; the reconciliation sweep's stale-turn update checks status only in its subquery (needs a turn 15 min stale against a 90 s deadline)."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the guarded failure update's result was ignored, so a completed write that raised after committing still sent AI_CHAT_ERROR and told the person to retry; the completion frame now goes before the memory mirror."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-01]
+decision_refs: []
+next_task: "AI32-02 (memory rollup deletes history after a truncated fallback summary)."
+updated: 2026-11-19
+```
+
+#### L07-08 The memory roll-up deletes history only for a real summary, summarizes outside any transaction, and commits only if nothing moved (external audit AI32-02, AI32-07)
+```yaml
+id: L07-08
+status: tests_pass
+env: local
+evidence_shas: [ef9872d]   # base; fix in the commit that adds this row
+files: [backend/memory_core/session_manager.py, backend/tests/test_memory_rollup.py]
+tests_run:
+  - {cmd: "read memory_core/session_manager.py summarize_rolling_memory and _local_llm_summarize at ef9872d; grep callers", result: "confirmed both: on any summarizer error the default returned (prior + transcript)[:1500], which the roll-up stored as the summary before deleting every older row (facts past 1,500 characters lost: AI32-02); the 30 s network call ran inside the open tenant_tx holding the connection and the read rows (AI32-07). Conditional: nothing in production calls the roll-up (only test_sealed_text_two_live), and as the app role its DELETE is refused (no DELETE grant on user_interactions, L17-22)", date: 2026-11-19}
+  - {cmd: "test_memory_rollup against ef9872d's session_manager.py", result: "red: 5 failed", date: 2026-11-19}
+  - {cmd: "after: test_memory_rollup", result: "5 passed: a summarizer outage over a >5,000-character history deletes nothing; the default summarizer raises SummaryUnavailable instead of truncating; the summary is made with no transaction open and replaces only the older rows; history or summary that changed during the summary leaves everything in place; an empty summary deletes nothing", date: 2026-11-19}
+  - {cmd: "after review r1: test_memory_rollup", result: "12 passed: a reply cut off at max_tokens (finish_reason length), a missing finish_reason, None or blank content all raise SummaryUnavailable; end to end, the default summarizer on a cut-off reply deletes nothing; a complete reply is used and the commit takes the per-user lock; a row added during the summary survives", date: 2026-11-19}
+  - {cmd: "test_sealed_text_two_live (exercises the roll-up as the app role)", result: "fails at ef9872d and here alike before reaching the roll-up, on the shared dev database (interaction_logs rows sealed under another key); left to CI's fresh database", date: 2026-11-19}
+authz_checked: "No access change. Both transactions run as the same tenant context; the commit step takes a per-user advisory lock (pg_advisory_xact_lock(hashtextextended('memory-rollup:<tenant>:<user>'))) and re-checks the prior summary and the archived row count before writing."
+blockers:
+  - "Still conditional: nothing schedules the roll-up, and as the app role its DELETE remains refused (L17-22). Before scheduling it: a DELETE grant decision, a retention policy, and a source-linked summary that can be corrected or regenerated (audit AI32-02). Also: once a transcript exceeds the local model's context every run is SummaryUnavailable, so the history would grow unbounded; summarize in bounded chunks first."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the default summarizer accepted a reply cut off at max_tokens (finish_reason 'length') as the summary, and None content raised AttributeError; it now requires finish_reason 'stop' and non-empty text. Tests added for the default summarizer end to end, the lock and a row added mid-summary."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-02, AI32-07]
+decision_refs: []
+next_task: "AI32-03 (staged approvals in the cross-provider failure guard)."
+updated: 2026-11-19
+```
+
 #### L07-09 The tool executor never falls back to the role-only offer: a turn whose remembered offer is gone is enforced with the full offer recomputed with live channel state (external audit AI32-04)
 ```yaml
 id: L07-09

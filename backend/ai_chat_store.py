@@ -600,24 +600,31 @@ async def load_response_bundle(ctx: TenantContext, assistant_id: str) -> dict:
 async def update_assistant(
     ctx: TenantContext, assistant_id: str, *, content: str, status_value: str,
     model_id: Optional[str] = None, error_code: Optional[str] = None,
-    choices: Optional[list[dict]] = None,
-) -> None:
+    choices: Optional[list[dict]] = None, unless_status: Optional[str] = None,
+) -> bool:
     """`choices` (L05-09) are the records the turn's question offered, as
     {type, id} only: metadata is plaintext, so no label is ever written there;
-    list_messages re-reads the labels as the caller."""
+    list_messages re-reads the labels as the caller.
+
+    `unless_status` leaves a row already in that state untouched (AI32-01: a
+    failure after the answer committed must never turn 'completed' into
+    'failed'). Returns whether the row was updated."""
     key = tenant_key(ctx)
     content = pan_redaction.scrub(content, "ai_chat_assistant_message",
                                   tenant_id=ctx.tenant_id, target_id=assistant_id)
     refs = json.dumps([{"type": str(c["type"]), "id": str(c["id"])} for c in choices]) if choices else None
     async with tenant_tx(ctx) as conn:
         ciphertext = await _encrypt_text(conn, content, key)
-        await conn.execute(
+        result = await conn.execute(
             """UPDATE ai_chat_messages SET content_ciphertext=$1,status=$2,model_id=$3,error_code=$4,
                        metadata = CASE WHEN $8::jsonb IS NULL THEN metadata
                                        ELSE metadata || jsonb_build_object('choices', $8::jsonb) END
-                WHERE id=$5::uuid AND tenant_id=$6::uuid AND user_id=$7""",
+                WHERE id=$5::uuid AND tenant_id=$6::uuid AND user_id=$7
+                  AND ($9::text IS NULL OR status IS DISTINCT FROM $9::text)""",
             ciphertext, status_value, model_id, error_code, assistant_id, ctx.tenant_id, ctx.agent_id, refs,
+            unless_status,
         )
+    return result != "UPDATE 0"
 
 
 # Both this module and ``ai_chat_agent`` used to carry their own literal list
