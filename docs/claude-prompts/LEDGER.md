@@ -345,6 +345,29 @@ updated: 2026-11-16
 ```
 New exported `verdictQueue(rows)` and a read-only `--verdicts` flag split the pages into recorded, ready for review (clean crawl, no writes on open, not legacy), needs attention, not crawled and legacy. It writes no file; the generated matrix is unchanged. The Playwright and crawl work for AC02.04, AC02.05 and AC02.08 is still owed.
 
+#### L02-13 The People tab finds any contact: search goes to the server over the whole contact book, and the list pages past the first 100 (external audit 33.3)
+```yaml
+id: L02-13
+status: tests_pass
+env: local
+evidence_shas: [57247ac]   # base; fix in the commit that adds this row
+files: [oracle-app/src/components/PeopleTab.jsx, oracle-app/src/components/PeopleTab.module.css, oracle-app/src/components/PeopleTab.test.jsx]
+tests_run:
+  - {cmd: "read PeopleTab.jsx and contacts_api.list_contacts at 57247ac", result: "confirmed 33.3: the tab loaded /api/crm/contacts?limit=200 once and filtered that array in the browser; with more contacts, one outside the first page answered 'No matches' and the count was a page count. The API already searches the whole table (q: name word prefixes, full email, full phone, blind-indexed) and pages (next_cursor)", date: 2026-11-19}
+  - {cmd: "the new tests against 57247ac's PeopleTab.jsx", result: "red: 4 of 4 (contact 240 not found; no paging; stale search shown)", date: 2026-11-19}
+  - {cmd: "after: vitest PeopleTab 5 passed, full vitest 1103 passed (cssTokens fixed to defined tokens); eslint clean; build ok", result: "pass", date: 2026-11-19}
+authz_checked: "No access-control change: both the search and the pages are the existing /api/crm/contacts route under the caller's tenant and record scope. Typing searches the server after 300 ms (q=..., 100 results), newest answer only (a slower earlier search is ignored); the results are merged with partial email / phone matches among the loaded contacts, since the server matches whole emails and phones. 'No matches' appears only after the server answered; a failed search says it is showing loaded matches only. Without a search the list loads 100 at a time with 'Load more contacts' (no duplicates); the count reads 'N contacts loaded — more below' and the switcher shows 'N+' while more exist."
+blockers:
+  - "The server search returns up to 100 matches with no 'more results' paging; a search matching more than 100 contacts shows the first 100."
+  - "No true total: the count is what is loaded (the API has no count of all contacts)."
+  - "Local bundle check: main already builds 6.6 KB over the budget on this machine while CI passes; this change adds about 2 KB. CI decides."
+  - "Not deployed (C4.4)."
+audit_refs: [33.3]
+decision_refs: []
+next_task: "33.2 (CommsTab thread race, NQ-02) after its owner privacy review."
+updated: 2026-11-19
+```
+
 ### L03
 Brokerage tenancy and hybrid access.
 

@@ -66,19 +66,61 @@ function ContactLiving({ living, clientId, contactId }) {
   return <LivingStrip living={composed} compact />;
 }
 
-function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities, openId, onOpen, onChanged }) {
-  const living = useLivingForContacts(contacts);
+// The page loads contacts in pages; a search goes to the server, which looks
+// through every contact (audit 33.3: the tab searched only the first 200).
+export const CONTACT_PAGE = 100;
+const SEARCH_DEBOUNCE_MS = 300;
+
+function matchesLocally(contact, needle) {
+  return [contact.full_name, contact.email, contact.phone, contact.source]
+    .some((value) => String(value || '').toLowerCase().includes(needle));
+}
+
+/** Server-side search of the whole contact book, newest answer only. */
+function useContactSearch(query) {
+  const [found, setFound] = useState({ query: '', contacts: [], error: null });
+  const latest = useRef(0);
+  const trimmed = query.trim();
+  useEffect(() => {
+    if (!trimmed) return undefined;
+    const request = latest.current + 1;
+    latest.current = request;
+    const timer = window.setTimeout(() => {
+      crmGet(`/api/crm/contacts?q=${encodeURIComponent(trimmed)}&limit=${CONTACT_PAGE}`).then(
+        (payload) => {
+          if (latest.current !== request) return;  // a newer search is under way
+          setFound({ query: trimmed, contacts: Array.isArray(payload?.contacts) ? payload.contacts : [], error: null });
+        },
+        (reason) => {
+          if (latest.current !== request) return;
+          setFound({ query: trimmed, contacts: [], error: reason });
+        },
+      );
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [trimmed]);
+  const current = found.query === trimmed && trimmed !== '';
+  return { results: current ? found.contacts : [], searched: current, error: current ? found.error : null };
+}
+
+function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities, openId, onOpen, onChanged,
+  hasMore, loadingMore, onLoadMore }) {
   const [query, setQuery] = useState('');
+  const search = useContactSearch(query);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return contacts || [];
-    return (contacts || []).filter((contact) => [
-      contact.full_name,
-      contact.email,
-      contact.phone,
-      contact.source,
-    ].some((value) => String(value || '').toLowerCase().includes(needle)));
-  }, [contacts, query]);
+    // Every contact the server found, plus partial email / phone matches
+    // among the loaded ones (the server matches whole emails and phones).
+    const seen = new Set();
+    const merged = [];
+    for (const contact of [...search.results, ...(contacts || []).filter((c) => matchesLocally(c, needle))]) {
+      if (!seen.has(contact.id)) { seen.add(contact.id); merged.push(contact); }
+    }
+    return merged;
+  }, [contacts, query, search.results]);
+  const living = useLivingForContacts(visible);
+  const searching = query.trim() !== '' && !search.searched;
 
   return (
     <section className={styles.contactBook} aria-labelledby="canonical-contacts-title" aria-busy={loading || refreshing}>
@@ -106,6 +148,15 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
           <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, email, phone…" />
         </label>
       ) : null}
+      {!loading && !error && (contacts || []).length > 0 ? (
+        <p className={styles.listNote} role="status">
+          {query.trim()
+            ? (searching ? 'Searching all your contacts…'
+              : search.error ? 'The full search is unavailable right now; showing matches among loaded contacts.'
+                : 'Searched all your contacts by name, full email or full phone; partial email or phone matches loaded contacts only.')
+            : `${(contacts || []).length} contacts loaded${hasMore ? ' — more below' : ''}`}
+        </p>
+      ) : null}
 
       {loading ? (
         <div className={styles.skeleton} aria-hidden="true"><span /><span /><span /></div>
@@ -121,6 +172,8 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
           <div><strong>No contacts yet</strong><p>Add your first client with New contact, or ask Neoh to add someone for you.</p></div>
           <button type="button" onClick={onOpenOpportunities}>Open opportunities</button>
         </div>
+      ) : visible.length === 0 && searching ? (
+        <div className={styles.skeleton} aria-hidden="true"><span /></div>
       ) : visible.length === 0 ? (
         <div className={styles.empty} role="status">
           <Search aria-hidden="true" />
@@ -165,6 +218,11 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
           ))}
         </ul>
       )}
+      {!loading && !error && !query.trim() && hasMore ? (
+        <button type="button" className={styles.loadMore} onClick={onLoadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading…' : 'Load more contacts'}
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -177,13 +235,16 @@ export default function PeopleTab() {
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const selectedByUser = useRef(false);
 
   const load = useCallback(() => {
     setRefreshing(true);
-    return crmGet('/api/crm/contacts?limit=200').then(
+    return crmGet(`/api/crm/contacts?limit=${CONTACT_PAGE}`).then(
       (payload) => {
         setContacts(Array.isArray(payload?.contacts) ? payload.contacts : []);
+        setNextCursor(payload?.next_cursor || null);
         setError(null);
         setRefreshing(false);
         setUpdatedAt(new Date());
@@ -200,6 +261,23 @@ export default function PeopleTab() {
     const initial = Promise.resolve().then(load);
     return () => { void initial; };
   }, [load]);
+
+  const loadMore = useCallback(() => {
+    if (!nextCursor) return undefined;
+    setLoadingMore(true);
+    return crmGet(`/api/crm/contacts?limit=${CONTACT_PAGE}&cursor=${encodeURIComponent(nextCursor)}`).then(
+      (payload) => {
+        const page = Array.isArray(payload?.contacts) ? payload.contacts : [];
+        setContacts((current) => {
+          const seen = new Set((current || []).map((c) => c.id));
+          return [...(current || []), ...page.filter((c) => !seen.has(c.id))];
+        });
+        setNextCursor(payload?.next_cursor || null);
+        setLoadingMore(false);
+      },
+      (reason) => { setError(reason); setLoadingMore(false); },
+    );
+  }, [nextCursor]);
 
   const selectView = (next) => {
     selectedByUser.current = true;
@@ -231,7 +309,7 @@ export default function PeopleTab() {
 
       <nav className={styles.switcher} aria-label="People workspace">
         <button type="button" aria-pressed={view === 'contacts'} data-source={error ? 'error' : contacts === null ? 'loading' : 'ready'} onClick={() => selectView('contacts')}>
-          <UsersRound aria-hidden="true" /><span>Contacts</span><small>{contacts?.length ?? '—'}</small>
+          <UsersRound aria-hidden="true" /><span>Contacts</span><small>{contacts ? `${contacts.length}${nextCursor ? '+' : ''}` : '—'}</small>
         </button>
         <button type="button" aria-pressed={view === 'opportunities'} onClick={() => selectView('opportunities')}>
           <BriefcaseBusiness aria-hidden="true" /><span>Opportunities</span>
@@ -250,6 +328,9 @@ export default function PeopleTab() {
           openId={openContactId}
           onOpen={setOpenContactId}
           onChanged={load}
+          hasMore={Boolean(nextCursor)}
+          loadingMore={loadingMore}
+          onLoadMore={loadMore}
         />
       ) : (
         <Suspense fallback={<div className={styles.skeleton} aria-hidden="true"><span /><span /><span /></div>}>
