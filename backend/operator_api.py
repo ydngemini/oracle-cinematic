@@ -1124,9 +1124,7 @@ async def _release(conn) -> dict[str, Any]:
     }
 
 
-class MfaResetBody(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    reason: str = Field(min_length=3, max_length=500)
+from mfa_api import ResetRequest as MfaResetBody  # noqa: E402 - the reset body, step-up included (28.4)
 
 
 @router.post("/users/{user_id}/mfa/reset")
@@ -1137,11 +1135,12 @@ async def reset_user_two_step(
 ) -> dict[str, Any]:
     """Reset any account's two-step sign-in, broker owners included — the
     one reset a broker owner cannot do for another owner (L17-19). The
-    account's sessions end; recorded in the audit chain as an admin action.
-    The person sets it up again at their next sign-in."""
+    operator re-proves their passphrase and second factor first (audit
+    28.4). The account's sessions end; recorded in the audit chain as an
+    admin action. The person sets it up again at their next sign-in."""
     from mfa_api import reset_member_mfa
 
-    return await reset_member_mfa(ctx, user_id, body.reason)
+    return await reset_member_mfa(ctx, user_id, body.reason, password=body.password, code=body.code)
 
 
 @router.get("/messaging/receipts")
