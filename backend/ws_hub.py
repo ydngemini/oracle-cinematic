@@ -31,6 +31,20 @@ MAX_CONNECTIONS_PER_REPLICA = int(os.getenv("ORACLE_WS_MAX_CONNECTIONS", "120"))
 
 _CHANNEL = "oracle_ws_events"
 _MAX_NOTIFY_BYTES = 7_500  # PostgreSQL NOTIFY payload hard limit is 8,000 bytes.
+# A frame larger than one NOTIFY (a 4,000-character transcript chunk of
+# Chinese or emoji, audit 27.6) crosses replicas in parts sent in one
+# transaction, so they arrive together and in order. 1,500 characters stay
+# under the limit even at 4 UTF-8 bytes each.
+_PART_CHARS = 1_500
+_MAX_PARTS = 32
+_PART_TTL_SECONDS = 30.0
+_MAX_PENDING_PARTS = 64
+_pending_parts: dict[str, dict] = {}
+# One stalled browser must not hold a broadcast up for everyone else (audit
+# 27.7): sends run concurrently, each bounded; a socket that cannot take a
+# frame in time is closed and dropped.
+SEND_TIMEOUT_SECONDS = float(os.getenv("ORACLE_WS_SEND_TIMEOUT_SECONDS", "5"))
+_send_stats = {"timeouts": 0, "failed": 0, "parts_sent": 0, "parts_dropped": 0}
 _instance_id = str(uuid.uuid4())
 _pool: Any = None
 _listener_connection: Any = None
@@ -119,6 +133,52 @@ async def deliver_local(tenant_id: str, payload: dict) -> int:
     return await _deliver_local(tenant_id, payload)
 
 
+async def _close_quietly(ws: WebSocket) -> None:
+    try:
+        await asyncio.wait_for(ws.close(code=1013), timeout=2)
+    except Exception:  # noqa: BLE001 - it is already being dropped
+        pass
+
+
+async def _send_one(ws: WebSocket, text: str) -> bool:
+    try:
+        await asyncio.wait_for(ws.send_text(text), timeout=SEND_TIMEOUT_SECONDS)
+        return True
+    except asyncio.TimeoutError:
+        _send_stats["timeouts"] += 1
+        logger.warning("WebSocket send timed out after %.1fs; dropping the slow socket", SEND_TIMEOUT_SECONDS)
+        asyncio.create_task(_close_quietly(ws))
+        return False
+    except Exception:  # noqa: BLE001 - socket died between snapshot and send
+        _send_stats["failed"] += 1
+        return False
+
+
+async def _fan_out(targets: list, text: str, drop) -> int:
+    """Send `text` to every socket at once; `drop(target)` unregisters a
+    socket that failed or timed out. Order within one socket is unchanged:
+    each socket receives this frame exactly once, in this call."""
+    if not targets:
+        return 0
+    results = await asyncio.gather(*(_send_one(_socket_of(t), text) for t in targets))
+    delivered = 0
+    for target, ok in zip(targets, results):
+        if ok:
+            delivered += 1
+        else:
+            drop(target)
+    return delivered
+
+
+def _socket_of(target) -> WebSocket:
+    return target[1] if isinstance(target, tuple) else target
+
+
+def send_stats() -> dict:
+    """Timeouts, failed sends and multi-part frames on this replica."""
+    return dict(_send_stats)
+
+
 async def _send_group(tenant_id: str, payload: dict) -> int:
     """Send one frame to every live socket in one tenant group.
 
@@ -130,15 +190,7 @@ async def _send_group(tenant_id: str, payload: dict) -> int:
     if not targets:
         return 0
 
-    text = json.dumps(payload)
-    delivered = 0
-    for ws in targets:
-        try:
-            await ws.send_text(text)
-            delivered += 1
-        except Exception:  # noqa: BLE001 — socket died between snapshot and send
-            unregister(tenant_id, ws)
-    return delivered
+    return await _fan_out(targets, json.dumps(payload), lambda ws: unregister(tenant_id, ws))
 
 
 async def _send_user(tenant_id: str, user_id: str, payload: dict) -> int:
@@ -147,15 +199,7 @@ async def _send_user(tenant_id: str, user_id: str, payload: dict) -> int:
     targets = list(_user_sockets.get(key, ()))
     if not targets:
         return 0
-    text = json.dumps(payload)
-    delivered = 0
-    for ws in targets:
-        try:
-            await ws.send_text(text)
-            delivered += 1
-        except Exception:  # noqa: BLE001
-            unregister(tenant_id, ws, user_id)
-    return delivered
+    return await _fan_out(targets, json.dumps(payload), lambda ws: unregister(tenant_id, ws, user_id))
 
 
 async def _deliver_local(tenant_id: str, payload: dict) -> int:
@@ -198,15 +242,7 @@ async def _send_users(tenant_id: str, user_ids: list[str], payload: dict) -> int
     ]
     if not targets:
         return 0
-    text = json.dumps(payload)
-    delivered = 0
-    for user, ws in targets:
-        try:
-            await ws.send_text(text)
-            delivered += 1
-        except Exception:  # noqa: BLE001
-            unregister(tenant_id, ws, user)
-    return delivered
+    return await _fan_out(targets, json.dumps(payload), lambda t: unregister(tenant_id, t[1], t[0]))
 
 
 async def _deliver_scoped_local(
@@ -239,19 +275,9 @@ async def _publish_scoped(
         },
         separators=(",", ":"),
         default=str,
+        ensure_ascii=False,
     )
-    if len(envelope.encode("utf-8")) > _MAX_NOTIFY_BYTES:
-        logger.error(
-            "Scoped WebSocket event too large for cross-replica delivery (group=%s bytes=%d)",
-            group.split(":", 1)[0],
-            len(envelope.encode("utf-8")),
-        )
-        return
-    try:
-        async with _pool.acquire() as conn:
-            await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, envelope)
-    except Exception as exc:  # noqa: BLE001 - local delivery remains available
-        logger.warning("WebSocket cross-replica publish failed: %s", exc)
+    await _notify(envelope, group.split(":", 1)[0])
 
 
 async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None) -> None:
@@ -268,19 +294,70 @@ async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None)
         },
         separators=(",", ":"),
         default=str,
+        ensure_ascii=False,
     )
-    if len(envelope.encode("utf-8")) > _MAX_NOTIFY_BYTES:
-        logger.error(
-            "WebSocket event too large for cross-replica delivery (tenant=%s bytes=%d)",
-            tenant_id,
-            len(envelope.encode("utf-8")),
-        )
-        return
+    await _notify(envelope, tenant_id)
+
+
+def _split_envelope(envelope: str) -> Optional[list[str]]:
+    """One NOTIFY payload per part, or None when even parts cannot carry it."""
+    pieces = [envelope[i:i + _PART_CHARS] for i in range(0, len(envelope), _PART_CHARS)]
+    if len(pieces) > _MAX_PARTS:
+        return None
+    part_id = uuid.uuid4().hex
+    return [json.dumps({"origin": _instance_id, "part": part_id, "i": i, "n": len(pieces), "d": piece},
+                       separators=(",", ":"), ensure_ascii=False)
+            for i, piece in enumerate(pieces)]
+
+
+async def _notify(envelope: str, label: str) -> None:
+    """NOTIFY one envelope, in parts (one transaction) when it is too big."""
+    if len(envelope.encode("utf-8")) <= _MAX_NOTIFY_BYTES:
+        parts = [envelope]
+    else:
+        parts = _split_envelope(envelope)
+        if parts is None:
+            logger.error("WebSocket event too large for cross-replica delivery even in parts (group=%s bytes=%d)",
+                         label, len(envelope.encode("utf-8")))
+            return
     try:
         async with _pool.acquire() as conn:
-            await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, envelope)
+            if len(parts) == 1:
+                await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, parts[0])
+            else:
+                async with conn.transaction():
+                    for part in parts:
+                        await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, part)
+                _send_stats["parts_sent"] += len(parts)
     except Exception as exc:  # noqa: BLE001 - local delivery remains available
         logger.warning("WebSocket cross-replica publish failed: %s", exc)
+
+
+def _take_part(envelope: dict) -> Optional[str]:
+    """Collect one part; the whole envelope once every part has arrived.
+    Incomplete frames expire after _PART_TTL_SECONDS; at most
+    _MAX_PENDING_PARTS frames wait at once."""
+    part_id, i, n, data = envelope["part"], envelope["i"], envelope["n"], envelope["d"]
+    if (not isinstance(part_id, str) or not isinstance(data, str) or not isinstance(i, int)
+            or not isinstance(n, int) or isinstance(i, bool) or not 0 <= i < n <= _MAX_PARTS):
+        raise TypeError("malformed part")
+    now = time.monotonic()
+    for stale in [k for k, v in _pending_parts.items() if now - v["at"] > _PART_TTL_SECONDS]:
+        _pending_parts.pop(stale, None)
+        _send_stats["parts_dropped"] += 1
+    entry = _pending_parts.get(part_id)
+    if entry is None:
+        if len(_pending_parts) >= _MAX_PENDING_PARTS:
+            _pending_parts.pop(next(iter(_pending_parts)), None)
+            _send_stats["parts_dropped"] += 1
+        entry = _pending_parts[part_id] = {"n": n, "got": {}, "at": now}
+    if entry["n"] != n:
+        raise TypeError("part count changed")
+    entry["got"][i] = data
+    if len(entry["got"]) < n:
+        return None
+    _pending_parts.pop(part_id, None)
+    return "".join(entry["got"][k] for k in range(n))
 
 
 async def _receive_notification(raw: str) -> None:
@@ -288,6 +365,14 @@ async def _receive_notification(raw: str) -> None:
     try:
         envelope = json.loads(raw)
         if envelope.get("origin") == _instance_id:
+            return
+        if "part" in envelope:
+            # One part of a frame too large for one NOTIFY (27.6). It has no
+            # tenant_id on purpose: a replica on the previous release drops it
+            # as malformed, as it dropped the oversized frame before.
+            whole = _take_part(envelope)
+            if whole is not None:
+                await _receive_notification(whole)
             return
         if "scoped_payload" in envelope:
             # v2 (record-scoped) envelope. It carries no "payload" key on
