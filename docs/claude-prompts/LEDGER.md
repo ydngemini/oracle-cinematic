@@ -1868,15 +1868,18 @@ id: L09-14
 status: tests_pass
 env: local
 evidence_shas: [f087e31]   # base; fix in the commit that adds this row
-files: [backend/call_briefing.py, backend/qwen_omni_realtime.py, backend/elevenlabs_realtime.py, backend/tests/test_plivo_qwen_realtime.py]
+files: [backend/call_briefing.py, backend/qwen_omni_realtime.py, backend/elevenlabs_realtime.py, backend/commands_api.py, backend/tests/test_plivo_qwen_realtime.py, backend/tests/test_elevenlabs_realtime.py]
 tests_run:
   - {cmd: "read qwen_omni_realtime._session_instructions, elevenlabs_realtime.outbound_instructions and plivo_call_handler at f087e31", result: "confirmed 34.3: plivo_call_handler stores the approved command's reason as state['briefing'] and ElevenLabs puts it in its prompt, but the Qwen bridges' outbound instructions were the generic _system_instructions(): a Qwen outbound call opened without knowing why it was calling", date: 2026-11-19}
   - {cmd: "the new tests against f087e31's qwen_omni_realtime.py", result: "red: 2 of 4 (the outbound Qwen prompt lacked the briefing; the engines did not share it)", date: 2026-11-19}
-  - {cmd: "after: test_plivo_qwen_realtime + test_elevenlabs_realtime 40 passed; voice engine tests 64 passed before the new cases", result: "pass", date: 2026-11-19}
-authz_checked: "call_briefing.briefing_instructions is the one contract: the approved reason (capped at 800 characters), the goal (interest in the home, a showing) and a limit (nothing about the home, its price, terms or an offer beyond the approved reason). ElevenLabs and Qwen (base bridge; the Twilio and Plivo subclasses use it for every non-inbound call) append it only on an outbound call; inbound intake is unchanged; no briefing keeps the generic prompt. The ElevenLabs prompt gains the limit sentence."
+  - {cmd: "after: full unit suite 6929 passed / 156 skipped (round 1); after review r1 voice tests 142 passed (the briefing from a typed command's request / property / opening, a chat reason, a speed-to-lead script; no phone number; capped; both engines say they cannot book; the Plivo call is placed with briefing_from_draft)", result: "pass", date: 2026-11-19}
+authz_checked: "call_briefing is the one contract. briefing_from_draft builds the briefing only from the approved command's own fields, in order: the chat tool's reason, a typed command's request, property address and approved opening (which names the agent and brokerage), and a script (speed-to-lead, sales); capped at 800 characters; no phone numbers. commands_api places the Plivo call with it (before: draft['reason'] only, so typed, speed-to-lead and sales calls had no briefing on either engine). briefing_instructions adds the goal (interest in the home, a showing) and limits (nothing about the home, its price, terms or an offer beyond the approved reason; it cannot book or hold times). ElevenLabs and Qwen (base bridge; the Twilio and Plivo subclasses use it for every non-inbound call) append it only on an outbound call; inbound intake is unchanged; no briefing keeps the generic prompt. The ElevenLabs prompt gains the limit sentence."
 blockers:
   - "Not tested on a live call: whether the model keeps to the briefing (no hallucinated facts or offers) is a prompt instruction, not enforced; a live Qwen outbound call needs the owner's approval (paid call to a real number)."
-  - "Twilio outbound calls carry no briefing in their state today (only the Plivo path stores it), so they stay generic."
+  - "Twilio outbound calls and the base ACS bridge carry no briefing in their call state (only the Plivo path stores it), so they stay generic."
+  - "Qwen has no note tool and keeps no outbound transcript: whatever the callee answers about a showing reaches their agent only through the call's outcome; the prompt now says the AI cannot book and their agent will follow up."
+  - "The approver sees the full draft; only the first 800 characters of the composed briefing reach the voice prompt."
+  - "Independent review r1 (REQUEST CHANGES), fixed: most approved calls had no briefing (only `reason` was read), the agent was never introduced (now via the approved opening), no cannot-book rule on Qwen; listed above: the ACS gap, Qwen's lost answers, the 800-character cap."
   - "Not deployed (C4.4)."
 audit_refs: [34.3]
 decision_refs: []
