@@ -46,9 +46,9 @@ def briefing_from_draft(draft: Optional[dict[str, Any]], *, on_behalf_of: str = 
         if value and value not in seen:
             seen.add(value)
             lines.append(template.format(value))
-    who = " ".join(str(on_behalf_of or "").split())
+    who = " ".join(str(on_behalf_of or "").split())[:120]
     if who and lines:
-        lines.append(f"Calling on behalf of: {who}")
+        lines.insert(0, f"Calling on behalf of: {who}")  # first, so a long reason cannot cut it off
     return "\n".join(lines)[:BRIEFING_MAX_CHARS]
 
 

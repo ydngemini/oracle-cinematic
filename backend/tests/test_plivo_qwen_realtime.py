@@ -272,3 +272,11 @@ def test_the_plivo_call_is_placed_with_the_draft_briefing():
     source = inspect.getsource(commands_api)
     assert "briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of)" in source
     assert 'briefing=str(draft.get("reason")' not in source
+
+
+def test_the_on_behalf_line_survives_a_long_reason():
+    import call_briefing
+
+    briefing = call_briefing.briefing_from_draft({"reason": "y" * 2000}, on_behalf_of="Sam Lee of Lockwood Realty")
+    assert briefing.startswith("Calling on behalf of: Sam Lee of Lockwood Realty")
+    assert len(briefing) == call_briefing.BRIEFING_MAX_CHARS
