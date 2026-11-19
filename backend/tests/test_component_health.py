@@ -416,3 +416,14 @@ def test_launch_assessment_by_state_and_role(state, role_index, role):
     verdict = ch.launch_assessment({name: {"state": state}})
     got = ("block" if verdict["blocking"] else "warn" if verdict["warning"] else "ok")
     assert got == _EXPECTED[state][role_index], (state, role, verdict)
+
+
+def test_an_export_archive_kept_past_expiry_for_a_day_alerts():
+    """Audit 29.6: a delete that keeps failing must reach a person."""
+    import component_health as ch
+
+    assert ch._export_cleanup(0)["state"] == ch.HEALTHY
+    bad = ch._export_cleanup(2)
+    assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING and bad["detail"]["overdue"] == 2
+    assert "export_cleanup" in ch._DB_KEYS and ch.role_of("export_cleanup") == "important"
+    assert "interval '1 day'" in ch._SQL_EXPORT_CLEANUP and "artifact_key IS NOT NULL" in ch._SQL_EXPORT_CLEANUP

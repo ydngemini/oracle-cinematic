@@ -4594,6 +4594,30 @@ next_task: "28.4: the actor re-proves password and second factor before resettin
 updated: 2026-11-18
 ```
 
+#### L17-53 Orphaned export archives are found and deleted, and an expired archive storage keeps refusing to delete raises an alert (external audit 29.6, remainder of L17-49)
+```yaml
+id: L17-53
+status: tests_pass
+env: local
+evidence_shas: [5bf2831]   # base; fix in the commit that adds this row
+files: [backend/privacy_export.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/tests/test_privacy_export_orphans_live.py, backend/tests/test_component_health.py, backend/tests/test_privacy_periodic.py, docs/data-retention-policy.md, docs/privacy-request-runbook.md, docs/runbooks/README.md]
+tests_run:
+  - {cmd: "read privacy_export.expire_exports and periodic._privacy_lifecycle_task at 5bf2831", result: "confirmed the L17-49 open items: expire_exports finds an archive only through its row, so an archive whose row was swept, whose build failed after the upload, or whose key was cleared by a delete that reported not-found elsewhere is never found; a delete that keeps failing is visible only in that operation's result", date: 2026-11-19}
+  - {cmd: "test_an_export_archive_kept_past_expiry_for_a_day_alerts against 5bf2831's component_health", result: "red: no export_cleanup component", date: 2026-11-19}
+  - {cmd: "live (real PostgreSQL, local storage): test_privacy_export_orphans_live + test_privacy_export_expiry_live + test_messaging_hardening_live (runs every component query)", result: "5 passed: kept = the archive its row points to, one still building (running, touched within 2 days) and one past expiry (expire_exports' job); deleted = a failed build's, one stuck 'running' for 3 days and one with no row; a non-archive key counted, not deleted; the export_cleanup query counts the archive held 2 days past expiry", date: 2026-11-19}
+  - {cmd: "test_component_health + test_privacy_periodic", result: "75 passed", date: 2026-11-19}
+authz_checked: "No access change. The scan runs in the hourly platform privacy task under the platform context (same as expire_exports), lists only privacy/exports/, deletes only keys of the exact form privacy/exports/<uuid>/<uuid>.zip that no operation row points to, and logs counts only. The alert component reports a count, never ids or keys."
+blockers:
+  - "The scan lists at most 5000 keys per run (truncated flag in the task result); export archives live 7 days, so that is far above expected volume."
+  - "An orphan whose delete fails is logged and retried hourly; it does not raise the export_cleanup alert (that counts rows past expiry only)."
+  - "Privacy: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [29.6]
+decision_refs: []
+next_task: "30.9 single worker."
+updated: 2026-11-19
+```
+
 ### L18
 Billing, seats and analytics.
 

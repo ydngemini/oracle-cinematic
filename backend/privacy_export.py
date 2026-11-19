@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -451,6 +452,60 @@ async def expire_exports() -> int:
                 "WHERE id=$1", row["id"])
         expired += 1
     return expired
+
+
+EXPORT_PREFIX = "privacy/exports/"
+_EXPORT_KEY = re.compile(
+    r"privacy/exports/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.zip")
+# An export still being built may have written its archive before its row
+# records the key (build_export: put, then one transaction); give it this long.
+BUILD_GRACE = timedelta(days=2)
+ORPHAN_SCAN_LIMIT = 5000
+
+
+async def sweep_orphan_exports() -> dict:
+    """Delete export archives that no operation row points to (audit 29.6).
+
+    expire_exports finds an archive only through its row, so an archive whose
+    row was swept by retention, whose build failed after the upload, or whose
+    key was cleared by a delete that reported success elsewhere (a
+    misconfigured bucket) would hold personal data with no expiry. Kept: an
+    archive its row still points to (expire_exports owns it), and one whose
+    export is still requested or running and recently touched. A key that does
+    not look like an export archive is counted, never deleted."""
+    import object_storage
+
+    if not object_storage.is_configured():
+        return {"skipped": "storage_not_configured"}
+    keys = await asyncio.to_thread(object_storage.list_prefix, EXPORT_PREFIX, ORPHAN_SCAN_LIMIT)
+    parsed = {k: m.group(2) for k in keys if (m := _EXPORT_KEY.fullmatch(k))}
+    rows: dict[str, Any] = {}
+    if parsed:
+        async with tenant_tx(_platform_ctx()) as conn:
+            for r in await conn.fetch(
+                    "SELECT id::text AS id, artifact_key, "
+                    "state IN ('requested','running') AND updated_at > now() - make_interval(secs => $2) AS building "
+                    "FROM privacy_operations WHERE id = ANY($1::uuid[])",
+                    sorted(set(parsed.values())), BUILD_GRACE.total_seconds()):
+                rows[r["id"]] = r
+    deleted = failed = kept = 0
+    for key, op_id in parsed.items():
+        row = rows.get(op_id)
+        if row is not None and (row["artifact_key"] == key or row["building"]):
+            kept += 1
+            continue
+        try:
+            await asyncio.to_thread(object_storage.delete_object, key)
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001 - retried on the next scan
+            failed += 1
+            log.warning("orphaned export archive could not be deleted yet (%s)", type(exc).__name__)
+    out = {"scanned": len(keys), "kept": kept, "orphans_deleted": deleted, "orphans_failed": failed,
+           "unrecognised": len(keys) - len(parsed), "truncated": len(keys) >= ORPHAN_SCAN_LIMIT}
+    if deleted or failed or out["unrecognised"]:
+        log.warning("export orphan scan: %s", json.dumps(out))
+    return out
 
 
 async def _export_job(payload: dict, reporter) -> dict:

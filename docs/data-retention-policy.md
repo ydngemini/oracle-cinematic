@@ -74,7 +74,8 @@ Brokerage lifecycle windows (business policy, not law):
 | `privacy_retention_sweep` (hourly) | `periodic.privacy_lifecycle` | capability tokens, finished jobs, tombstones, privacy records |
 | `privacy_expire_audit` (hourly; floor 365 days) | same | audit ledger, keeping the hash chain verifiable through an anchor |
 | `purge_expired_platform_data` (daily) | `periodic.platform_retention_cleanup` | public-data raw payloads, negotiation transcripts if a timer is set, `di_cache` |
-| `expire_exports` (hourly) | same task | export archives |
+| `expire_exports` (hourly) | same task | export archives (the row forgets the archive only after storage confirms the delete; `export_cleanup` alerts when one is still held a day past expiry) |
+| `sweep_orphan_exports` (hourly) | same task | export archives no operation row points to (failed builds, rows swept by retention); keys that are not export archives are counted, never deleted |
 | `privacy_purge_mls_feed` | operator, at licence end | licensed MLS rows (runbook §R2) |
 | Provider retention | the provider | see `docs/subprocessor-inventory.md` |
 
