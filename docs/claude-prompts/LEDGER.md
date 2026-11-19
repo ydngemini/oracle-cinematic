@@ -4988,6 +4988,29 @@ next_task: "30.3 test-alert proof; 30.2 (readiness reads the canonical component
 updated: 2026-11-18
 ```
 
+#### L19-17 Launch readiness judges component health by the states the backend emits: a core service unavailable, rejected or stale blocks go-live (external audit 30.2)
+```yaml
+id: L19-17
+status: tests_pass
+env: local
+evidence_shas: [a68f5cd]   # base; fix in the commit that adds this row
+files: [backend/component_health.py, scripts/neoh-launch-readiness.py, backend/tests/test_component_health.py, backend/tests/test_launch_readiness.py]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_operator_console and backend/component_health.py at a68f5cd", result: "confirmed 30.2: the gate counted a component down only for DOWN / UNHEALTHY / FAILED, which component_health never emits; UNAVAILABLE, AUTH_FAILED, STALE and UNKNOWN on a core service read as 'all components healthy' (PASS), and an unreachable health endpoint was only a warning", date: 2026-11-18}
+  - {cmd: "the new readiness tests against a68f5cd's script", result: "red: 5 of 6 (core service UNAVAILABLE / AUTH_FAILED / STALE / UNKNOWN passed; unreachable endpoint only warned)", date: 2026-11-18}
+  - {cmd: "after: full unit suite 6877 passed / 152 skipped; after the review-round fixes (ROLE entries, role_of, malformed-body guard, wording) the 372 related unit tests passed (table: every module-level state constant x core / important / optional / unlisted role, plus an undefined state; snapshot and gate role agreement; malformed body)", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. One policy, component_health.launch_assessment, which the readiness script loads from backend/component_health.py by path (no second copy of the states). Blocks: a core or important component UNAVAILABLE / AUTH_FAILED / STALE; a core one UNKNOWN or NOT_CONFIGURED; any state the module does not define. Warns: DEGRADED / RATE_LIMITED / RECOVERING anywhere; an optional component not working or UNKNOWN; an important one UNKNOWN. inbound_calls, billing_meter, usage_reporting and messaging_registration are now listed in ROLE as important (they defaulted to optional in the snapshot and important in the gate); role_of() gives one default (important) for both. A malformed health body blocks. With an operator token, a health endpoint that does not answer with components blocks production and warns staging."
+blockers:
+  - "Not exercised against a live degraded worker, queue or realtime listener (the audit asks for that): needs a deployed environment with an operator token; staging cannot run it until DigitalOcean access is restored (30.5)."
+  - "Without an operator token the operator checks stay an optional warning; that is audit 30.7 (operator-only checks optional for launch-critical subsystems), open."
+  - "Independent review r1: APPROVE with LOW follow-ups, applied (role agreement, coverage test reads the module constants, malformed body, wording). Residual, LOW: a configured Valkey that does not answer reports DEGRADED (component_health._valkey), so the gate only warns although calling is unavailable; the gate uses the operator checkout's ROLE, not the role the server reports, so it can drift if the checkout is not the deployed SHA."
+  - "Not deployed (C4.4)."
+audit_refs: [30.2]
+decision_refs: []
+next_task: "30.7: operator-only checks required in production; 30.6 / 30.8."
+updated: 2026-11-18
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
