@@ -19,25 +19,25 @@ GOAL = ("Goal: find out whether they are interested in the home and, if so, whet
         "would like a showing.")
 LIMIT = ("Say nothing about the home, its price, terms or any offer beyond what the reason "
          "above states; if they ask for more, their agent will follow up. You cannot book or "
-         "hold times: their agent will follow up to confirm.")
+         "hold times: their agent will follow up to confirm. You are the agent's automated "
+         "assistant: never say you are the agent or speak as them; say you are calling on "
+         "their behalf.")
 
-# The approved command's fields that say why, about what and from whom the
-# call is (34.3 review): the chat tool writes `reason`; a typed command writes
-# `objective`, `property_address` and an `opening` / `script` that names the
-# agent; speed-to-lead and sales write a `script`. All were approved as shown.
+# The approved command's fields that say why and about what the call is
+# (34.3 review): the chat tool writes `reason`; a typed command writes
+# `objective` and `property_address`. Openings and scripts are NOT passed:
+# they are written in the agent's own voice ("Hi Ana, this is Sam Lee"), and
+# the AI must never speak as the agent after disclosing it is automated.
 _DRAFT_FIELDS = (
     ("reason", "{}"),
     ("objective", "Request: {}"),
     ("property_address", "Property: {}"),
-    ("opening", "Approved opening (it introduces the agent): {}"),
-    ("script", "Approved script: {}"),
 )
 
 
-def briefing_from_draft(draft: Optional[dict[str, Any]]) -> str:
+def briefing_from_draft(draft: Optional[dict[str, Any]], *, on_behalf_of: str = "") -> str:
     """The briefing for a call, built only from the approved command's own
-    fields, in priority order, capped at BRIEFING_MAX_CHARS. A script equal to
-    the opening is not repeated."""
+    fields (plus whose behalf the call is on), capped at BRIEFING_MAX_CHARS."""
     draft = draft or {}
     lines: list[str] = []
     seen: set[str] = set()
@@ -46,6 +46,9 @@ def briefing_from_draft(draft: Optional[dict[str, Any]]) -> str:
         if value and value not in seen:
             seen.add(value)
             lines.append(template.format(value))
+    who = " ".join(str(on_behalf_of or "").split())
+    if who and lines:
+        lines.append(f"Calling on behalf of: {who}")
     return "\n".join(lines)[:BRIEFING_MAX_CHARS]
 
 

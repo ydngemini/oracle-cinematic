@@ -234,22 +234,28 @@ def test_both_engines_use_the_same_briefing_contract():
 
 
 def test_the_briefing_comes_from_every_approved_field_not_only_reason():
-    """34.3 review: a typed command, speed-to-lead and sales calls write
-    objective / property / opening / script, never `reason`."""
+    """34.3 review: a typed command writes objective / property, never `reason`;
+    openings and scripts in the agent's own voice are never passed."""
     import call_briefing
 
     typed = {"opening": "Hi Ana, this is Sam Lee from Lockwood Realty.", "objective": "Call Ana about 12 Elm St",
              "property_address": "12 Elm St, Dover DE", "agent_phone": "+13025550100",
              "script": "Hi Ana, this is Sam Lee from Lockwood Realty."}
-    briefing = call_briefing.briefing_from_draft(typed)
+    briefing = call_briefing.briefing_from_draft(typed, on_behalf_of="Sam Lee of Lockwood Realty")
     assert "Request: Call Ana about 12 Elm St" in briefing and "Property: 12 Elm St, Dover DE" in briefing
-    assert "Sam Lee" in briefing and briefing.count("Sam Lee") == 1, "a script equal to the opening is not repeated"
-    assert "+13025550100" not in briefing, "only fields that say why, what and who"
+    assert "Calling on behalf of: Sam Lee of Lockwood Realty" in briefing
+    assert "this is Sam Lee" not in briefing, "the AI never speaks as the agent"
+    assert "+13025550100" not in briefing
     assert call_briefing.briefing_from_draft({"reason": "She asked for a callback"}) == "She asked for a callback"
-    stl = call_briefing.briefing_from_draft({"script": "Hi, is this Ana? This is Sam — you just enquired."})
-    assert stl.startswith("Approved script: Hi, is this Ana?")
-    assert call_briefing.briefing_from_draft({}) == ""
+    assert call_briefing.briefing_from_draft({"script": "Hi, is this Ana? This is Sam."}, on_behalf_of="Sam") == ""
     assert len(call_briefing.briefing_from_draft({"reason": "x" * 2000})) == call_briefing.BRIEFING_MAX_CHARS
+
+
+def test_the_assistant_never_speaks_as_the_agent():
+    import call_briefing
+
+    rules = call_briefing.briefing_instructions({"briefing": "a showing"})
+    assert "never say you are the agent" in rules and "on their behalf" in rules
 
 
 def test_both_engines_say_they_cannot_book():
@@ -264,5 +270,5 @@ def test_the_plivo_call_is_placed_with_the_draft_briefing():
     import commands_api
 
     source = inspect.getsource(commands_api)
-    assert "briefing=briefing_from_draft(draft)" in source
+    assert "briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of)" in source
     assert 'briefing=str(draft.get("reason")' not in source

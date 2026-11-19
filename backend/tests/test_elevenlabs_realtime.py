@@ -308,7 +308,7 @@ def test_the_approved_call_carries_its_approved_fields_as_the_briefing():
 
     src = inspect.getsource(commands_api)
     at = src.index("await initialize_outbound_plivo_call_state(")
-    assert "briefing=briefing_from_draft(draft)" in src[at:at + 500]
+    assert "briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of)" in src[at:at + 500]
 
 
 # ── A spoken "stop" on an outbound call (L09-05, AC09.05) ───────────────────

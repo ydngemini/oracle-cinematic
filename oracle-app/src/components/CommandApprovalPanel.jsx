@@ -29,7 +29,12 @@ function commandLabel(command) {
 
 function commandSummary(command) {
   if (command.command_type === 'EMAIL') return command.draft?.content?.subject || 'Email draft';
-  if (command.command_type === 'CALL') return command.target?.phone || 'Call';
+  if (command.command_type === 'CALL') {
+    // What the voice assistant will be told, so the approver sees it (34.3).
+    const draft = command.draft?.content || {};
+    return [command.target?.phone, draft.reason || draft.objective, draft.property_address]
+      .filter(Boolean).join(' · ') || 'Call';
+  }
   return command.draft?.content?.event?.summary || command.draft?.content?.body || 'Draft ready for review';
 }
 
