@@ -108,3 +108,17 @@
 .contactBook input[readonly] { border-color: transparent; background: transparent; box-shadow: none; cursor: default; padding-left: 0; }
 .contactBook input[readonly]:focus-visible { border-color: var(--oracle-border-subtle); }
 .contactBook select:disabled { border-color: transparent; background: transparent; opacity: 1; cursor: default; }
+
+/* 33.3: what the list holds, and paging past the first page. */
+.listNote {
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+}
+
+.loadMore {
+  display: block;
+  margin: var(--space-3) auto 0;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-5);
+}
