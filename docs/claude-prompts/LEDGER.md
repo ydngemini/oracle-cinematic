@@ -1903,6 +1903,7 @@ blockers:
   - "A recovered call's task is assigned to its route's agent even if that agent has since been offboarded (a parked route keeps its agent)."
   - "Calls left 'pending' (the bridge never started: mark_inbound_streaming failed, a crash before streaming, a call refused at the realtime cap, a failed ai-unavailable finalize) are not recovered and not on component health: 'pending' is also the normal end state of calls the AI never took (forwarded, missed — 589 such rows locally), so a sweep cannot tell which owe a callback. Needs a distinct marker for 'the AI was due to take this call'."
   - "A retried finalize re-runs transcript cleaning, so a payment-card redaction event can be recorded up to three times."
+  - "The 15 s budget bounds the sleeps, not each attempt: in a full outage teardown can wait about two connection timeouts (~20 s) before the realtime slot is released. Review r2: APPROVE."
   - "Independent review r1 (REQUEST CHANGES), fixed: the sweep could overwrite a transcript the bridge saved meanwhile, the 2-hour rule could recover a live call, retries ran on any error and slowed teardown, a failing row could block the batch; recorded above: 'pending' calls."
   - "Not run against a real call; not deployed (C4.4)."
 audit_refs: [34.6]
