@@ -5081,6 +5081,26 @@ next_task: "30.7: operator-only checks required in production; 30.6 / 30.8."
 updated: 2026-11-18
 ```
 
+#### L19-18 A production go-live needs the operator-only checks: without the operator token it is BLOCKED unless a named waiver is recorded, and unreachable billing exceptions block a charging production (external audit 30.7)
+```yaml
+id: L19-18
+status: tests_pass
+env: local
+evidence_shas: [7eed35d]   # base; fix in the commit that adds this row
+files: [scripts/neoh-launch-readiness.py, backend/tests/test_launch_readiness.py, docs/first-brokerage-launch.md]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_operator_console at 7eed35d", result: "confirmed 30.7: with no NEOH_OPERATOR_TOKEN the operator checks (component health, MLS feeds, billing exceptions) were one WARN in production too, and an unreachable billing-exceptions endpoint only warned", date: 2026-11-18}
+  - {cmd: "after: test_launch_readiness 42 passed (production without the token BLOCKED, with --waive-operator-checks WARN carrying the waiver text, staging WARN; unreachable billing exceptions BLOCKED when charging, WARN when not; a healthy operator snapshot PASS with its response time)", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. Production: no operator token -> operator_console BLOCKED, or WARN with 'WAIVED: <who: why>' when --waive-operator-checks is given (recorded in the text and JSON report); billing exceptions unreachable -> BLOCKED when charging; MLS feeds stay a warning (MLS is not sold, D-2026-10-12-01). The component-health reason records the operator snapshot's response time and the release SHA the /version check read. Staging is unchanged (warnings)."
+blockers:
+  - "Not run against a deployed production (none exists; 30.1). The saved docs/launch-readiness/*.json snapshots predate this and still show the old warning."
+  - "Not deployed (C4.4)."
+audit_refs: [30.7]
+decision_refs: []
+next_task: "30.6: per-environment gate evidence; 30.8: a go-live storage acceptance gate."
+updated: 2026-11-18
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

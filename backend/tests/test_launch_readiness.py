@@ -155,14 +155,44 @@ def test_missing_doctl_blocks_instead_of_guessing():
 
 # ── A correct environment passes its hard requirements ─────────────────────
 
+def _operator_endpoints(world):
+    world.http["/api/admin/health/components"] = (
+        200, {}, json.dumps({"components": {"database": {"state": "HEALTHY"}, "workers": {"state": "HEALTHY"}}}).encode())
+    world.http["/api/admin/billing/exceptions"] = (200, {}, b'{"exceptions": []}')
+
+
 def test_a_correct_production_has_no_blockers(passing_gates):
-    a, c = audit(World(), gates_root=passing_gates)
+    w = World()
+    _operator_endpoints(w)
+    a, c = audit(w, gates_root=passing_gates, token="t")
     blocked = {i: x.reason for i, x in c.items() if x.status == lr.BLOCKED}
     assert blocked == {}
     # What it cannot see is a WARN, not a PASS.
     assert c["stripe_live_mode"].status == lr.WARN
-    assert c["operator_console"].status == lr.WARN
+    assert c["component_health"].status == lr.PASS and "answered in" in c["component_health"].reason
+    assert c["billing_exceptions"].status == lr.PASS
     assert lr.exit_code(a.checks) == 1
+
+
+def test_production_without_the_operator_checks_blocks_unless_waived(passing_gates):
+    """Audit 30.7: core health and billing exceptions are operator-only, so a
+    production go-live is not credited without them; a waiver is recorded."""
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["operator_console"].status == lr.BLOCKED
+    _, c = audit(World(), gates_root=passing_gates, operator_waiver="owner: first look before the token exists")
+    assert c["operator_console"].status == lr.WARN and "WAIVED: owner: first look" in c["operator_console"].reason
+    _, c = audit(World("staging"), gates_root=passing_gates)
+    assert c["operator_console"].status == lr.WARN
+
+
+def test_unreachable_billing_exceptions_block_a_charging_production(passing_gates):
+    w = World()
+    _operator_endpoints(w)
+    del w.http["/api/admin/billing/exceptions"]
+    _, c = audit(w, gates_root=passing_gates, token="t")
+    assert c["billing_exceptions"].status == lr.BLOCKED
+    _, c = audit(w, gates_root=passing_gates, token="t", charging=False)
+    assert c["billing_exceptions"].status == lr.WARN
 
 
 def test_a_correct_staging_has_no_blockers(passing_gates):
