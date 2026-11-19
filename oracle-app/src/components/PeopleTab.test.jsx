@@ -137,5 +137,27 @@ describe('PeopleTab contact book', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh contacts' }));
     expect(await screen.findByText('Zed New')).toBeTruthy();
   });
+
+  it('keeps a server-found contact on screen while a refresh re-runs the search', async () => {
+    let releaseRerun;
+    let searches = 0;
+    api.crmGet.mockImplementation((path) => {
+      if (path.includes('q=')) {
+        searches += 1;
+        if (searches === 1) return Promise.resolve({ contacts: [{ id: 'z', full_name: 'Zed 240' }] });
+        return new Promise((resolve) => { releaseRerun = () => resolve({ contacts: [{ id: 'z', full_name: 'Zed 240 edited' }] }); });
+      }
+      return Promise.resolve({ contacts: [{ id: 'x', full_name: 'Xavier' }] });
+    });
+    render(<PeopleTab />);
+    await screen.findByText('Xavier');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Zed' } });
+    await screen.findByText('Zed 240');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh contacts' }));
+    await waitFor(() => expect(releaseRerun).toBeTypeOf('function'));
+    expect(screen.getByText('Zed 240')).toBeTruthy();  // still there mid-refresh
+    releaseRerun();
+    expect(await screen.findByText('Zed 240 edited')).toBeTruthy();
+  });
 });
 

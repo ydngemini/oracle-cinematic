@@ -80,7 +80,7 @@ function matchesLocally(contact, needle) {
 /** Server-side search of the whole contact book, newest answer only.
  * `generation` changes on every refresh, so an edit or a Refresh re-runs it. */
 function useContactSearch(query, generation) {
-  const [found, setFound] = useState({ key: '', contacts: [], more: false, error: null });
+  const [found, setFound] = useState({ key: '', query: '', contacts: [], more: false, error: null });
   const latest = useRef(0);
   const trimmed = query.trim().slice(0, SEARCH_MAX_CHARS);
   const key = `${generation}:${trimmed}`;
@@ -92,26 +92,30 @@ function useContactSearch(query, generation) {
       crmGet(`/api/crm/contacts?q=${encodeURIComponent(trimmed)}&limit=${CONTACT_PAGE}`).then(
         (payload) => {
           if (latest.current !== request) return;  // a newer search is under way
-          setFound({ key, contacts: Array.isArray(payload?.contacts) ? payload.contacts : [],
+          setFound({ key, query: trimmed, contacts: Array.isArray(payload?.contacts) ? payload.contacts : [],
             more: Boolean(payload?.next_cursor), error: null });
         },
         (reason) => {
           if (latest.current !== request) return;
-          setFound({ key, contacts: [], more: false, error: reason });
+          setFound({ key, query: trimmed, contacts: [], more: false, error: reason });
         },
       );
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [key, trimmed]);
   const current = found.key === key && trimmed !== '';
-  return { results: current ? found.contacts : [], more: current && found.more, searched: current,
-    error: current ? found.error : null };
+  // While a refresh re-runs the same search, keep showing its last answer:
+  // a contact found only by the server must not vanish (and close its open
+  // panel) for the length of the request.
+  const sameQuery = trimmed !== '' && found.query === trimmed;
+  return { results: current || sameQuery ? found.contacts : [], more: (current || sameQuery) && found.more,
+    searched: current || sameQuery, error: current ? found.error : null };
 }
 
 function searchStatus(search, count, searching) {
   if (searching) return 'Searching all your contacts…';
   if (search.error) return `Full search unavailable; ${count} ${count === 1 ? 'match' : 'matches'} among loaded contacts.`;
-  if (search.more) return `First ${count} matches. Keep typing to narrow the search.`;
+  if (search.more) return `First ${search.results.length} matches. Keep typing to narrow the search.`;
   return `${count} ${count === 1 ? 'match' : 'matches'} across all your contacts.`;
 }
 

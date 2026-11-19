@@ -360,7 +360,7 @@ authz_checked: "No access-control change: both the search and the pages are the 
 blockers:
   - "The server search returns up to 100 matches with no 'more results' paging; the status line says so and asks to narrow the search."
   - "Browse pages are ordered by updated_at (newest first), so a not-yet-loaded contact updated between pages moves above the cursor and is missed by Load more until a refresh (no duplicates). A stable paging key is a backend change."
-  - "Independent review r1 (REQUEST CHANGES), fixed: search truncation claimed 'all', stale search rows after an edit, a refresh racing Load more, a failed page hiding the list, living-line requests per keystroke, long pastes, a noisy live region without a count; recorded above: paging by updated_at."
+  - "Independent review r1 (REQUEST CHANGES), fixed: search truncation claimed 'all', stale search rows after an edit, a refresh racing Load more, a failed page hiding the list, living-line requests per keystroke, long pastes, a noisy live region without a count; recorded above: paging by updated_at. Review r2: APPROVE; its follow-up applied (a refresh keeps showing the last search answer until the re-run answers, so a server-found contact and its open panel do not vanish; 'First N' counts server matches)."
   - "No true total: the count is what is loaded (the API has no count of all contacts)."
   - "Local bundle check: main already builds 6.6 KB over the budget on this machine while CI passes; this change adds about 2 KB. CI decides."
   - "Not deployed (C4.4)."
