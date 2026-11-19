@@ -93,8 +93,8 @@ def flag(name: str, default: bool = False) -> bool:
 # "web"/"worker" split matters only when the API scales horizontally (e.g.
 # DigitalOcean App Platform's web component). The voice, reconstruction and
 # video workers now queue in their own tables (claimed with SKIP LOCKED), but
-# their boot recovery sweeps, the GPU pod reaper, the video claim and the
-# disposition enforcer still assume ONE background process
+# their boot recovery sweeps (which also release the recorded GPU), the video
+# claim and the disposition enforcer still assume ONE background process
 # (docs/worker-background-work-inventory.md, audit 30.9). The periodic
 # scheduler and durable job queue (automation_jobs.py) ARE replica-safe
 # (idempotency-keyed enqueue, leased claims), but "web" excludes all background

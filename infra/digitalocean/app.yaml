@@ -23,10 +23,10 @@
 #                               durable job queue, and the voice/reconstruction/
 #                               video-studio workers. Pinned at
 #                               instance_count: 1 — their jobs queue in tables,
-#                               but the boot recovery sweeps, the GPU pod
-#                               reaper and the video claim assume one worker:
-#                               a second would requeue or reap the first one's
-#                               live jobs (docs/worker-background-work-inventory.md).
+#                               but the boot recovery sweeps and the video
+#                               claim assume one worker: a second would requeue
+#                               the first one's live jobs and release their
+#                               GPUs (docs/worker-background-work-inventory.md).
 #   web       (service)      — the Vite SPA, served by the frontend image's own
 #                               nginx (port 8080) and pinned by digest like
 #                               api/worker. A service, not a static_site: only

@@ -44,7 +44,7 @@ async def _scenario():
         await conn.execute(recon, tenant, "queued", 200)
         await conn.execute(recon, tenant, "running", 15)
         after = dict(await conn.fetchrow(ch._SQL_MEDIA_JOBS))
-        assert after["voice_hung"] == before["voice_hung"] + 1
+        assert after["voice_silent"] == before["voice_silent"] + 1
         assert after["recon_silent"] == before["recon_silent"] + 1
         assert after["voice_oldest_queued_s"] >= 20 * 60
         assert after["recon_oldest_queued_s"] >= 200 * 60

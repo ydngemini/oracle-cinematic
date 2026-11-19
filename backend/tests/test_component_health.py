@@ -423,7 +423,7 @@ def test_media_jobs_alert_on_a_backlog_or_a_job_that_stopped_moving():
     and reconstruction loops read their own tables."""
     import component_health as ch
 
-    calm = {"voice_oldest_queued_s": 60, "voice_hung": 0, "recon_oldest_queued_s": 1800, "recon_silent": 0}
+    calm = {"voice_oldest_queued_s": 60, "voice_silent": 0, "recon_oldest_queued_s": 1800, "recon_silent": 0}
     assert ch._media_jobs(calm, worker_live=True)["state"] == ch.HEALTHY
     assert ch._media_jobs({k: None for k in calm}, worker_live=True)["state"] == ch.HEALTHY
     voice_backlog = ch._media_jobs({**calm, "voice_oldest_queued_s": ch.VOICE_QUEUED_MAX_S + 1}, worker_live=True)
@@ -432,6 +432,6 @@ def test_media_jobs_alert_on_a_backlog_or_a_job_that_stopped_moving():
     # No live worker: the backlog is the `workers` alert's job, not a second page.
     assert ch._media_jobs({**calm, "recon_oldest_queued_s": ch.RECON_QUEUED_MAX_S + 1},
                           worker_live=False)["state"] == ch.HEALTHY
-    hung = ch._media_jobs({**calm, "voice_hung": 1, "recon_silent": 2}, worker_live=False)
+    hung = ch._media_jobs({**calm, "voice_silent": 1, "recon_silent": 2}, worker_live=False)
     assert hung["state"] == ch.DEGRADED and hung["detail"]["recon_silent"] == 2
     assert "media_jobs" in ch._DB_KEYS and ch.role_of("media_jobs") == "important"

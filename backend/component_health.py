@@ -110,22 +110,23 @@ _DB_KEYS: tuple[str, ...] = (
 )
 
 # Audit 30.9 thresholds. Voice: 2 worker loops, a walkthrough takes minutes;
-# a 'running' job has no lease, so one that hangs stays running until the
-# next restart. Reconstruction: 1 loop, a capture takes 15-60 min and a
-# running job heartbeats updated_at every RECON_HEARTBEAT_SECONDS (60 s).
+# reconstruction: 1 loop, a capture takes 15-60 min. A running job of either
+# kind bumps updated_at every 60 s (voice_intel / reconstruction_worker
+# HEARTBEAT_SECONDS), so 10 silent minutes means its worker loop stopped, not
+# that the work is long (a voice job waiting on the shared whisper lock keeps
+# beating). The intervals stay inside the SQL literals on purpose
+# (test_sql_string_literals_have_balanced_quotes).
 VOICE_QUEUED_MAX_S = 15 * 60
-VOICE_RUNNING_MAX = "30 minutes"
 RECON_QUEUED_MAX_S = 3 * 3600
-RECON_SILENT_MAX = "10 minutes"
 _SQL_MEDIA_JOBS = (
     "SELECT (SELECT EXTRACT(EPOCH FROM now() - min(created_at))::int FROM voice_walkthrough_jobs "
     "        WHERE status = 'queued') AS voice_oldest_queued_s, "
     "       (SELECT count(*) FROM voice_walkthrough_jobs WHERE status = 'running' "
-    "        AND updated_at < now() - interval '" + VOICE_RUNNING_MAX + "') AS voice_hung, "
+    "        AND updated_at < now() - interval '10 minutes') AS voice_silent, "
     "       (SELECT EXTRACT(EPOCH FROM now() - min(created_at))::int FROM reconstruction_jobs "
     "        WHERE status = 'queued') AS recon_oldest_queued_s, "
     "       (SELECT count(*) FROM reconstruction_jobs WHERE status = 'running' "
-    "        AND updated_at < now() - interval '" + RECON_SILENT_MAX + "') AS recon_silent")
+    "        AND updated_at < now() - interval '10 minutes') AS recon_silent")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -383,14 +384,14 @@ def _media_jobs(row: dict, *, worker_live: bool) -> dict:
     stopped moving counts either way."""
     voice_wait = int(row.get("voice_oldest_queued_s") or 0)
     recon_wait = int(row.get("recon_oldest_queued_s") or 0)
-    voice_hung, recon_silent = int(row.get("voice_hung") or 0), int(row.get("recon_silent") or 0)
-    detail = {"voice_oldest_queued_s": voice_wait, "voice_hung": voice_hung,
+    voice_silent, recon_silent = int(row.get("voice_silent") or 0), int(row.get("recon_silent") or 0)
+    detail = {"voice_oldest_queued_s": voice_wait, "voice_silent": voice_silent,
               "recon_oldest_queued_s": recon_wait, "recon_silent": recon_silent}
     problems = []
-    if voice_hung:
-        problems.append("voice walkthroughs stuck running (they resume only after a worker restart)")
+    if voice_silent:
+        problems.append("voice walkthroughs running with no heartbeat (their worker loop stopped)")
     if recon_silent:
-        problems.append("3D reconstructions running with no heartbeat")
+        problems.append("3D reconstructions running with no heartbeat (their worker loop stopped)")
     if worker_live and voice_wait > VOICE_QUEUED_MAX_S:
         problems.append("voice walkthroughs waiting too long")
     if worker_live and recon_wait > RECON_QUEUED_MAX_S:
