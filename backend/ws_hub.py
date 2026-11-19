@@ -133,11 +133,24 @@ async def deliver_local(tenant_id: str, payload: dict) -> int:
     return await _deliver_local(tenant_id, payload)
 
 
+_close_tasks: set = set()
+
+
 async def _close_quietly(ws: WebSocket) -> None:
+    # Not time-capped here: for a socket whose send buffer is full, the
+    # websockets library's own close_timeout (10 s) ends in fail_connection(),
+    # which drops the TCP connection and lets the /ws handler finish. Cutting
+    # it short left the connection half-closed (27.7 review).
     try:
-        await asyncio.wait_for(ws.close(code=1013), timeout=2)
+        await ws.close(code=1013)
     except Exception:  # noqa: BLE001 - it is already being dropped
         pass
+
+
+def _schedule_close(ws: WebSocket) -> None:
+    task = asyncio.create_task(_close_quietly(ws))
+    _close_tasks.add(task)
+    task.add_done_callback(_close_tasks.discard)
 
 
 async def _send_one(ws: WebSocket, text: str) -> bool:
@@ -147,7 +160,7 @@ async def _send_one(ws: WebSocket, text: str) -> bool:
     except asyncio.TimeoutError:
         _send_stats["timeouts"] += 1
         logger.warning("WebSocket send timed out after %.1fs; dropping the slow socket", SEND_TIMEOUT_SECONDS)
-        asyncio.create_task(_close_quietly(ws))
+        _schedule_close(ws)
         return False
     except Exception:  # noqa: BLE001 - socket died between snapshot and send
         _send_stats["failed"] += 1
@@ -265,17 +278,14 @@ async def _publish_scoped(
 ) -> None:
     if _pool is None or not _listener_started:
         return
-    envelope = json.dumps(
+    envelope = _dumps_envelope(
         {
             "origin": _instance_id,
             "tenant_id": group,
             "user_ids": user_ids,
             "mirror": mirror,
             "scoped_payload": payload,
-        },
-        separators=(",", ":"),
-        default=str,
-        ensure_ascii=False,
+        }
     )
     await _notify(envelope, group.split(":", 1)[0])
 
@@ -285,18 +295,27 @@ async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None)
     # still deserve the frame while ours is reconnecting.
     if _pool is None or not _listener_started:
         return
-    envelope = json.dumps(
+    envelope = _dumps_envelope(
         {
             "origin": _instance_id,
             "tenant_id": tenant_id,
             "user_id": user_id,
             "payload": payload,
-        },
-        separators=(",", ":"),
-        default=str,
-        ensure_ascii=False,
+        }
     )
     await _notify(envelope, tenant_id)
+
+
+def _dumps_envelope(obj: dict) -> str:
+    """UTF-8 JSON (about half the size of ASCII escapes for non-ASCII text),
+    falling back to ASCII escapes for text that is not valid UTF-8, such as a
+    lone surrogate (27.7 review): a broadcast must never raise for it."""
+    text = json.dumps(obj, separators=(",", ":"), default=str, ensure_ascii=False)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = json.dumps(obj, separators=(",", ":"), default=str)
+    return text
 
 
 def _split_envelope(envelope: str) -> Optional[list[str]]:

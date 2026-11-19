@@ -42,7 +42,8 @@ def test_a_stalled_socket_does_not_delay_the_others_and_is_dropped():
         ws_hub._sockets["t"] = {stalled, *healthy}
         loop = asyncio.get_running_loop()
         started = loop.time()
-        delivered = await ws_hub._send_group("t", {"type": "X"})
+        # Bounded so a regression fails fast instead of hanging the suite.
+        delivered = await asyncio.wait_for(ws_hub._send_group("t", {"type": "X"}), timeout=3)
         took = loop.time() - started
         await asyncio.sleep(0.05)  # let the close task run
         return stalled, healthy, delivered, took
@@ -144,3 +145,26 @@ def test_a_frame_too_large_even_in_parts_is_refused(monkeypatch, caplog):
     huge = "x" * (ws_hub._PART_CHARS * (ws_hub._MAX_PARTS + 1))
     asyncio.run(ws_hub._publish("t", {"text": huge}))
     assert sent == []
+
+
+def test_a_stalled_agent_socket_is_dropped_from_targeted_sends_too():
+    async def run():
+        stalled, healthy = _Ws(stall=True), _Ws()
+        ws_hub._user_sockets[("t", "a@x.test")] = {stalled}
+        ws_hub._user_sockets[("t", "b@x.test")] = {healthy}
+        n = await asyncio.wait_for(ws_hub._send_users("t", ["A@x.test", "b@x.test"], {"type": "Y"}), timeout=3)
+        await asyncio.sleep(0.05)
+        return stalled, healthy, n
+
+    stalled, healthy, n = asyncio.run(run())
+    assert n == 1 and healthy.frames == [{"type": "Y"}] and stalled.closed
+    assert ("t", "a@x.test") not in ws_hub._user_sockets
+
+
+def test_a_lone_surrogate_does_not_break_a_broadcast(monkeypatch):
+    """27.7 review: with UTF-8 envelopes, a lone surrogate would raise."""
+    sent: list[str] = []
+    monkeypatch.setattr(ws_hub, "_pool", _Pool(sent))
+    monkeypatch.setattr(ws_hub, "_listener_started", True)
+    asyncio.run(ws_hub._publish("t", {"text": json.loads('"\\ud83d broken"')}))
+    assert len(sent) == 1 and "\\ud83d" in sent[0]
