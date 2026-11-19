@@ -15,7 +15,10 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-def test_unfinalized_inbound_calls_are_recovered_once():
+def test_unfinalized_inbound_calls_are_recovered_once(monkeypatch):
+    # CI's live job sets no master key; a test key, like the other live tests.
+    if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY"):
+        monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "f" * 64)
     asyncio.run(_scenario())
 
 
