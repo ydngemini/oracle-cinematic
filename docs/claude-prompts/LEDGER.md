@@ -4378,6 +4378,27 @@ next_task: "29.6 (expired exports marked deleted without a verified delete); 29.
 updated: 2026-11-18
 ```
 
+#### L17-51 The operator session inventory reports each sign-in's own tenant and role, and says it is this server's recent sign-ins, not every open session (external audit 28.7)
+```yaml
+id: L17-51
+status: tests_pass
+env: local
+evidence_shas: [4c78ad6]   # base; fix in the commit that adds this row
+files: [backend/auth.py, backend/admin_ops.py, oracle-app/src/components/AdminOpsTab.jsx, backend/tests/test_session_registry_capacity.py, backend/tests/test_password_hashing.py]
+tests_run:
+  - {cmd: "read auth._session_registry / active_sessions and admin_ops at 4c78ad6", result: "confirmed 28.7: one entry per agent_id per Python process; tenant and role resolved through DEMO_TENANCY with fallback (agent_id, 'agent'), so a database-backed broker owner was listed as an 'agent' of a tenant named after their email; the console showed 'Sessions' and 'N online' as if fleet-wide", date: 2026-11-18}
+  - {cmd: "the new tests against 4c78ad6's auth.py + admin_ops.py", result: "red: 3 of 3", date: 2026-11-18}
+  - {cmd: "after: registry, admin_ops and auth unit tests 309 passed; vitest AdminOpsTab 2 passed; eslint clean", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change; the registry was and is never used for access control (now stated at its definition). Each sign-in path (login, signup, policy/password re-mint, invitation) records the tenant and role it issued the token for; an unknown role is reported as unknown, never guessed. /overview, /users and /system-health carry sessions_scope ('recent sign-ins on this server only ...'); the console labels read 'Recent sign-ins (this server)' and 'signed in recently here' / 'no recent sign-in here'."
+blockers:
+  - "Not done (the audit's alternative): a shared session_id registry with last-seen and revocation status across replicas. The inventory stays per-replica telemetry, now labelled as such."
+  - "Not deployed (C4.4)."
+audit_refs: [28.7]
+decision_refs: []
+next_task: "28.4: the actor re-proves password and second factor before resetting another member's two-step sign-in."
+updated: 2026-11-18
+```
+
 ### L18
 Billing, seats and analytics.
 

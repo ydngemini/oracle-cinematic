@@ -690,7 +690,14 @@ def _send_reset_email(to_email: str, link: str) -> None:
 
 MAX_SESSIONS = int(os.getenv("ORACLE_SESSION_REGISTRY_MAX", "10000"))
 
+# Recent sign-ins on THIS process only (audit 28.7): one entry per account,
+# not per device, not shared across replicas, and not linked to revocation.
+# Telemetry for the operator console; never use it for access control.
 _session_registry: dict[str, dict] = {}
+SESSION_INVENTORY_SCOPE = (
+    "Recent sign-ins on this server only: other replicas, other devices and "
+    "sign-outs are not reflected. Not a list of every open session."
+)
 
 
 def _prune_expired_sessions() -> None:
@@ -707,7 +714,7 @@ def _prune_expired_sessions() -> None:
         log.debug("Pruned %d expired session(s) from registry.", len(expired))
 
 
-def _register_session(agent_id: str) -> None:
+def _register_session(agent_id: str, tenant_id: Optional[str] = None, role: Optional[str] = None) -> None:
     _prune_expired_sessions()
     # Re-registering moves an agent to the newest position (dicts keep
     # insertion order), so eviction below always drops the stalest sign-in.
@@ -716,21 +723,28 @@ def _register_session(agent_id: str) -> None:
         oldest = next(iter(_session_registry))
         del _session_registry[oldest]
         log.info("Session registry full (%d) — evicted the oldest entry.", MAX_SESSIONS)
+    # The tenant and role the sign-in was issued for (audit 28.7: they used
+    # to be guessed from DEMO_TENANCY, so a broker owner read as an agent of
+    # a tenant named after their email).
     _session_registry[agent_id] = {
         "issued_at": time.time(),
         "agent_id": agent_id,
+        "tenant_id": tenant_id,
+        "role": role,
     }
     log.debug("Session registered for agent_id=%r.", actor_ref(agent_id))
 
 
 def active_sessions() -> list[dict]:
-    """Sanitized snapshot of the live session registry for the platform-admin
-    ops surface (admin_ops.py). Tokens are never stored in the registry, so
-    there is nothing secret to leak here — just who is logged in and when."""
+    """This process's recent sign-ins for the platform-admin ops surface
+    (admin_ops.py); see SESSION_INVENTORY_SCOPE for what it is not. Tokens
+    are never stored in the registry, so there is nothing secret to leak."""
     _prune_expired_sessions()
     snapshot = []
     for agent_id, entry in _session_registry.items():
-        tenant_id, role = DEMO_TENANCY.get(agent_id, (agent_id, "agent"))
+        tenant_id, role = entry.get("tenant_id"), entry.get("role")
+        if tenant_id is None and role is None and agent_id in DEMO_TENANCY:
+            tenant_id, role = DEMO_TENANCY[agent_id]
         snapshot.append(
             {
                 "agent_id": agent_id,
@@ -1209,7 +1223,7 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         mfa_enrolment=mfa_enrolment,
     )
 
-    _register_session(agent_identity)
+    _register_session(agent_identity, tenant_id, role)
     log.info("Successful login for agent_id=%r, tenant_id=%r.", actor_ref(agent_identity), tenant_id)
     if role == "platform_admin":
         security_alerts.privileged_sign_in(agent_identity, client, role)
@@ -1291,7 +1305,7 @@ async def register(body: RegisterRequest, response: Response, request: Request =
         mfa_enrolment=True,
     )
     _set_session_cookie(response, token)
-    _register_session(email)
+    _register_session(email, tenant_id, "broker_owner")
     log.info("New signup: user_id=%s tenant_id=%r", new_user["id"] if new_user else None, tenant_id)
     _alert_new_owner(email, tenant_id, request, via="self-serve signup (new brokerage)")
     return LoginResponse(
@@ -1478,7 +1492,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         session_epoch=int(row["session_epoch"]),
         mfa_enrolment=mfa_enrolment,
     )
-    _register_session(current_agent_id)
+    _register_session(current_agent_id, tenant_id, role)
     _set_session_cookie(response, token)
     log.info("Password reset for agent_id=%r", actor_ref(current_agent_id))
     return LoginResponse(
@@ -1796,7 +1810,7 @@ async def accept_invite(body: AcceptInviteRequest, response: Response, request: 
         user_id=str(user["id"]), mfa_enrolment=mfa_enrolment,
     )
     _set_session_cookie(response, token)
-    _register_session(email)
+    _register_session(email, tenant_id, invited_role)
     log.info("Invitation accepted: user_id=%s tenant_id=%r", user["id"], tenant_id)
     if invited_role == "broker_owner":
         _alert_new_owner(email, tenant_id, request, via="owner invitation accepted")

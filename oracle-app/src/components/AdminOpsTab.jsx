@@ -311,7 +311,7 @@ function SystemStrip({ data }) {
       </span>
       <SysItem label="Uptime" value={fmtUptime(data?.uptime_seconds)} />
       <SysItem label="DB Conn" value={fmtInt.format(num(db.connections))} />
-      <SysItem label="Sessions" value={fmtInt.format(num(data?.active_sessions))} />
+      <SysItem label="Recent sign-ins (this server)" value={fmtInt.format(num(data?.active_sessions))} />
       <SysItem label="Watchers" value={fmtInt.format(num(data?.firehose_watchers))} />
     </div>
   );
@@ -455,7 +455,7 @@ function UsersPanel({ slot, onRetry }) {
   return (
     <Section
       label="Users"
-      aside={onlineCount !== null ? <span className={styles.asideCount}>{onlineCount} online</span> : null}
+      aside={onlineCount !== null ? <span className={styles.asideCount} title={slot?.data?.sessions_scope || undefined}>{onlineCount} signed in recently here</span> : null}
     >
       <Slot slot={slot} onRetry={onRetry} skelHeights={[52, 52, 52]}>
         {(data) => {
@@ -485,7 +485,7 @@ function UsersPanel({ slot, onRetry }) {
                     {u.has_profile ? GLYPHS.check : '·'}
                   </span>
                   <span className={styles.rowWhen}>
-                    {u.online ? `exp ${relTime(u.session_expires_at) ?? '—'}` : 'offline'}
+                    {u.online ? `signed in here · exp ${relTime(u.session_expires_at) ?? '—'}` : 'no recent sign-in here'}
                   </span>
                 </li>
               ))}
