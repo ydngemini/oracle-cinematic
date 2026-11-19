@@ -243,7 +243,8 @@ def _waiver_well_formed(text: str) -> bool:
 
 def _gate_state(gate: dict, env: str) -> tuple:
     """(status, evidence) of an owner gate for one environment: from
-    status_by_env.<env> when the gate records it, else the gate's own."""
+    status_by_env.<env> when the gate records it (a missing entry is open),
+    else the gate's own."""
     per = gate.get("status_by_env")
     if isinstance(per, dict):
         entry = per.get(env) if isinstance(per.get(env), dict) else {}
@@ -883,6 +884,8 @@ class Audit:
         owner = self.root / "docs" / "launch-readiness" / "owner-gates.json"
         data = _json(owner.read_text(encoding="utf-8")) if owner.exists() else None
         cluster = self.expected["clusters"].get("neoh-postgres") or ""
+        others = [c for env in ("production", "staging") if env != self.env
+                  for c in [load_expected(env)["clusters"].get("neoh-postgres")] if c]
         for g in (data or {}).get("gates") or []:
             envs = g.get("environments") or ["production", "staging"]
             if self.env not in envs:
@@ -890,14 +893,23 @@ class Audit:
             status, evidence = _gate_state(g, self.env)
             done = status == "done"
             reason = ("done: " if done else "open: ") + str(g.get("how_to_close", ""))
-            # Evidence is per environment (audit 30.6): a gate that covers
-            # several environments is credited here only when its evidence for
-            # this one names this environment's database cluster. A staging
-            # role proof cannot authorize production deletion safety.
-            if done and len(envs) > 1 and not _names_cluster(evidence, cluster):
-                done = False
-                reason = (f"open for {self.env}: the evidence does not name {cluster or 'this environment'} "
-                          f"(record it under status_by_env.{self.env}) — " + str(g.get("how_to_close", "")))
+            # A gate about one environment's own database (evidence_scope
+            # "environment", audit 30.6) is closed per environment: only its
+            # status_by_env.<env> counts, and that evidence must name this
+            # environment's cluster and no other's. A staging role proof
+            # cannot authorize production deletion safety. This checks what
+            # the owner recorded, not the cluster itself.
+            if g.get("evidence_scope") == "environment" and done:
+                problem = None
+                if not isinstance(g.get("status_by_env"), dict):
+                    problem = "record it under status_by_env"
+                elif not _names_cluster(evidence, cluster):
+                    problem = f"the evidence does not name {cluster or 'this environment'}"
+                elif any(_names_cluster(evidence, other) for other in others):
+                    problem = "the evidence names another environment's cluster"
+                if problem:
+                    done = False
+                    reason = f"open for {self.env}: {problem} — " + str(g.get("how_to_close", ""))
             self.add(f"gate:{g.get('id')}", g.get("area", "owner"), g.get("title", g.get("id")), done,
                      reason, blocking=g.get("class") == "blocker")
 
