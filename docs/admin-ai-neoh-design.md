@@ -39,7 +39,7 @@ Column "Today": **exists** = the code exists in source (not a claim that it is e
 | Access-denial bursts and anomalies | `audit_middleware.py:145-147`, `:223` `_record_anomaly_safe`; `admin_ops.py:729` `/anomalies` | exists | Recorded, not pushed to a person (annex A.5.25 gap #6) |
 | Audit chain integrity and audit loss | `audit_ledger.py:746` `verify_chain_segment`; `:159` `_alert_audit_loss`; task `periodic.py:1104-1110` | partial | The verify task is periodic, so it does not run on staging (§3.2) |
 | Platform-admin reads of brokerage data | `audit_middleware.py:151-221` (L17-17) | exists | Feeds the SoD evidence |
-| Fleet counts, sessions, users online | `admin_ops.py:234` `/overview`, `:395` `/users`, `:752` `/system` | exists | `/users` returns identities, so the digest uses counts only |
+| Fleet counts, sessions, users online | `admin_ops.py` `/overview`, `/users`, `/system` | exists | `/users` returns identities, so the digest uses counts only. "Sessions" and "online" are recent sign-ins on the replica that answered, not fleet-wide open sessions (`sessions_scope`, audit 28.7, L17-51) |
 | Per-replica load: sockets, pool, asyncio tasks, ambient LLM calls | `admin_ops.py:98` `/runtime-load` | partial | In-process, one replica per answer; nothing aggregates across replicas |
 | Per-brokerage state and needs-action | `operator_api.py:510` `/brokerages`, `:630` `/diagnostics` | exists | Content-free by construction (`operator_api.py:20-25`) |
 | Billing exceptions: no subscription, payment issue, cancelled, webhook refusals, metering backlog | `operator_api.py:1136` `/billing/exceptions`; `admin_ops.py:349` `/billing-summary` | exists | Read only. A refund or plan change is always R1 |
