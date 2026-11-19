@@ -205,3 +205,16 @@ def test_leftover_probe_objects_older_than_an_hour_are_swept(monkeypatch):
     store[old] = store[fresh] = b"x"
     object_storage.round_trip()
     assert old not in store and fresh in store
+
+
+def test_an_azure_blob_url_lists_its_container_for_the_listing_check(monkeypatch):
+    import object_storage
+
+    seen = []
+    _fake_s3(monkeypatch, lambda url: seen.append(url) or 404)
+    monkeypatch.setattr(object_storage, "_check_backend", lambda: "azure-blob")
+    monkeypatch.setattr(object_storage, "signed_url",
+                        lambda key, expires_seconds=60: f"https://acct.blob.core.windows.net/media/{key}?sv=x&sig=y")
+    result = object_storage.round_trip()
+    assert result["ok"] is True  # Azure answers a private container with 404
+    assert seen[1] == "https://acct.blob.core.windows.net/media?restype=container&comp=list"
