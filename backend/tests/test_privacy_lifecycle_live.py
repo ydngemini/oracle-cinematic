@@ -17,6 +17,7 @@ touched. Providers (Twilio, Google, Stripe) are fakes that record calls.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -42,6 +43,7 @@ def test_full_lifecycle_against_real_postgres(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(object_storage, "BACKEND", "local")
     monkeypatch.setattr(object_storage, "MEDIA_ROOT", tmp_path)
+    monkeypatch.setenv("ORACLE_STORAGE_BACKEND", "local")  # the vault reads through object storage
     asyncio.run(_scenario(monkeypatch, tmp_path))
     events = [json.loads(r.getMessage())["event"] for r in caplog.records if r.name == "oracle.privacy.events"]
     for expected in ("offboarding.completed", "export.requested", "export.completed",
@@ -150,6 +152,16 @@ async def _scenario(monkeypatch, media_root):
         assert not decision.allowed and "opt-out" in " ".join(decision.blockers).lower()
 
         # ── 4. Export ─────────────────────────────────────────────────────
+        # Without the master key the export refuses before writing anything,
+        # instead of a "succeeded" archive missing every sealed column (29.5).
+        monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY")
+        refused_export = await privacy_export.request_export(octx)
+        with pytest.raises(privacy_export.ExportIncomplete):
+            await privacy_export._export_job({"operation_id": refused_export["operation_id"]}, None)
+        row = await admin.fetchrow("SELECT state, error, artifact_key FROM privacy_operations WHERE id=$1",
+                                   refused_export["operation_id"])
+        assert (row["state"], row["error"], row["artifact_key"]) == ("failed", "export failed: master_key_missing", None)
+        monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
         export = await privacy_export.request_export(octx)
         built = await privacy_export.build_export(export["operation_id"])
         assert built["state"] == "succeeded"
@@ -162,10 +174,26 @@ async def _scenario(monkeypatch, media_root):
         assert sentinel in blob
         assert "password_hash" not in blob and "scrypt$" not in blob
         assert f"k1-{sentinel}" in blob                     # encrypted contact decrypted into the export
+        assert f"lead-owner-{sentinel}" in blob             # a lead's sealed payload (29.5)
+        assert f"extracted {sentinel}" in blob and ids["attachment_b64"] in blob  # attachment text + bytes
+        assert ids["audio_b64"] in blob and f"contract text {sentinel}" in blob
+        assert f"documents/{ids['contract_key']}" in names  # the vault PDF erasure would delete
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["files"]["tables/clients.jsonl"]["rows"] == 1
         assert "users" in manifest["omitted_columns"] and "password_hash" in manifest["omitted_columns"]["users"]
-        assert manifest["media"]["included"] == 1
+        assert manifest["completeness"] == "complete" and built["completeness"] == "complete"
+        assert manifest["media"]["included"] == 2 and manifest["media"]["documents"] == 1
+
+        # A sealed value this key cannot open stops the export and names the
+        # table, instead of a retry loop on an anonymous error (29.5 review).
+        await admin.execute("UPDATE leads SET encrypted_payload = pgp_sym_encrypt('x', 'not-this-tenants-key') "
+                            "WHERE id=$1", ids["lead"])
+        broken = await privacy_export.request_export(octx)
+        with pytest.raises(privacy_export.ExportIncomplete, match="undecryptable: leads: encrypted_payload"):
+            await privacy_export._export_job({"operation_id": broken["operation_id"]}, None)
+        assert await admin.fetchval("SELECT error FROM privacy_operations WHERE id=$1",
+                                    broken["operation_id"]) == "export failed: undecryptable"
+        await admin.execute("UPDATE leads SET encrypted_payload = NULL WHERE id=$1", ids["lead"])
         # The other tenant's sentinel never appears.
         other = await admin.fetchval("SELECT full_name FROM clients WHERE tenant_id=$1 LIMIT 1", U)
         assert other not in blob
@@ -199,7 +227,8 @@ async def _scenario(monkeypatch, media_root):
         # dry run before closing: counts only, nothing changes
         dry = await pl.erasure_preview(T)
         assert dry["highlights"]["clients"] == 1 and dry["highlights"]["users"] == 3
-        assert dry["stored_objects"] == 1 and dry["retained_after_erasure"]["subscriptions"] == 1
+        # the photo and the contract PDF (vault) the export also carried
+        assert dry["stored_objects"] == 2 and dry["retained_after_erasure"]["subscriptions"] == 1
         assert sentinel not in json.dumps(dry)
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE tenant_id=$1", T) == 1
         await pl.request_closure(octx, confirm_name=f"Brokerage {sentinel}", reason="closing for good")
@@ -409,6 +438,32 @@ async def _seed(admin, T, U, s, owner, agent_a, agent_b, media_root) -> dict:
         await admin.execute(
             "INSERT INTO audit_anomaly_alerts (tenant_id, fingerprint, severity, anomaly_type, evidence, actor_id) "
             "VALUES ($1, repeat('a',64), 'low', 'test', '{}'::jsonb, $2)", T, agent_a)
+        # Sealed columns no export used to carry (audit 29.5): a lead's sealed
+        # contact blob, and a private attachment's bytes and extracted text.
+        await admin.execute("UPDATE leads SET encrypted_payload = pgp_sym_encrypt($2, $3) WHERE id=$1",
+                            ids["lead"], json.dumps({"owner_name": f"lead-owner-{s}"}), key_t)
+        attachment = f"%PDF attachment {s}".encode()
+        await admin.execute(
+            "INSERT INTO ai_record_attachments (tenant_id, owner_agent_id, record_type, record_id, filename, media_type, "
+            "byte_size, sha256, bytes_ciphertext, extracted_text_ciphertext, scan_status, created_by) "
+            "VALUES ($1,$2,'client',$3,'deed.pdf','application/pdf',$4,repeat('b',64), "
+            "pgp_sym_encrypt_bytea($5, $7), pgp_sym_encrypt($6, $7), 'clean', $2)",
+            T, agent_a, ids["c1"], len(attachment), attachment, f"extracted {s}", key_t)
+        ids["attachment_b64"] = base64.b64encode(attachment).decode()
+        # A contract PDF in the vault and a recorded walkthrough: the export
+        # carries the file erasure would delete, and the audio (29.5 review).
+        ids["contract_key"] = f"tenants/{T}/contracts/{ids['c1']}/doc-{s}.pdf"
+        (media_root / ids["contract_key"]).parent.mkdir(parents=True, exist_ok=True)
+        (media_root / ids["contract_key"]).write_bytes(b"%PDF-1.7 contract " + s.encode())
+        await admin.execute(
+            "INSERT INTO contract_documents (tenant_id, document_type, template_key, template_version, input_hash, "
+            "content_ciphertext, created_by, s3_key, lead_id) VALUES ($1,'seller_purchase','tx-resale','1',repeat('c',64), "
+            "pgp_sym_encrypt($2,$3),$4,$5,$6)", T, f"contract text {s}", key_t, agent_a, ids["contract_key"], ids["lead"])
+        audio = f"RIFF walkthrough {s}".encode()
+        await admin.execute(
+            "INSERT INTO voice_walkthrough_jobs (tenant_id, lead_id, created_by, original_filename, suffix, audio_bytes, audio) "
+            "VALUES ($1,$2,$3,'walk.wav','.wav',$4,$5)", T, ids["lead"], owner, len(audio), audio)  # owner: agent_a is offboarded
+        ids["audio_b64"] = base64.b64encode(audio).decode()
     return ids
 
 
