@@ -91,14 +91,14 @@ def flag(name: str, default: bool = False) -> bool:
 # deployment keeps its current behaviour with it unset.
 #
 # "web"/"worker" split matters only when the API scales horizontally (e.g.
-# DigitalOcean App Platform's web component). voice_intel.py and
-# reconstruction_worker.py hold their job queues in an in-process
-# asyncio.Queue with no cross-replica coordination — a job submitted to one
-# web replica is invisible to another. The periodic scheduler and durable job
-# queue (automation_jobs.py) ARE already replica-safe (idempotency-keyed
-# enqueue, `FOR UPDATE SKIP LOCKED` claim), but there is no reason to run
-# background work on every horizontally-scaled web replica either, so "web"
-# excludes all of it and "worker" runs it on a single pinned instance instead.
+# DigitalOcean App Platform's web component). The voice, reconstruction and
+# video workers now queue in their own tables (claimed with SKIP LOCKED), but
+# their boot recovery sweeps, the GPU pod reaper, the video claim and the
+# disposition enforcer still assume ONE background process
+# (docs/worker-background-work-inventory.md, audit 30.9). The periodic
+# scheduler and durable job queue (automation_jobs.py) ARE replica-safe
+# (idempotency-keyed enqueue, leased claims), but "web" excludes all background
+# work and "worker" runs it on a single pinned instance.
 PROCESS_ROLE: str = (os.environ.get("ORACLE_PROCESS_ROLE") or "all").strip().lower()
 if PROCESS_ROLE not in ("all", "web", "worker"):
     PROCESS_ROLE = "all"

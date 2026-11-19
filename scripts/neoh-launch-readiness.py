@@ -440,8 +440,10 @@ class Audit:
                  f"cross-replica fan-out exercised)")
         w_n = int((comps.get("worker") or {}).get("instance_count") or 0) if "worker" in comps else 0
         self.add("worker_count", "platform", "Exactly one worker", w_n == 1,
-                 f"worker instance_count {w_n}; must be exactly 1 (voice/reconstruction queues are "
-                 f"in-process — a second worker silently loses work; zero runs no background work)")
+                 f"worker instance_count {w_n}; must be exactly 1 (the voice/reconstruction boot sweeps, "
+                 f"GPU pod reaper and video claim assume one worker: a second would requeue or reap "
+                 f"the first one's live jobs — docs/worker-background-work-inventory.md; zero runs no "
+                 f"background work)")
         drift = []
         for n, (cnt, size) in self.expected["sizes"].items():
             c = comps.get(n)

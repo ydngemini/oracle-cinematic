@@ -5318,6 +5318,28 @@ next_task: "27.6 / 27.7 (realtime fan-out size and slow writers)."
 updated: 2026-11-19
 ```
 
+#### L19-22 The single worker's background work is inventoried, and its voice and 3D job tables page when work stops moving (external audit 30.9)
+```yaml
+id: L19-22
+status: tests_pass
+env: local
+evidence_shas: [5bf2831]   # base; fix in the commit that adds this row
+files: [docs/worker-background-work-inventory.md, backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_media_jobs_health_live.py, backend/config.py, backend/voice_intel.py, infra/digitalocean/app.yaml, scripts/neoh-launch-readiness.py, docs/runbooks/README.md]
+tests_run:
+  - {cmd: "inventory of every process-local work mechanism at 5bf2831 (voice_intel, reconstruction_worker, video_studio, disposition_enforcer, security_alerts, audit_middleware, llm_gateway, ops_alerts, ws_hub, voice_opt_out), spot-checked at the cited lines", result: "no work is held only in memory any more: voice, reconstruction and video queue in their own tables before the wake event. What still requires one worker: boot recovery sweeps with no lease (voice, reconstruction), the GPU pod reaper (pod age only), the video claim (a queued row is not moved out of 'queued'), a per-process video semaphore, an unlocked hourly disposition enforcer. The comments in app.yaml, config.py, voice_intel.py and the worker_count readiness message still described in-process asyncio queues (corrected). job_queue watched automation_jobs only: a dead voice/3D loop or a voice job hung 'running' (no lease) was invisible", date: 2026-11-19}
+  - {cmd: "test_media_jobs_alert_on_a_backlog_or_a_job_that_stopped_moving (unit) + test_media_jobs_health_live (real PostgreSQL, rolled back) + test_messaging_hardening_live (runs every component query)", result: "pass: a voice job queued 20 min and a reconstruction queued 200 min are a backlog while a worker is alive (not a second page when none is); a voice job running 45 min and a reconstruction silent 15 min count either way", date: 2026-11-19}
+  - {cmd: "test_launch_readiness + test_component_health + test_rendered_spec_boots + spec/deploy wiring tests", result: "pass", date: 2026-11-19}
+authz_checked: "No access change. media_jobs reads counts and ages through the existing platform component-health context; it reports numbers, never ids. app.yaml changes are comments only."
+blockers:
+  - "Not done (the audit's migration work, ordered in docs/worker-background-work-inventory.md): leases for voice claims and the reconstruction orphan sweep/reaper, an atomic leased video claim with an attempts cap, a lock for the disposition enforcer, idempotent voice notes, and a SIGKILL rehearsal during an active walkthrough and reconstruction. Until then the worker stays at exactly one (launch check worker_count)."
+  - "Thresholds are judgment, not measurement: voice queued 15 min / running 30 min, reconstruction queued 3 h / silent 10 min (heartbeat 60 s)."
+  - "Not deployed (C4.4)."
+audit_refs: [30.9]
+decision_refs: []
+next_task: "Owner: the lease work above before any second worker; 30.10 (staging capacity run) needs the DigitalOcean token and owner thresholds."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

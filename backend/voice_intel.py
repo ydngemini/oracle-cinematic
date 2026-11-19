@@ -3,9 +3,10 @@ Voice Intelligence — field walkthrough audio → transcript → structured dos
 
 Flow:
   mobile POST /api/voice/log-walkthrough/{lead_id}      → 202 immediately
-    → audio staged to local disk (uuid filename, extension whitelist, size cap)
-    → job on an in-process asyncio.Queue (no external broker; ws_hub has the
-      same single-process note — Redis is the seam if we ever scale out)
+    → audio and job stored in the voice_walkthrough_jobs row (migration 0114;
+      extension whitelist, size cap, per-tenant queue cap); the worker claims
+      it with FOR UPDATE SKIP LOCKED. Single-worker assumption: see
+      docs/worker-background-work-inventory.md (audit 30.9).
     → worker: faster-whisper transcription (lazy import, runs in a thread)
         → Bedrock extraction via the existing ml_forge client
         → interaction_logs INSERT through tenant_tx (RLS live, append-only —

@@ -12,7 +12,7 @@
 #   api       (service)      — the FastAPI backend. Horizontally scalable:
 #                               ORACLE_PROCESS_ROLE=web means it never starts
 #                               the periodic scheduler or any of the
-#                               replica-unsafe in-process job queues
+#                               single-worker background loops
 #                               (voice_intel.py, reconstruction_worker.py).
 #                               Cross-replica WebSocket fan-out rides Postgres
 #                               LISTEN/NOTIFY, not Redis, so this needs no
@@ -21,11 +21,12 @@
 #                               Runs the periodic scheduler (MLS/Bridge sync,
 #                               mission ticks, outcome attribution, etc.), the
 #                               durable job queue, and the voice/reconstruction/
-#                               video-studio in-process workers. Pinned at
-#                               instance_count: 1 — those in-process queues
-#                               have no cross-replica coordination, so a
-#                               second worker instance would silently miss
-#                               half of whatever it's racing the first one for.
+#                               video-studio workers. Pinned at
+#                               instance_count: 1 — their jobs queue in tables,
+#                               but the boot recovery sweeps, the GPU pod
+#                               reaper and the video claim assume one worker:
+#                               a second would requeue or reap the first one's
+#                               live jobs (docs/worker-background-work-inventory.md).
 #   web       (service)      — the Vite SPA, served by the frontend image's own
 #                               nginx (port 8080) and pinned by digest like
 #                               api/worker. A service, not a static_site: only
