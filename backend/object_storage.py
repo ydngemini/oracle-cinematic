@@ -438,6 +438,115 @@ def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     )
 
 
+ROUND_TRIP_PREFIX = "health/round-trip/"
+_ROUND_TRIP_MAX_AGE_SECONDS = 3600
+# What an anonymous request to a private bucket answers. S3 / Spaces: 401/403.
+# Azure blob: 404 ResourceNotFound or 409 PublicAccessNotPermitted. Anything
+# else (5xx, 400, a redirect) proves nothing, and fails the gate (30.8 review).
+_REFUSED_ANONYMOUS = {"s3": {401, 403}, "azure-blob": {401, 403, 404, 409}}
+
+
+def _anonymous_get_status(url: str) -> Optional[int]:
+    """HTTP status of an unsigned GET of `url`, or None when unreachable."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=8) as response:  # nosec B310 - our own bucket URL, scheme checked
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:  # noqa: BLE001 - unreachable proves nothing either way
+        return None
+
+
+def _refused_anonymously(backend: str, url: str) -> Optional[bool]:
+    """True when an unsigned GET of `url` is refused, False when it is served
+    (200), None when the answer proves neither (5xx, redirect, unreachable)."""
+    if not url.startswith("https://"):
+        return None
+    code = _anonymous_get_status(url)
+    if code == 200:
+        return False
+    return True if code in _REFUSED_ANONYMOUS.get(backend, set()) else None
+
+
+def _definitely_absent(exc: BaseException) -> bool:
+    if isinstance(exc, FileNotFoundError) or _s3_not_found(exc):
+        return True
+    return type(exc).__name__ in ("ResourceNotFoundError", "NoSuchKey")
+
+
+def _sweep_round_trip_leftovers(now: float) -> None:
+    """Probe objects a killed process or a timed-out call left behind."""
+    for key in list_prefix(ROUND_TRIP_PREFIX, limit=200):
+        stamp = key[len(ROUND_TRIP_PREFIX):].split("-", 1)[0]
+        if stamp.isdigit() and now - int(stamp) > _ROUND_TRIP_MAX_AGE_SECONDS:
+            try:
+                delete_object(key)
+            except Exception:  # noqa: BLE001 - tried again on the next probe
+                pass
+
+
+def round_trip() -> dict:
+    """Prove the storage a first brokerage will use works end to end with the
+    app's own credentials (audit 30.8): write a temporary private object,
+    read it back byte for byte, check that neither it nor a listing of the
+    bucket is served anonymously, delete it, and check it is gone. The
+    release smoke test's probe answers "does it respond"; a go-live needs
+    "does it store, return, keep private and delete". Never raises; returns
+    no key, bucket or endpoint."""
+    import secrets as _secrets
+    import time as _time
+
+    started = _time.monotonic()
+    steps: dict[str, Any] = {"put": False, "get": False, "match": False, "private": None,
+                             "listing_private": None, "delete": False, "absent": False}
+    now = int(_time.time())
+    key = f"{ROUND_TRIP_PREFIX}{now}-{_secrets.token_hex(12)}.bin"
+    payload = _secrets.token_bytes(64)
+    error = None
+    try:
+        backend = _check_backend()
+        try:
+            _sweep_round_trip_leftovers(now)
+        except Exception:  # noqa: BLE001 - a sweep problem is not the probe's verdict
+            pass
+        put_bytes(key, payload, "application/octet-stream")
+        steps["put"] = True
+        data = get_bytes(key)
+        steps["get"] = True
+        steps["match"] = data == payload
+        url = signed_url(key, expires_seconds=60)
+        if url is None:
+            # A mount has no URL anyone could fetch.
+            steps["private"] = steps["listing_private"] = "not_applicable"
+        else:
+            unsigned = url.split("?", 1)[0]
+            steps["private"] = _refused_anonymously(backend, unsigned)
+            root = unsigned[: unsigned.rfind("/" + key)] if ("/" + key) in unsigned else None
+            if root:
+                listing = root + ("?restype=container&comp=list" if backend == "azure-blob" else "/")
+                steps["listing_private"] = _refused_anonymously(backend, listing)
+        steps["delete"] = delete_object(key)
+        try:
+            get_bytes(key)
+        except Exception as exc:  # noqa: BLE001 - classified: only "not found" is absent
+            steps["absent"] = _definitely_absent(exc)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        backend = BACKEND
+        error = type(exc).__name__
+        try:
+            delete_object(key)
+        except Exception:  # noqa: BLE001 - the next probe sweeps it
+            pass
+    ok = (steps["put"] and steps["get"] and steps["match"] and steps["delete"] and steps["absent"]
+          and steps["private"] in (True, "not_applicable")
+          and steps["listing_private"] in (True, "not_applicable"))
+    return {"backend": backend, "ok": bool(ok), "steps": steps, "error": error,
+            "ms": round((_time.monotonic() - started) * 1000)}
+
+
 def presigned_put_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     """A URL something outside this process can PUT one object to, or None.
 
