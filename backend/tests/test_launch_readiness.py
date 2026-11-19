@@ -610,3 +610,15 @@ def test_the_repository_s_erasure_gates_are_per_environment():
     assert c["gate:privacy_erasure_live_on_do"].status == lr.WARN  # a warning gate, open
     _, c = audit(World("staging"))
     assert c["gate:privacy_erasure_role_on_do"].status == lr.PASS
+
+
+def test_every_multi_environment_database_gate_is_closed_per_environment():
+    """30.6 review: a database gate added without evidence_scope would fall
+    back to crediting one environment's evidence for all of them."""
+    data = json.loads((REPO / "docs" / "launch-readiness" / "owner-gates.json").read_text())
+    for g in data["gates"]:
+        about_a_database = any(w in (g.get("how_to_close", "") + " " + g.get("title", "")).lower()
+                               for w in ("cluster", "neoh-postgres", "database", "rls"))
+        if about_a_database and len(g.get("environments") or ["production", "staging"]) > 1:
+            assert g.get("evidence_scope") == "environment", g["id"]
+            assert isinstance(g.get("status_by_env"), dict), g["id"]

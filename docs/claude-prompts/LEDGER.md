@@ -5161,6 +5161,7 @@ authz_checked: "No access-control change. A gate marked evidence_scope 'environm
 blockers:
   - "Owner record: this reopens privacy_erasure_role_on_do for production in docs/launch-readiness/owner-gates.json (the owner closes gates there) and makes privacy_erasure_live_on_do per environment."
   - "The check reads what the owner recorded: it does not query DigitalOcean for the cluster, account, role or migration head (those are in how_to_close as what the evidence must state)."
+  - "The staging closure of privacy_erasure_role_on_do (2026-10-03) proves the gate's title (doadmin BYPASSRLS on neoh-postgres-staging) but predates the stricter how_to_close (migration head, FORCE RLS erasure on a real tenant); privacy_erasure_live_on_do staging is still open. Review r2: APPROVE; a guard test now requires evidence_scope on every multi-environment gate about a database."
   - "Independent review r1 (REQUEST CHANGES), fixed: evidence naming both clusters passed production (now refused), the rule keyed on how many environments a gate lists (now an explicit evidence_scope), the audit's requirements only in the ledger (now in the gate's how_to_close), stale README / launch-state wording."
   - "Not deployed (C4.4)."
 audit_refs: [30.6]
