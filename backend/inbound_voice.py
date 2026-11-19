@@ -871,7 +871,7 @@ async def finalize_inbound_voice_call(
             """
             SELECT id,client_id,contact_id,intake_mode,callback_task_id,
                    contact_intake_session_id,intake_handoff_task_id,
-                   caller_phone_ciphertext,opt_out_requested
+                   caller_phone_ciphertext,opt_out_requested,transcript_status
               FROM inbound_voice_calls
              WHERE tenant_id=$1::uuid AND provider_call_sid=$2
              FOR UPDATE
@@ -880,6 +880,10 @@ async def finalize_inbound_voice_call(
             call_sid,
         )
         if row is None:
+            return
+        if recovered and row["transcript_status"] != "active":
+            # The bridge finalized it after the sweep picked it (34.6 review):
+            # never overwrite a saved transcript with the recovery's empty one.
             return
         # Recorded mid-call by record_inbound_opt_out: never undone here, even
         # if the cleaned transcript no longer shows the utterance.
@@ -1059,6 +1063,7 @@ async def finalize_inbound_voice_call(
 
 
 _FINALIZE_RETRY_DELAYS = (0.5, 2.0)
+_FINALIZE_RETRY_BUDGET_SECONDS = 15.0
 
 
 async def finalize_inbound_voice_call_with_retry(
@@ -1072,27 +1077,37 @@ async def finalize_inbound_voice_call_with_retry(
     task that already exists, so a retry never doubles anything. Raises the
     last error; the reconciliation sweep is the backstop for a call that still
     ends up unfinalized (recover_unfinalized_calls)."""
+    from db.connection import unreachable_errors
+
+    # Only "the database is not there" is worth retrying, and only briefly:
+    # this runs in the bridge's teardown, before its slot is released.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FINALIZE_RETRY_BUDGET_SECONDS
     for delay in (*_FINALIZE_RETRY_DELAYS, None):
         try:
             await finalize_inbound_voice_call(call_sid, transcript, state)
             return
-        except Exception:
-            if delay is None:
+        except unreachable_errors():
+            if delay is None or loop.time() + delay > deadline:
                 raise
-            logger.warning("inbound finalize failed; retrying in %.1fs", delay)
+            logger.warning("inbound finalize could not reach the database; retrying in %.1fs", delay)
             await asyncio.sleep(delay)
 
 
 # A call still 'active' this long after it ended (or this long after it
 # started) was never finalized; the same thresholds as component health.
 _UNFINALIZED_SQL = """
-    SELECT c.provider_call_sid, c.tenant_id::text AS tenant_id, r.agent_id
+    SELECT c.id, c.provider_call_sid, c.tenant_id::text AS tenant_id, r.agent_id
       FROM inbound_voice_calls c
       JOIN telephony_routes r ON r.id = c.route_id AND r.tenant_id = c.tenant_id
      WHERE c.transcript_status = 'active' AND c.direction = 'inbound'
-       AND (c.ended_at < now() - interval '10 minutes' OR c.started_at < now() - interval '2 hours')
+       -- Ended 10 minutes ago, or (no end recorded) started longer ago than
+       -- any call can last: the 2-hour health threshold could still be a
+       -- live call (34.6 review).
+       AND (c.ended_at < now() - interval '10 minutes' OR (c.ended_at IS NULL AND c.started_at < now() - interval '6 hours'))
        AND ($2::uuid IS NULL OR c.tenant_id = $2)
-     ORDER BY c.started_at
+     -- A row that keeps failing is touched below and goes to the back.
+     ORDER BY c.updated_at
      LIMIT $1
 """
 
@@ -1115,6 +1130,11 @@ async def recover_unfinalized_calls(*, only_tenant: Optional[str] = None, limit:
         except Exception:  # noqa: BLE001 - counted; health keeps showing it
             failed += 1
             logger.exception("unfinalized inbound call could not be recovered")
+            try:
+                async with tenant_tx(platform) as conn:
+                    await conn.execute("UPDATE inbound_voice_calls SET updated_at=now() WHERE id=$1", row["id"])
+            except Exception:  # noqa: BLE001 - only the queue order
+                pass
     return {"recovered": recovered, "failed": failed}
 
 

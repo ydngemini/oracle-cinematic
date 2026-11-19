@@ -56,7 +56,10 @@ async def _scenario():
         stopped = await call("+13025550172", ended_minutes_ago=30, opted_out=True)
         live = await call("+13025550173", ended_minutes_ago=2)  # just ended: its bridge may still finalize it
 
-        first = await inbound_voice.recover_unfinalized_calls(only_tenant=tenant)
+        # Through the 15-minute reconciliation sweep itself.
+        import reconciliation
+
+        first = (await reconciliation.run_sweep(only_tenant=tenant))["inbound_calls"]
         assert first == {"recovered": 2, "failed": 0}
 
         async def outcome(sid):
@@ -72,6 +75,24 @@ async def _scenario():
         again = await inbound_voice.recover_unfinalized_calls(only_tenant=tenant)
         assert again == {"recovered": 0, "failed": 0}
         assert await admin.fetchval("SELECT count(*) FROM client_tasks WHERE tenant_id=$1", tenant) == 2
+
+        # The bridge finalizes a call after the sweep picked it: the recovery
+        # pass must not overwrite the saved transcript (34.6 review).
+        raced = await call("+13025550174", ended_minutes_ago=30)
+        state = {"direction": "inbound", "tenant_id": tenant, "agent_id": agent}
+        await inbound_voice.finalize_inbound_voice_call(
+            raced, [{"role": "caller", "text": "I would like a showing on Saturday"}], state)
+        saved = await admin.fetchval("SELECT transcript_ciphertext FROM inbound_voice_calls WHERE provider_call_sid=$1", raced)
+        await inbound_voice.finalize_inbound_voice_call(raced, [], state, recovered=True)
+        row = await admin.fetchrow("SELECT transcript_status, transcript_ciphertext FROM inbound_voice_calls "
+                                   "WHERE provider_call_sid=$1", raced)
+        assert row["transcript_status"] == "complete" and row["transcript_ciphertext"] == saved is not None
+
+        # No end recorded and started 3 hours ago: possibly still live, not recovered.
+        silent = await call("+13025550175", ended_minutes_ago=0)
+        await admin.execute("UPDATE inbound_voice_calls SET ended_at=NULL, started_at=now() - interval '3 hours' "
+                            "WHERE provider_call_sid=$1", silent)
+        assert (await inbound_voice.recover_unfinalized_calls(only_tenant=tenant))["recovered"] == 0
     finally:
         for sql in ("DELETE FROM inbound_voice_calls WHERE tenant_id=$1", "DELETE FROM client_tasks WHERE tenant_id=$1",
                     "DELETE FROM outreach_suppression WHERE tenant_id=$1", "DELETE FROM telephony_routes WHERE tenant_id=$1",
