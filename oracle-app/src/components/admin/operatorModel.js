@@ -163,7 +163,7 @@ export function fmtMoney(v) {
 function lastAttemptWords(last) {
   if (!last) return '';
   if (last.outcome === 'recipient_missing') return 'The last test had nobody to go to.';
-  if (last.outcome === 'sending') return 'The last test never got an answer from the mail relay.';
+  if (last.outcome === 'sending') return 'The result of the last test was not recorded (the server may have restarted while sending it).';
   if (last.outcome === 'sent' && !last.confirmed) return 'The last test was sent but its code was not confirmed.';
   if (last.outcome !== 'sent') return `The mail relay did not accept the last test (${last.outcome}).`;
   return '';

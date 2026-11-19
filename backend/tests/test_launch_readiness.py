@@ -190,8 +190,8 @@ def test_go_live_needs_a_confirmed_test_alert(passing_gates):
               "last_attempt": {"outcome": "recipient_missing", "requested_at": "x", "confirmed": False}}
     assert "not set on the api replica" in gate(nobody).reason
     failed = {**_ALERT_PROVEN, "proven": False, "confirmed_at": None,
-              "last_attempt": {"outcome": "SMTPAuthenticationError", "requested_at": "x", "confirmed": False}}
-    assert gate(failed).status == lr.BLOCKED and "SMTPAuthenticationError" in gate(failed).reason
+              "last_attempt": {"outcome": "SmtpConfigurationError", "requested_at": "x", "confirmed": False}}
+    assert gate(failed).status == lr.BLOCKED and "SmtpConfigurationError" in gate(failed).reason
     assert gate({}, status=404).status == lr.BLOCKED, "an older release without the endpoint proves nothing"
     assert gate(unconfirmed, env="staging").status == lr.WARN
 

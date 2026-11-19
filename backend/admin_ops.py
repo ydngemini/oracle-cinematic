@@ -125,7 +125,8 @@ async def storage_round_trip(ctx: TenantContext = Depends(require_platform_admin
 
 class AlertTestConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    code: str = Field(min_length=4, max_length=32)
+    # Any length: a short or mistyped code is a wrong code (counted), not a 422.
+    code: str = Field(min_length=1, max_length=32)
 
 
 @router.get("/alerts/test")
@@ -170,9 +171,10 @@ async def confirm_alert_test(body: AlertTestConfirm, ctx: TenantContext = Depend
     """Confirm the code from the most recent test alert. A wrong code is
     counted (at most ops_alert_test.MAX_ATTEMPTS tries per test)."""
     import ops_alert_test
+    import ops_alerts
 
     async with tenant_tx(ctx) as conn:
-        result = await ops_alert_test.confirm(conn, body.code, ctx.agent_id)
+        result = await ops_alert_test.confirm(conn, body.code, ctx.agent_id, ops_alerts._recipient())
     await ledger.record(category=AuditCategory.ADMIN_ACTION, action="ops_alert_test_confirm",
                         tenant_id=ctx.tenant_id, user_id=ctx.agent_id, metadata={"result": result["result"]})
     if result["result"] == "confirmed":

@@ -59,10 +59,12 @@ async def _scenario():
         await t.finish(conn, started.id, None)
         st = await t.status(conn, TO)
         assert st["awaiting_code"] is True and st["proven"] is False
-        wrong = await t.confirm(conn, "ZZZZ-ZZZZ", "op-1")
+        wrong = await t.confirm(conn, "ZZZZ-ZZZZ", "op-1", TO)
         assert wrong == {"result": "wrong_code", "attempts_left": t.MAX_ATTEMPTS - 1}
-        assert (await t.confirm(conn, t.display_code(started.code).lower(), "op-3"))["result"] == "confirmed"
-        assert (await t.confirm(conn, started.code, "op-3"))["result"] == "no_pending_test", "a code works once"
+        assert (await t.confirm(conn, started.code, "op-1", "old@example.test"))["result"] == "no_pending_test", \
+            "a code confirms only a test sent to today's recipient"
+        assert (await t.confirm(conn, t.display_code(started.code).lower(), "op-3", TO))["result"] == "confirmed"
+        assert (await t.confirm(conn, started.code, "op-3", TO))["result"] == "no_pending_test", "a code works once"
         st = await t.status(conn, " ops@example.TEST ")
         assert st["proven"] is True and st["confirmed_at"] and st["awaiting_code"] is False
         assert (await t.status(conn, "someone-else@example.test"))["proven"] is False, "proof is per recipient"
@@ -76,17 +78,28 @@ async def _scenario():
         # A send the relay refused can never be confirmed.
         await _age(conn)
         failed = await t.begin(conn, "op-1", TO)
-        await t.finish(conn, failed.id, "SMTPAuthenticationError")
-        assert (await t.confirm(conn, failed.code, "op-1"))["result"] == "no_pending_test"
-        assert (await t.status(conn, TO))["last_attempt"]["outcome"] == "SMTPAuthenticationError"
+        await t.finish(conn, failed.id, "SmtpConfigurationError")
+        assert (await t.confirm(conn, failed.code, "op-1", TO))["result"] == "no_pending_test"
+        assert (await t.status(conn, TO))["last_attempt"]["outcome"] == "SmtpConfigurationError"
+
+        # A newer send that never recorded its outcome does not hide an
+        # older test that can still be confirmed.
+        await _age(conn)
+        older = await t.begin(conn, "op-1", TO)
+        await t.finish(conn, older.id, None)
+        await _age(conn)
+        await t.begin(conn, "op-1", TO)  # stays 'sending' (as after a crash)
+        st = await t.status(conn, TO)
+        assert st["awaiting_code"] is True and st["last_attempt"]["outcome"] == "sending"
+        assert (await t.confirm(conn, older.code, "op-1", TO))["result"] == "confirmed"
 
         # Too many wrong codes end that test, even for the right code.
         await _age(conn)
         guessed = await t.begin(conn, "op-1", TO)
         await t.finish(conn, guessed.id, None)
         for _ in range(t.MAX_ATTEMPTS):
-            assert (await t.confirm(conn, "AAAA-AAAA", "op-9"))["result"] == "wrong_code"
-        assert (await t.confirm(conn, guessed.code, "op-9"))["result"] == "too_many_attempts"
+            assert (await t.confirm(conn, "AAAA-AAAA", "op-9", TO))["result"] == "wrong_code"
+        assert (await t.confirm(conn, guessed.code, "op-9", TO))["result"] == "too_many_attempts"
         assert (await t.status(conn, TO))["awaiting_code"] is False
 
         # An unconfirmed code expires.
@@ -95,7 +108,7 @@ async def _scenario():
         await t.finish(conn, late.id, None)
         await conn.execute("UPDATE ops_alert_tests SET requested_at = requested_at - make_interval(hours => $1) "
                            "WHERE id = $2", t.CODE_TTL_HOURS + 1, late.id)
-        assert (await t.confirm(conn, late.code, "op-1"))["result"] == "no_pending_test"
+        assert (await t.confirm(conn, late.code, "op-1", TO))["result"] == "no_pending_test"
     finally:
         await tx.rollback()
         await conn.close()

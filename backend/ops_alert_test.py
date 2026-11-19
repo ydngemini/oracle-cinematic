@@ -8,9 +8,11 @@ relay accepting a message is not proof that anyone received it.
 
 What is stored (ops_alert_tests, migration 0180): who asked and who confirmed
 (operator ids), a SHA-256 prefix of the recipient address (never the address,
-so the proof can be matched to today's recipient), a SHA-256 of the code (never
-the code), the relay outcome and the times. Only the most recent unconfirmed
-test can be confirmed, for CODE_TTL_HOURS, with at most MAX_ATTEMPTS tries.
+so the proof can be matched to today's recipient), an HMAC of the code (never
+the code), the relay outcome and the times. Only the most recent
+test sent to today's recipient can be confirmed, for CODE_TTL_HOURS, with at
+most MAX_ATTEMPTS tries. The code is stored only as an HMAC keyed by the
+server secret.
 """
 
 from __future__ import annotations
@@ -43,7 +45,12 @@ def _normalize(code: str) -> str:
 
 
 def _hash(code: str) -> str:
-    return hashlib.sha256(_normalize(code).encode()).hexdigest()
+    """Keyed, so a copy of the table (a backup, a replica) cannot be reversed
+    into the code: an unkeyed hash of a 40-bit code falls to a GPU in minutes."""
+    from auth import SECRET_KEY
+
+    key = hmac.new(SECRET_KEY.encode(), b"neoh-ops-alert-test-code-v1", hashlib.sha256).digest()
+    return hmac.new(key, _normalize(code).encode(), hashlib.sha256).hexdigest()
 
 
 def new_code() -> str:
@@ -110,18 +117,23 @@ async def finish(conn, row_id: int, error: Optional[str]) -> None:
             "UPDATE ops_alert_tests SET outcome = $2, code_hash = NULL WHERE id = $1", row_id, error[:80])
 
 
-async def confirm(conn, code: str, confirmed_by: str) -> dict[str, Any]:
-    """Check a code against the most recent unconfirmed test. Returns
+_LATEST_SENT = (
+    "SELECT id, code_hash, attempts, confirmed_at FROM ops_alert_tests "
+    "WHERE outcome = $1 AND recipient_fingerprint = $2 AND requested_at > now() - make_interval(hours => $3) "
+    "ORDER BY requested_at DESC LIMIT 1")
+
+
+async def confirm(conn, code: str, confirmed_by: str, recipient: str) -> dict[str, Any]:
+    """Check a code against the latest test sent to today's recipient. Returns
     {"result": "confirmed" | "wrong_code" | "too_many_attempts" | "no_pending_test", ...}.
     A wrong code is counted in the same transaction, so the caller must let
-    the transaction commit before it reports the refusal."""
-    row = await conn.fetchrow(
-        "SELECT id, code_hash, attempts FROM ops_alert_tests "
-        "WHERE outcome = $1 AND confirmed_at IS NULL AND code_hash IS NOT NULL "
-        "AND requested_at > now() - make_interval(hours => $2) "
-        "ORDER BY requested_at DESC LIMIT 1 FOR UPDATE",
-        SENT, CODE_TTL_HOURS)
-    if row is None:
+    the transaction commit before it reports the refusal. Two confirmations
+    of the same code serialize on the row lock; the second finds it already
+    confirmed (no_pending_test) instead of spending an older test's tries."""
+    if not recipient.strip():
+        return {"result": "no_pending_test"}
+    row = await conn.fetchrow(_LATEST_SENT + " FOR UPDATE", SENT, fingerprint(recipient), CODE_TTL_HOURS)
+    if row is None or row["confirmed_at"] is not None or row["code_hash"] is None:
         return {"result": "no_pending_test"}
     if row["attempts"] >= MAX_ATTEMPTS:
         return {"result": "too_many_attempts"}
@@ -146,19 +158,19 @@ async def status(conn, recipient: str) -> dict[str, Any]:
             "FROM ops_alert_tests WHERE confirmed_at IS NOT NULL AND recipient_fingerprint = $1 "
             "ORDER BY confirmed_at DESC LIMIT 1",
             fingerprint(recipient), PROOF_MAX_AGE_DAYS)
+    pending = None
+    if recipient:
+        pending = await conn.fetchrow(_LATEST_SENT, SENT, fingerprint(recipient), CODE_TTL_HOURS)
     last = await conn.fetchrow(
-        "SELECT outcome, requested_at, confirmed_at, attempts, "
-        "outcome = $1 AND confirmed_at IS NULL AND code_hash IS NOT NULL "
-        "AND requested_at > now() - make_interval(hours => $2) AND attempts < $3 AS awaiting_code "
-        "FROM ops_alert_tests ORDER BY requested_at DESC LIMIT 1",
-        SENT, CODE_TTL_HOURS, MAX_ATTEMPTS)
+        "SELECT outcome, requested_at, confirmed_at FROM ops_alert_tests ORDER BY requested_at DESC LIMIT 1")
     return {
         "recipient_configured": bool(recipient),
         "proven": bool(proof and proof["fresh"]),
         "confirmed_at": proof["confirmed_at"].isoformat() if proof else None,
         "stale": bool(proof and not proof["fresh"]),
         "max_age_days": PROOF_MAX_AGE_DAYS,
-        "awaiting_code": bool(last and last["awaiting_code"]),
+        "awaiting_code": bool(pending and pending["confirmed_at"] is None and pending["code_hash"] is not None
+                              and pending["attempts"] < MAX_ATTEMPTS),
         "last_attempt": None if last is None else {
             "outcome": last["outcome"],
             "requested_at": last["requested_at"].isoformat(),

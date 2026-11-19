@@ -45,7 +45,8 @@ def world(monkeypatch):
         w.sent.append((subject, body, to))
         return w.send_result
 
-    async def confirm(conn, code, by):
+    async def confirm(conn, code, by, recipient):
+        assert recipient == "ops@example.test", "a code is checked against today's recipient"
         return w.confirm
 
     monkeypatch.setattr(admin_ops, "tenant_tx", tenant_tx)
@@ -71,10 +72,10 @@ def test_a_sent_test_alert_carries_its_code_only_to_the_recipient(world):
 
 def test_an_unsent_or_refused_test_alert_says_so(world):
     world.begin = ops_alert_test.Started(id=8, code="ABCD2345", recipient="ops@example.test")
-    world.send_result = "SMTPAuthenticationError"
+    world.send_result = "SmtpConfigurationError"
     assert asyncio.run(admin_ops.send_alert_test(ctx=CTX)) == {
-        "outcome": "delivery_failed", "error": "SMTPAuthenticationError"}
-    assert world.finished == [(8, "SMTPAuthenticationError")]
+        "outcome": "delivery_failed", "error": "SmtpConfigurationError"}
+    assert world.finished == [(8, "SmtpConfigurationError")]
 
     world.sent.clear()
     world.begin = ops_alert_test.Started()

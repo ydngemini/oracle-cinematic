@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS ops_alert_tests (
     id                    bigserial PRIMARY KEY,
     requested_by          text NOT NULL,
     recipient_fingerprint text NOT NULL,
-    -- SHA-256 of the one-time code; NULL when nothing was sent.
+    -- HMAC (keyed by the server secret) of the one-time code; NULL when
+    -- nothing was sent or once it is confirmed.
     code_hash             text,
     -- 'sending' until the relay answers, then 'sent', 'recipient_missing' or
     -- the delivery error's name.

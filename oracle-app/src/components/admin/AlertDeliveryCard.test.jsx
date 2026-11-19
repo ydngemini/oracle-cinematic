@@ -23,8 +23,8 @@ describe('AlertDeliveryCard (audit 30.3)', () => {
 
   it('says alert delivery is not proven until a test code is confirmed', () => {
     expect(alertDeliverySummary({ ...base, recipient_configured: false })).toMatch(/reach only the logs/);
-    expect(alertDeliverySummary({ ...base, last_attempt: { outcome: 'SMTPAuthenticationError', confirmed: false } }))
-      .toMatch(/did not accept the last test \(SMTPAuthenticationError\)/);
+    expect(alertDeliverySummary({ ...base, last_attempt: { outcome: 'SmtpConfigurationError', confirmed: false } }))
+      .toMatch(/did not accept the last test \(SmtpConfigurationError\)/);
     expect(alertDeliverySummary({ ...base, stale: true })).toMatch(/older than 14 days/);
     expect(alertDeliverySummary({ ...base, proven: true, confirmed_at: new Date().toISOString() }))
       .toMatch(/accepts it for 14 days/);
