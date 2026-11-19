@@ -43,6 +43,7 @@ from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
 from tenancy import Role, TenantContext, require_context, require_role
 from admin_ops import require_platform_admin
+from mfa_api import ResetRequest
 
 log = logging.getLogger("oracle.brokerage_onboarding")
 
@@ -1123,16 +1124,17 @@ async def suspend_member(
 @router.post("/team/{user_id}/mfa/reset")
 async def reset_member_two_step(
     user_id: UUID,
-    body: MemberStatusChange,
+    body: ResetRequest,
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
     """A broker owner resets an agent's two-step sign-in (a lost phone, no
-    recovery codes). Another owner's reset takes a platform admin
+    recovery codes), re-proving their own password and code first (audit
+    28.4). Another owner's reset takes a platform admin
     (POST /api/admin/users/{id}/mfa/reset). Their sessions end; audited."""
     from mfa_api import reset_member_mfa
 
     require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
-    return await reset_member_mfa(ctx, user_id, body.reason)
+    return await reset_member_mfa(ctx, user_id, body.reason, password=body.password, code=body.code)
 
 
 class SecuritySettings(BaseModel):
