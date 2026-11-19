@@ -1519,6 +1519,28 @@ next_task: "None until the owner decides the twin may influence ranking."
 updated: 2026-11-14
 ```
 
+#### L07-07 A chat answer that committed stays completed: a failing session-memory write or a lost completion frame no longer turns it into a failed turn (external audit AI32-01)
+```yaml
+id: L07-07
+status: tests_pass
+env: local
+evidence_shas: [ef9872d]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/tests/test_ai_chat_completion_boundary.py, backend/tests/test_ai_chat_completed_guard_live.py]
+tests_run:
+  - {cmd: "read ai_chat_agent.handle_ai_chat_job at ef9872d", result: "confirmed AI32-01: after update_assistant(status completed) the two SessionManager.record_interaction writes and the AI_CHAT_COMPLETE broadcast ran inside the same try; any of them raising sent the turn to the generic except, which rewrote the saved answer as 'failed' with an error message and broadcast AI_CHAT_ERROR, after tool writes had already been applied", date: 2026-11-19}
+  - {cmd: "test_ai_chat_completion_boundary against ef9872d's ai_chat_agent.py", result: "red: 4 failed", date: 2026-11-19}
+  - {cmd: "after: test_ai_chat_completion_boundary (4) + interrupted-turn, budget and choices tests", result: "107 passed: a memory write that keeps failing is retried once and the turn stays completed with AI_CHAT_COMPLETE and no error frame; a write that fails once is mirrored on the retry; a lost completion frame does not fail the turn; a failure before the answer is saved still fails it, guarded by unless_status='completed'", date: 2026-11-19}
+  - {cmd: "live: test_ai_chat_completed_guard_live (app pool, as the agent)", result: "1 passed: a failure update with unless_status='completed' leaves a completed turn untouched and still fails a streaming one", date: 2026-11-19}
+authz_checked: "No access change. The guard is one more predicate on the same RLS-scoped UPDATE (tenant and user). The memory mirror logs the turn id and error class only, never text."
+blockers:
+  - "The memory mirror is retried once inline, not through a durable outbox: a turn whose mirror still fails is missing from rolling session memory (the chat history itself has it). Logged per turn."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-01]
+decision_refs: []
+next_task: "AI32-02 (memory rollup deletes history after a truncated fallback summary)."
+updated: 2026-11-19
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
