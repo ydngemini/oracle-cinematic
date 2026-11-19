@@ -2379,6 +2379,29 @@ next_task: "21.5; chunk 26 open items."
 updated: 2026-11-18
 ```
 
+#### L10-20 The ACS callback webhook, which acknowledges events before processing them, cannot be enabled in production except as an acknowledged experiment (external audit 34.7)
+```yaml
+id: L10-20
+status: tests_pass
+env: local
+evidence_shas: [9bfe5d5]   # base; fix in the commit that adds this row
+files: [backend/config.py, .env.example, backend/tests/test_config_acs_experimental.py]
+tests_run:
+  - {cmd: "read commands_api ACS EventGrid webhook, webhook_auth.verify_webhook and infra/digitalocean/app.yaml at 9bfe5d5", result: "confirmed 34.7: the webhook schedules its handlers with asyncio.ensure_future and returns accepted before they run, so a crash after the 200 loses the event. Scope: ACS is not in the deployed offering — the app spec carries no ORACLE_ACS_WEBHOOK_SECRET, and verify_webhook answers 503 without it, so nothing is scheduled today", date: 2026-11-19}
+  - {cmd: "the new test against 9bfe5d5's config.py", result: "red: production booted with the ACS webhook secret set", date: 2026-11-19}
+  - {cmd: "after: test_config_acs_experimental 2 passed; config boot-guard and env-documentation tests 37 passed; full unit suite 6947 passed / 158 skipped (round 1). After review r1: ACS + demo-login + weak-secret + env-doc + rendered-spec boot tests 63 passed (production rules with prod / production / unset / ci refuse the ACS secret; an acknowledged experiment boots; webhooks on without ACS boot; the ACS placeholder is still refused inside the experiment). Review r2 caught test_recovery_security still expecting the ACS secret whenever webhooks are on: updated to the new rule (required only inside the experiment, checked both ways); full unit suite 6952 passed / 158 skipped", result: "pass", date: 2026-11-19}
+authz_checked: "No access-control change. config.validate_or_die refuses to start any environment outside dev and staging (production, or an unset / unrecognised ORACLE_ENV, as for demo logins) when ORACLE_ACS_WEBHOOK_SECRET is set unless ORACLE_ACS_EXPERIMENTAL=1 records the decision to accept event loss; the message names the settings, never the secret. With ORACLE_ENABLE_WEBHOOKS on, the ACS secret is required only inside the acknowledged experiment (before: always), so turning webhooks on never forces the experiment; the custom-call secret is still required. Dev and staging are unchanged."
+blockers:
+  - "Not done (the audit's other option): durable, deduplicated ACS callback events before acknowledgement. ACS stays out of the paid offering; enabling it for customers needs that work first."
+  - "Outside 34.7's ACS scope: the custom-call webhook (commands_api) also schedules its status update with ensure_future and acknowledges first; it is gated only by its own secret (not in the deployed spec either)."
+  - "Independent review r1 (REQUEST CHANGES), fixed: ORACLE_ENABLE_WEBHOOKS required the ACS secret, which the guard then refused (webhooks on forced the experiment); the weak-secret test for the ACS placeholder passed for the wrong reason; tests did not assert a successful boot or clear the ACS settings; an unset ORACLE_ENV skipped the guard."
+  - "Not deployed (C4.4)."
+audit_refs: [34.7]
+decision_refs: []
+next_task: "34.8 (live carrier / 10DLC evidence: owner and provider account)."
+updated: 2026-11-19
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 

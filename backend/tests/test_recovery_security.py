@@ -308,6 +308,7 @@ def _validate_config_in_subprocess(**settings: str) -> subprocess.CompletedProce
         "ORACLE_JWT_TENANT_AUDIENCE",
         "ORACLE_ENABLE_WEBHOOKS",
         "ORACLE_ACS_WEBHOOK_SECRET",
+        "ORACLE_ACS_EXPERIMENTAL",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_QWEN_REALTIME_ENABLED",
         "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
@@ -362,8 +363,15 @@ def test_production_config_resolves_jwt_scope_and_gates_webhook_secrets():
         **base, ORACLE_ENABLE_WEBHOOKS="true"
     )
     assert webhooks_enabled.returncode != 0
-    assert "ORACLE_ACS_WEBHOOK_SECRET" in webhooks_enabled.stderr
+    # The ACS secret is required only inside the acknowledged ACS experiment
+    # (audit 34.7); turning webhooks on alone requires the custom-call secret.
+    assert "ORACLE_ACS_WEBHOOK_SECRET" not in webhooks_enabled.stderr
     assert "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET" in webhooks_enabled.stderr
+    acs_experiment = _validate_config_in_subprocess(
+        **base, ORACLE_ENABLE_WEBHOOKS="true", ORACLE_ACS_EXPERIMENTAL="1"
+    )
+    assert acs_experiment.returncode != 0
+    assert "ORACLE_ACS_WEBHOOK_SECRET" in acs_experiment.stderr
 
     qwen_without_acs_audience = _validate_config_in_subprocess(
         **base,
