@@ -280,3 +280,14 @@ def test_the_on_behalf_line_survives_a_long_reason():
     briefing = call_briefing.briefing_from_draft({"reason": "y" * 2000}, on_behalf_of="Sam Lee of Lockwood Realty")
     assert briefing.startswith("Calling on behalf of: Sam Lee of Lockwood Realty")
     assert len(briefing) == call_briefing.BRIEFING_MAX_CHARS
+
+
+def test_the_on_behalf_name_is_never_the_login():
+    import call_briefing
+
+    assert call_briefing.on_behalf_of({"name": "Sam Lee", "brokerage": "Lockwood Realty"}, "sam@x.test") == \
+        "Sam Lee of Lockwood Realty"
+    assert call_briefing.on_behalf_of({"name": "sam@x.test", "brokerage": "Lockwood Realty"}, "SAM@x.test") == \
+        "Lockwood Realty"
+    assert call_briefing.on_behalf_of({"name": "Sam <sam@x.test>", "brokerage": ""}, "other") == ""
+    assert call_briefing.on_behalf_of({}, "sam@x.test") == ""

@@ -64,3 +64,16 @@ def briefing_instructions(state: Optional[dict[str, Any]]) -> str:
         return ""
     return (f"\n\nWhy you are calling (approved by the agent; do not add to it): {briefing}\n"
             f"{GOAL} {LIMIT}")
+
+
+def on_behalf_of(identity: Optional[dict[str, Any]], login: str) -> str:
+    """'<name> of <brokerage>' from an agent_profile.load_agent_identity()
+    result. Its name falls back to the login (an email address), which must
+    never be spoken on a call: a name equal to the login or containing '@' is
+    dropped."""
+    identity = identity or {}
+    name = " ".join(str(identity.get("name") or "").split())
+    if name.lower() == str(login or "").lower() or "@" in name:
+        name = ""
+    brokerage = " ".join(str(identity.get("brokerage") or "").split())
+    return " of ".join(v for v in (name, brokerage) if v)

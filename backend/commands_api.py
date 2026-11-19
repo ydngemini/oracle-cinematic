@@ -4155,18 +4155,13 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # so a call keyed on that id had no state and its answer webhook
                 # refused it as "unmanaged". The URL is covered by the V3
                 # signature, so the reference cannot be forged onto a webhook.
-                from call_briefing import briefing_from_draft
+                from call_briefing import briefing_from_draft, on_behalf_of as _on_behalf_of
 
                 on_behalf_of = ""
                 try:
                     from agent_profile import load_agent_identity
 
-                    identity = await load_agent_identity(owner_ctx)
-                    # "name" falls back to the login (an email): never put that in a call.
-                    name = str(identity.get("name") or "")
-                    if name.lower() == str(owner_ctx.agent_id or "").lower() or "@" in name:
-                        name = ""
-                    on_behalf_of = " of ".join(v for v in (name, str(identity.get("brokerage") or "")) if v)
+                    on_behalf_of = _on_behalf_of(await load_agent_identity(owner_ctx), owner_ctx.agent_id)
                 except Exception:  # noqa: BLE001 - the call still carries its approved reason
                     logger.warning("agent identity unavailable for a call briefing", exc_info=True)
                 correlation = str(uuid.uuid4())
