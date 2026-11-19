@@ -551,3 +551,39 @@ def test_a_refused_waiver_is_not_recorded_as_applied(passing_gates):
     a, c = audit(World(), gates_root=passing_gates, operator_waiver="owner: WAIVED twice")
     assert c["operator_console"].status == lr.BLOCKED
     assert lr.report_json(a, a.checks)["operator_waiver"] is None
+
+
+def _gates(root, gates):
+    (root / "docs" / "launch-readiness" / "owner-gates.json").write_text(json.dumps({"gates": gates}))
+
+
+def test_staging_evidence_does_not_close_a_production_gate(passing_gates):
+    """Audit 30.6: 'done' named only neoh-postgres-staging, and the checker
+    credited it for production too."""
+    legacy = {"id": "erasure_role", "class": "blocker", "environments": ["production", "staging"],
+              "status": "done", "evidence": "2026-10-03 on neoh-postgres-staging: doadmin BYPASSRLS"}
+    _gates(passing_gates, [legacy])
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["gate:erasure_role"].status == lr.BLOCKED and "neoh-postgres" in c["gate:erasure_role"].reason
+    _, c = audit(World("staging"), gates_root=passing_gates)
+    assert c["gate:erasure_role"].status == lr.PASS
+
+
+def test_per_environment_status_is_read_for_each_environment(passing_gates):
+    per_env = {"id": "erasure_role", "class": "blocker", "environments": ["production", "staging"],
+               "status_by_env": {"staging": {"status": "done", "evidence": "on neoh-postgres-staging"},
+                                 "production": {"status": "done", "evidence": "2026-12-01 on neoh-postgres"}}}
+    _gates(passing_gates, [per_env])
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["gate:erasure_role"].status == lr.PASS
+    per_env["status_by_env"]["production"]["evidence"] = "copied: on neoh-postgres-staging"
+    _gates(passing_gates, [per_env])
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["gate:erasure_role"].status == lr.BLOCKED, "a longer cluster name is not this one"
+
+
+def test_the_repository_s_erasure_role_gate_is_open_for_production():
+    _, c = audit(World())
+    assert c["gate:privacy_erasure_role_on_do"].status == lr.BLOCKED
+    _, c = audit(World("staging"))
+    assert c["gate:privacy_erasure_role_on_do"].status == lr.PASS

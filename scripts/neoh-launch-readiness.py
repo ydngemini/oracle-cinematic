@@ -241,6 +241,22 @@ def _waiver_well_formed(text: str) -> bool:
     return bool(sep and who.strip() and why.strip())
 
 
+def _gate_state(gate: dict, env: str) -> tuple:
+    """(status, evidence) of an owner gate for one environment: from
+    status_by_env.<env> when the gate records it, else the gate's own."""
+    per = gate.get("status_by_env")
+    if isinstance(per, dict):
+        entry = per.get(env) if isinstance(per.get(env), dict) else {}
+        return entry.get("status"), str(entry.get("evidence") or "")
+    return gate.get("status"), str(gate.get("evidence") or "")
+
+
+def _names_cluster(evidence: str, cluster: str) -> bool:
+    """The evidence names this cluster, and not a longer name it prefixes
+    ('neoh-postgres' must not match 'neoh-postgres-staging')."""
+    return bool(cluster) and re.search(rf"(?<![\w-]){re.escape(cluster)}(?![\w-])", evidence) is not None
+
+
 def _component_health():
     """backend/component_health.py, loaded by path: the readiness gate uses the
     states and launch policy the backend reports with (audit 30.2)."""
@@ -866,14 +882,24 @@ class Audit:
                          warn=True)
         owner = self.root / "docs" / "launch-readiness" / "owner-gates.json"
         data = _json(owner.read_text(encoding="utf-8")) if owner.exists() else None
+        cluster = self.expected["clusters"].get("neoh-postgres") or ""
         for g in (data or {}).get("gates") or []:
             envs = g.get("environments") or ["production", "staging"]
             if self.env not in envs:
                 continue
-            done = g.get("status") == "done"
+            status, evidence = _gate_state(g, self.env)
+            done = status == "done"
+            reason = ("done: " if done else "open: ") + str(g.get("how_to_close", ""))
+            # Evidence is per environment (audit 30.6): a gate that covers
+            # several environments is credited here only when its evidence for
+            # this one names this environment's database cluster. A staging
+            # role proof cannot authorize production deletion safety.
+            if done and len(envs) > 1 and not _names_cluster(evidence, cluster):
+                done = False
+                reason = (f"open for {self.env}: the evidence does not name {cluster or 'this environment'} "
+                          f"(record it under status_by_env.{self.env}) — " + str(g.get("how_to_close", "")))
             self.add(f"gate:{g.get('id')}", g.get("area", "owner"), g.get("title", g.get("id")), done,
-                     ("done: " if done else "open: ") + str(g.get("how_to_close", "")),
-                     blocking=g.get("class") == "blocker")
+                     reason, blocking=g.get("class") == "blocker")
 
 
 # ── Output ─────────────────────────────────────────────────────────────────

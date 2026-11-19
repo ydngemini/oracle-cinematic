@@ -5146,6 +5146,27 @@ next_task: "30.6: per-environment gate evidence; 30.8: a go-live storage accepta
 updated: 2026-11-18
 ```
 
+#### L19-20 An owner gate is closed per environment: staging evidence no longer closes it for production (external audit 30.6)
+```yaml
+id: L19-20
+status: tests_pass
+env: local
+evidence_shas: [db7bdd0]   # base; fix in the commit that adds this row
+files: [scripts/neoh-launch-readiness.py, docs/launch-readiness/owner-gates.json, backend/tests/test_launch_readiness.py]
+tests_run:
+  - {cmd: "read docs/launch-readiness/owner-gates.json and check_gates at db7bdd0", result: "confirmed 30.6: privacy_erasure_role_on_do was 'done' for production and staging on evidence that names only neoh-postgres-staging, and check_gates credited any 'done' for every environment the gate lists", date: 2026-11-19}
+  - {cmd: "the new tests against db7bdd0's script and gates file", result: "red: 3 of 3 (staging evidence closed the production gate; status_by_env ignored; the repository's erasure-role gate passed for production)", date: 2026-11-19}
+  - {cmd: "after: test_launch_readiness 50 passed", result: "pass", date: 2026-11-19}
+authz_checked: "No access-control change. A gate may record status_by_env.<env> {status, evidence}; check_gates reads it per environment. A 'done' on a gate covering several environments is credited for an environment only when its evidence names that environment's database cluster (neoh-postgres / neoh-postgres-staging, matched whole so the production name does not match the staging one). privacy_erasure_role_on_do now records staging done (its 2026-10-03 evidence) and production open: production does not exist yet (30.1), so its role has never been proven."
+blockers:
+  - "Owner record: this reopens privacy_erasure_role_on_do for production in docs/launch-readiness/owner-gates.json (the owner closes gates there). Closing it needs the same role proof on the production cluster, plus (per the audit) an erasure run under FORCE RLS on a real non-production tenant in that cluster; the migration head is not checked against the evidence."
+  - "Not deployed (C4.4)."
+audit_refs: [30.6]
+decision_refs: []
+next_task: "27.6 / 27.7 (realtime fan-out size and slow writers)."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
