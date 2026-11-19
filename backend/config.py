@@ -208,9 +208,17 @@ _REQUIRED_IN_PROD: list[tuple[str, str]] = [
 ]
 
 _WEBHOOK_SECRETS: list[tuple[str, str]] = [
-    ("ORACLE_ACS_WEBHOOK_SECRET", "ACS webhook authentication"),
     ("ORACLE_CUSTOM_CALL_WEBHOOK_SECRET", "custom-call webhook authentication"),
 ]
+# Required with webhooks only when the ACS experiment is acknowledged (34.7):
+# otherwise turning webhooks on would force accepting ACS event loss.
+_ACS_WEBHOOK_SECRETS: list[tuple[str, str]] = [
+    ("ORACLE_ACS_WEBHOOK_SECRET", "ACS webhook authentication"),
+]
+
+
+def acs_experiment_acknowledged() -> bool:
+    return os.environ.get("ORACLE_ACS_EXPERIMENTAL", "").strip() == "1"
 
 _QWEN_REALTIME_SETTINGS: list[tuple[str, str]] = [
     ("DASHSCOPE_API_KEY", "Qwen Omni realtime authentication"),
@@ -311,8 +319,10 @@ def validate_or_die() -> None:
     # the event. ACS is not in the deployed offering (no webhook secret in
     # the app spec, so the route answers 503). Production may enable it only
     # as an explicit, acknowledged experiment.
-    if (IS_PROD and os.environ.get("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
-            and os.environ.get("ORACLE_ACS_EXPERIMENTAL", "").strip() != "1"):
+    # Every environment outside dev and staging (an unset or unrecognised
+    # ORACLE_ENV is held to production rules, as for demo logins).
+    if (ORACLE_ENV not in DEMO_LOGIN_ENVS and os.environ.get("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
+            and not acs_experiment_acknowledged()):
         raise RuntimeError(
             "Refusing to start: ORACLE_ACS_WEBHOOK_SECRET enables the ACS callback webhook in "
             "production, and it acknowledges events before processing them (a crash loses them). "
@@ -357,6 +367,8 @@ def validate_or_die() -> None:
     required = list(_REQUIRED_IN_PROD)
     if enable_webhooks:
         required.extend(_WEBHOOK_SECRETS)
+        if acs_experiment_acknowledged():
+            required.extend(_ACS_WEBHOOK_SECRETS)
     acs_qwen_enabled = flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
     twilio_qwen_enabled = flag(
         "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
