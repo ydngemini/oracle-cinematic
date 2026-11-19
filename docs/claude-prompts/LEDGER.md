@@ -1519,6 +1519,31 @@ next_task: "None until the owner decides the twin may influence ranking."
 updated: 2026-11-14
 ```
 
+#### L07-07 A chat answer that committed stays completed: a failing session-memory write or a lost completion frame no longer turns it into a failed turn (external audit AI32-01)
+```yaml
+id: L07-07
+status: tests_pass
+env: local
+evidence_shas: [ef9872d]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/tests/test_ai_chat_completion_boundary.py, backend/tests/test_ai_chat_completed_guard_live.py]
+tests_run:
+  - {cmd: "read ai_chat_agent.handle_ai_chat_job at ef9872d", result: "confirmed AI32-01: after update_assistant(status completed) the two SessionManager.record_interaction writes and the AI_CHAT_COMPLETE broadcast ran inside the same try; any of them raising sent the turn to the generic except, which rewrote the saved answer as 'failed' with an error message and broadcast AI_CHAT_ERROR, after tool writes had already been applied", date: 2026-11-19}
+  - {cmd: "test_ai_chat_completion_boundary against ef9872d's ai_chat_agent.py", result: "red: 4 failed (the independent reviewer re-ran them against the base with the new retry constant added, so the failures are behavioural, not the monkeypatch's AttributeError: all 4 still fail)", date: 2026-11-19}
+  - {cmd: "after: test_ai_chat_completion_boundary (4) + interrupted-turn, budget and choices tests", result: "107 passed: a memory write that keeps failing is retried once and the turn stays completed with AI_CHAT_COMPLETE and no error frame; a write that fails once is mirrored on the retry; a lost completion frame does not fail the turn; a failure before the answer is saved still fails it, guarded by unless_status='completed'", date: 2026-11-19}
+  - {cmd: "live: test_ai_chat_completed_guard_live (app pool, as the agent)", result: "1 passed: a failure update with unless_status='completed' leaves a completed turn untouched and still fails a streaming one", date: 2026-11-19}
+  - {cmd: "after review r1: + test_a_completed_write_that_raised_after_committing_is_not_reported_as_failed, test_the_completion_frame_goes_out_before_the_memory_mirror", result: "109 passed: when the completed write committed but its call raised, the guarded failure update reports the row already completed and the person gets AI_CHAT_COMPLETE, not an error; the completion frame is sent before the memory mirror runs", date: 2026-11-19}
+authz_checked: "No access change. The guard is one more predicate on the same RLS-scoped UPDATE (tenant and user). The memory mirror logs the turn id and error class only, never text."
+blockers:
+  - "The memory mirror is retried once inline, not through a durable outbox (an automation_jobs mirror job carrying only the assistant id would be the next step): a turn whose mirror still fails is missing from rolling session memory (the chat history itself has it). Logged per turn. A write that committed but raised is retried and recorded twice (user_interactions has no idempotency key)."
+  - "Pre-existing, out of scope: _broadcast_chunks runs before the completed update, so a failed NOTIFY there still fails a turn whose tool writes applied; the reconciliation sweep's stale-turn update checks status only in its subquery (needs a turn 15 min stale against a 90 s deadline)."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the guarded failure update's result was ignored, so a completed write that raised after committing still sent AI_CHAT_ERROR and told the person to retry; the completion frame now goes before the memory mirror."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-01]
+decision_refs: []
+next_task: "AI32-02 (memory rollup deletes history after a truncated fallback summary)."
+updated: 2026-11-19
+```
+
 #### L07-08 The memory roll-up deletes history only for a real summary, summarizes outside any transaction, and commits only if nothing moved (external audit AI32-02, AI32-07)
 ```yaml
 id: L07-08
@@ -5392,6 +5417,31 @@ blockers:
 audit_refs: [30.3]
 decision_refs: []
 next_task: "29.6 alert + orphan scan of privacy/exports/; 30.9 single worker."
+updated: 2026-11-19
+```
+
+#### L19-22 The single worker's background work is inventoried, and its voice and 3D job tables page when work stops moving (external audit 30.9)
+```yaml
+id: L19-22
+status: tests_pass
+env: local
+evidence_shas: [5bf2831]   # base; fix in the commit that adds this row
+files: [docs/worker-background-work-inventory.md, backend/component_health.py, backend/voice_intel.py, backend/tests/test_component_health.py, backend/tests/test_media_jobs_health_live.py, backend/tests/test_voice_heartbeat.py, backend/tests/test_process_role.py, backend/config.py, infra/digitalocean/app.yaml, scripts/neoh-launch-readiness.py, docs/deploy-digitalocean.md, docs/runbooks/README.md, docs/runbooks/background-work-stalled.md]
+tests_run:
+  - {cmd: "inventory of every process-local work mechanism at 5bf2831 (voice_intel, reconstruction_worker, video_studio, disposition_enforcer, security_alerts, audit_middleware, llm_gateway, ops_alerts, ws_hub, voice_opt_out), spot-checked at the cited lines", result: "no work is held only in memory any more: voice, reconstruction and video queue in their own tables before the wake event. What still requires one worker: boot recovery sweeps with no lease (voice, reconstruction), the GPU pod reaper (pod age only), the video claim (a queued row is not moved out of 'queued'), a per-process video semaphore, an unlocked hourly disposition enforcer. The comments in app.yaml, config.py, voice_intel.py and the worker_count readiness message still described in-process asyncio queues (corrected). job_queue watched automation_jobs only: a dead voice/3D loop or a voice job hung 'running' (no lease) was invisible", date: 2026-11-19}
+  - {cmd: "test_media_jobs_alert_on_a_backlog_or_a_job_that_stopped_moving (unit) + test_media_jobs_health_live (real PostgreSQL, rolled back) + test_messaging_hardening_live (runs every component query)", result: "pass: a voice job queued 20 min and a reconstruction queued 200 min are a backlog while a worker is alive (not a second page when none is); a voice job and a reconstruction whose heartbeat is silent over 10 min count either way", date: 2026-11-19}
+  - {cmd: "after review r1: test_voice_heartbeat + test_component_health + test_deal_pipeline_sql (quote balance)", result: "76 passed: a running walkthrough bumps updated_at while it runs and stops with it", date: 2026-11-19}
+  - {cmd: "full unit suite after review r1", result: "6953 passed, 1 failed (test_env_documentation: ORACLE_VOICE_HEARTBEAT_SECONDS undocumented); documented in .env.example, env-documentation 5 passed. Review r2: APPROVE (runbook still named voice_hung: fixed)", date: 2026-11-19}
+  - {cmd: "test_launch_readiness + test_component_health + test_rendered_spec_boots + spec/deploy wiring tests", result: "pass", date: 2026-11-19}
+authz_checked: "No access change. media_jobs reads counts and ages through the existing platform component-health context; it reports numbers, never ids. app.yaml changes are comments only."
+blockers:
+  - "Not done (the audit's migration work, ordered in docs/worker-background-work-inventory.md): leases for voice claims and the reconstruction orphan sweep/reaper, an atomic leased video claim with an attempts cap, a lock for the disposition enforcer, idempotent voice notes, and a SIGKILL rehearsal during an active walkthrough and reconstruction. Until then the worker stays at exactly one (launch check worker_count)."
+  - "Thresholds are judgment, not measurement: voice queued 15 min, reconstruction queued 3 h, silent heartbeat 10 min (beats every 60 s). A transcription hung inside its thread keeps the event loop beating, so it is not reported (the heartbeat proves the loop, not the thread). The voice 'running' count has no partial index (seq scan of voice_walkthrough_jobs each minute; small table today)."
+  - "Independent review r1 (REQUEST CHANGES), fixed: a voice job waiting on the shared whisper lock looked 'stuck' after 30 min and the alert advised a restart (now: running voice jobs heartbeat every 60 s and the alert fires on a silent heartbeat); docs/deploy-digitalocean.md and test_process_role.py still said in-process queues; background-work-stalled.md had no media_jobs guidance (a reconstruction restart releases its GPU and spends an attempt); the GPU pod reaper hazard was overstated (the boot sweep's GPU release is the real one); two line numbers; video claim race also within one process; live calls run on API replicas (34.6 recovery), added to the inventory and the SIGKILL rehearsal."
+  - "Not deployed (C4.4)."
+audit_refs: [30.9]
+decision_refs: []
+next_task: "Owner: the lease work above before any second worker; 30.10 (staging capacity run) needs the DigitalOcean token and owner thresholds."
 updated: 2026-11-19
 ```
 

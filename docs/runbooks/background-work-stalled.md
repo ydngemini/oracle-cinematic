@@ -6,6 +6,7 @@ Background work runs in **one** App Platform worker component (`worker`, `ORACLE
 - alert `[Neoh] workers UNAVAILABLE`: no worker heartbeat for 120 s (4 missed 30 s beats);
 - alert `[Neoh] scheduler …`: no scheduler tick for 2 ticks + 2 min;
 - alert `[Neoh] job_queue …`: the oldest ready job keeps getting older, or dead letters are appearing;
+- alert `[Neoh] media_jobs DEGRADED`: voice walkthroughs or 3D reconstructions are waiting too long (15 min / 3 h) while a worker is alive, or a running one has stopped its 60 s heartbeat for 10 min (its worker loop stopped);
 - customers: Neoh replies, texts and syncs wait. The CRM itself works.
 
 **What Neoh does by itself:**
@@ -21,4 +22,9 @@ Background work runs in **one** App Platform worker component (`worker`, `ORACLE
 4. If jobs keep failing: `GET /api/admin/health/components` → `job_queue.detail.dead_letter_1h`. Find the failing `job_type` in the worker logs (`automation_jobs` lines). One bad handler does not block other job types.
 5. If the queue is only slow (sustained `oldest_ready_s` > 60 s with a healthy worker): raise `ORACLE_JOB_WORKERS` (default lane, 8 in production) or `ORACLE_INTERACTIVE_JOB_WORKERS` (Neoh replies, 16), then redeploy. **Never** set the worker's `instance_count` above 1 (see the comment in `infra/digitalocean/app.yaml`).
 
-**Verify:** the `workers`, `scheduler` and `job_queue` components are HEALTHY, `oldest_ready_s` is falling, and the alerts close by themselves.
+**`media_jobs` specifically** (what each job loses on a restart: [worker inventory](../worker-background-work-inventory.md)):
+- `voice_silent` > 0: the voice loop stopped while a job was running. Restarting the worker requeues it (the audio is in its row); after 3 attempts it fails with a reason.
+- `recon_silent` > 0: a reconstruction stopped beating. A restart **fails or requeues it and terminates its recorded GPU pod**, using one of its 2 attempts. If the worker is alive and healthy, check its logs for that job first; `provider_reconciliation` fails a reconstruction silent for 6 h by itself.
+- A backlog with a healthy loop: voice runs 2 loops (`ORACLE_VOICE_WORKERS`), reconstruction 1 (`RECON_WORKER_COUNT`). Raise those, **never** the worker's `instance_count`.
+
+**Verify:** the `workers`, `scheduler`, `job_queue` and `media_jobs` components are HEALTHY, `oldest_ready_s` is falling, and the alerts close by themselves.
