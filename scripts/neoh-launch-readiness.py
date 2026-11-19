@@ -226,6 +226,12 @@ def _all_envs(spec: dict, names=("api", "worker")) -> dict:
     return {n: _envs(comps[n]) for n in names if n in comps}
 
 
+def _waiver_well_formed(text: str) -> bool:
+    """'who: why', both parts present (audit 30.7 review)."""
+    who, sep, why = text.partition(":")
+    return bool(sep and who.strip() and why.strip())
+
+
 def _component_health():
     """backend/component_health.py, loaded by path: the readiness gate uses the
     states and launch policy the backend reports with (audit 30.2)."""
@@ -695,10 +701,18 @@ class Audit:
         if not (self.token and self.base_url):
             # Core health and billing exceptions are only visible to the
             # operator: a production go-live cannot be credited without them
-            # (audit 30.7). Skipping them takes a named, recorded waiver.
-            if prod and self.operator_waiver:
+            # (audit 30.7). A named waiver ('who: why') is accepted only while
+            # production is not charging; a paid launch stays BLOCKED.
+            if prod and self.operator_waiver and not _waiver_well_formed(self.operator_waiver):
                 self.add("operator_console", "operations", "Operator-console checks", False,
-                         f"not checked — WAIVED: {self.operator_waiver}", warn=True)
+                         "not checked — the waiver must read 'who: why'", blocking=True)
+            elif prod and self.operator_waiver and self.charging:
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         f"not checked — waiver ({self.operator_waiver}) refused: production charges, so core "
+                         "health and billing exceptions must be checked", blocking=True)
+            elif prod and self.operator_waiver:
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         f"not checked — WAIVED (not charging): {self.operator_waiver}", warn=True)
             else:
                 self.add("operator_console", "operations", "Operator-console checks", False,
                          "not checked — set NEOH_OPERATOR_TOKEN (and a reachable URL) for component health, "
@@ -710,6 +724,7 @@ class Audit:
         started = time.monotonic()
         st, _, d = self._get("/api/admin/health/components", auth=True)
         took = f"{(time.monotonic() - started) * 1000:.0f} ms"
+        release = ((self.version or {}).get("git_sha") or "?")[:12] if isinstance(self.version, dict) else None
         if st == 200 and isinstance(d, dict) and d.get("components"):
             # The backend's own state model and launch policy (audit 30.2).
             verdict = _component_health().launch_assessment(d["components"])
@@ -717,16 +732,16 @@ class Audit:
             self.add("component_health", "operations", "Component health", not blocking and not warning,
                      ("all components healthy" if not (blocking or warning) else
                       f"blocks go-live: {', '.join(blocking) or '-'}; reduced or unknown: {', '.join(warning) or '-'}")
-                     + f" (operator snapshot answered in {took}"
-                     + (f", release {self.version.get('git_sha', '?')[:12]}" if isinstance(self.version, dict) else "")
-                     + ")",
+                     + f" (operator snapshot answered in {took}" + (f", release {release}" if release else "")
+                     + "; states: " + ", ".join(f"{k}={str((v or {}).get('state', '?'))}"
+                                               for k, v in sorted(d["components"].items())) + ")",
                      blocking=bool(blocking))
         else:
             # A token was given and the health endpoint did not answer with
             # components: production cannot be shown healthy (audit 30.2).
             self.add("component_health", "operations", "Component health", False,
                      f"/api/admin/health/components → {st or 'unreachable'}"
-                     + (" (no components reported)" if st == 200 else ""),
+                     + (" (no components reported)" if st == 200 else "") + f" after {took}",
                      blocking=self.env == "production", warn=self.env != "production")
         st, _, d = self._get("/api/admin/mls/feeds", auth=True)
         if st == 200:
@@ -897,6 +912,8 @@ def report_json(audit: Audit, checks: list) -> dict:
         "app_id": (audit.app or {}).get("id"), "base_url": audit.base_url or None,
         "generated_at": audit.now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "summary": summarize(checks),
+        # A deliberate skip of the operator-only checks, as given (audit 30.7).
+        "operator_waiver": audit.red.scrub(audit.operator_waiver) if audit.operator_waiver else None,
         "checks": [c.as_dict() for c in checks],
     }
 

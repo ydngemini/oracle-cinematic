@@ -8,7 +8,8 @@ platform gate is `scripts/neoh-launch-readiness.py`, and incidents start at
 **Precondition:** `NEOH_OPERATOR_TOKEN=<operator session token> python3 scripts/neoh-launch-readiness.py --env production`
 shows **no BLOCKED**. Without the operator token, core component health and
 billing exceptions cannot be checked and production is BLOCKED (audit 30.7);
-`--waive-operator-checks 'who: why'` records a deliberate skip in the report. Today it shows 30; see [`launch-state.md`](launch-state.md).
+`--waive-operator-checks 'who: why'` records a deliberate skip in the report, and is
+refused once production charges. Today it shows 30; see [`launch-state.md`](launch-state.md).
 Do not start T-7 until it is clean.
 
 ## T-7 days: providers and licensing

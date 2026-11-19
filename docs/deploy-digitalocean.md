@@ -6,8 +6,8 @@ the repository is legacy ([`infrastructure-status.md`](infrastructure-status.md)
 > **Current state (2026-10-03): Neoh has never been deployed to DigitalOcean.**
 > There is no production app. Staging is being created now: its Postgres,
 > Valkey and registry exist, but its app does not yet. Check the live answer
-> with `python3 scripts/neoh-launch-readiness.py --env production` (or
-> `--env staging`). The ranked blockers are in [`launch-state.md`](launch-state.md),
+> with `NEOH_OPERATOR_TOKEN=<token> python3 scripts/neoh-launch-readiness.py --env production` (or
+> `--env staging`; production without the operator token is BLOCKED, audit 30.7). The ranked blockers are in [`launch-state.md`](launch-state.md),
 > and staging creation is in [`staging-setup.md`](staging-setup.md).
 
 Target platform as of 2026-09-21. Supersedes `infra/DEPLOY.md` (AWS) and

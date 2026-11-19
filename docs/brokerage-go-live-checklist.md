@@ -19,8 +19,10 @@ sees as the setup screen. Its `capabilities` and `readiness` drive most of this
 list.
 
 **Before the first brokerage, the platform itself must be ready.** Run
-`python3 scripts/neoh-launch-readiness.py --env production`: no BLOCKED rows
-(see [`launch-state.md`](launch-state.md)).
+`NEOH_OPERATOR_TOKEN=<operator session token> python3 scripts/neoh-launch-readiness.py --env production`:
+no BLOCKED rows (see [`launch-state.md`](launch-state.md)). Without the operator
+token, core component health and billing exceptions are unchecked and a
+production run is BLOCKED (audit 30.7).
 
 Brokerage: ____________  Tenant id: ____________  Owner: ____________  Date: ________
 
