@@ -33,8 +33,8 @@ async def _scenario(media_root):
 
     tenant = str(uuid.uuid4())
 
-    def archive(op_id):
-        key = f"privacy/exports/{tenant}/{op_id}.zip"
+    def archive(op_id, owner=None, suffix=""):
+        key = f"privacy/exports/{owner or tenant}/{op_id}.zip{suffix}"
         (media_root / key).parent.mkdir(parents=True, exist_ok=True)
         (media_root / key).write_bytes(b"PK archive")
         return key
@@ -61,15 +61,29 @@ async def _scenario(media_root):
         failed = await op("failed", pointed=False)
         stuck = await op("running", pointed=False, touched="now() - interval '3 days'")
         no_row = archive(str(uuid.uuid4()))
+        failed_partial = archive(failed.rsplit("/", 1)[1][:-4], suffix=".partial")
+        building_partial = archive(building.rsplit("/", 1)[1][:-4], suffix=".partial")
+        elsewhere = archive(str(uuid.uuid4()), owner=str(uuid.uuid4()))  # a tenant this DB does not know
         odd = f"privacy/exports/{tenant}/notes.txt"
         (media_root / odd).write_bytes(b"not an archive")
 
+        # A platform context that fell back to the request pool has no
+        # platform power and sees no rows: it must delete nothing.
+        platform_pool = connection._platform_pool
+        connection._platform_pool = None
+        try:
+            powerless = await privacy_export.sweep_orphan_exports()
+        finally:
+            connection._platform_pool = platform_pool
+        assert powerless == {"skipped": "no_platform_power", "scanned": 10}
+        assert all(p.exists() for p in media_root.rglob("*.zip*"))
+
         out = await privacy_export.sweep_orphan_exports()
-        assert out == {"scanned": 7, "kept": 3, "orphans_deleted": 3, "orphans_failed": 0,
-                       "unrecognised": 1, "truncated": False}
-        for kept in (live, building, overdue, odd):
+        assert out == {"scanned": 10, "kept": 5, "orphans_deleted": 3, "orphans_failed": 0,
+                       "unknown_tenant": 1, "unrecognised": 1, "truncated": False}
+        for kept in (live, building, overdue, stuck, building_partial, elsewhere, odd):
             assert (media_root / kept).exists(), kept
-        for gone in (failed, stuck, no_row):
+        for gone in (failed, no_row, failed_partial):
             assert not (media_root / gone).exists(), gone
 
         # The expired archive its row still points to is expire_exports' job;

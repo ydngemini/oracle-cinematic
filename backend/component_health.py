@@ -226,11 +226,11 @@ async def _db_components() -> dict[str, dict]:
         # RUN-02: an inbound call still 'active' after the carrier reported it
         # over (or two hours on) was never finalized; a spoken opt-out on it may
         # be unrecorded if the mid-call write also failed.
-        exports = await conn.fetchrow(_SQL_EXPORT_CLEANUP)
         inbound = await conn.fetchrow(
             "SELECT count(*) AS unfinalized FROM inbound_voice_calls "
             "WHERE transcript_status='active' AND (ended_at < now() - interval '10 minutes' "
             "OR started_at < now() - interval '2 hours')")
+        exports = await conn.fetchrow(_SQL_EXPORT_CLEANUP)
         # BILL-001: delivered speed-to-lead engagements still unmetered an hour
         # on — the sweep re-meters every 15 minutes, so these are ones it
         # could not fix.
