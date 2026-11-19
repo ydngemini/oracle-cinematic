@@ -50,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
@@ -225,6 +226,21 @@ def _all_envs(spec: dict, names=("api", "worker")) -> dict:
     return {n: _envs(comps[n]) for n in names if n in comps}
 
 
+def _component_states(components) -> str:
+    """'name=STATE, ...' for the report; tolerant of a malformed body, which
+    launch_assessment has already turned into a BLOCK (30.7 review)."""
+    if not isinstance(components, dict):
+        return "MALFORMED"
+    return ", ".join(f"{k}={(v if isinstance(v, dict) else {}).get('state', '?')}"
+                     for k, v in sorted(components.items(), key=lambda kv: str(kv[0])))
+
+
+def _waiver_well_formed(text: str) -> bool:
+    """'who: why', both parts present (audit 30.7 review)."""
+    who, sep, why = text.partition(":")
+    return bool(sep and who.strip() and why.strip())
+
+
 def _component_health():
     """backend/component_health.py, loaded by path: the readiness gate uses the
     states and launch policy the backend reports with (audit 30.2)."""
@@ -272,8 +288,12 @@ class Audit:
     def __init__(self, env: str, *, base_url: str = "", token: str = "", manifest: Optional[dict] = None,
                  repo_slug: str = DEFAULT_REPO_SLUG, charging: bool = True,
                  runner: Runner = default_runner, http: Http = default_http,
-                 now: Optional[dt.datetime] = None, repo_root: pathlib.Path = REPO) -> None:
+                 now: Optional[dt.datetime] = None, repo_root: pathlib.Path = REPO,
+                 operator_waiver: str = "") -> None:
         self.env = env
+        # Who skipped the authenticated operator checks, and why (audit 30.7).
+        self.operator_waiver = operator_waiver.strip()
+        self.waiver_applied = False
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.manifest = manifest
@@ -687,26 +707,51 @@ class Audit:
                  blocking=self.env == "production")
 
     def check_operator_console(self):
+        prod = self.env == "production"
         if not (self.token and self.base_url):
-            self.add("operator_console", "operations", "Operator-console checks", False,
-                     "not checked — set NEOH_OPERATOR_TOKEN (and a reachable URL) for component health, "
-                     "MLS feeds and billing exceptions", warn=True)
+            # Core health and billing exceptions are only visible to the
+            # operator: a production go-live cannot be credited without them
+            # (audit 30.7). A named waiver ('who: why') is accepted only while
+            # production is not charging; a paid launch stays BLOCKED.
+            if prod and self.operator_waiver and not _waiver_well_formed(self.operator_waiver):
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         "not checked — the waiver must read 'who: why'", blocking=True)
+            elif prod and self.operator_waiver and self.charging:
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         f"not checked — waiver ({self.operator_waiver}) refused: production charges, so core "
+                         "health and billing exceptions must be checked", blocking=True)
+            elif prod and self.operator_waiver:
+                self.waiver_applied = True
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         f"not checked — WAIVED (not charging): {self.operator_waiver}", warn=True)
+            else:
+                self.add("operator_console", "operations", "Operator-console checks", False,
+                         "not checked — set NEOH_OPERATOR_TOKEN (and a reachable URL) for component health, "
+                         "MLS feeds and billing exceptions"
+                         + ("; a production go-live needs them (or --waive-operator-checks 'who: why')"
+                            if prod else ""),
+                         blocking=prod, warn=not prod)
             return
+        started = time.monotonic()
         st, _, d = self._get("/api/admin/health/components", auth=True)
+        took = f"{(time.monotonic() - started) * 1000:.0f} ms"
+        release = ((self.version or {}).get("git_sha") or "?")[:12] if isinstance(self.version, dict) else None
         if st == 200 and isinstance(d, dict) and d.get("components"):
             # The backend's own state model and launch policy (audit 30.2).
             verdict = _component_health().launch_assessment(d["components"])
             blocking, warning = verdict["blocking"], verdict["warning"]
             self.add("component_health", "operations", "Component health", not blocking and not warning,
-                     "all components healthy" if not (blocking or warning) else
-                     f"blocks go-live: {', '.join(blocking) or '-'}; reduced or unknown: {', '.join(warning) or '-'}",
+                     ("all components healthy" if not (blocking or warning) else
+                      f"blocks go-live: {', '.join(blocking) or '-'}; reduced or unknown: {', '.join(warning) or '-'}")
+                     + f" (operator snapshot answered in {took}" + (f", release {release}" if release else "")
+                     + "; states: " + _component_states(d["components"]) + ")",
                      blocking=bool(blocking))
         else:
             # A token was given and the health endpoint did not answer with
             # components: production cannot be shown healthy (audit 30.2).
             self.add("component_health", "operations", "Component health", False,
                      f"/api/admin/health/components → {st or 'unreachable'}"
-                     + (" (no components reported)" if st == 200 else ""),
+                     + (" (no components reported)" if st == 200 else "") + f" after {took}",
                      blocking=self.env == "production", warn=self.env != "production")
         st, _, d = self._get("/api/admin/mls/feeds", auth=True)
         if st == 200:
@@ -731,8 +776,12 @@ class Audit:
                      "none" if not items else f"{len(items)} open billing exception(s) — review in the operator console",
                      blocking=False)
         else:
+            # Billing exceptions cannot be silently omitted when production
+            # charges (audit 30.7); MLS stays optional (not sold).
+            gate = prod and self.charging
             self.add("billing_exceptions", "billing", "Billing exceptions", False,
-                     f"not checked: /api/admin/billing/exceptions → {st or 'unreachable'}", warn=True)
+                     f"not checked: /api/admin/billing/exceptions → {st or 'unreachable'}",
+                     blocking=gate, warn=not gate)
 
     def check_backups(self):
         cluster = self.expected["clusters"].get("neoh-postgres")
@@ -873,6 +922,9 @@ def report_json(audit: Audit, checks: list) -> dict:
         "app_id": (audit.app or {}).get("id"), "base_url": audit.base_url or None,
         "generated_at": audit.now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "summary": summarize(checks),
+        # A deliberate skip of the operator-only checks, as given (audit 30.7).
+        # Recorded only when it was applied: no token, production, not charging.
+        "operator_waiver": audit.red.scrub(audit.operator_waiver) if audit.waiver_applied else None,
         "checks": [c.as_dict() for c in checks],
     }
 
@@ -891,6 +943,8 @@ def main(argv: Optional[list] = None, *, runner: Runner = default_runner, http: 
     ap.add_argument("--repo", default=DEFAULT_REPO_SLUG, help="GitHub owner/name for the CI environment checks")
     ap.add_argument("--not-charging", action="store_true",
                     help="billing not live yet: missing Stripe config is a WARN, not a blocker")
+    ap.add_argument("--waive-operator-checks", default="", metavar="'WHO: WHY'",
+                    help="production only: run without NEOH_OPERATOR_TOKEN; recorded in the report")
     args = ap.parse_args(argv)
     if args.base_url and not args.base_url.startswith("https://"):
         ap.error("--base-url must be https://")
@@ -899,7 +953,7 @@ def main(argv: Optional[list] = None, *, runner: Runner = default_runner, http: 
         manifest = _json(pathlib.Path(args.manifest).read_text(encoding="utf-8"))
     audit = Audit(args.env, base_url=args.base_url, token=os.getenv("NEOH_OPERATOR_TOKEN", ""),
                   manifest=manifest, repo_slug=args.repo, charging=not args.not_charging,
-                  runner=runner, http=http, now=now)
+                  runner=runner, http=http, now=now, operator_waiver=args.waive_operator_checks)
     checks = audit.run_all()
     print(render_text(audit, checks))
     if args.json_path:

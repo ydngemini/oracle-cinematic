@@ -155,14 +155,62 @@ def test_missing_doctl_blocks_instead_of_guessing():
 
 # ── A correct environment passes its hard requirements ─────────────────────
 
+def _operator_endpoints(world):
+    world.http["/api/admin/health/components"] = (
+        200, {}, json.dumps({"components": {"database": {"state": "HEALTHY"}, "workers": {"state": "HEALTHY"}}}).encode())
+    world.http["/api/admin/billing/exceptions"] = (200, {}, b'{"exceptions": []}')
+
+
 def test_a_correct_production_has_no_blockers(passing_gates):
-    a, c = audit(World(), gates_root=passing_gates)
+    w = World()
+    _operator_endpoints(w)
+    a, c = audit(w, gates_root=passing_gates, token="t")
     blocked = {i: x.reason for i, x in c.items() if x.status == lr.BLOCKED}
     assert blocked == {}
     # What it cannot see is a WARN, not a PASS.
     assert c["stripe_live_mode"].status == lr.WARN
-    assert c["operator_console"].status == lr.WARN
+    assert c["component_health"].status == lr.PASS and "answered in" in c["component_health"].reason
+    assert c["billing_exceptions"].status == lr.PASS
     assert lr.exit_code(a.checks) == 1
+
+
+def test_production_without_the_operator_checks_blocks_unless_waived(passing_gates):
+    """Audit 30.7: core health and billing exceptions are operator-only, so a
+    production go-live is not credited without them; a waiver is recorded."""
+    _, c = audit(World(), gates_root=passing_gates)
+    assert c["operator_console"].status == lr.BLOCKED
+    # A paid launch cannot be waived; a malformed waiver is refused.
+    a, c = audit(World(), gates_root=passing_gates, operator_waiver="owner: first look before the token exists")
+    assert c["operator_console"].status == lr.BLOCKED and "refused" in c["operator_console"].reason
+    _, c = audit(World(), gates_root=passing_gates, charging=False, operator_waiver="x")
+    assert c["operator_console"].status == lr.BLOCKED and "who: why" in c["operator_console"].reason
+    # Not charging: a named waiver is a recorded WARN, also in the JSON report.
+    a, c = audit(World(), gates_root=passing_gates, charging=False,
+                 operator_waiver="owner: first look before the token exists")
+    assert c["operator_console"].status == lr.WARN and "WAIVED (not charging): owner" in c["operator_console"].reason
+    assert lr.report_json(a, a.checks)["operator_waiver"] == "owner: first look before the token exists"
+    _, c = audit(World("staging"), gates_root=passing_gates)
+    assert c["operator_console"].status == lr.WARN
+
+
+def test_the_waiver_reaches_the_cli_and_the_json_report(tmp_path):
+    out = tmp_path / "r.json"
+    w = World()
+    lr.main(["--env", "production", "--not-charging", "--json", str(out),
+             "--waive-operator-checks", "owner: before the token exists"],
+            runner=w.runner, http=w.http_get, now=NOW)
+    report = json.loads(out.read_text())
+    assert report["operator_waiver"] == "owner: before the token exists"
+
+
+def test_unreachable_billing_exceptions_block_a_charging_production(passing_gates):
+    w = World()
+    _operator_endpoints(w)
+    del w.http["/api/admin/billing/exceptions"]
+    _, c = audit(w, gates_root=passing_gates, token="t")
+    assert c["billing_exceptions"].status == lr.BLOCKED
+    _, c = audit(w, gates_root=passing_gates, token="t", charging=False)
+    assert c["billing_exceptions"].status == lr.WARN
 
 
 def test_a_correct_staging_has_no_blockers(passing_gates):
@@ -479,3 +527,27 @@ def test_an_unreachable_health_endpoint_blocks_production_and_warns_staging():
     s = World("staging")
     _, c = audit(s, token="t")
     assert c["component_health"].status == lr.WARN
+
+
+
+@pytest.mark.parametrize("body", [{"components": ["db"]}, {"components": {"database": "HEALTHY"}}])
+def test_a_malformed_health_body_blocks_and_does_not_crash(body):
+    """30.7 review: the evidence line must not crash the gate the policy blocks."""
+    w = World()
+    w.http["/api/admin/health/components"] = (200, {}, json.dumps(body).encode())
+    _, c = audit(w, token="t")
+    assert c["component_health"].status == lr.BLOCKED
+
+
+def test_an_unapplied_waiver_is_not_recorded(passing_gates):
+    w = World()
+    _operator_endpoints(w)
+    a, _ = audit(w, gates_root=passing_gates, token="t", charging=False, operator_waiver="owner: not needed")
+    assert lr.report_json(a, a.checks)["operator_waiver"] is None
+
+
+
+def test_a_refused_waiver_is_not_recorded_as_applied(passing_gates):
+    a, c = audit(World(), gates_root=passing_gates, operator_waiver="owner: WAIVED twice")
+    assert c["operator_console"].status == lr.BLOCKED
+    assert lr.report_json(a, a.checks)["operator_waiver"] is None

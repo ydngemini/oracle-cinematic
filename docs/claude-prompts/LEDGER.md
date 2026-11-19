@@ -5116,12 +5116,33 @@ tests_run:
 authz_checked: "No access-control change. One policy, component_health.launch_assessment, which the readiness script loads from backend/component_health.py by path (no second copy of the states). Blocks: a core or important component UNAVAILABLE / AUTH_FAILED / STALE; a core one UNKNOWN or NOT_CONFIGURED; any state the module does not define. Warns: DEGRADED / RATE_LIMITED / RECOVERING anywhere; an optional component not working or UNKNOWN; an important one UNKNOWN. inbound_calls, billing_meter, usage_reporting and messaging_registration are now listed in ROLE as important (they defaulted to optional in the snapshot and important in the gate); role_of() gives one default (important) for both. A malformed health body blocks. With an operator token, a health endpoint that does not answer with components blocks production and warns staging."
 blockers:
   - "Not exercised against a live degraded worker, queue or realtime listener (the audit asks for that): needs a deployed environment with an operator token; staging cannot run it until DigitalOcean access is restored (30.5)."
-  - "Without an operator token the operator checks stay an optional warning; that is audit 30.7 (operator-only checks optional for launch-critical subsystems), open."
+  - "Without an operator token the operator checks were an optional warning: audit 30.7, closed by L19-18 (production BLOCKED without the token)."
   - "Independent review r1: APPROVE with LOW follow-ups, applied (role agreement, coverage test reads the module constants, malformed body, wording). Residual, LOW: a configured Valkey that does not answer reports DEGRADED (component_health._valkey), so the gate only warns although calling is unavailable; the gate uses the operator checkout's ROLE, not the role the server reports, so it can drift if the checkout is not the deployed SHA."
   - "Not deployed (C4.4)."
 audit_refs: [30.2]
 decision_refs: []
 next_task: "30.7: operator-only checks required in production; 30.6 / 30.8."
+updated: 2026-11-18
+```
+
+#### L19-18 A production go-live needs the operator-only checks: without the operator token it is BLOCKED unless a named waiver is recorded, and unreachable billing exceptions block a charging production (external audit 30.7)
+```yaml
+id: L19-18
+status: tests_pass
+env: local
+evidence_shas: [7eed35d]   # base; fix in the commit that adds this row
+files: [scripts/neoh-launch-readiness.py, backend/tests/test_launch_readiness.py, docs/first-brokerage-launch.md]
+tests_run:
+  - {cmd: "read scripts/neoh-launch-readiness.py check_operator_console at 7eed35d", result: "confirmed 30.7: with no NEOH_OPERATOR_TOKEN the operator checks (component health, MLS feeds, billing exceptions) were one WARN in production too, and an unreachable billing-exceptions endpoint only warned", date: 2026-11-18}
+  - {cmd: "after: full unit suite 6897 passed / 156 skipped; after review r1 test_launch_readiness 43 passed (production without the token BLOCKED; a waiver refused while charging and when malformed, a recorded WARN when not charging, carried to the JSON through the CLI; staging WARN; unreachable billing exceptions BLOCKED when charging, WARN when not; a healthy snapshot PASS with its response time and states)", result: "pass", date: 2026-11-18}
+authz_checked: "No access-control change. Production: no operator token -> operator_console BLOCKED. --waive-operator-checks 'who: why' is refused (still BLOCKED) while production charges, refused when not in 'who: why' form, and otherwise a WARN reading 'WAIVED (not charging): ...', also in the JSON report's top-level operator_waiver; billing exceptions unreachable -> BLOCKED when charging; MLS feeds stay a warning (MLS is not sold, D-2026-10-12-01). The component-health reason records the operator snapshot's response time (also on failure), the release SHA the /version check read, and every component's state. Staging is unchanged (warnings)."
+blockers:
+  - "Not run against a deployed production (none exists; 30.1). The saved docs/launch-readiness/*.json snapshots predate this and still show the old warning."
+  - "Independent review r1 (REQUEST CHANGES), fixed: the waiver could clear a paid launch (now refused while charging), any text was accepted (now 'who: why'), the waiver was not a top-level JSON field, response time only on success, healthy states not kept, a null git_sha could raise, L19-17 and three runbooks still showed the old behaviour. The raw operator snapshot is not stored in the report (states are, in the reason). Round 2 (REQUEST CHANGES), fixed: the states list could crash on a malformed body the policy blocks (now guarded, tested), and a waiver given with a token was recorded though not applied (now only when applied)."
+  - "Not deployed (C4.4)."
+audit_refs: [30.7]
+decision_refs: []
+next_task: "30.6: per-environment gate evidence; 30.8: a go-live storage acceptance gate."
 updated: 2026-11-18
 ```
 
