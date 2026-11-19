@@ -3949,7 +3949,7 @@ tests_run:
 authz_checked: "Decide inside the transaction, commit, raise 401 after it closes; the attempt is counted in SQL (attempts = attempts + 1) with an explicit ::int cast; an expired code is refused (live test pins expires_at). The TOTP path was checked: a replayed step writes nothing, so its in-transaction raise loses no state."
 blockers:
   - {type: owner, note: "No account-level cool-down after a lockout (independent review of #86): a fresh code is issued at once, so a passphrase holder gets ~50 guesses/minute across new challenges. Decide: a cool-down (e.g. 15 min after a retired challenge) or alerting."}
-  - "28.3 (environment-operator JWTs cannot be revoked) and 28.2 (MFA policy change does not end non-MFA sessions) remain open."
+  - "28.3 (environment-operator JWTs cannot be revoked) remains open. 28.2: L17-47."
   - "Auth/security: independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [28.1]
@@ -4329,6 +4329,30 @@ audit_refs: [24.8]
 decision_refs: []
 next_task: "24.7 (after PR #109); 25.1/25.2."
 updated: 2026-11-17
+```
+
+#### L17-47 Turning on required two-step sign-in signs out, at once, every member it now applies to who lacks it (external audit 28.2)
+```yaml
+id: L17-47
+status: tests_pass
+env: local
+evidence_shas: [a68f5cd]   # base; fix in the commit that adds this row
+files: [backend/brokerage_onboarding.py, backend/tests/test_tenant_user_mfa_live.py, oracle-app/src/components/TwoStepSettings.jsx, oracle-app/src/components/TwoStep.test.jsx]
+tests_run:
+  - {cmd: "read brokerage_onboarding.put_security_settings at a68f5cd", result: "confirmed 28.2: PUT /api/brokerage/security set tenants.require_mfa and, by its own docstring, left open sessions running; a session minted while the rule was off has no mfa_enrol claim and every re-mint copies the claim forward, so an agent without two-step kept working until the token expired", date: 2026-11-18}
+  - {cmd: "live PostgreSQL: test_tenant_user_mfa_live against a68f5cd's brokerage_onboarding.py (members_signed_out asserts neutralised)", result: "red: DID NOT RAISE InvalidAuthorizationSpecificationError (the agent's pre-switch session still worked)", date: 2026-11-18}
+  - {cmd: "mutants: (a) drop the caller-session re-check; (b) drop the confirmed-factor clause", result: "red both: (a) a revoked owner token changed the rule (DID NOT RAISE HTTPException); (b) members_signed_out 2 != 1 (an enrolled agent was signed out)", date: 2026-11-18}
+  - {cmd: "after: live 1 passed (with the review-round-2 changes); full unit suite 6830 passed / 151 skipped (before round 2, which added only verify_session_current and test rows); after round 2 the 246 related unit tests passed; vitest TwoStep 14 passed; eslint clean; CI runs the full suite on the PR head", result: "pass", date: 2026-11-18}
+authz_checked: "The switch from off to on and the epoch bump commit in one transaction (tenants row FOR UPDATE). Bumped: active agents of the caller's brokerage with no confirmed factor; owners and platform admins already had to use it (their sessions are mfa_enrol-held at sign-in). Members who use two-step and other brokerages are untouched (live). user_mfa_factors is platform-only under RLS (0150), so the write runs as the platform context scoped to ctx.tenant_id, after verify_session_current(ctx) re-proves the caller's session (a revoked owner token gets 401 and the rule is unchanged, live). Re-saving 'on' ends nothing. Open sockets close on their next session re-check (server.py, about 60 s)."
+blockers:
+  - "Independent review r1 (REQUEST CHANGES): the platform-context write skipped the caller's session check (fixed: verify_session_current + live 401 test) and the test did not exercise the factor exclusion (fixed: an enrolled agent stays signed in, an agent of another brokerage is untouched). Residual, LOW, needs the member's own credentials and exact timing: disable / reset_password / accept_invite / change_password decide 'owes enrolment' outside the switch's lock, so a token minted in that window carries no hold until it expires. Optional follow-up: read tenants.require_mfa FOR SHARE inside those transactions."
+  - "members_signed_out counts members whose epoch was bumped, including members with no open session."
+  - "Auth/security: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [28.2]
+decision_refs: []
+next_task: "28.3 (owner decision on the operator session registry migration); 28.4-28.7."
+updated: 2026-11-18
 ```
 
 #### L17-48 A brokerage export refuses rather than leave out sealed data: no master key, a column nobody mapped, or a value the key cannot open; documents and audio go in, and partial media is said (external audit 29.5)
