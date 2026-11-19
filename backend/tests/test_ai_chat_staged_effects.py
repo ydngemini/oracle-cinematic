@@ -140,3 +140,18 @@ def test_a_fireworks_tier_that_staged_blocks_the_later_tiers(monkeypatch):
     monkeypatch.setattr(ai_chat_agent, "_local_fallback", later_tier)
     text, _actions, _model = asyncio.run(ai_chat_agent._generate(CTX, _bundle(), "assistant-2"))
     assert later == [] and text.startswith("A call was prepared")
+
+
+def test_the_reply_counts_each_staged_request_once_and_per_kind():
+    """AI32-03 review r2: a re-staged text returns the same id (one text); two
+    contract drafts are two."""
+    bundle = {}
+    for receipt in ({"ok": True, "command_id": "c1", "action_type": "draft_sms"},
+                    {"ok": True, "command_id": "c1", "action_type": "draft_sms"}):
+        ai_chat_agent._note_staged(bundle, receipt)
+    assert ai_chat_agent._interrupted_reply(bundle, []).startswith("A text was prepared and is waiting")
+    for receipt in ({"ok": True, "approval_id": "k1", "action_type": "draft_contract"},
+                    {"ok": True, "approval_id": "k2", "action_type": "draft_contract"}):
+        ai_chat_agent._note_staged(bundle, receipt)
+    assert ai_chat_agent._interrupted_reply(bundle, []).startswith(
+        "A text and 2 contract drafts were prepared and are waiting")

@@ -547,30 +547,34 @@ def _turn_has_effects(bundle: dict, actions: list) -> bool:
     return bool(actions) or bool(bundle.get("staged_effects"))
 
 
-_STAGED_WORDS = {
-    "draft_sms": "a text", "draft_email": "an email", "call_contact": "a call",
-    "schedule_event": "a calendar event", "draft_contract": "a contract draft",
-    "publish_to_marketplace": "a marketplace listing",
+_STAGED_NOUNS = {
+    "draft_sms": "text", "draft_email": "email", "call_contact": "call",
+    "schedule_event": "calendar event", "draft_contract": "contract draft",
+    "publish_to_marketplace": "marketplace listing",
 }
 
 
 def _interrupted_reply(bundle: dict, actions: list) -> str:
     """Names only what this turn actually did (AI32-03 review): a request cut
-    short must not read as if all of it was staged."""
-    staged = bundle.get("staged_effects") or []
-    if not staged:
+    short must not read as if all of it was staged. A re-staged request that
+    returned the same id counts once."""
+    unique: dict[str, str] = {}
+    for effect in bundle.get("staged_effects") or []:
+        unique.setdefault(effect.get("id", ""), effect.get("action_type", ""))
+    if not unique:
         return "The requested record update was applied, but the assistant response was interrupted."
-    kinds = []
-    for effect in staged:
-        word = _STAGED_WORDS.get(effect.get("action_type", ""), "a request")
-        if word not in kinds:
-            kinds.append(word)
-    named = kinds[0] if len(kinds) == 1 else ", ".join(kinds[:-1]) + " and " + kinds[-1]
+    counts: dict[str, int] = {}
+    for action_type in unique.values():
+        noun = _STAGED_NOUNS.get(action_type, "request")
+        counts[noun] = counts.get(noun, 0) + 1
+    parts = [(f"an {noun}" if noun[0] in "aeiou" else f"a {noun}") if n == 1 else f"{n} {noun}s"
+             for noun, n in counts.items()]
+    named = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    one = len(unique) == 1
     done = "A record update was applied and " if actions else ""
-    sentence = (f"{done}{named} {'was' if len(staged) == 1 else 'were'} prepared and "
-                f"{'is' if len(staged) == 1 else 'are'} waiting in Approvals; nothing was sent. The assistant "
-                "response was interrupted before the rest of the request, so check what is still missing and "
-                "ask again for it.")
+    sentence = (f"{done}{named} {'was' if one else 'were'} prepared and {'is' if one else 'are'} waiting in "
+                "Approvals; nothing was sent. The assistant response was interrupted before the rest of the "
+                "request, so check what is still missing and ask again for it.")
     return sentence[0].upper() + sentence[1:]
 
 
