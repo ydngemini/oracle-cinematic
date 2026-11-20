@@ -8,7 +8,6 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
 
 import memory_core.session_manager as sm
 

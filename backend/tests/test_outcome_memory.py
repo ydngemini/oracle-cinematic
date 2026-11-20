@@ -21,7 +21,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 import outcome_memory as om
 from tenancy import Role, TenantContext

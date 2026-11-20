@@ -12,7 +12,6 @@ import asyncio
 import inspect
 import pathlib
 
-import pytest
 
 import process_heartbeat as hb
 

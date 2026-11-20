@@ -14,7 +14,7 @@ import pathlib
 
 import pytest
 
-from missions import executor, policy
+from missions import executor
 from tenancy import Role, TenantContext
 
 CTX = TenantContext(

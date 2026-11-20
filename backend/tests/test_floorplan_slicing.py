@@ -607,7 +607,6 @@ def test_the_raster_margin_clears_the_background_threshold():
     on roughly half of all plans, and that phantom room is larger than the whole
     building. It caused every spurious-room error measured.
     """
-    from floorplan_pipeline import raster
 
     margin = slicing.RASTER_MARGIN
     # The building spans 1/(1+2m) of each padded axis, so the ring is whatever

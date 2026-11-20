@@ -5735,6 +5735,27 @@ next_task: "Measure the false-red rate over the next migration PRs; then F2 (rol
 updated: 2026-11-20
 ```
 
+#### L19-29 static gate phase 3: unused imports (F401), every removal cross-referenced first (external audit 35-03 phase 3)
+```yaml
+id: L19-29
+status: tests_pass
+env: local
+evidence_shas: [04a0922]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/tests/test_static_gate.py, backend/agent_mind/__init__.py, backend/server.py, "backend/state_compliance/*.py", "and 105 more files (imports only; see the PR)"]
+tests_run:
+  - {cmd: "ruff --select F401 at 04a0922", result: "321 findings (262 in production modules, 59 in tests, 108 files); 178 more were hidden by a noqa on the FIRST line of seven multi-line state_compliance imports ('re-exported for route handlers'), which silences every name in the statement", date: 2026-11-20}
+  - {cmd: "cross-reference every finding before removal: other modules importing the name from that module (absolute, relative, parenthesised), module.attr access, setattr and dotted-string patch targets; star imports checked (only tests.conftest)", result: "one genuine re-export: agent_mind.MindService (server.py, commands_api.py import it) — kept with a one-name noqa naming its importers; the 178 hidden names and the rest had no importer. Seven test-only module imports removed (no side effect relied on: suite green); unused 'from .engine import _engine' dropped from five route modules; orphaned comments removed", date: 2026-11-20}
+  - {cmd: "full backend suite; touched live test (test_brokerage_access_matrix_live) on the dev DB; ruff (E9,F63,F7,F82,F841,F811,F401); test_static_gate", result: "7255 passed, 0 failed; live 2 passed; All checks passed; gate 4 passed. The gate test now pins F401, rejects ALL / extend-ignore / extend-per-file-ignores and file-level ruff noqa, and requires a reason on every F401 noqa (red: a bare one fails it). Every remaining F401 noqa states its reason (availability probes, side-effect registrations, an import under test, pytest fixtures)", date: 2026-11-20}
+authz_checked: "No access change. Imports only; no behaviour change intended — side-effect imports in server.py (job-handler registration, image pixel ceilings) are kept and labelled."
+blockers:
+  - "Wider families (B, UP, SIM) are later phases; B008 (FastAPI Depends in defaults, ~509) is idiomatic and likely stays excluded."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "35-03 phase 4: B023 (loop-variable closures) and B904 (raise without from) triage."
+updated: 2026-11-20
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

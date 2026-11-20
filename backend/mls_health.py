@@ -22,7 +22,7 @@ derived server-side from mls_feed_entitlements, which IS row-secured.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from mls_licensing import DEVELOPER, LICENSED

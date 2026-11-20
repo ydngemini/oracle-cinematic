@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
 
 from tests.conftest import *  # noqa: F401,F403 — env bootstrap must run before `server`
 

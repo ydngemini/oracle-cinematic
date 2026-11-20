@@ -56,7 +56,7 @@ def test_the_scraping_reconstruction_module_is_gone():
     """spatial_agent ran a second pipeline that scraped listing-site images for
     an arbitrary address and wrote the result to the public directory above."""
     with pytest.raises(ImportError):
-        import spatial_agent  # noqa: F401
+        import spatial_agent  # noqa: F401 - the import itself is under test (must raise)
 
 
 def test_the_websocket_cannot_start_a_reconstruction_by_address():

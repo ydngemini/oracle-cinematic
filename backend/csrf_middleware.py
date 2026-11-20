@@ -6,7 +6,6 @@ In production, all POST/PUT/DELETE/PATCH requests require a valid CSRF token.
 
 from __future__ import annotations
 
-import os
 import secrets
 from typing import Callable
 

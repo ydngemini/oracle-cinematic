@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from .base import ArcGISHarvester, classify_owner, to_float, norm
+from .base import ArcGISHarvester, classify_owner, to_float
 from .property_adapter import PropertyRecord
 
 # PADDRESS2 example: " Harveyville, KS  66431"

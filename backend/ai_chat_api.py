@@ -25,14 +25,12 @@ import ai_budget
 import ws_hub
 from ai_chat_models import ChatSendFrame
 from ai_chat_store import (
-    active_message_count,
     create_chat_request,
     delete_attachment,
     get_attachment,
     list_attachments,
     list_messages,
     list_records,
-    recent_request_count,
     release_concurrency,
     save_attachment,
     undo_action,

@@ -20,7 +20,6 @@ Falls back to Claude-3 Sonnet if Llama fails.
 
 import json
 import logging
-import os
 from typing import Optional
 
 from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL

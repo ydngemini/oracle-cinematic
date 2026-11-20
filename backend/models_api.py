@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import hashlib
 import math
-import os
 import re
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from approval_service import create_approval, decide_approval
 from automation_jobs import enqueue_job, register_handler

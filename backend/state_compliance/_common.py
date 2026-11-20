@@ -6,20 +6,13 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
-from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, HTTPException, status
 
 from db.connection import tenant_tx
-from tenancy import TenantContext, Role, require_context, require_role
+from tenancy import TenantContext
 
-# Authoritative attorney-at-closing list — single source of truth shared with
-# the compliance engine so the public state-profile API and ComplianceEngine
-# never disagree about whether a state requires an attorney at closing.
-from compliance_engine.closing import ATTORNEY_CLOSE_STATES
 
 logger = logging.getLogger("oracle.state_compliance")
 

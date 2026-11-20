@@ -31,12 +31,11 @@ Key field map (exact column names from service):
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import urllib.parse
 from typing import Optional
 
-from .base import BaseHarvester, RateLimiter, PAGE_SIZE, to_float, classify_owner, norm
+from .base import BaseHarvester, to_float, classify_owner, norm
 from .property_adapter import PropertyRecord
 
 logger = logging.getLogger("oracle.harvester")

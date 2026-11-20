@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from typing import Iterable, Optional
+from typing import Optional
 
 from .errors import DegenerateGeometry, MissingScale
 from .schema import (

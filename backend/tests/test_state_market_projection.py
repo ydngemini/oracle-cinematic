@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timezone
 
-import pytest
 
 from state_market_projection import (
     UNMAPPED_COLUMNS,

@@ -15,9 +15,7 @@ without a ceiling.
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
 
-import pytest
 
 import ai_tools_gated as gated
 import ai_tools_read as read_tools
@@ -127,7 +125,6 @@ def test_a_request_without_a_subject_is_refused():
 # ---------------------------------------------------------------------------
 
 def test_a_reconstruction_is_requested_and_no_gpu_is_rented(monkeypatch):
-    import ai_tools_gated
     import reconstruction_providers as rp
 
     class _Ready:

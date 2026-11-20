@@ -19,7 +19,7 @@ import gzip
 import io
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException, UploadFile

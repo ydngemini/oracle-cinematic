@@ -12,8 +12,6 @@ import io
 import json
 import requests
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -460,7 +458,6 @@ def test_a_single_clip_with_captions_is_not_stream_copied(tmp_path):
     """The one-clip fast path copies the file verbatim — which would silently
     drop the captions the caller asked for."""
     import av
-    import numpy as np
 
     clip, out = tmp_path / "c.mp4", tmp_path / "out.mp4"
     _synth_clip(clip, 720, 1280, frames=4, shade=220)

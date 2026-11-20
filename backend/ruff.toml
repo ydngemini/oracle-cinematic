@@ -11,8 +11,14 @@
 # Where a finding is intended, such as a test parameter that is a pytest
 # fixture imported from another module, the line carries a targeted
 # `# noqa: F811` with its reason, never a file- or rule-wide ignore.
+#
+# Phase 3 adds F401 (an import nothing uses). A noqa on the FIRST line of a
+# multi-line import silences every name in it: the state_compliance split
+# carried "# noqa: F401 (re-exported for route handlers)" over 178 names that
+# nothing imported. A genuine re-export carries a one-name noqa with the
+# importer named (agent_mind/__init__.py).
 target-version = "py312"
 extend-exclude = ["venv", "node_modules", "pascal-editor"]
 
 [lint]
-select = ["E9", "F63", "F7", "F82", "F841", "F811"]
+select = ["E9", "F63", "F7", "F82", "F841", "F811", "F401"]

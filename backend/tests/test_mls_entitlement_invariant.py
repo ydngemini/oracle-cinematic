@@ -20,7 +20,6 @@ tomorrow fails here until it either narrows or is listed below with a reason.
 from __future__ import annotations
 
 import pathlib
-import re
 
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 

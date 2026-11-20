@@ -18,7 +18,6 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-import mls_feed_lock
 from mls_feed_lock import FeedBusy, feed_sync_lock, feed_sync_session_lock
 
 

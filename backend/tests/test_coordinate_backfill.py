@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-import pytest
 
 import backfill_property_coordinates as backfill
 
@@ -393,7 +392,7 @@ def test_the_cache_key_distinguishes_the_passes():
     import csv as _csv
     import io as _io
 
-    from data_integrations.census_geocoder import CensusGeocoder, _split_oneline
+    from data_integrations.census_geocoder import CensusGeocoder
 
     keys = []
 

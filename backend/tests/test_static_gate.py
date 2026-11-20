@@ -4,8 +4,8 @@
 so the approved-email branch raised UnboundLocalError before reaching it.
 
 Phase 2 widened the gate to F841 and F811 (unused locals, redefinitions of
-unused names); the families are pinned below so the gate cannot pass by
-checking less."""
+unused names), phase 3 to F401 (unused imports); the families are pinned
+below so the gate cannot pass by checking less."""
 
 from __future__ import annotations
 
@@ -40,9 +40,34 @@ def test_the_gate_keeps_its_phase_one_and_two_families():
     while checking less. An intended finding is silenced on its own line with
     a reason (`# noqa: F811 - ...`), never by ignoring the rule for a file."""
     lint = tomllib.loads((BACKEND / "ruff.toml").read_text())["lint"]
-    assert {"E9", "F63", "F7", "F82", "F841", "F811"} <= set(lint["select"])
-    ignored = set(lint.get("ignore", [])) | {
-        code for codes in lint.get("per-file-ignores", {}).values() for code in codes
+    assert {"E9", "F63", "F7", "F82", "F841", "F811", "F401"} <= set(lint["select"])
+    ignored = set(lint.get("ignore", [])) | set(lint.get("extend-ignore", [])) | {
+        code
+        for key in ("per-file-ignores", "extend-per-file-ignores")
+        for codes in lint.get(key, {}).values() for code in codes
     }
-    # Any ignore that covers a phase-2 rule, prefixes ("F8", "F84") included.
-    assert not [c for c in ignored for rule in ("F841", "F811") if rule.startswith(c)], ignored
+    # Any ignore that covers a pinned rule: prefixes ("F8", "F84") and ALL included.
+    assert not [c for c in ignored for rule in ("F841", "F811", "F401")
+                if c == "ALL" or rule.startswith(c)], ignored
+
+
+def test_no_file_silences_the_gate_wholesale_and_import_noqa_names_its_reason():
+    """A file-level `# ruff: noqa` turns the gate off for that file; a bare
+    `# noqa: F401` on the first line of a multi-line import silences every
+    name in it (178 dead names hid that way in state_compliance)."""
+    import re
+
+    bad_file_level, bare_import_noqa = [], []
+    for path in BACKEND.rglob("*.py"):
+        if any(part in ("venv", "node_modules", "pascal-editor") for part in path.parts):
+            continue
+        text = path.read_text(errors="ignore")
+        rel = path.relative_to(BACKEND)
+        if re.search(r"^#\s*ruff:\s*noqa\b", text, re.M):
+            bad_file_level.append(str(rel))
+        for n, line in enumerate(text.splitlines(), 1):
+            m = re.search(r"#\s*noqa:\s*([A-Z0-9, ]*F401[A-Z0-9, ]*)(.*)$", line)
+            if m and not re.search(r"[A-Za-z]{3}", m.group(2)):
+                bare_import_noqa.append(f"{rel}:{n}")
+    assert not bad_file_level, bad_file_level
+    assert not bare_import_noqa, bare_import_noqa
