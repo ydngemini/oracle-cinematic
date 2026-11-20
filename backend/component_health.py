@@ -48,6 +48,8 @@ ROLE = {
     # an unfinalized call, unmetered usage or a lost texting campaign is real.
     "inbound_calls": "important", "billing_meter": "important", "usage_reporting": "important",
     "messaging_registration": "important",
+    # Configured hosted models the gateway is skipping (AI32-08), operator-only.
+    "ai_models": "optional",
     # Voice walkthroughs and 3D reconstructions run in the single worker from
     # their own job tables, which job_queue (automation_jobs) never looked at
     # (audit 30.9): a dead loop, or a job hung with no lease, was invisible.
@@ -359,7 +361,6 @@ async def _db_components() -> dict[str, dict]:
                     failed_15m=failed, total_15m=total)
                  if failed >= 3 and failed * 2 > total and latest_turn != "completed"
                  else _c(HEALTHY, "Neoh responding", total_15m=total))
-    out["ai"] = _with_model_health(out["ai"])
     unresolved, failed_side = int(side["unresolved"] or 0), int(side["failed_15m"] or 0)
     out["outbound_side_effects"] = (
         _c(DEGRADED, "some calls/texts/emails need reconciliation", unresolved=unresolved, failed_15m=failed_side)
@@ -379,24 +380,29 @@ async def _db_components() -> dict[str, dict]:
     return out
 
 
-def _with_model_health(ai: dict) -> dict:
-    """AI32-08: a configured model the provider no longer serves, or a key it
-    rejects, used to show only as slow or failing answers. The gateway's
-    breaker state (this process, no provider call) names it: a healthy 'ai'
-    becomes DEGRADED when a primary chat or fast model is being skipped."""
+def _ai_models() -> dict:
+    """AI32-08: which configured hosted models this process is skipping (a
+    retired model, a rejected key, a sustained outage), from the gateway's
+    breaker state — no provider is called. Operator-facing only: users see
+    the 'ai' component, which measures real answers, so a dead fallback tier
+    while another model answers every turn is detail here, not a banner.
+    DEGRADED only when a task has no hosted model left to try."""
     try:
         import llm_gateway
 
         health = llm_gateway.provider_health()
-    except Exception:  # noqa: BLE001 - no gateway, nothing to add
-        return ai
-    skipped = [f"{task}: {row['provider']}/{row['model']} ({row.get('kind')})"
-               for task, rows in health.items() for row in rows if row.get("state") == "skipped"]
-    detail = {**ai.get("detail", {}), "models": health}
-    if skipped and ai["state"] == HEALTHY:
-        return _c(DEGRADED, "some configured AI models are unavailable and are being skipped: " + "; ".join(skipped),
-                  **detail)
-    return {**ai, "detail": detail}
+    except Exception as exc:  # noqa: BLE001 - no gateway: nothing to observe
+        return _c(UNKNOWN, "AI model state unavailable", reason=type(exc).__name__)
+    skipped = {task: [f"{r['provider']}/{r['model']} ({r.get('kind')})" for r in rows if r.get("state") == "skipped"]
+               for task, rows in health.items()}
+    down = [task for task, rows in health.items() if rows and all(r.get("state") == "skipped" for r in rows)]
+    if down:
+        return _c(DEGRADED, "no hosted AI model is available for: " + ", ".join(down)
+                  + " (" + "; ".join(m for t in down for m in skipped[t]) + ")", models=health)
+    if any(skipped.values()):
+        return _c(HEALTHY, "hosted AI models answering; skipping "
+                  + "; ".join(m for ms in skipped.values() for m in ms), models=health)
+    return _c(HEALTHY, "configured AI models answering or untried", models=health)
 
 
 def _inbound_calls(unfinalized: int) -> dict:
@@ -642,7 +648,7 @@ async def _snapshot() -> dict:
     else:
         rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
     components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
-                  "outbound_opt_outs": _outbound_opt_outs()}
+                  "outbound_opt_outs": _outbound_opt_outs(), "ai_models": _ai_models()}
     for name, comp in components.items():
         comp["role"] = role_of(name)
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]

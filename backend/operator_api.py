@@ -1687,7 +1687,10 @@ def _gateway_view() -> dict[str, Any]:
     ladders = {}
     for task in ("analysis", "fast"):
         try:
-            ladders[task] = [{"provider": p.name, "model": p.model} for p in llm_gateway.providers_for(task)]
+            # The whole configured ladder, skipped models included (AI32-08);
+            # what is being skipped is in the health snapshot's ai_models.
+            ladders[task] = [{"provider": p.name, "model": p.model, "skipped": llm_gateway._breaker_open(p)}
+                             for p in llm_gateway.providers_for(task, include_skipped=True)]
         except Exception:  # noqa: BLE001 — a broken builder must not hide the rest
             ladders[task] = []
     snap = llm_gateway.counter.snapshot()
@@ -1702,7 +1705,9 @@ def _gateway_view() -> dict[str, Any]:
     return {
         "configured": any(ladders.values()),
         "ladders": ladders,
-        "current": {task: (ladder[0] if ladder else None) for task, ladder in ladders.items()},
+        # The model a call would try first: the first one not being skipped.
+        "current": {task: next((r for r in ladder if not r.get("skipped")), ladder[0] if ladder else None)
+                    for task, ladder in ladders.items()},
         "providers": providers,
         "counter_scope": "this API replica since it started",
         "window_seconds": snap.get("window_seconds"),

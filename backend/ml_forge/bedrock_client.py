@@ -42,7 +42,9 @@ FIREWORKS_PRIMARY = os.environ.get(
     "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k3"
 )
 FIREWORKS_SECONDARY = os.environ.get(
-    "ORACLE_FIREWORKS_FAST_MODEL", "accounts/fireworks/routers/glm-5p2-fast"
+    # Same measured default as llm_gateway.FIREWORKS_FAST_DEFAULT (AI32-08):
+    # glm-5p2-fast is retired ("Model not found").
+    "ORACLE_FIREWORKS_FAST_MODEL", "accounts/fireworks/routers/deepseek-v4p1-flash-1017-ultrafast"
 )
 # Reasoning models spend the budget on reasoning_content before emitting any
 # content. Callers here ask for as little as 700, which comes back empty with

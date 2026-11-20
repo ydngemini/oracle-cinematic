@@ -46,6 +46,14 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 
 logger = logging.getLogger("oracle.llm_gateway")
 
+# litellm calls dotenv.load_dotenv() on import unless LITELLM_MODE is not "DEV"
+# (its default): importing it pulled the working directory's .env into the
+# process — real provider keys included — even with ORACLE_SKIP_DOTENV=1 set
+# (the test suite, the eval scripts) and on servers that are configured only
+# by their platform environment. Configuration comes from the process
+# environment, and server.py alone decides whether a .env is read.
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
+
 # How far back the call counter keeps timestamps. An hour comfortably covers the
 # 60-second window the runtime-load endpoint asks for while leaving room for a
 # wider question later.
@@ -462,46 +470,63 @@ _BUILDERS = {"fireworks": _fireworks, "bedrock": _bedrock, "foundry": _foundry, 
 MIN_TOKENS = int(_env("ORACLE_FIREWORKS_MIN_TOKENS") or 2048)
 
 
-def providers_for(task: str) -> list[Provider]:
+def providers_for(task: str, *, include_skipped: bool = False) -> list[Provider]:
     """Configured providers for a task, best first. May be empty.
 
     A (provider, model) whose breaker is open (repeated definite failures, see
     below) is left out, unless every candidate is open — then all are offered,
-    so a recovery is noticed rather than the task failing without a try."""
+    so a recovery is noticed rather than the task failing without a try.
+    `include_skipped` returns the whole configured ladder (operator views)."""
     resolved: list[Provider] = []
     for provider_name, model in _TASK_MODELS.get(task, _TASK_MODELS["analysis"]):
         builder = _BUILDERS.get(provider_name)
         provider = builder(model) if builder else None
         if provider is not None:
             resolved.append(provider)
-    available = [p for p in resolved if not _breaker_open(p)]
-    return available or resolved
+    if include_skipped:
+        return resolved
+    return _usable(resolved)
+
+
+def _usable(candidates: list[Provider]) -> list[Provider]:
+    """The candidates whose breaker is closed, or all of them when none is: a
+    call is never refused only because every option failed recently."""
+    available = [p for p in candidates if not _breaker_open(p)]
+    return available or candidates
 
 
 # ---------------------------------------------------------------------------
-# Circuit breaker for definite failures (AI32-08)
+# Circuit breaker for failures that will repeat (AI32-08)
 # ---------------------------------------------------------------------------
-# A wrong or retired model name, a rejected key and an unreachable host fail
-# the same way on every call. Retrying them first on every request only spent
-# the caller's deadline: with the Azure subscription disabled, the fast tier
-# lost seconds of the voice path's 8 s budget to Foundry on every turn before
-# reaching a provider that could answer. After BREAKER_THRESHOLD such failures
-# in a row a (provider, model) is skipped for BREAKER_COOLDOWN_S; one success
-# closes it. Per process, in memory; timeouts and rate limits never open it.
+# A retired model name or a rejected key fails the same way on every call;
+# retrying it first on every request only spends the caller's deadline (the
+# voice path has 8 s). Two in a row skip that (provider, model) for
+# BREAKER_COOLDOWN_S. An unreachable host is different: litellm reports every
+# status-less error — a connection reset, a DNS blip, its own parsing
+# failures — as APIConnectionError, so it counts only when it is sustained:
+# UNREACHABLE_THRESHOLD failures spread over at least UNREACHABLE_MIN_SPAN_S
+# (two calls in flight during a one-second blip must not switch a model off).
+# After the cool-down the candidate is offered again (a half-open trial): a
+# failure reopens it at once, a success clears it. Failures older than the
+# cool-down are forgotten. Timeouts and rate limits never count. Per process,
+# in memory.
 BREAKER_THRESHOLD = 2
+UNREACHABLE_THRESHOLD = 3
+UNREACHABLE_MIN_SPAN_S = 60.0
 BREAKER_COOLDOWN_S = float(_env("ORACLE_LLM_BREAKER_COOLDOWN_SECONDS") or 300)
 _DEFINITE = {
     "NotFoundError": "model_not_found",
     "AuthenticationError": "auth_rejected",
     "PermissionDeniedError": "auth_rejected",
-    "APIConnectionError": "unreachable",
 }
+_SUSTAINED = {"APIConnectionError": "unreachable"}
 _breaker: dict[tuple[str, str], dict[str, Any]] = {}
 _breaker_lock = threading.Lock()
 
 
-def _definite_failure(exc: BaseException) -> Optional[str]:
-    return _DEFINITE.get(type(exc).__name__)
+def _failure_kind(exc: BaseException) -> Optional[str]:
+    name = type(exc).__name__
+    return _DEFINITE.get(name) or _SUSTAINED.get(name)
 
 
 def _breaker_open(provider: Provider) -> bool:
@@ -512,18 +537,27 @@ def _breaker_open(provider: Provider) -> bool:
 
 def _breaker_record(provider: Provider, *, ok: bool, exc: Optional[BaseException] = None) -> None:
     key = (provider.name, provider.model)
-    kind = None if ok or exc is None else _definite_failure(exc)
+    kind = None if ok or exc is None else _failure_kind(exc)
+    now = time.monotonic()
     with _breaker_lock:
         if ok:
             _breaker.pop(key, None)
             return
         if kind is None:
             return  # a timeout or rate limit says nothing about the next call
-        state = _breaker.setdefault(key, {"failures": 0})
+        state = _breaker.get(key)
+        if state is None or now - state["last_at"] > BREAKER_COOLDOWN_S + state.get("open_for", 0.0):
+            state = {"failures": 0, "first_at": now}
+            _breaker[key] = state
         state["failures"] += 1
         state["kind"] = kind
-        if state["failures"] >= BREAKER_THRESHOLD:
-            state["open_until"] = time.monotonic() + BREAKER_COOLDOWN_S
+        state["last_at"] = now
+        sustained = kind in _SUSTAINED.values()
+        trips = (state["failures"] >= UNREACHABLE_THRESHOLD and now - state["first_at"] >= UNREACHABLE_MIN_SPAN_S
+                 if sustained else state["failures"] >= BREAKER_THRESHOLD)
+        if trips:
+            state["open_until"] = now + BREAKER_COOLDOWN_S
+            state["open_for"] = BREAKER_COOLDOWN_S
             logger.error("llm_gateway: %s %s skipped for %.0f s after %d %s failures",
                          provider.name, provider.model.split("/")[-1], BREAKER_COOLDOWN_S,
                          state["failures"], kind)
@@ -749,7 +783,8 @@ async def complete(
     fail; it mis-parses, and a silent format downgrade inside something that
     plans actions is worse than no answer at all.
     """
-    providers = providers_for(task)
+    configured = providers_for(task, include_skipped=True)
+    providers = _usable(configured)
     if not providers:
         raise LLMUnavailable(
             f"No provider is configured for {task!r}. Set ORACLE_FIREWORKS_API_KEY, "
@@ -757,7 +792,10 @@ async def complete(
             f"local server."
         )
     if response_format is not None:
-        capable = [p for p in providers if p.supports_response_format]
+        # The breaker filter is applied after the capability filter: a skipped
+        # structured-output model is still a better trial than refusing
+        # because only the non-structured local tier is "available".
+        capable = _usable([p for p in configured if p.supports_response_format])
         if not capable:
             raise LLMUnavailable(
                 f"{task!r} requires structured output, and none of the configured "

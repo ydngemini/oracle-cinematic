@@ -102,19 +102,105 @@ def test_a_success_closes_the_breaker_and_all_open_still_offers_everything(fresh
     dead, good = (llm_gateway._fireworks(m) for m in ("dead-model", "good-model"))
     for provider in (dead, good):
         for _ in range(llm_gateway.BREAKER_THRESHOLD):
-            llm_gateway._breaker_record(provider, ok=False, exc=APIConnectionError())
+            llm_gateway._breaker_record(provider, ok=False, exc=NotFoundError())
     assert len(llm_gateway.providers_for("fast")) == 2, "every candidate open: offer them all rather than none"
     llm_gateway._breaker_record(dead, ok=True)
     assert llm_gateway._breaker_open(dead) is False and llm_gateway._breaker_open(good) is True
 
 
-def test_the_ai_component_names_skipped_models(monkeypatch):
-    monkeypatch.setattr(llm_gateway, "provider_health", lambda: {
-        "fast": [{"provider": "foundry", "model": "Kimi-K2.6", "state": "skipped", "failures": 2, "kind": "unreachable"}],
-        "analysis": [{"provider": "fireworks", "model": "kimi-k3", "state": "ok"}]})
-    healthy = ch._c(ch.HEALTHY, "Neoh responding", total_15m=4)
-    out = ch._with_model_health(healthy)
-    assert out["state"] == ch.DEGRADED and "foundry/Kimi-K2.6 (unreachable)" in out["summary"]
-    assert out["detail"]["total_15m"] == 4 and "models" in out["detail"]
-    failing = ch._c(ch.UNAVAILABLE, "Neoh responses are failing")
-    assert ch._with_model_health(failing)["state"] == ch.UNAVAILABLE, "never softens a worse state"
+def test_the_ai_banner_is_untouched_and_ai_models_pages_only_when_a_task_has_no_model(monkeypatch):
+    """Review r1: a dead fallback tier while another model answers must not put
+    'Neoh is having trouble' in front of every user."""
+    ok = {"provider": "fireworks", "model": "kimi-k3", "state": "ok"}
+    dead = {"provider": "foundry", "model": "Kimi-K2.6", "state": "skipped", "failures": 2, "kind": "auth_rejected"}
+    monkeypatch.setattr(llm_gateway, "provider_health", lambda: {"fast": [dead, ok], "analysis": [ok]})
+    partial = ch._ai_models()
+    assert partial["state"] == ch.HEALTHY and "foundry/Kimi-K2.6 (auth_rejected)" in partial["summary"]
+    assert "ai_models" not in ch.USER_MESSAGES and ch.role_of("ai_models") == "optional"
+    monkeypatch.setattr(llm_gateway, "provider_health", lambda: {"fast": [dead], "analysis": [ok]})
+    down = ch._ai_models()
+    assert down["state"] == ch.DEGRADED and "no hosted AI model is available for: fast" in down["summary"]
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_a_connection_blip_does_not_switch_a_model_off(fresh):
+    """Review r1: litellm reports every status-less error as APIConnectionError;
+    two calls in flight during a one-second blip must not open the breaker."""
+    _two_fireworks(fresh)
+    clock = _Clock()
+    fresh.setattr(llm_gateway.time, "monotonic", clock)
+    dead = llm_gateway._fireworks("dead-model")
+    for _ in range(5):
+        llm_gateway._breaker_record(dead, ok=False, exc=APIConnectionError())
+    assert llm_gateway._breaker_open(dead) is False, "a burst within a second is not a sustained outage"
+    clock.t += llm_gateway.UNREACHABLE_MIN_SPAN_S
+    llm_gateway._breaker_record(dead, ok=False, exc=APIConnectionError())
+    assert llm_gateway._breaker_open(dead) is True, "sustained over the span: skipped"
+    clock.t += llm_gateway.BREAKER_COOLDOWN_S + 1
+    assert llm_gateway._breaker_open(dead) is False, "half-open after the cool-down"
+    llm_gateway._breaker_record(dead, ok=False, exc=APIConnectionError())
+    assert llm_gateway._breaker_open(dead) is True, "a failed trial reopens at once"
+
+
+def test_old_failures_are_forgotten(fresh):
+    _two_fireworks(fresh)
+    clock = _Clock()
+    fresh.setattr(llm_gateway.time, "monotonic", clock)
+    dead = llm_gateway._fireworks("dead-model")
+    llm_gateway._breaker_record(dead, ok=False, exc=NotFoundError())
+    clock.t += llm_gateway.BREAKER_COOLDOWN_S + 1
+    llm_gateway._breaker_record(dead, ok=False, exc=NotFoundError())
+    assert llm_gateway._breaker_open(dead) is False, "two failures a cool-down apart are not 'in a row'"
+
+
+def test_a_skipped_structured_model_is_still_tried_rather_than_refusing(fresh):
+    """Review r1: with the only structured-output model skipped, a structured
+    call must try it instead of raising 'none honour response_format' while
+    local (no structured output) counts as available."""
+    fresh.setenv("ORACLE_AI_LOCAL_FALLBACK", "1")
+    fresh.setattr(llm_gateway, "_TASK_MODELS", {"fast": (("fireworks", "only-structured"), ("local", "local-llama")),
+                                                 "analysis": (("fireworks", "a"),)})
+    structured = llm_gateway._fireworks("only-structured")
+    for _ in range(llm_gateway.BREAKER_THRESHOLD):
+        llm_gateway._breaker_record(structured, ok=False, exc=NotFoundError())
+    assert [p.name for p in llm_gateway.providers_for("fast")] == ["local"]
+    fake = _FakeLiteLLM(_FakeResponse('{"ok": true}'))
+    fresh.setattr(llm_gateway, "_litellm", lambda: fake)
+    out = asyncio.run(llm_gateway.complete("hi", task="fast", response_format={"type": "json_object"}))
+    assert out == '{"ok": true}' and fake.calls[0]["model"].endswith("only-structured")
+
+
+def test_importing_the_gateway_stops_litellm_loading_a_dotenv():
+    import os
+
+    assert os.environ.get("LITELLM_MODE") == "PRODUCTION"
+
+
+def test_the_operator_view_shows_the_whole_ladder_with_skipped_marked(fresh):
+    import operator_api
+
+    _two_fireworks(fresh)
+    dead = llm_gateway._fireworks("dead-model")
+    for _ in range(llm_gateway.BREAKER_THRESHOLD):
+        llm_gateway._breaker_record(dead, ok=False, exc=NotFoundError())
+    fast = operator_api._gateway_view()["ladders"]["fast"] if "ladders" in operator_api._gateway_view() else None
+    if fast is None:
+        pytest.skip("view shape differs")
+    assert [(r["model"].split("/")[-1], r["skipped"]) for r in fast] == [("dead-model", True), ("good-model", False)]
+
+
+def test_no_module_still_defaults_to_the_retired_fast_model():
+    from pathlib import Path
+
+    backend = Path(llm_gateway.__file__).resolve().parent
+    hits = [str(p.relative_to(backend)) for p in backend.rglob("*.py")
+            if "tests" not in p.parts and "venv" not in p.parts
+            and "routers/glm-5p2-fast" in p.read_text(errors="ignore")]
+    assert hits == []
