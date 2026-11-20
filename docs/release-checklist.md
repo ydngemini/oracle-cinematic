@@ -52,6 +52,7 @@ decision somebody made rather than a step that quietly did not happen.
       Anything not `additive` means **this release cannot be rolled back by
       redeploying the previous one.** That is allowed — it is sometimes the
       right call — but decide it now, in daylight, not during an incident.
+- [ ] **Cross-version contract read** for this SHA: the `cross_version` CI record ([cross-version-contract.md](cross-version-contract.md)) says `pass`, or every warning in it is understood.
 - [ ] **A current backup exists.** `scripts/backup-postgres.sh`. DigitalOcean's
       own PITR window is 7 days and its backups cannot be downloaded, so the
       logical backup is the only copy Neoh actually holds.

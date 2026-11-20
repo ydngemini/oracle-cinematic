@@ -5710,6 +5710,27 @@ next_task: "35-03 phase 3: F401 unused imports (324) in bounded batches, then B0
 updated: 2026-11-20
 ```
 
+#### L19-28 Cross-version contract job: the previous release boots and runs its own live suite on the schema this change leaves behind (external audit 35-06)
+```yaml
+id: L19-28
+status: tests_pass
+env: local
+evidence_shas: [2eeb8b4]   # base; fix in the commit that adds this row
+files: [.github/workflows/ci.yml, scripts/cross-version-contract.sh, scripts/cross_version/evaluate.py, scripts/cross_version/xv_pytest_plugin.py, scripts/cross_version/boot_probe.py, backend/tests/test_cross_version_contract.py, backend/tests/test_cross_version_wiring.py, docs/cross-version-contract.md, docs/release-checklist.md, docs/deploy-digitalocean.md]
+tests_run:
+  - {cmd: "design: 3 independent designs + judge (workflow wf_6e8e5ace-122)", result: "per-PR job chosen; follow-up F1 (rollback.sh set gap) landed first as L19-26/#151", date: 2026-11-20}
+  - {cmd: "offline: test_cross_version_contract + test_cross_version_wiring + CI/env/release/rollback tests; ruff (phase 2 rules) incl. scripts/cross_version", result: "210 passed; All checks passed. Red: INCOMPATIBLE downgraded to DRIFT → 6 failed; canary accepting DRIFT → 1 failed; all-skipped check removed → 1 failed. The tests exposed a harness bug (the classifier loaded without sys.modules → every record HARNESS) and a setup gap (REASSIGN/DROP OWNED lost the migrations' ALTER DEFAULT PRIVILEGES → copied to the doadmin stand-in)", date: 2026-11-20}
+authz_checked: "No access change. CI only: no secrets, permissions contents: read (fork-safe); not in release.needs or promote.needs; no declaration file, flag or env var relaxes an outcome; migration_safety.py and rollback.sh unchanged (DEP-05)."
+blockers:
+  - "Only a real CI run proves the database setup on postgres:16-alpine, the PRE_DEPLOY rehearsal as the doadmin stand-in, the previous app booting in staging mode, the noise level of the previous suite, and that the canary yields an INCOMPATIBLE 23514 — this PR's own CI runs canary mode."
+  - "Not a required check yet (owner action F6 in docs/cross-version-contract.md); rollback.sh does not read the record until follow-up F2."
+  - "Not deployed (C4.4)."
+audit_refs: [35-06]
+decision_refs: []
+next_task: "Record this PR's CI canary result and timings here; then F2 (rollback.sh requires a passing record for the exact pair)."
+updated: 2026-11-20
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

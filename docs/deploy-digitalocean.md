@@ -410,6 +410,7 @@ behind, which is not the same as "did the migration work":
 narrowed types, new `NOT NULL` without a default, dropped policies and
 functions all break a previous release. Anything it cannot classify counts as
 unsafe, because the cost is asymmetric.
+CI's `cross_version` job also runs the previous release and its live suite on the schema each change leaves behind: evidence next to that verdict, never a relaxation of it ([cross-version-contract.md](cross-version-contract.md)).
 
 When it refuses, the options are a **corrective forward migration** (usually
 fastest and safest), an **emergency compatibility patch** that restores what
