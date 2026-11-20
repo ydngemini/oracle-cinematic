@@ -493,8 +493,8 @@ def _single_attempt(client: Any) -> Any:
 
         client.base_uri = API_VOICE_BASE_URI
         client.voice_retry_count = 3
-    except Exception:  # noqa: BLE001 - SDK shape changed: fail safe below
-        raise ProviderConfigurationError("Plivo SDK no longer supports single-attempt voice requests")
+    except Exception as exc:  # noqa: BLE001 - SDK shape changed: fail safe below
+        raise ProviderConfigurationError("Plivo SDK no longer supports single-attempt voice requests") from exc
     return client
 
 

@@ -5765,6 +5765,28 @@ next_task: "35-03 phase 4: B023 (loop-variable closures) and B904 (raise without
 updated: 2026-11-20
 ```
 
+#### L19-30 static gate phase 4: loop-variable closures (B023) and exception causes (B904) (external audit 35-03 phase 4)
+```yaml
+id: L19-30
+status: tests_pass
+env: local
+evidence_shas: [b9220c0]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/tests/test_static_gate.py, backend/tests/test_site_domains_rollback_live.py, backend/tests/test_ai_budget_hosted_calls.py, backend/tests/test_realtime_fanout_scope.py, "and 28 production modules (raise ... from only; see the PR)", backend/tests/test_ai_budget.py]
+tests_run:
+  - {cmd: "ruff --select B023,B904 at b9220c0", result: "9 B023 (three test files) and 118 B904 (67 handlers already named, 51 not, no bare except)", date: 2026-11-20}
+  - {cmd: "fix: B023 — the live test's lambdas bind `who` by default; the two AST visitors (called within their iteration) carry a reasoned noqa. B904 — an AST pass appends `from <name>` at each raise's end and names an unnamed handler `as exc` (a fresh name where `exc` is already used in the function, because an except name is unbound when the handler ends); edits by UTF-8 byte offset, bottom-up", result: "118 raises fixed (four later corrected to a bare raise, below), 51 handlers named; ruff clean on every pinned family. Semantics: elsewhere only __cause__/__suppress_context__ change. The two production readers of __cause__ (command_providers Twilio classification, semantic_turn budget refusal) are untouched and no changed raise creates the exceptions they inspect except a Plivo configuration error whose cause is never a TwilioRestException", date: 2026-11-20}
+  - {cmd: "full backend suite; test_static_gate", result: "7292 passed, 0 failed; the gate pins B023 and B904", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed; test_ai_budget (+2) red against 8cb27fa", result: "the script had written `raise _with_receipts(refused, ...) from refused` in four ai_chat_agent tier handlers; _with_receipts returns the same object, so the refusal became its own cause and the budget-read error a fail-closed 'unknown' refusal carries (ai_budget raises refusal('unknown') from exc) was dropped. Now `_with_receipts(...)` then a bare `raise` (B904 does not flag it). New tests: the real _generate path keeps a refusal's own __cause__ and its receipts; no 'from refused' remains. 2 red on 8cb27fa, 103 pass after", date: 2026-11-20}
+authz_checked: "No access change. Tracebacks name the original error as the cause; HTTP responses are unchanged (FastAPI never sends the cause)."
+blockers:
+  - "B008 (FastAPI Depends in argument defaults, ~509) is idiomatic and stays unselected."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "35-03 phase 5 candidates: B017 (7, blind pytest.raises(Exception)), B905 (46, zip without strict=), B011 (5, assert False), B007 (10, unused loop variable); UP/SIM are style."
+updated: 2026-11-20
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

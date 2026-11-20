@@ -1357,8 +1357,8 @@ async def validate_provider(provider: str, account_label: str, ctx: TenantContex
         credentials = json.loads(raw)
         if not isinstance(credentials, dict):
             raise ValueError
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=409, detail="Stored provider credential is invalid.")
+    except (TypeError, ValueError) as exc2:
+        raise HTTPException(status_code=409, detail="Stored provider credential is invalid.") from exc2
     capabilities: dict[str, bool] = {}
     error: Optional[str] = None
     try:
@@ -1434,8 +1434,8 @@ async def send_test_email(account_label: str, ctx: TenantContext = Depends(requi
         credentials = json.loads(raw)
         if not isinstance(credentials, dict):
             raise ValueError
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=409, detail="Stored provider credential is invalid.")
+    except (TypeError, ValueError) as exc2:
+        raise HTTPException(status_code=409, detail="Stored provider credential is invalid.") from exc2
     import smtp_mailer
 
     def _send() -> str:

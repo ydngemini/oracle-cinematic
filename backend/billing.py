@@ -369,8 +369,8 @@ async def create_checkout_session(
         raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.")
     try:
         tenant_id = str(uuid.UUID(body.tenant_id))
-    except ValueError:
-        raise HTTPException(status_code=422, detail="tenant_id is not a brokerage id.")
+    except ValueError as exc2:
+        raise HTTPException(status_code=422, detail="tenant_id is not a brokerage id.") from exc2
 
     async with tenant_tx(ctx) as conn:
         # One checkout at a time per brokerage: a double click, a second tab or
@@ -424,8 +424,8 @@ async def create_checkout_session(
             # attempts by default), and on the loop it froze every request.
             session = await asyncio.wait_for(asyncio.to_thread(
                 lambda: stripe.checkout.Session.create(**session_kwargs, idempotency_key=idem)), timeout=45)
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.")
+        except asyncio.TimeoutError as exc2:
+            raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.") from exc2
         except stripe.error.InvalidRequestError as exc:
             # Stripe's message names prices, tax registration and account state.
             # That is operator detail: the request body here is only a tenant_id, so
@@ -435,9 +435,9 @@ async def create_checkout_session(
             raise HTTPException(
                 status_code=502,
                 detail="Checkout could not be started. Please try again shortly.",
-            )
-        except stripe.error.AuthenticationError:
-            raise HTTPException(status_code=500, detail="Stripe authentication failed")
+            ) from exc
+        except stripe.error.AuthenticationError as exc2:
+            raise HTTPException(status_code=500, detail="Stripe authentication failed") from exc2
         except stripe.error.StripeError as exc:
             # Same reasoning as InvalidRequestError above: Stripe's text is operator
             # detail, and this branch was leaking it too.
@@ -445,7 +445,7 @@ async def create_checkout_session(
             raise HTTPException(
                 status_code=502,
                 detail="Checkout could not be started. Please try again shortly.",
-            )
+            ) from exc
         # Stripe states the session's expiry; when an answer lacks it, its
         # documented Checkout default (24 hours) is what applies.
         await conn.execute(
@@ -539,7 +539,7 @@ async def create_portal_session(
         raise HTTPException(
             status_code=502,
             detail="The billing portal could not be opened. Please try again shortly.",
-        )
+        ) from exc
 
     return JSONResponse(content={"url": session.url})
 
@@ -690,12 +690,12 @@ async def stripe_webhook(request: Request):
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except ValueError:
+    except ValueError as exc:
         _note_refusal("invalid_payload")
-        raise HTTPException(status_code=400, detail="Invalid webhook payload")
-    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload") from exc
+    except stripe.error.SignatureVerificationError as exc:
         _note_refusal("invalid_signature")
-        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+        raise HTTPException(status_code=400, detail="Invalid webhook signature") from exc
 
     # construct_event is the signature check. The handlers then read the SAME
     # verified bytes as plain JSON: since stripe-python 15, StripeObject is no
@@ -752,13 +752,13 @@ async def stripe_webhook(request: Request):
                 return JSONResponse(content={"received": True, "duplicate": True})
             try:
                 await handler(conn, obj, event_created)
-            except _SubscriptionNotYetKnown:
+            except _SubscriptionNotYetKnown as exc:
                 # Stripe does not guarantee order: invoice.paid,
                 # subscription.updated or subscription.deleted can arrive
                 # before checkout.session.completed.
                 # Recording it as processed lost it for good. Roll back (the event
                 # id is not kept) and ask Stripe to redeliver later.
-                raise _RetryLater()
+                raise _RetryLater() from exc
     except _RetryLater:
         logger.info("[billing] %s %s arrived before its subscription; asking Stripe to redeliver",
                     event_type, event_id)

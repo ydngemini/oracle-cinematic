@@ -133,7 +133,7 @@ async def _fetch(ctx: TenantContext, query: str, *args) -> list[dict]:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",
-        )
+        ) from exc
 
 
 async def _fetchrow(ctx: TenantContext, query: str, *args) -> Optional[dict]:

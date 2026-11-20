@@ -71,8 +71,8 @@ async def get_dossier(
     email bodies for 500 leads would bloat every pipeline push."""
     try:
         uuid.UUID(lead_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+    except ValueError as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID") from exc2
 
     try:
         async with tenant_tx(ctx) as conn:
@@ -137,7 +137,7 @@ async def get_dossier(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline ({exc})",
-        )
+        ) from exc
 
     return {
         "listing": listing,
@@ -210,8 +210,8 @@ async def set_acquisition_entity(
 ):
     try:
         uuid.UUID(lead_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+    except ValueError as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID") from exc2
 
     entity = {
         "entity_name": body.entity_name.strip(),
@@ -238,7 +238,7 @@ async def set_acquisition_entity(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — entity not persisted ({exc})",
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
@@ -258,8 +258,8 @@ async def move_dossier(
 ):
     try:
         uuid.UUID(lead_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+    except ValueError as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID") from exc2
 
     try:
         async with tenant_tx(ctx) as conn:
@@ -283,7 +283,7 @@ async def move_dossier(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — move not persisted ({exc})",
-        )
+        ) from exc
 
     if row is None:
         # Unknown id OR another tenant's lead — RLS makes them indistinguishable,

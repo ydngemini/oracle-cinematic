@@ -228,7 +228,7 @@ async def geocode_batch(
     try:
         results = await (await _get_geocoder()).geocode_batch(body.addresses)
     except ValueError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     matched = sum(1 for r in results if r.get("matched"))
     # Rows Census never answered for are counted apart from verified misses:
     # `requested - matched` is NOT the number of addresses Census could not find.

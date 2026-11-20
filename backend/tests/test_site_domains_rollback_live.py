@@ -175,9 +175,9 @@ async def _scenario(monkeypatch, caplog):  # noqa: C901 — one scenario, read t
         # ── nobody without the publish right reaches a domain or a rollback ──
         rollback_v1 = sites_api.SiteRollbackRequest(expected_live_revision_id=v1)
         for who in (colleague, editor, owner_b):
-            for call in (lambda: sites_api.list_site_domains(site_id, ctx=who),
-                         lambda: sites_api.verify_site_domain(site_id, domain_id, ctx=who, resolver=resolver),
-                         lambda: sites_api.rollback_site(site_id, rollback_v1, ctx=who)):
+            for call in (lambda who=who: sites_api.list_site_domains(site_id, ctx=who),
+                         lambda who=who: sites_api.verify_site_domain(site_id, domain_id, ctx=who, resolver=resolver),
+                         lambda who=who: sites_api.rollback_site(site_id, rollback_v1, ctx=who)):
                 with pytest.raises(HTTPException) as denied:
                     await call()
                 assert denied.value.status_code == 404, who.agent_id

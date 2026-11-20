@@ -183,7 +183,7 @@ async def save_onboarding_profile(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — profile not persisted ({exc})",
-        )
+        ) from exc
 
     if result == "INSERT 0 0":
         # ON CONFLICT fired but the WHERE tenant guard rejected the update.

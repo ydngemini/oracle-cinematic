@@ -1417,3 +1417,29 @@ def test_a_refused_usage_row_keeps_the_hold_counting_the_reported_tokens(monkeyp
     sql, args = update[0]
     assert args == ("call-1", 150) and "GREATEST(tokens, $2)" in sql
     assert "interval '1 month'" in sql and "AT TIME ZONE 'UTC'" in sql, "held to the cap's own month end"
+
+
+def test_a_refusal_keeps_its_own_cause_through_the_tier_handlers(monkeypatch):
+    """35-03 phase 4 review: `raise _with_receipts(refused, ...) from refused`
+    made the refusal its own cause and dropped the error a fail-closed
+    'unknown' refusal carries (ai_budget raises refusal('unknown') from the
+    budget-read failure). The tier handler re-raises the same object."""
+    root = ConnectionError("budget store unreachable")
+
+    def refusal_with_cause():
+        exc = SpendRefused("unknown", "AI_BUDGET_UNKNOWN", "The AI budget could not be read.")
+        exc.__cause__ = root
+        return exc
+
+    monkeypatch.setitem(globals(), "_exhausted", refusal_with_cause)
+    _ladder(monkeypatch, refuse_with_receipt=True)
+    with pytest.raises(SpendRefused) as refused:
+        asyncio.run(ai_chat_agent._generate(AGENT, dict(BUNDLE), "assistant-2"))
+    assert refused.value.__cause__ is root
+    assert refused.value.applied, "the receipts are still attached"
+
+
+def test_no_tier_handler_makes_a_refusal_its_own_cause():
+    import inspect
+
+    assert "from refused" not in inspect.getsource(ai_chat_agent)

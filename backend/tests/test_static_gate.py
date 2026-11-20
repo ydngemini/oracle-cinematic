@@ -40,14 +40,14 @@ def test_the_gate_keeps_its_phase_one_and_two_families():
     while checking less. An intended finding is silenced on its own line with
     a reason (`# noqa: F811 - ...`), never by ignoring the rule for a file."""
     lint = tomllib.loads((BACKEND / "ruff.toml").read_text())["lint"]
-    assert {"E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004"} <= set(lint["select"])
+    assert {"E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004", "B023", "B904"} <= set(lint["select"])
     ignored = set(lint.get("ignore", [])) | set(lint.get("extend-ignore", [])) | {
         code
         for key in ("per-file-ignores", "extend-per-file-ignores")
         for codes in lint.get(key, {}).values() for code in codes
     }
     # Any ignore that covers a pinned rule: prefixes ("F8", "F84") and ALL included.
-    assert not [c for c in ignored for rule in ("F841", "F811", "F401", "PGH004")
+    assert not [c for c in ignored for rule in ("F841", "F811", "F401", "PGH004", "B023", "B904")
                 if c == "ALL" or rule.startswith(c)], ignored
 
 

@@ -531,10 +531,10 @@ async def list_contacts(
                 cursor=cursor,
             )
             contacts = [await _contact_json(conn, ctx, row) for row in rows]
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc:
+        raise _contact_service_unavailable() from exc
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc
 
     return {"contacts": contacts, "count": len(contacts), "next_cursor": next_cursor}
 
@@ -637,10 +637,10 @@ async def create_contact(
                     conn, tenant_id=ctx.tenant_id, contact_id=str(_row_get(row, "id")),
                     client_id=body.client_id, phone_e164=body.phone, phone_hash=phone_hash)
             contact = await _contact_json(conn, ctx, row)
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc:
+        raise _contact_service_unavailable() from exc
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc
     return {"contact": contact}
 
 
@@ -652,7 +652,7 @@ async def get_contact(
     try:
         contact_id = _uuid(contact_id, "contact_id")
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     try:
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
@@ -663,10 +663,10 @@ async def get_contact(
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "contact not found")
             contact = await _contact_json(conn, ctx, row)
             contact["access"] = await contact_access_level(conn, contact_id)
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc2:
+        raise _contact_service_unavailable() from exc2
+    except RuntimeError as exc2:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc2
     return {"contact": contact}
 
 
@@ -679,7 +679,7 @@ async def update_contact(
     try:
         contact_id = _uuid(contact_id, "contact_id")
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "no fields to update")
@@ -894,10 +894,10 @@ async def update_contact(
             # The caller's access after the change (taking a pool contact or
             # returning one keeps edit).
             contact["access"] = await contact_access_level(conn, contact_id)
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc2:
+        raise _contact_service_unavailable() from exc2
+    except RuntimeError as exc2:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc2
     return {"contact": contact}
 
 
@@ -990,7 +990,7 @@ async def create_property_relationship(
     try:
         contact_id = _uuid(contact_id, "contact_id")
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     try:
         async with tenant_tx(ctx) as conn:
             await require_contact_edit(conn, contact_id)
@@ -1050,10 +1050,10 @@ async def create_property_relationship(
                 body.closing_date,
                 body.anniversary_enabled,
             )
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc2:
+        raise _contact_service_unavailable() from exc2
+    except RuntimeError as exc2:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc2
     return {
         "relationship": {
             "id": str(_row_get(row, "id")),
@@ -1098,7 +1098,7 @@ async def create_intake(
     try:
         contact_id = _uuid(contact_id, "contact_id")
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     questions = questions_for(body.persona)
     # Sealed is still stored: no card number in the answers or the transcript.
     body.answers = pan_redaction.scrub_obj(body.answers, "contact_intake", tenant_id=ctx.tenant_id,
@@ -1177,10 +1177,10 @@ async def create_intake(
                 f"Review {body.persona} intake",
                 _row_get(contact, "assigned_agent_id") or ctx.agent_id,
             )
-    except ContactTruthConfigError:
-        raise _contact_service_unavailable()
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except ContactTruthConfigError as exc2:
+        raise _contact_service_unavailable() from exc2
+    except RuntimeError as exc2:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc2
     return {
         "intake": {
             "id": str(_row_get(session, "id")),
@@ -1209,7 +1209,7 @@ async def reserve_nurture_job(
     try:
         contact_id = _uuid(contact_id, "contact_id")
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     now = datetime.now(timezone.utc)
     try:
         async with tenant_tx(ctx) as conn:
@@ -1351,8 +1351,8 @@ async def reserve_nurture_job(
                     body.channel,
                     decision.calendar_year,
                 )
-    except RuntimeError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.")
+    except RuntimeError as exc2:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Contact store is offline.") from exc2
     return {
         "created": created,
         "job": {

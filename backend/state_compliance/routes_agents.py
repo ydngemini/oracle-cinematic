@@ -168,7 +168,7 @@ async def log_ce_credits(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",
-        )
+        ) from exc
 
     required = _CE_HOURS_BY_STATE.get(code, 0)
     return CECreditResponse(

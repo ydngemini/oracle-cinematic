@@ -18,8 +18,13 @@
 # nothing imported. A genuine re-export carries a one-name noqa with the
 # importer named (agent_mind/__init__.py). PGH004 refuses a bare `# noqa`
 # (one with no rule code), which would silence every rule on its line.
+#
+# Phase 4 adds B023 (a closure reading a loop variable that has moved on by
+# the time it runs) and B904 (a raise inside `except` without `from`, which
+# reports the original error as "another exception occurred" instead of as
+# the cause).
 target-version = "py312"
 extend-exclude = ["venv", "node_modules", "pascal-editor"]
 
 [lint]
-select = ["E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004"]
+select = ["E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004", "B023", "B904"]

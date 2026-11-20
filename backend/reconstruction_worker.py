@@ -383,9 +383,9 @@ async def _extract_video_frames(video: Path, dest: Path, prefix: str) -> list[Pa
     )
     try:
         output, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
         proc.kill()
-        raise ProviderError(f"Frame extraction timed out for {video.name}.")
+        raise ProviderError(f"Frame extraction timed out for {video.name}.") from exc
 
     if proc.returncode != 0:
         detail = (output or b"")[-400:].decode("utf-8", "replace").strip()

@@ -310,10 +310,10 @@ async def mls_portal_search(
                 *data_args,
             )]
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS portal search failed: %s", exc)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     listings = [_listing_json(r) for r in rows]
     sources = sorted({item["source"] for item in listings if item.get("source")})
@@ -345,8 +345,8 @@ async def mls_portal_listing(
     """Full detail for one cached listing. 422 on a malformed id, 404 if absent."""
     try:
         uuid.UUID(listing_id)
-    except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "listing_id must be a UUID")
+    except (ValueError, AttributeError, TypeError) as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "listing_id must be a UUID") from exc2
 
     try:
         async with tenant_tx(ctx) as conn:
@@ -387,10 +387,10 @@ async def mls_portal_listing(
                     for m in await buyers_for_listing(conn, dict(row), ctx=ctx)
                 ]
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS portal detail failed: %s", exc)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id!r} not found.")
@@ -461,10 +461,10 @@ async def mls_portal_health(
                     "records": row.get("listings_synced"),
                 })
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS health failed: %s", exc)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
     sources: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
@@ -1201,10 +1201,10 @@ async def mls_pipeline_search(
         async with tenant_tx(ctx) as conn:
             lead_ids = await _lead_ids_for_records(conn, rows)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("Public property record search failed: %s", exc)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     query_key = _token_key(q) if q and q.strip() else ""
     ambiguous = _ambiguous_parcels(rows)
@@ -1254,8 +1254,8 @@ async def mls_pipeline_listing(
     """Return one allow-listed shared record; CRM data is never joined."""
     try:
         uuid.UUID(record_id)
-    except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "record_id must be a UUID")
+    except (ValueError, AttributeError, TypeError) as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "record_id must be a UUID") from exc2
 
     try:
         async with tenant_tx(ctx) as conn:
@@ -1266,10 +1266,10 @@ async def mls_pipeline_listing(
                 record_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("Public property record detail failed: %s", exc)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Public record {record_id!r} not found.")

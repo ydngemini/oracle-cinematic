@@ -372,9 +372,9 @@ async def _run(
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
         proc.kill()
-        raise ProviderError(f"timed out: {' '.join(cmd[:2])}")
+        raise ProviderError(f"timed out: {' '.join(cmd[:2])}") from exc
     if proc.returncode != 0:
         tail = (out or b"")[-600:].decode("utf-8", "replace")
         raise ProviderError(f"{cmd[0]} exited {proc.returncode}: {tail}")

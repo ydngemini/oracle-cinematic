@@ -109,8 +109,8 @@ def _num(value) -> Optional[float]:
 def _require_uuid(value: str, name: str) -> str:
     try:
         uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"{name} must be a UUID")
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"{name} must be a UUID") from exc
     return value
 
 
@@ -119,8 +119,8 @@ def _check_optional_uuid(v: Optional[str]) -> Optional[str]:
         return v
     try:
         uuid.UUID(v)
-    except (ValueError, AttributeError, TypeError):
-        raise ValueError("must be a UUID")
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("must be a UUID") from exc
     return v
 
 
@@ -537,7 +537,7 @@ async def list_listings(ctx: TenantContext = Depends(require_context)):
                 """
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
 
     return {"listings": [_listing_json(r) for r in rows]}
 
@@ -632,7 +632,7 @@ async def create_listing(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — listing not persisted ({exc})",
-        )
+        ) from exc
 
     logger.info(
         "Listing created: id=%s seller=%s lead=%s (tenant=%s, agent=%s)",
@@ -814,7 +814,7 @@ async def list_clients(
                 *args,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
 
     clients = []
     for r in rows:
@@ -895,7 +895,7 @@ async def create_client(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — client not persisted ({exc})",
-        )
+        ) from exc
 
     logger.info(
         "Client created: id=%s type=%s stage=%s (tenant=%s, agent=%s)",
@@ -1054,7 +1054,7 @@ async def update_client(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — update not persisted ({exc})",
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
@@ -1365,7 +1365,7 @@ async def link_client_house(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — house link not persisted ({exc})",
-        )
+        ) from exc
 
     logger.info(
         "House linked: client=%s house=%s source=%s created=%s (tenant=%s, agent=%s)",
@@ -1410,7 +1410,7 @@ async def client_interactions(
             # 0154 (A01): subject and message text are sealed; open both shapes.
             rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
 
     return {"interactions": [_interaction_json(r) for r in rows]}
 
@@ -1652,7 +1652,7 @@ async def send_message(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — message not persisted ({exc})",
-        )
+        ) from exc
 
     logger.info(
         "Message logged: client=%s channel=%s direction=%s delivery=%s queued_email=%s (tenant=%s, agent=%s)",
@@ -1726,7 +1726,7 @@ async def create_showing(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — showing not persisted ({exc})",
-        )
+        ) from exc
 
     logger.info(
         "Showing logged: client=%s listing=%s lead=%s outcome=%s (tenant=%s, agent=%s)",
@@ -1791,8 +1791,8 @@ async def list_showings(
     """
     try:
         uuid.UUID(client_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid client id")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid client id") from exc
     limit = max(1, min(100, int(limit)))
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
@@ -1821,8 +1821,8 @@ async def update_showing(
     """The first UPDATE path showings has ever had. See ShowingUpdate."""
     try:
         uuid.UUID(showing_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid showing id")
+    except ValueError as exc2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid showing id") from exc2
 
     shown_at = body.shown_at
     if shown_at is not None and shown_at.tzinfo is None:
@@ -1845,7 +1845,7 @@ async def update_showing(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — showing not updated ({exc})",
-        )
+        ) from exc
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "showing not found")
 
@@ -1913,7 +1913,7 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
             # The opened content lands in `payload`; its body is the snippet.
             rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
 
     threads = []
     for row in rows:
@@ -1966,7 +1966,7 @@ async def get_profile(ctx: TenantContext = Depends(require_context)):
                 ctx.agent_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
 
     return {"profile": _profile_json(row)}
 
@@ -2009,7 +2009,7 @@ async def put_profile(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — profile not persisted ({exc})",
-        )
+        ) from exc
 
     if row is None:
         # ON CONFLICT fired but the WHERE tenant guard rejected the update.
