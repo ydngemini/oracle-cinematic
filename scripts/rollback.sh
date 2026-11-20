@@ -131,24 +131,75 @@ if [ -z "$CURRENT_HEAD" ]; then
   say "(pass --from <current-manifest.json> to use the deployed release instead)"
 fi
 
+# The gap is every migration that may be live and the target lacks (35-06 F1).
+# A filename range (target_head < name <= current_head) alone missed a migration
+# merged late with a lower number: 0144 landed while the head was 0145, so a
+# rollback across it saw an empty gap although the classifier calls 0144
+# UNKNOWN. Manifests now record their migration list, and the gap is the UNION
+# of the set difference and the old range: migrations can be applied
+# independently of the image that is running (docs/deploy-digitalocean.md
+# § Release identity), so a file in the range that the live manifest does not
+# list still counts. Stricter than the range alone, never looser. A migration
+# the target has and the live release does not is refused: the live schema is
+# then not a superset of the target's, and nothing here can judge that.
 VERDICT_JSON="$(
-  cd "$REPO/backend" && python3 - "$TARGET_HEAD" "$CURRENT_HEAD" <<'PY' 2>/dev/null
+  cd "$REPO/backend" && python3 - "$TO" "${FROM:-}" "$TARGET_HEAD" "$CURRENT_HEAD" <<'PY' 2>/dev/null
 import json, pathlib, sys
 sys.path.insert(0, ".")
 from migration_safety import classify_files, rollback_is_safe
 
-target_head, current_head = sys.argv[1], sys.argv[2]
-paths = sorted(pathlib.Path("db/migrations").glob("*.sql"))
-# Everything strictly AFTER the target's head, up to and including the current.
-gap = [p for p in paths if target_head < p.name <= current_head]
-verdicts = classify_files(gap)
+to_path, from_path, target_head, current_head = sys.argv[1:5]
+to_manifest = json.load(open(to_path))
+from_manifest = json.load(open(from_path)) if from_path else {}
+migrations_dir = pathlib.Path("db/migrations")
+on_disk = sorted(p.name for p in migrations_dir.glob("*.sql"))
+
+
+def listed(manifest):
+    value = manifest.get("migrations")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(n, str) and n.endswith(".sql") for n in value):
+        raise SystemExit("malformed migrations list")      # empty output: the script refuses
+    return value
+
+
+def refuse(gap, reason, method, count=None):
+    print(json.dumps({"count": len(gap) if count is None else count, "safe": False, "method": method,
+                      "files": gap, "blocking": [reason]}))
+    raise SystemExit(0)
+
+
+target = listed(to_manifest)
+current = listed(from_manifest) if from_path else on_disk
+in_range = [n for n in on_disk if target_head < n <= current_head]
+if target is not None and current is not None:
+    method = "set+range"
+    only_target = sorted(set(target) - set(current))
+    if only_target:
+        refuse(only_target, "in the target release but not the live one: " + ", ".join(only_target)
+               + " — the live schema is not a superset of the target's, so an application-only "
+               "rollback cannot be judged", method, count=0)   # nothing was "applied since" the target
+    gap_names = sorted(set(current) - set(target) | set(in_range))
+else:
+    gap_names = in_range
+    method = "range"
+    to_count = to_manifest.get("migration_count")
+    from_count = from_manifest.get("migration_count") if from_path else len(on_disk)
+    # Only a necessary condition: equal counts are consistent with the range
+    # being the whole set, not proof of it (a removed file plus a late one
+    # would also balance). History has no removed or renamed migrations.
+    if not isinstance(to_count, int) or not isinstance(from_count, int) or from_count - to_count != len(gap_names):
+        refuse(gap_names, f"the migration set between the two releases cannot be established: "
+               f"{from_count} - {to_count} migrations recorded, {len(gap_names)} in the filename range "
+               f"(a late, lower-numbered migration?) — use manifests that record their migration lists", method)
+missing = [n for n in gap_names if not (migrations_dir / n).exists()]
+if missing:
+    refuse(gap_names, "not in this checkout, so it cannot be classified: " + ", ".join(missing), method)
+verdicts = classify_files([migrations_dir / n for n in gap_names])
 safe, blocking = rollback_is_safe(verdicts)
-print(json.dumps({
-    "count": len(gap),
-    "safe": safe,
-    "blocking": blocking,
-    "files": [p.name for p in gap],
-}))
+print(json.dumps({"count": len(gap_names), "safe": safe, "blocking": blocking, "method": method,
+                  "files": gap_names}))
 PY
 )"
 
@@ -158,9 +209,9 @@ PY
 GAP_COUNT="$(printf '%s' "$VERDICT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])')"
 SAFE="$(printf '%s' "$VERDICT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["safe"])')"
 
-if [ "$GAP_COUNT" = "0" ]; then
+if [ "$GAP_COUNT" = "0" ] && [ "$SAFE" = "True" ]; then
   say "no migrations were applied after $TARGET_SHA — nothing to be incompatible with"
-else
+elif [ "$GAP_COUNT" != "0" ]; then
   say "$GAP_COUNT migration(s) applied since the target release"
 fi
 
