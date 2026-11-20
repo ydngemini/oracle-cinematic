@@ -86,14 +86,16 @@ _SEPARATORS = {"||", "&&", ";", ";;", "|", "|&", "&", "{", "}", "(", ")"}
 _DOCKER_GLOBAL_VALUE_OPTS = {"-H", "--host", "-c", "--context", "--config",
                              "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"}
 # `docker run` long options that take no value (Docker 28 `docker run --help`).
-# Any other `--x` without `=` takes the next word unless that word is itself an
-# option, so a boolean flag missing from this list cannot hide the one after it.
+# Any other `--x` without `=` takes the next word unless that word is itself a
+# flag (a letter after the dash: `-1` for "unlimited" is still a value), so a
+# boolean flag missing from this list cannot hide the one after it.
 _RUN_BOOLEAN_LONG = {"--rm", "--detach", "--interactive", "--tty", "--init",
                      "--privileged", "--read-only", "--no-healthcheck",
                      "--oom-kill-disable", "--sig-proxy", "--disable-content-trust",
                      "--quiet", "--use-api-socket", "--help"}
 # Short flags that take no value: -d, -i, -t, -q (and -P, read as a publish).
 _RUN_BOOLEAN_SHORT = "ditq"
+_FLAG_WORD = __import__("re").compile(r"--?[A-Za-z]")
 
 
 def _publish_options(args: list[str]) -> list[str]:
@@ -110,7 +112,7 @@ def _publish_options(args: list[str]) -> list[str]:
         if tok.startswith("--"):
             name, eq, value = tok.partition("=")
             takes_next = (not eq and name not in _RUN_BOOLEAN_LONG
-                          and name != "--publish-all" and not nxt.startswith("-"))
+                          and name != "--publish-all" and not _FLAG_WORD.match(nxt))
             if takes_next:
                 value = nxt
             if name == "--publish":
@@ -138,6 +140,10 @@ def _publish_options(args: list[str]) -> list[str]:
                 break
             i += 2 if took_next else 1
             continue
+        if tok.startswith(("{", "<(", ">(")):
+            # A named-fd redirection or a process substitution where the image
+            # should be: this reader cannot place what follows, so it says so.
+            raise AssertionError(f"cannot read this docker run past {tok!r}")
         break
     return found
 
@@ -179,8 +185,16 @@ def _docker_run_args(script: str) -> list[list[str]]:
     for line in script.replace("\\\n", " ").splitlines():
         line = _strip_comment(line)
         for match in re.finditer(r"(?<![\w/.$-])(?:[\w./-]*/)?docker(?![\w.-])", line):
+            start = match.start()
+            # A quoted command name (`"docker" run`) is still a command: start
+            # at the opening quote. `eval "docker run ..."` has no closing
+            # quote right after the name, so it is still read from `docker`
+            # and still fails below.
+            if (start and line[start - 1] in "'\""
+                    and line[match.end():match.end() + 1] == line[start - 1]):
+                start -= 1
             # An fd number written onto its redirection (`2>`) is part of it.
-            text = re.sub(r"(?<=\s)\d+(?=[<>])", "", line[match.start():])
+            text = re.sub(r"(?<=\s)\d+(?=[<>])", "", line[start:])
             lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
             lexer.whitespace_split = True
             lexer.commenters = ""
@@ -203,6 +217,10 @@ def _docker_run_args(script: str) -> list[list[str]]:
                 for word in words:
                     if word in _SEPARATORS:
                         break
+                    if word in ("<(", ">("):
+                        # A process substitution: its `)` would read as the
+                        # end of the command and hide every option after it.
+                        raise ValueError("process substitution")
                     if set(word) <= set("<>&|") and set(word) & set("<>"):
                         next(words, "")                       # and its target
                         continue
@@ -254,6 +272,14 @@ def test_the_publish_reader_sees_the_spellings_in_its_probe():
         ("docker run &>/tmp/log -p 1:2 img 2>&1", ["1:2"]),
         # ${#...} is a length, not a comment.
         ("docker run -e N=${#ARR[@]} -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
+        # A negative value ("unlimited") is a value, not a flag (review r3).
+        ("docker run -d --pids-limit -1 -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
+        ("docker run -d --memory-swap -1 --network host img", ["--network=host"]),
+        ("docker run -d --oom-score-adj -500 -p 1:2 img", ["1:2"]),
+        # A quoted command name is still the command.
+        ('"docker" run -d -p 0.0.0.0:6379:6379 img', ["0.0.0.0:6379:6379"]),
+        ("'docker' run -d -p 1:2 img", ["1:2"]),
+        ('"/usr/bin/docker" run -p 1:2 img', ["1:2"]),
     ]:
         assert _published_ports(line) == expected, line
 
@@ -272,12 +298,16 @@ def test_the_publish_reader_reads_only_dockers_own_options():
     assert _published_ports('echo "  could not start docker"') == []
     assert _published_ports('echo "is docker running?"; docker run -p 127.0.0.1::1 img') == ["127.0.0.1::1"]
     # A run whose words cannot be read still fails loudly.
-    try:
-        _published_ports('eval "docker run -d -p 56379:6379 img"')
-    except AssertionError:
-        pass
-    else:
-        pytest.fail("an unreadable docker run was skipped")
+    for unreadable in ('eval "docker run -d -p 56379:6379 img"',
+                       "docker run {fd}>/tmp/x -p 1:2 img",
+                       "docker run --rm <(env) -p 1:2 img",
+                       "docker run --env-file <(env) -p 1:2 img"):
+        try:
+            _published_ports(unreadable)
+        except AssertionError:
+            pass
+        else:
+            pytest.fail(f"an unreadable docker run was skipped: {unreadable}")
 
 
 def test_the_drill_publishes_no_fixed_host_port():
