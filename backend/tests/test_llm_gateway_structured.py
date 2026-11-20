@@ -69,7 +69,7 @@ def test_a_provider_that_cannot_honour_the_format_is_skipped(monkeypatch):
     monkeypatch.setattr(gateway, "_litellm", lambda: recorder)
     monkeypatch.setattr(
         gateway, "providers_for",
-        lambda _task: [_provider("bedrock", structured=False),
+        lambda _task, **_kw: [_provider("bedrock", structured=False),
                        _provider("fireworks", structured=True)],
     )
     asyncio.run(gateway.complete("plan it", response_format=SCHEMA))
@@ -85,7 +85,7 @@ def test_it_refuses_when_no_provider_can_honour_the_format(monkeypatch):
     monkeypatch.setattr(gateway, "_litellm", lambda: recorder)
     monkeypatch.setattr(
         gateway, "providers_for",
-        lambda _task: [_provider("bedrock", structured=False),
+        lambda _task, **_kw: [_provider("bedrock", structured=False),
                        _provider("local", structured=False)],
     )
     with pytest.raises(gateway.LLMUnavailable) as caught:
@@ -104,7 +104,7 @@ def test_an_ordinary_call_still_falls_through_everything(monkeypatch):
     monkeypatch.setattr(gateway, "_litellm", lambda: recorder)
     monkeypatch.setattr(
         gateway, "providers_for",
-        lambda _task: [_provider("bedrock", structured=False)],
+        lambda _task, **_kw: [_provider("bedrock", structured=False)],
     )
     assert asyncio.run(gateway.complete("hello")) == "prose"
     assert "response_format" not in recorder.calls[0], (
