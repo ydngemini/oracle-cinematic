@@ -1111,6 +1111,47 @@ def _guard_unbacked_claims(text: str, staged_commands: list[str]) -> str:
     return f"{text}\n\n{UNBACKED_CLAIM_NOTE}"
 
 
+#: A reply saying something was sent, called or booked. A chat turn never
+#: sends anything itself: outreach is prepared for approval first.
+_SENT_CLAIM = re.compile(
+    r"\b(?:I(?:'ve| have)? (?:just )?(?:sent|texted|emailed|called|phoned|booked)\b"
+    r"|(?:has|have|was|were) (?:been )?(?:sent|texted|emailed|delivered|booked)\b(?! (?:once|after|when|if)))",
+    re.IGNORECASE,
+)
+#: A reply saying a CRM record changed.
+_CHANGE_CLAIM = re.compile(
+    r"\b(?:I(?:'ve| have)? (?:updated|changed|moved|added|created|deleted|removed|logged|marked|saved|assigned)"
+    r"|(?:has|have) been (?:updated|changed|moved|added|created|deleted|removed|logged|marked|saved|assigned))\b"
+    r"[^.!?\n]{0,60}\b(?:record|client|lead|contact|deal|stage|status|note|task|pipeline|profile|tag|follow-up)s?\b",
+    re.IGNORECASE,
+)
+UNSENT_CLAIM_NOTE = ("Note from Neoh: nothing was sent, called or booked in this reply. Messages, calls and "
+                     "bookings are prepared for your approval first.")
+UNCHANGED_CLAIM_NOTE = "Note from Neoh: no record was changed in this reply."
+
+
+def _verify_claims(text: str, actions: list, bundle: dict) -> str:
+    """One postcondition for every provider (AI32-05): a claim in the final
+    reply must be backed by this turn's durable receipts — applied changes
+    (actions) and staged requests (bundle['staged_effects']) — whichever
+    provider wrote it. Unbacked claims keep the model's words and get a
+    plain statement of what actually happened."""
+    if not text:
+        return text
+    staged = bool(bundle.get("staged_effects"))
+    notes = []
+    if not staged and _STAGING_CLAIM.search(text) and UNBACKED_CLAIM_NOTE not in text:
+        notes.append(UNBACKED_CLAIM_NOTE)
+    if _SENT_CLAIM.search(text) and UNSENT_CLAIM_NOTE not in text:
+        notes.append(UNSENT_CLAIM_NOTE)
+    if not actions and _CHANGE_CLAIM.search(text) and UNCHANGED_CLAIM_NOTE not in text:
+        notes.append(UNCHANGED_CLAIM_NOTE)
+    if not notes:
+        return text
+    logger.warning("chat reply made %d unbacked action claim(s)", len(notes))
+    return text + "\n\n" + "\n".join(notes)
+
+
 def _local_tools(context_type: str | None) -> list[dict]:
     """The same gated tool set, in OpenAI Chat Completions shape.
 
@@ -1858,6 +1899,9 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         # 2026-10-02); now the turn ends, honestly, at the deadline.
         content, actions, model_id = await asyncio.wait_for(
             _generate(ctx, bundle, assistant_id), timeout=_TURN_DEADLINE_SECONDS)
+        # Whatever provider answered, its claims are checked against this
+        # turn's receipts before anyone sees them (AI32-05).
+        content = _verify_claims(content, actions, bundle)
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
         # The one precise question's choices (T05.10, L05-09): the row keeps
         # the record ids only — labels are re-read as the caller when the
