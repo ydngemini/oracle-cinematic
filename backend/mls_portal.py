@@ -313,7 +313,7 @@ async def mls_portal_search(
     except RuntimeError as exc:
         raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("MLS portal search failed: %s", exc)
+        logger.error("MLS portal search failed: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     listings = [_listing_json(r) for r in rows]
@@ -390,7 +390,7 @@ async def mls_portal_listing(
     except RuntimeError as exc:
         raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("MLS portal detail failed: %s", exc)
+        logger.error("MLS portal detail failed: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     if not row:
@@ -464,7 +464,7 @@ async def mls_portal_health(
     except RuntimeError as exc:
         raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("MLS health failed: %s", exc)
+        logger.error("MLS health failed: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
     sources: list[dict[str, Any]] = []
     for raw in rows:
@@ -1204,7 +1204,7 @@ async def mls_pipeline_search(
     except RuntimeError as exc:
         raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("Public property record search failed: %s", exc)
+        logger.error("Public property record search failed: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     query_key = _token_key(q) if q and q.strip() else ""
@@ -1269,7 +1269,7 @@ async def mls_pipeline_listing(
     except RuntimeError as exc:
         raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("Public property record detail failed: %s", exc)
+        logger.error("Public property record detail failed: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
 
     if not row:

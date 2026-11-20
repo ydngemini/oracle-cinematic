@@ -888,7 +888,10 @@ async def extract_image(
     except RuntimeError as exc:
         # opencv/numpy absent — the pipeline imports lazily so the rest of the
         # API keeps working; this endpoint degrades honestly instead of 500ing.
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        # The library's message (an import path, a version) goes to the log.
+        log.error("Floor-plan extraction unavailable: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "Floor-plan extraction is not available on this server.") from exc
 
     document_json_obj = document.to_json()
     return {

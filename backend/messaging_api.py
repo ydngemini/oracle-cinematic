@@ -36,10 +36,37 @@ from messaging_data import (
     register_messaging_brand,
     register_messaging_campaign,
 )
+from memory_core_errors import memory_core_offline
 from tenancy import Role, TenantContext, require_context, require_role
 from billing import require_active_subscription
 
 logger = logging.getLogger("oracle.messaging")
+
+
+def _texting_provider() -> str:
+    """The configured provider, or a fixed 503. MessagingProviderError's text
+    names the server's environment variable and its value; the broker owner
+    reading the answer can set neither, so it goes to the log only."""
+    from messaging_provider import MessagingProviderError, messaging_provider_name
+
+    try:
+        return messaging_provider_name()
+    except MessagingProviderError as exc:
+        logger.error("Messaging provider misconfigured: %s", exc)
+        raise HTTPException(status_code=503, detail="Texting is not configured on this server.") from exc
+
+
+def _provider_refusals() -> tuple[type[BaseException], ...]:
+    """A definite no from the provider, or from the guard in front of it: the
+    text is written for the broker owner fixing a registration. Anything else
+    _ask_registration already turns into RegistrationUnconfirmed, so what is
+    left under it is the database or sealing layer, whose text is not."""
+    import recovery_mode
+    from command_providers import ProviderConfigurationError, ProviderRejectedError
+    from messaging_provider import MessagingProviderError
+
+    return (ProviderConfigurationError, ProviderRejectedError, MessagingProviderError,
+            NotImplementedError, recovery_mode.RecoveryModeBlocked)
 
 router = APIRouter(prefix="/api/messaging", tags=["Messaging"])
 
@@ -347,12 +374,12 @@ async def register_brand(
     exists, or while a submission is unresolved, is a 409 and reaches no
     provider — no adapter can update a brand in place yet."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     credentials = await _telnyx_credentials(ctx)
     try:
         return await register_messaging_brand(
-            ctx, body.model_dump(exclude_none=True), provider=messaging_provider_name(), credentials=credentials
+            ctx, body.model_dump(exclude_none=True), provider=provider, credentials=credentials
         )
     except RegistrationConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -360,8 +387,10 @@ async def register_brand(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the brand registration: {exc}") from exc
+    except _provider_refusals() as exc:
+        raise HTTPException(status_code=502, detail=f"The texting provider refused the brand registration: {exc}") from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "brand registration not recorded") from exc
 
 
 @router.put("/business/registration/campaign", dependencies=[Depends(require_active_subscription)])
@@ -372,7 +401,7 @@ async def register_campaign(
     """10DLC Campaign — one per brokerage at the provider (L10-09), same
     guards as register_brand."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     credentials = await _telnyx_credentials(ctx)
     try:
@@ -381,7 +410,7 @@ async def register_campaign(
             description=body.description,
             usecase=body.usecase,
             extra=body.model_dump(exclude={"description", "usecase"}, exclude_none=True),
-            provider=messaging_provider_name(),
+            provider=provider,
             credentials=credentials,
         )
     except RegistrationConflict as exc:
@@ -390,8 +419,10 @@ async def register_campaign(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the campaign submission: {exc}") from exc
+    except _provider_refusals() as exc:
+        raise HTTPException(status_code=502, detail=f"The texting provider refused the campaign submission: {exc}") from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "campaign submission not recorded") from exc
 
 
 @router.post("/business/registration/refresh")
@@ -400,15 +431,7 @@ async def refresh_registration(ctx: TenantContext = Depends(require_context)) ->
     now (25.2). A broker owner only; reads, never submits. Two owners racing
     are safe: the newer provider answer wins."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import MessagingProviderError, messaging_provider_name
-
-    try:
-        provider = messaging_provider_name()
-    except MessagingProviderError as exc:
-        # The message names the server's environment variable and its value;
-        # the broker owner reading this cannot set either.
-        logger.error("Messaging provider misconfigured: %s", exc)
-        raise HTTPException(status_code=503, detail="Texting is not configured on this server.") from exc
+    provider = _texting_provider()
     credentials = await _telnyx_credentials(ctx)
     # Throttled: repeated clicks within 30 s answer from what was just read.
     result = await refresh_registration_status(ctx, provider=provider, credentials=credentials,
@@ -423,7 +446,7 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
     answered from the ledger, a racing or unresolved one is a 409, an
     ambiguous provider answer is a 502 that waits for an operator."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     business_number = await get_public_business_number(ctx)
     if business_number is None:
@@ -433,7 +456,7 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
         return await assign_messaging_campaign_number(
             ctx,
             phone_number=str(business_number["voice_caller_id_e164"]),
-            provider=messaging_provider_name(),
+            provider=provider,
             credentials=credentials,
         )
     except RegistrationConflict as exc:
@@ -442,8 +465,10 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the number assignment: {exc}") from exc
+    except _provider_refusals() as exc:
+        raise HTTPException(status_code=502, detail=f"The texting provider refused the number assignment: {exc}") from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "number assignment not recorded") from exc
 
 
 # ── Telnyx webhooks (signed, tenant-safe, idempotent) ───────────────────────

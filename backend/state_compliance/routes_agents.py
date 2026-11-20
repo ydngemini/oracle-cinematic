@@ -164,7 +164,7 @@ async def log_ce_credits(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("CE log insert failed: %s", exc)
+        logger.error("CE log insert failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",
