@@ -75,7 +75,7 @@ class FakeRouteConn:
             return dict(self.row) if self.row else None
         if q.startswith("INSERT INTO telephony_routes"):
             self.inserts += 1
-            values = dict(zip(_INSERT_COLUMNS, args))
+            values = dict(zip(_INSERT_COLUMNS, args, strict=True))
             row = dict(self.row) if self.row else {
                 "id": "aaaaaaaa-0000-4000-8000-000000000000",
                 "endpoint_key": "bbbbbbbb-0000-4000-8000-000000000000",

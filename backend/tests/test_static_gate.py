@@ -4,8 +4,10 @@
 so the approved-email branch raised UnboundLocalError before reaching it.
 
 Phase 2 widened the gate to F841 and F811 (unused locals, redefinitions of
-unused names), phase 3 to F401 (unused imports); the families are pinned
-below so the gate cannot pass by checking less."""
+unused names), phase 3 to F401 (unused imports), phase 4 to B023/B904 (loop
+closures, exception causes) and phase 5 to B017/B011/B007/B905 (blind raises,
+`assert False`, unused loop variables, zip without strict=). The families are
+pinned below so the gate cannot pass by checking less."""
 
 from __future__ import annotations
 
@@ -35,20 +37,23 @@ def test_the_backend_passes_the_static_gate():
     assert result.returncode == 0, result.stdout[-2000:]
 
 
-def test_the_gate_keeps_its_phase_one_and_two_families():
+PINNED = ("E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004", "B023", "B904",
+          "B017", "B011", "B007", "B905")
+
+
+def test_the_gate_keeps_its_pinned_families():
     """Removing a family from the selection would make every later run pass
     while checking less. An intended finding is silenced on its own line with
     a reason (`# noqa: F811 - ...`), never by ignoring the rule for a file."""
     lint = tomllib.loads((BACKEND / "ruff.toml").read_text())["lint"]
-    assert {"E9", "F63", "F7", "F82", "F841", "F811", "F401", "PGH004", "B023", "B904"} <= set(lint["select"])
+    assert set(PINNED) <= set(lint["select"])
     ignored = set(lint.get("ignore", [])) | set(lint.get("extend-ignore", [])) | {
         code
         for key in ("per-file-ignores", "extend-per-file-ignores")
         for codes in lint.get(key, {}).values() for code in codes
     }
     # Any ignore that covers a pinned rule: prefixes ("F8", "F84") and ALL included.
-    assert not [c for c in ignored for rule in ("F841", "F811", "F401", "PGH004", "B023", "B904")
-                if c == "ALL" or rule.startswith(c)], ignored
+    assert not [c for c in ignored for rule in PINNED if c == "ALL" or rule.startswith(c)], ignored
 
 
 def test_no_file_silences_the_gate_wholesale_and_import_noqa_names_its_reason():
@@ -80,3 +85,36 @@ def test_no_file_silences_the_gate_wholesale_and_import_noqa_names_its_reason():
     assert not bad_file_level, bad_file_level
     assert not block_noqa, block_noqa
     assert not bare_import_noqa, bare_import_noqa
+
+
+def _zip_strict_false_lines(text: str) -> list[int]:
+    import ast
+
+    lines = []
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "zip":
+            for kw in node.keywords:
+                if kw.arg == "strict" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                    lines.append(kw.value.lineno)
+    return lines
+
+
+def test_a_deliberately_uneven_zip_says_why():
+    """B905 (phase 5) makes every zip() choose. strict=False is right only when
+    the sides differ ON PURPOSE, and the reader needs the purpose: the line
+    carries a comment. Sliding pairs are itertools.pairwise and a cut is
+    itertools.islice, so neither needs strict=False at all."""
+    assert _zip_strict_false_lines("zip(a, b, strict=False)\nzip(a, b, strict=True)\n") == [1]
+    unexplained = []
+    for path in BACKEND.rglob("*.py"):
+        if any(part in ("venv", "node_modules", "pascal-editor") for part in path.parts):
+            continue
+        text = path.read_text(errors="ignore")
+        if "strict=False" not in text:
+            continue
+        source = text.splitlines()
+        for n in _zip_strict_false_lines(text):
+            comment = source[n - 1].partition("#")[2].strip()
+            if len(comment) < 8:
+                unexplained.append(f"{path.relative_to(BACKEND)}:{n}")
+    assert not unexplained, unexplained

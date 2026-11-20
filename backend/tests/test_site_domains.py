@@ -178,7 +178,7 @@ def test_every_write_a_check_makes_is_a_move_the_database_allows():
         status, _ = sd.decide(current, txt=txt, cname=cname, site_published=published, target_configured=target)
         path = sd.steps(current, status)
         assert path and path[-1] == status, (current, status, path)
-        for before, after in zip([current, *path], path):
+        for before, after in itertools.pairwise([current, *path]):
             assert before == after or (before, after) in moves, (current, txt, cname, published, target, path)
 
 

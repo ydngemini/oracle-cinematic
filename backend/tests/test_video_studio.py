@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from itertools import pairwise
 import requests
 from contextlib import asynccontextmanager
 
@@ -310,7 +311,7 @@ def test_captions_and_prompts_come_from_the_same_segmentation():
     segments = studio._script_segments(script, 2)
     prompts = studio._per_clip_prompts(script, 2)
     assert len(segments) == len(prompts) == 2
-    for segment, prompt in zip(segments, prompts):
+    for segment, prompt in zip(segments, prompts, strict=True):
         assert prompt.startswith(segment)
 
 
@@ -406,7 +407,7 @@ def test_stitching_clips_of_different_sizes_produces_one_monotonic_stream(tmp_pa
         pts = [f.pts for f in container.decode(video=0)]
     assert (stream.codec_context.width, stream.codec_context.height) == (720, 1280)
     assert len(pts) == 8
-    assert all(x < y for x, y in zip(pts, pts[1:]))
+    assert all(x < y for x, y in pairwise(pts))
 
 
 def test_stream_copying_identical_clips_keeps_decode_order_monotonic(tmp_path):
@@ -427,7 +428,7 @@ def test_stream_copying_identical_clips_keeps_decode_order_monotonic(tmp_path):
         dts = [p.dts for p in container.demux(stream) if p.dts is not None]
     with av.open(str(out)) as container:
         frames = list(container.decode(video=0))
-    assert all(x < y for x, y in zip(dts, dts[1:])), dts
+    assert all(x < y for x, y in pairwise(dts)), dts
     assert len(frames) == 12          # nothing dropped at the boundary
 
 

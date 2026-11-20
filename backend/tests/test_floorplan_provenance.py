@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 import floorplan_api as fp
 from tenancy import Role, TenantContext
@@ -77,8 +78,10 @@ def test_scaffold_hash_changes_with_content():
 # ---------------------------------------------------------------------------
 
 def test_scaffold_sha256_must_look_like_a_hash():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError) as exc:
         fp.SaveFloorplanRequest(document=MINIMAL_DOCUMENT, scaffold_sha256="not-a-hash")
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("string_pattern_mismatch", ("scaffold_sha256",))]
 
 
 def test_dimension_manifest_and_scaffold_sha256_are_optional():

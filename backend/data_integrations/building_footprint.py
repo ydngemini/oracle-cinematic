@@ -96,7 +96,7 @@ def _ring_area_sqm(ring: list[list[float]], latitude: float) -> float:
     metres_per_deg_lat = 111_132.0
     metres_per_deg_lon = 111_320.0 * math.cos(math.radians(latitude))
     total = 0.0
-    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1], strict=True):
         total += (x1 * metres_per_deg_lon) * (y2 * metres_per_deg_lat) - (
             x2 * metres_per_deg_lon
         ) * (y1 * metres_per_deg_lat)

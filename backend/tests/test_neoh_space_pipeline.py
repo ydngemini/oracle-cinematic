@@ -561,7 +561,7 @@ def _with_a_truncated_photo(env, prefix):
     good = _good_capture(env.tmp, n=12)
     ids = [f"{prefix}-0000-4000-8000-{i:012d}" for i in range(13)]
     truncated = ids[-1]
-    blobs = {mid: path.read_bytes() for mid, path in zip(ids, good)}
+    blobs = {mid: path.read_bytes() for mid, path in zip(ids[:-1], good, strict=True)}
     whole = good[0].read_bytes()
     blobs[truncated] = whole[: len(whole) // 3]
     _serve_capture(env, _photo_rows(ids), blobs)

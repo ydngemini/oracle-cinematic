@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from pydantic import ValidationError
 
 import client_portal
 from client_portal import PortalAssetScope, _portal_media_url
@@ -43,8 +44,9 @@ class TestScope:
         assert scope.tour is False
 
     def test_the_scope_is_a_closed_allow_list(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError) as exc:
             PortalAssetScope(everything=True)
+        assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [("extra_forbidden", ("everything",))]
 
 
 @pytest.fixture(scope="module")

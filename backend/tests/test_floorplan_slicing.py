@@ -213,7 +213,7 @@ def test_known_dimensions_are_recovered():
     got = sorted([max(xs) - min(xs), max(ys) - min(ys)])
     want = sorted([W, D])
 
-    for actual, expected in zip(got, want):
+    for actual, expected in zip(got, want, strict=True):
         assert abs(actual - expected) / expected < 0.08, f"{actual:.2f} vs {expected:.2f}"
 
 
@@ -333,7 +333,7 @@ def test_a_surveyed_parcel_footprint_anchors_the_scale():
         max(p[1] for w in doc.walls for p in (w.start, w.end))
         - min(p[1] for w in doc.walls for p in (w.start, w.end)),
     ])
-    for actual, expected in zip(got, sorted([W, D])):
+    for actual, expected in zip(got, sorted([W, D]), strict=True):
         assert abs(actual - expected) / expected < 0.15
 
 
@@ -419,7 +419,7 @@ def test_low_opacity_floaters_are_dropped():
     ys = [p[1] for w in doc.walls for p in (w.start, w.end)]
     got = sorted([max(xs) - min(xs), max(ys) - min(ys)])
     # Without the opacity filter the extent would be the floater cloud, not the house.
-    for actual, expected in zip(got, sorted([W, D])):
+    for actual, expected in zip(got, sorted([W, D]), strict=True):
         assert abs(actual - expected) / expected < 0.15
 
 
@@ -488,7 +488,7 @@ def test_a_long_room_yields_its_real_dimensions():
     xs = [p[0] for w in doc.walls for p in (w.start, w.end)]
     ys = [p[1] for w in doc.walls for p in (w.start, w.end)]
     got = sorted([max(xs) - min(xs), max(ys) - min(ys)])
-    for actual, expected in zip(got, sorted([length, width])):
+    for actual, expected in zip(got, sorted([length, width]), strict=True):
         assert abs(actual - expected) / expected < 0.06, f"{actual:.2f} vs {expected:.2f}"
 
 

@@ -52,7 +52,7 @@ def _to_local_metres(ring: Sequence[Sequence[float]]) -> list[Point2D]:
             math.radians(lon - lon0) * EARTH_RADIUS_M * cos_lat0,
             math.radians(lat - lat0) * EARTH_RADIUS_M,
         )
-        for lon, lat in zip(lons, lats)
+        for lon, lat in zip(lons, lats, strict=True)
     ]
 
 

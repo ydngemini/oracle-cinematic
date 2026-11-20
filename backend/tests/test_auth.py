@@ -33,6 +33,18 @@ def _mint(claims: dict, key: str | None = None, algorithm: str | None = None) ->
     return jwt.encode(claims, key or auth.SECRET_KEY, algorithm=algorithm or auth.ALGORITHM)
 
 
+def _assert_rejected(token: str, accepted_means: str) -> None:
+    """decode_token must refuse with a 401. pytest.fail, not `assert False`:
+    python -O strips assert statements, which would turn every acceptance
+    of a bad token into a silent pass."""
+    try:
+        auth.decode_token(token)
+    except HTTPException as exc:
+        assert exc.status_code == 401, exc.status_code
+    else:
+        pytest.fail(accepted_means)
+
+
 def _valid_claims(**over) -> dict:
     now = int(time.time())
     base = {
@@ -55,11 +67,7 @@ def test_valid_token_roundtrips():
 
 def test_expired_token_rejected():
     expired = _mint(_valid_claims(exp=int(time.time()) - 10))
-    try:
-        auth.decode_token(expired)
-        assert False, "expired token was accepted"
-    except HTTPException as exc:
-        assert exc.status_code == 401
+    _assert_rejected(expired, "expired token was accepted")
 
 
 def test_forged_signature_rejected():
@@ -68,40 +76,24 @@ def test_forged_signature_rejected():
         _valid_claims(role="platform_admin"),
         key="ATTACKER_KEY_NOT_THE_SERVER_32_BYTES",
     )
-    try:
-        auth.decode_token(forged)
-        assert False, "forged token was accepted — privilege escalation"
-    except HTTPException as exc:
-        assert exc.status_code == 401
+    _assert_rejected(forged, "forged token was accepted — privilege escalation")
 
 
 def test_empty_and_garbage_tokens_rejected():
     for bad in ("", "not.a.jwt", "Bearer x", "a" * 10):
-        try:
-            auth.decode_token(bad)
-            assert False, f"garbage token accepted: {bad!r}"
-        except HTTPException as exc:
-            assert exc.status_code == 401
+        _assert_rejected(bad, f"garbage token accepted: {bad!r}")
 
 
 def test_oversized_token_rejected():
     # decode_token guards on length before doing any crypto work.
     huge = _mint(_valid_claims(blob="x" * 9000))
-    try:
-        auth.decode_token(huge)
-        assert False, "oversized token accepted"
-    except HTTPException as exc:
-        assert exc.status_code == 401
+    _assert_rejected(huge, "oversized token accepted")
 
 
 def test_none_algorithm_attack_rejected():
     # Classic JWT "alg: none" downgrade — must not be honored.
     unsigned = jwt.encode(_valid_claims(role="platform_admin"), key="", algorithm="none")
-    try:
-        auth.decode_token(unsigned)
-        assert False, "alg=none token accepted — signature bypass"
-    except HTTPException as exc:
-        assert exc.status_code == 401
+    _assert_rejected(unsigned, "alg=none token accepted — signature bypass")
 
 
 def _request_with_cookie(token: str | None = None) -> Request:

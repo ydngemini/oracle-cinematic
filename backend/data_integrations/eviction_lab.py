@@ -151,10 +151,21 @@ class EvictionLabSource(DataSource):
         except StopIteration:
             return []
         rows = []
-        for raw in reader:
+        for line, raw in enumerate(reader, start=2):
             if not raw:
                 continue
-            rows.append(dict(zip(header, raw)))
+            if len(raw) != len(header):
+                # Every row of the published files carries exactly the header's
+                # fields (7,234 rows over six state/county/tract/block-group
+                # files, 2026-11-20). A short or long row is a damaged download:
+                # zip() would drop columns or pair values with the wrong names
+                # and report real data as missing. classify() reads the
+                # ValueError as a bad response, never as "no data here".
+                raise ValueError(
+                    f"{self.source_name} CSV line {line} has {len(raw)} fields; "
+                    f"the header has {len(header)}"
+                )
+            rows.append(dict(zip(header, raw, strict=True)))
         return rows
 
     async def fetch(self, *, geography: str, postal: Optional[str]) -> Optional[dict]:

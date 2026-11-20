@@ -682,7 +682,7 @@ class NationwideMarketResearchAgent:
         observations: list[MarketObservation] = []
         sources: dict[str, dict[str, Any]] = {}
         failures = 0
-        for spec, outcome in zip(self.specs, outcomes):
+        for spec, outcome in zip(self.specs, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 failures += 1
                 sources[spec.key] = {

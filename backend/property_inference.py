@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from itertools import pairwise
 from collections import Counter
 from typing import Any, Mapping, Sequence
 
@@ -157,7 +158,7 @@ def analyze_topography(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     elevations = [sample["elevation_ft"] for sample in normalized]
     grades: list[float] = []
     ordered = sorted(normalized, key=lambda value: value["distance_ft"])
-    for left, right in zip(ordered, ordered[1:]):
+    for left, right in pairwise(ordered):
         run = right["distance_ft"] - left["distance_ft"]
         if run > 0:
             grades.append(abs(right["elevation_ft"] - left["elevation_ft"]) / run)

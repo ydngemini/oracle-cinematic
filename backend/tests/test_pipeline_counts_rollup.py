@@ -81,7 +81,7 @@ def test_both_halves_are_scoped_to_one_tenant():
     tenant, not the sum of every tenant — deliberate business scope."""
     conn, _ = _run_tool()
     assert len(conn.queries) == 2, f"expected exactly two queries, got {conn.queries}"
-    for query, args in zip(conn.queries, conn.args):
+    for query, args in zip(conn.queries, conn.args, strict=True):
         assert "tenant_id=$1::uuid" in query, query
         assert args == (CTX.tenant_id,)
     source = inspect.getsource(ai_chat_store._read_team_or_providers)

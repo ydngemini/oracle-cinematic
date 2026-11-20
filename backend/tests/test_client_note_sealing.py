@@ -79,6 +79,21 @@ def test_a_decrypt_failure_names_no_content(monkeypatch):
     assert "secret" not in str(err.value)
 
 
+@pytest.mark.parametrize("answer", [None, [], ["only one"]], ids=["null", "empty", "short"])
+def test_a_short_decrypt_answer_fails_closed(monkeypatch, answer):
+    """One text per ciphertext. zip() over a short answer left the rest of the
+    notes at their plaintext default (""), so sealed notes read as blank."""
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+
+    class _Conn:
+        async def fetchval(self, *_a):
+            return answer
+
+    rows = [{"id": i, "body": "", "body_ciphertext": b"x", "body_tenant_id": TENANT} for i in (1, 2)]
+    with pytest.raises(client_note_crypto.NoteSealError, match=r"answered \d texts for 2 notes"):
+        asyncio.run(client_note_crypto.open_rows(_Conn(), rows))
+
+
 def _sql_literals(tree: ast.AST):
     """Every string literal or f-string, with {name} for each interpolation."""
     parts = {id(p) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for p in n.values}
