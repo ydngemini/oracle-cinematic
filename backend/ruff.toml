@@ -1,0 +1,10 @@
+# Audit 35-03: a phased static gate. Phase 1 is the must-pass set that finds
+# real runtime failures with no style noise: syntax errors (E9), invalid
+# comparisons (F63), misplaced return/yield/break (F7) and undefined or
+# unbound names (F82, which caught an UnboundLocalError in the email send
+# path). Widen the selection one rule family at a time, fixing as you go.
+target-version = "py312"
+extend-exclude = ["venv", "node_modules", "pascal-editor"]
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]

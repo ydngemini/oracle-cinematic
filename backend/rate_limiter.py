@@ -11,7 +11,10 @@ import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+
+if TYPE_CHECKING:  # annotations only; redis is optional at runtime
+    from redis.asyncio import Redis
 
 from tenancy import TenantContext
 

@@ -4159,8 +4159,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
 
                 on_behalf_of = ""
                 try:
-                    from agent_profile import load_agent_identity
-
+                    # load_agent_identity is the module-level import: a local
+                    # import here made the name local to this whole function,
+                    # so the email branch above raised UnboundLocalError.
                     on_behalf_of = _on_behalf_of(await load_agent_identity(owner_ctx), owner_ctx.agent_id)
                 except Exception:  # noqa: BLE001 - the call still carries its approved reason
                     logger.warning("agent identity unavailable for a call briefing", exc_info=True)

@@ -38,7 +38,7 @@ import time
 import capture_sidecars
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 log = logging.getLogger("oracle.reconstruction")
