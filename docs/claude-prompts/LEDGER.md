@@ -2124,7 +2124,7 @@ tests_run:
 authz_checked: "No access change. Only the failure classification of local errors before the provider call changes (failed instead of reconciliation_required); provider-side errors are classified as before. Behaviour change: such a command now ends 'failed' and the job is retried (up to max_attempts) instead of being parked; safe because nothing was sent and the job claims the command row FOR UPDATE and runs only from queued or failed."
 blockers:
   - "Source-order tests, not a behavioural run of the email branch (still owed, L19-25)."
-  - "Report only, pre-existing: recovery_mode.guard and the ProviderRequestError target/subject checks in command_providers fail before any network call but are still recorded as reconciliation_required (recovery mode returns a success-shaped result)."
+  - "Report only, pre-existing: recovery_mode.guard and the ProviderRequestError target/subject checks in command_providers, and Plivo's recovery_mode.guard and E.164 check in voice_provider.place_call, fail before any network call but are still recorded as reconciliation_required (recovery mode returns a success-shaped result)."
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
