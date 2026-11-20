@@ -71,7 +71,8 @@ def test_no_file_silences_the_gate_wholesale_and_import_noqa_names_its_reason():
             bad_file_level.append(str(rel))
         for n, line in enumerate(text.splitlines(), 1):
             # a bare block noqa, or one that names F401 (an E402-only one hides nothing here)
-            if re.search(r"\bimport\s*\(\s*#\s*noqa(?!\s*:)|\bimport\s*\(\s*#\s*noqa\s*:[^#\n]*F401", line, re.I):
+            # (names before the noqa on the opening line hide the rest too)
+            if re.search(r"\bimport\s*\([^)#]*#\s*noqa(?!\s*:)|\bimport\s*\([^)#]*#\s*noqa\s*:[^#\n]*F401", line, re.I):
                 block_noqa.append(f"{rel}:{n}")
             m = re.search(r"#\s*noqa:\s*([A-Z0-9, ]*F401[A-Z0-9, ]*)(.*)$", line, re.I)
             if m and not re.search(r"[A-Za-z]{3}", m.group(2)):
