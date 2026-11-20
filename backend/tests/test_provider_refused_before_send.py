@@ -667,12 +667,13 @@ def test_an_email_header_with_a_line_break_is_refused_before_connecting(monkeypa
     assert commands_api._provider_submission_is_uncertain(True, caught.value) is False
 
 
-def test_a_subject_with_a_line_break_is_refused_at_staging():
+@pytest.mark.parametrize("brk", ["\r\n", "\n", "\x0b", "\x0c", "\x85", "\u2028"])
+def test_a_subject_with_a_line_break_is_refused_at_staging(brk):
     import commands_api
 
     with pytest.raises(ValueError, match="single line"):
         commands_api._validate_command_payload(
-            commands_api.CommandType.EMAIL, {"email": "a@b.test"}, {"subject": "Hello\r\nBcc: x@y.test", "body": "hi"})
+            commands_api.CommandType.EMAIL, {"email": "a@b.test"}, {"subject": f"Hello{brk}Bcc: x@y.test", "body": "hi"})
 
 
 def test_a_custom_call_url_without_a_scheme_is_a_configuration_error(monkeypatch):

@@ -730,7 +730,9 @@ def _validate_command_payload(
             raise ValueError("EMAIL target requires a valid email")
         if not str(draft.get("subject") or "").strip():
             raise ValueError("EMAIL draft requires subject")
-        if "\r" in str(draft["subject"]) or "\n" in str(draft["subject"]):
+        # Any line break str.splitlines() knows (\v, \f, \x85, U+2028...), not
+        # only CR/LF: the email policy refuses all of them (L09-16 review r2).
+        if len(str(draft["subject"]).strip().splitlines()) > 1:
             # A mail header cannot carry a line break; refuse it now rather
             # than at send time (L09-16 review).
             raise ValueError("EMAIL subject must be a single line")
