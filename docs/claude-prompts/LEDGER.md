@@ -5710,6 +5710,31 @@ next_task: "35-03 phase 3: F401 unused imports (324) in bounded batches, then B0
 updated: 2026-11-20
 ```
 
+#### L19-28 Cross-version contract job: the previous release boots and runs its own live suite on the schema this change leaves behind (external audit 35-06)
+```yaml
+id: L19-28
+status: tests_pass
+env: local
+evidence_shas: [837691b]   # base of the squashed v2 commit
+files: [.github/workflows/ci.yml, scripts/cross-version-contract.sh, scripts/cross_version/evaluate.py, scripts/cross_version/xv_pytest_plugin.py, scripts/cross_version/boot_probe.py, backend/tests/test_cross_version_contract.py, backend/tests/test_cross_version_wiring.py, docs/cross-version-contract.md, docs/release-checklist.md, docs/deploy-digitalocean.md]
+tests_run:
+  - {cmd: "design: 3 independent designs + judge (workflow wf_6e8e5ace-122)", result: "per-PR job chosen; follow-up F1 (rollback.sh set gap) landed first as L19-26/#151", date: 2026-11-20}
+  - {cmd: "offline: test_cross_version_contract + test_cross_version_wiring + CI/env/release/rollback tests; ruff (phase 2 rules) incl. scripts/cross_version", result: "210 passed; All checks passed. Red: INCOMPATIBLE downgraded to DRIFT → 6 failed; canary accepting DRIFT → 1 failed; all-skipped check removed → 1 failed. The tests exposed a harness bug (the classifier loaded without sys.modules → every record HARNESS) and a setup gap (REASSIGN/DROP OWNED lost the migrations' ALTER DEFAULT PRIVILEGES → copied to the doadmin stand-in)", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed: first CI canary (run 44741248526) was green for the wrong reason — asyncpg's relative frame 'asyncpg/protocol/protocol.pyx' resolved under the previous backend, so test-code SQL errors counted as app frames", result: "app frames now absolute + existing + under the previous backend (regression tests with the real relative frame); canary adds CHECK (false) NOT VALID on process_heartbeats (the previous worker upserts it at startup); the boot probe maps PostgreSQL message texts to SQLSTATEs and judges boot-log errors against the control. 127 offline tests; red: old _is_app_path → 6 failed, name-only scan → 13 failed", date: 2026-11-20}
+  - {cmd: "PR #155 CI, canary mode (run 44744355231)", result: "pass in 5m07s: P@B ok, P@C FAILED and N@C FAILED with 23514 on process_heartbeats/xv_canary_hb (the server log shows the app's own INSERT INTO process_heartbeats); previous suite 168 collected, 145 passed, 23 DRIFT (leads, raised from test code) listed under drift_only; canary detected via boot P@C only; contract_result incompatible as designed; security scans green", date: 2026-11-20}
+  - {cmd: "independent review r2", result: "APPROVE: detection comes from the previous app's own write (boot-P@C-worker.log: oracle.process_heartbeat 'heartbeat not written (... xv_canary_hb')); P@B had no contract hits", date: 2026-11-20}
+authz_checked: "No access change. CI only: no secrets, permissions contents: read (fork-safe); not in release.needs or promote.needs; no declaration file, flag or env var relaxes an outcome; migration_safety.py and rollback.sh unchanged (DEP-05)."
+blockers:
+  - "Proven in CI (run 44744355231): database setup on postgres:16-alpine, the PRE_DEPLOY rehearsal as the doadmin stand-in, the previous app booting in staging mode with no baseline boot-log errors, and canary detection through an app write. Not yet measured: the false-red rate over real gap PRs (needed before F7)."
+  - "Watch while measuring false reds (review r2, not seen in run 44744355231): PostgreSQL IF EXISTS notices ('column ... does not exist, skipping') match the 42703 pattern if the app logs them; a benign unique-violation race logged only on C fails the boot; name-only or object-less messages (e.g. 'value too long for type') can be masked by an unrelated same-signature line on P@B; MAX_HITS=50 per phase."
+  - "Not a required check yet (owner decision F7 in docs/cross-version-contract.md, after the false-red rate is measured); rollback.sh does not read the record until follow-up F2."
+  - "Not deployed (C4.4)."
+audit_refs: [35-06]
+decision_refs: []
+next_task: "Measure the false-red rate over the next migration PRs; then F2 (rollback.sh requires a passing record for the exact pair) and F7 (owner: make it required)."
+updated: 2026-11-20
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
@@ -5817,7 +5842,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | DEP-03 | Rollback doesn't verify the target app | P1 | fixed on main (#53 | 19 | L19-08, AC19.04 |
 | DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed on main (#53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
 | DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed on main (#72); exercised only on the next real deploy (staging token expired) | 19 | L19-10 |
-| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback | 19 | T19.06 |
+| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback. Behavioural complement: L19-28 (cross-version contract job, previous app on the new schema); rollback.sh consumption pending F2 | 19 | T19.06 |
 | DEP-06 | Post-rollback smoke is advisory | P2 | fixed on main (#68) | 19 | L19-13, T19.11 |
 | DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
 | DEP-08 | Storage smoke can pass with storage broken | P2 | fixed in code, PR #70 (/health/storage with the app's credentials; smoke asserts it) | 19 | L19-14 |
