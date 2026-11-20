@@ -5596,17 +5596,18 @@ id: L19-24
 status: tests_pass
 env: local
 evidence_shas: [97e337d]
-files: [docs/claude-prompts/LEDGER.md]
+files: [.github/CODEOWNERS, docs/claude-prompts/LEDGER.md]
 tests_run:
   - {cmd: "gh api (read-only) repos/ydngemini/oracle-cinematic: vulnerability-alerts, automated-security-fixes, branches/main/protection, rulesets; tree", result: "before: vulnerability alerts off (404), automated security fixes off, no classic branch protection, rulesets main-protection and noah-branch-namespace active, no CODEOWNERS file", date: 2026-11-19}
   - {cmd: "with the owner's approval: gh api -X PUT .../vulnerability-alerts and .../automated-security-fixes; read back", result: "vulnerability alerts on (204), automated security fixes enabled:true", date: 2026-11-19}
+  - {cmd: "2026-11-20: gh api codeowners/errors on the branch; rulesets/27349721 read back; collaborators", result: "CODEOWNERS: 0 errors; main-protection: PR + 4 required checks, 0 approvals, require_code_owner_review false, no bypass actors; collaborators: ydngemini (admin) and Murtazadarya (write) — so the repository is NOT single-maintainer: a write collaborator could merge to main (which deploys staging) with no owner review", date: 2026-11-20}
 authz_checked: "Repository settings only, changed by the owner's explicit choice; security-fix PRs still go through CI and review before any merge."
 blockers:
-  - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. require_code_owner_review stays OFF in ruleset main-protection (27349721): single-maintainer repository, every PR is authored with the owner's account (GitHub forbids self-approval) and the ruleset has no bypass actors, so requiring it would block every merge. Turn it on once a second reviewer exists."
+  - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. Code-owner approval is to be required by a SEPARATE ruleset (main-code-owner-review) with a repository-admin bypass in pull-request mode, created after this file is on main: the owner's own PRs merge via the admin bypass (GitHub never counts an author's approval), a write collaborator needs the owner's review, and main-protection (required checks, no bypass) still binds everyone."
 audit_refs: [35-08]
 decision_refs: []
 next_task: "Require code-owner review once a second reviewer exists."
-updated: 2026-11-19
+updated: 2026-11-20
 ```
 
 #### L19-25 A phase-1 static gate (ruff: syntax errors, undefined and unbound names) runs in CI, and the UnboundLocalError it found in the approved-email path is fixed (external audit 35-03; regression from L09-14)
