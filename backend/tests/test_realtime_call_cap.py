@@ -84,7 +84,7 @@ def test_zero_means_no_cap_in_dev(monkeypatch):
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_a_brokerage_at_its_cap_never_opens_another_bridge(monkeypatch, controls, caplog, route):
+def test_a_brokerage_at_its_cap_never_opens_another_bridge(monkeypatch, controls, caplog, route):  # noqa: F811 - the parameter is the pytest fixture imported above
     monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "2")
     commands_api._REALTIME_ACTIVE[TENANT] = 2
     opened: list = []
@@ -99,7 +99,7 @@ def test_a_brokerage_at_its_cap_never_opens_another_bridge(monkeypatch, controls
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_another_brokerage_at_its_cap_does_not_block_this_one(monkeypatch, controls, route):
+def test_another_brokerage_at_its_cap_does_not_block_this_one(monkeypatch, controls, route):  # noqa: F811 - the parameter is the pytest fixture imported above
     monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "2")
     commands_api._REALTIME_ACTIVE[OTHER_TENANT] = 2
     opened: list = []
@@ -110,7 +110,7 @@ def test_another_brokerage_at_its_cap_does_not_block_this_one(monkeypatch, contr
 
 
 @pytest.mark.parametrize("route", ["plivo", "twilio"])
-def test_the_slot_is_released_when_the_bridge_fails(monkeypatch, controls, route):
+def test_the_slot_is_released_when_the_bridge_fails(monkeypatch, controls, route):  # noqa: F811 - the parameter is the pytest fixture imported above
     import qwen_omni_realtime
 
     monkeypatch.setenv("ORACLE_REALTIME_MAX_CALLS_PER_BROKERAGE", "1")
@@ -137,7 +137,7 @@ _BRIDGE_NAMES = {"twilio": "TwilioQwenRealtimeBridge", "plivo": "PlivoQwenRealti
 
 
 @pytest.mark.parametrize("route", ["acs", "plivo", "twilio"])
-def test_the_slot_is_released_when_the_bridge_cannot_be_built(monkeypatch, controls, route):
+def test_the_slot_is_released_when_the_bridge_cannot_be_built(monkeypatch, controls, route):  # noqa: F811 - the parameter is the pytest fixture imported above
     """Construction failure (Twilio/Plivo close 4400; ACS falls back) must
     give the slot back, or each failed call shrinks the brokerage's cap."""
     import qwen_omni_realtime
@@ -162,7 +162,7 @@ def test_the_slot_is_released_when_the_bridge_cannot_be_built(monkeypatch, contr
 
 
 @pytest.mark.parametrize("route", ["acs", "plivo", "twilio"])
-def test_the_slot_is_released_when_the_call_task_is_cancelled(monkeypatch, controls, route):
+def test_the_slot_is_released_when_the_call_task_is_cancelled(monkeypatch, controls, route):  # noqa: F811 - the parameter is the pytest fixture imported above
     """A cancelled handler (server shutdown, client gone mid-await) raises
     CancelledError, which no `except Exception` catches: only finally helps."""
     import qwen_omni_realtime
@@ -181,7 +181,7 @@ def test_the_slot_is_released_when_the_call_task_is_cancelled(monkeypatch, contr
     assert commands_api._REALTIME_ACTIVE == {}, "a cancelled call kept its slot"
 
 
-def test_plivo_takes_no_slot_when_the_engine_cannot_be_chosen(monkeypatch, controls):
+def test_plivo_takes_no_slot_when_the_engine_cannot_be_chosen(monkeypatch, controls):  # noqa: F811 - the parameter is the pytest fixture imported above
     """Choosing the realtime engine happens before the slot is taken, so a
     failure there cannot strand a slot outside the releasing try/finally."""
     import elevenlabs_realtime

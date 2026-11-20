@@ -25,9 +25,11 @@ from typing import Any, Mapping, Optional
 
 from command_providers import (
     ProviderConfigurationError,
+    ProviderRefusedBeforeSend,
     ProviderRejectedError,
     ProviderRequestError,
     ProviderResult,
+    RecoveryModeRefusedBeforeSend,
 )
 
 logger = logging.getLogger("oracle.messaging_provider")
@@ -279,10 +281,12 @@ class TwilioMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        # Refused before any request: a definite "not sent" (PR #147 review).
         recovery_mode.guard(
             "send_message via TwilioMessagingProvider",
             kind="send_message",
             destination=to,
+            refusal=RecoveryModeRefusedBeforeSend,
         )
         from command_providers import send_twilio_sms
 
@@ -349,19 +353,29 @@ class TelnyxMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        # Each refusal from here to send_long_code precedes the Telnyx
+        # request, so it is a definite "not sent" — never the "may have been
+        # sent" a plain ProviderRequestError means to the command worker, which
+        # sets submission_started just before this call (PR #147 review,
+        # L09-16). The checks come before the SDK import, so a missing SDK
+        # cannot mask a definite refusal.
         recovery_mode.guard(
             "send_message via TelnyxMessagingProvider",
             kind="send_message",
             destination=to,
+            refusal=RecoveryModeRefusedBeforeSend,
         )
-        import asyncio
-
-        from telnyx import APIStatusError
-
         if not to.startswith("+"):
-            raise ProviderRequestError("approved SMS/MMS target must be E.164")
+            raise ProviderRefusedBeforeSend(
+                "Not sent: the approved text's phone number is not in international (E.164) format")
         if not from_.startswith("+"):
             raise ProviderConfigurationError("Telnyx sender must be E.164")
+        import asyncio
+
+        try:
+            from telnyx import APIStatusError
+        except ImportError as exc:      # before any request: a deploy problem
+            raise ProviderConfigurationError("the Telnyx SDK is not installed") from exc
 
         def _send():
             client = self._client(credentials)
@@ -907,5 +921,10 @@ class TelnyxMessagingProvider(MessagingProvider):
             except APIStatusError as exc:
                 raise ProviderRejectedError(f"Telnyx rejected the number assignment: {exc}") from exc
 
-        response = await asyncio.wait_for(asyncio.to_thread(_assign), timeout=20.0)
+        # The response is not read: Telnyx completes an assignment
+        # asynchronously, so what create() returns is not yet the assignment's
+        # status. The caller reads ASSIGNED from get_number_campaign()
+        # afterwards (messaging_data, 25.2). The binding was never used (ruff
+        # F841, audit 35-03 phase 2).
+        await asyncio.wait_for(asyncio.to_thread(_assign), timeout=20.0)
         return ProviderResult("telnyx_number_campaign", phone_number, "assigned", {"campaign_id": campaign_id})

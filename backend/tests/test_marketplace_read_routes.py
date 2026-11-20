@@ -93,7 +93,7 @@ def test_browse_still_only_shows_published_inventory(monkeypatch):
 def test_own_publications_returns_serialised_rows(monkeypatch):
     """_row() stringifies UUIDs/datetimes and decodes the jsonb summary; a raw
     asyncpg Record would not survive JSON encoding."""
-    conn = _patch(monkeypatch, _Conn(rows=[{
+    _patch(monkeypatch, _Conn(rows=[{
         "id": "pub-1",
         "state": "draft",
         "truthful_summary": '{"address": "15 Main St"}',
@@ -150,7 +150,7 @@ def test_buyer_profiles_join_is_outer_so_a_missing_client_still_lists(monkeypatc
 def test_both_routes_are_behind_the_marketplace_feature_gate(monkeypatch, route):
     """Every other route in this module gates on Feature.MARKETPLACE; a read
     route that skipped it would advertise a disabled capability."""
-    conn = _patch(monkeypatch, _Conn())
+    _patch(monkeypatch, _Conn())
     called = {}
 
     def _require(feature):

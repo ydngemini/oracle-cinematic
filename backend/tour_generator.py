@@ -159,8 +159,10 @@ def _estimate_style(data: dict) -> str:
 
 
 def _estimate_room_count(data: dict) -> int:
+    # Bathrooms are not counted: the estimate is bedrooms plus kitchen and
+    # living room. They were read and never used (ruff F841, audit 35-03
+    # phase 2); counting them now would change every generated tour's size.
     beds = data.get("bedrooms", 0)
-    baths = data.get("bathrooms", 0)
     sqft = data.get("sqft", 0)
     rooms_from_sqft = max(4, min(8, sqft // 400))
     rooms_from_beds = beds + 2  # beds + kitchen + living

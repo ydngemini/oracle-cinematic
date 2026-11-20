@@ -252,10 +252,6 @@ def test_altered_payload_invalidates_the_signature(monkeypatch):
 
 
 def test_prepare_inbound_call_accepts_a_plivo_call_uuid():
-    route = _route_row(
-        tenant_id=TENANT_A, agent_id=AGENT_A, route_id=ROUTE_A,
-        endpoint_key=ENDPOINT_A, did=DID_A, auth_id=AUTH_ID_A,
-    )
     # Just validate the format gate directly — the DB path is exercised by
     # test_inbound_v1_routing_and_idempotency.py's FakeCallsConn pattern for
     # Twilio; here the property under test is the format acceptance itself.

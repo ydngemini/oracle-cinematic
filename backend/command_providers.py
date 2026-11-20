@@ -42,6 +42,50 @@ class ProviderRejectedError(ProviderRequestError):
     """The provider rejected the request before creating a remote action."""
 
 
+class ProviderRefusedBeforeSend(ProviderRequestError):
+    """Neoh refused the send itself, before any request left for the provider.
+
+    A definite "not sent", never "may have been sent". The command worker sets
+    `submission_started` immediately before each provider call (PR #147), so a
+    check at the top of an adapter (an approved target that is not E.164, an
+    email with no subject) used to be filed as reconciliation_required: never
+    reported as failed, never retried, and left for an operator to reconcile a
+    send that provably never happened (PR #147 review, L09-16). This type is
+    what commands_api._provider_submission_is_uncertain treats as certain.
+
+    Still a ProviderRequestError, so every caller that already handles one
+    keeps catching it; email_outbox tests for this subclass first and files
+    the email as failed, not "delivery unknown".
+
+    `job_terminal`: the same approved payload is refused the same way on every
+    attempt, so a retry would only re-run the refusal minutes later (the
+    ProviderConfigurationError reasoning)."""
+
+    job_terminal = True
+    job_error_code = "NOT_SENT_INVALID_REQUEST"
+
+
+class RecoveryModeRefusedBeforeSend(recovery_mode.RecoveryModeBlocked):
+    """Recovery mode refused a send at the top of its adapter, before any request.
+
+    Raised only by a send adapter's first statement
+    (`recovery_mode.guard(..., refusal=RecoveryModeRefusedBeforeSend)`), so it
+    proves the email, text, call or calendar invite was not sent. Before it, the
+    command worker filed the refusal as reconciliation_required and returned a
+    success-shaped result: the job "succeeded", the worker's RECOVERY_MODE_BLOCKED
+    dead-letter clause never ran, and the requester saw "may have been sent"
+    for a send that was refused (PR #147 review).
+
+    It stays a RecoveryModeBlocked, so the job worker still dead-letters it
+    (review OUT-1) and email_outbox still holds it for after recovery. It is
+    deliberately NOT a ProviderRequestError: no handler that reconciles or
+    retries provider errors starts catching recovery mode.
+
+    A guard that refuses something AFTER a send (abort_twilio_call hanging up a
+    call that nothing manages) keeps the plain RecoveryModeBlocked, because the
+    call it would have hung up exists."""
+
+
 def _authenticated_callback_url(path: str, secret_env: str) -> str:
     base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
     secret = os.getenv(secret_env, "").strip()
@@ -73,7 +117,10 @@ def _http_json(
     allow_http: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     if not allow_http and not request.full_url.startswith("https://"):
-        raise ProviderRequestError(
+        # Refused before urlopen, so nothing was sent: a configuration error
+        # (the URL comes from ORACLE_CUSTOM_CALL_API_URL or a credential), not
+        # the "may have been accepted" ProviderRequestError (PR #147 review).
+        raise ProviderConfigurationError(
             f"refusing non-HTTPS provider URL: {request.full_url[:80]}"
         )
     try:
@@ -106,15 +153,18 @@ async def send_smtp_email(
     replies land with the agent who worked the lead, not the relay mailbox.
     `list_unsubscribe_url` (commercial_email.prepare) adds the RFC 8058
     one-click headers; the caller has already footered the body."""
-    recovery_mode.guard("send an approved email")
+    # Every refusal down to _send is made before any connection to the mail
+    # server, so each is a definite "not sent" (PR #147 review), not the
+    # "may have been sent" a ProviderRequestError means to the command worker.
+    recovery_mode.guard("send an approved email", refusal=RecoveryModeRefusedBeforeSend)
     credentials = dict(credentials or {})
     recipient = str((draft.get("target") or {}).get("email") or "").strip()
     subject = str(draft.get("subject") or "").strip()
     body_text = str(draft.get("body") or "").strip()
     if not recipient or "@" not in recipient:
-        raise ProviderRequestError("approved email target is invalid")
+        raise ProviderRefusedBeforeSend("Not sent: the approved email's recipient address is invalid")
     if not subject or not body_text:
-        raise ProviderRequestError("approved email subject and body are required")
+        raise ProviderRefusedBeforeSend("Not sent: the approved email needs both a subject and a body")
 
     def _send() -> str:
         import smtp_mailer
@@ -130,6 +180,9 @@ async def send_smtp_email(
             )
         except smtp_mailer.SmtpConfigurationError as exc:
             raise ProviderConfigurationError(str(exc)[:500]) from exc
+        except smtp_mailer.SmtpMessageInvalid as exc:
+            # Built before connecting: nothing reached the mail server.
+            raise ProviderRefusedBeforeSend(f"Not sent: {exc}"[:500]) from exc
         except smtp_mailer.SmtpUncertainError as exc:
             # May already be in the recipient's inbox: reconcile, never resend.
             raise ProviderRequestError(str(exc)[:500]) from exc
@@ -272,10 +325,13 @@ async def send_twilio_sms(
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> ProviderResult:
     """Send one previously-approved SMS with a registered Twilio sender."""
+    # Every refusal down to _send precedes the Twilio request: a definite
+    # "not sent" (PR #147 review).
     recovery_mode.guard(
         "send an SMS",
         kind="send_message",
         destination=str(((draft or {}).get("target") or {}).get("phone") or ""),
+        refusal=RecoveryModeRefusedBeforeSend,
     )
     credentials = dict(credentials or {})
     account_sid = str(
@@ -312,9 +368,10 @@ async def send_twilio_sms(
     }:
         raise ProviderConfigurationError("Twilio SMS sender registration is not verified")
     if not recipient.startswith("+"):
-        raise ProviderRequestError("approved SMS target must be E.164")
+        raise ProviderRefusedBeforeSend(
+            "Not sent: the approved text's phone number is not in international (E.164) format")
     if not body or len(body) > 1_600:
-        raise ProviderRequestError("approved SMS body must contain 1-1600 characters")
+        raise ProviderRefusedBeforeSend("Not sent: the approved text must contain 1-1600 characters")
 
     def _send() -> str:
         from twilio.base.exceptions import TwilioRestException
@@ -342,13 +399,16 @@ async def create_google_calendar_event(
     *,
     access_token: Optional[str] = None,
 ) -> ProviderResult:
-    recovery_mode.guard("create a Google Calendar event (which emails attendees)")
+    # Refusals before the POST are a definite "not created" (PR #147 review).
+    recovery_mode.guard("create a Google Calendar event (which emails attendees)",
+                        refusal=RecoveryModeRefusedBeforeSend)
     token = access_token or os.getenv("GOOGLE_CALENDAR_ACCESS_TOKEN", "")
     if not token:
         raise ProviderConfigurationError("Google Calendar OAuth credential is not configured")
     event = dict(draft.get("event") or {})
     if not event.get("summary") or not event.get("start") or not event.get("end"):
-        raise ProviderRequestError("calendar summary, start, and end are required")
+        raise ProviderRefusedBeforeSend(
+            "Not created: the approved calendar event needs a summary, a start and an end")
     calendar_id = urllib.parse.quote(
         str(draft.get("calendar_id") or "primary"), safe=""
     )
@@ -387,10 +447,13 @@ async def place_twilio_call(
     credentials: Optional[Mapping[str, Any]] = None,
     correlation: str = "",
 ) -> ProviderResult:
+    # Every refusal down to _call precedes the Twilio request: a definite
+    # "not placed" (PR #147 review).
     recovery_mode.guard(
         "place a phone call",
         kind="place_call",
         destination=str(((draft or {}).get("target") or {}).get("phone") or ""),
+        refusal=RecoveryModeRefusedBeforeSend,
     )
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", ""))
@@ -431,7 +494,8 @@ async def place_twilio_call(
     if not from_number:
         raise ProviderConfigurationError("TWILIO_FROM_NUMBER is not configured")
     if not to_number.startswith("+"):
-        raise ProviderRequestError("approved call target must be E.164")
+        raise ProviderRefusedBeforeSend(
+            "Not placed: the approved call's phone number is not in international (E.164) format")
     if not twiml_url:
         raise ProviderConfigurationError("Twilio TwiML URL is not configured")
     if account_tier in {"trial", "free-trial"}:
@@ -768,7 +832,9 @@ async def place_custom_http_call(
     }
     Provider response should return JSON with one of: call_id / id / sid / reference.
     """
-    recovery_mode.guard("place a phone call")
+    # Refusals before _call (and _http_json's HTTPS check inside it) precede
+    # the POST: a definite "not placed" (PR #147 review).
+    recovery_mode.guard("place a phone call", refusal=RecoveryModeRefusedBeforeSend)
     credentials = dict(credentials or {})
     api_url = str(
         credentials.get("api_url") or os.getenv("ORACLE_CUSTOM_CALL_API_URL", "")
@@ -789,8 +855,13 @@ async def place_custom_http_call(
 
     if not api_url:
         raise ProviderConfigurationError("ORACLE_CUSTOM_CALL_API_URL is not configured")
+    if not api_url.startswith("https://"):
+        # Checked here, not only in _http_json: urllib.request.Request raises a
+        # bare ValueError for a URL with no scheme (L09-16 review).
+        raise ProviderConfigurationError(f"the custom call API URL must be https: {api_url[:80]}")
     if not to_number.startswith("+"):
-        raise ProviderRequestError("approved call target must be E.164")
+        raise ProviderRefusedBeforeSend(
+            "Not placed: the approved call's phone number is not in international (E.164) format")
 
     payload = {
         "to": to_number,

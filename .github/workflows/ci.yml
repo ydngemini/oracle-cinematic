@@ -78,8 +78,9 @@ jobs:
         working-directory: backend
         run: python -m pytest tests compliance_engine/tests -q
 
-      # Static gate, phase 1 (audit 35-03): syntax errors, undefined and
-      # unbound names, misplaced return/yield (backend/ruff.toml).
+      # Static gate, phases 1-2 (audit 35-03): syntax errors, undefined and
+      # unbound names, misplaced return/yield, unused locals and redefinitions
+      # (backend/ruff.toml).
       - name: Static checks (ruff)
         working-directory: backend
         run: python -m ruff check .

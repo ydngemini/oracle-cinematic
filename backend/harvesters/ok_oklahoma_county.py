@@ -81,9 +81,11 @@ class OklahomaCountyHarvester(ArcGISHarvester):
         absentee = bool(mail_full) and norm(mail_full) != norm(situs)
 
         market_val = to_float(row.get("currentmarket"))
-        assessed   = to_float(row.get("currentassessed"))
 
-        # Equity proxy — Oklahoma uses 11 % of market as assessed; no mortgage data
+        # No equity figure: Oklahoma assesses at about 11 % of market, which
+        # says nothing about the mortgage, so equity stays 0.0 (unknown). The
+        # assessed value read for that proxy was never used (ruff F841, audit
+        # 35-03 phase 2).
         equity_pct = 0.0
 
         # Sale date: RecordedDate (ISO date) preferred; fall back to saledate (year int)

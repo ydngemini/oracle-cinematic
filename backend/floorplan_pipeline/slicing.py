@@ -1107,7 +1107,7 @@ def occupancy_raster(xyz, up: UpAxis, lo: float, hi: float, *, sub_slices: int =
     # matters because detect_rooms discards any component touching the border
     # as the exterior background — with no margin, the building's interior IS
     # that component, and every room is thrown away.
-    pad = span_pad = max(x_max - x_min, y_max - y_min) * RASTER_MARGIN
+    pad = max(x_max - x_min, y_max - y_min) * RASTER_MARGIN
     x_min, x_max = x_min - pad, x_max + pad
     y_min, y_max = y_min - pad, y_max + pad
 
