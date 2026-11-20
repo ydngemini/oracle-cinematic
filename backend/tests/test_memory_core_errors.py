@@ -163,7 +163,7 @@ def test_registration_separates_a_provider_refusal_from_a_database_failure(monke
      503, "Texting is not configured on this server."),
     (lambda: __import__("recovery_mode").RecoveryModeBlocked("ORACLE_RECOVERY_MODE=1 refuses side effects"),
      503, "Texting is paused while Neoh is in recovery mode."),
-    (lambda: NotImplementedError(), 501, "This server's texting provider cannot register brands or campaigns."),
+    (lambda: NotImplementedError(), 501, "This server's texting provider does not support 10DLC registration."),
 ], ids=["config", "provider-name", "recovery", "unsupported"])
 def test_an_outcome_that_never_reached_the_provider_names_no_setting(monkeypatch, caplog, make, status, detail):
     """Only a real rejection is the provider's word. A missing server key,

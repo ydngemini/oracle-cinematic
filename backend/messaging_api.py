@@ -84,7 +84,7 @@ def _provider_outcome(exc: BaseException) -> HTTPException:
         return HTTPException(status_code=503, detail="Texting is paused while Neoh is in recovery mode.")
     if isinstance(exc, NotImplementedError):
         return HTTPException(status_code=501,
-                             detail="This server's texting provider cannot register brands or campaigns.")
+                             detail="This server's texting provider does not support 10DLC registration.")
     return HTTPException(status_code=503, detail="Texting is not configured on this server.")
 
 router = APIRouter(prefix="/api/messaging", tags=["Messaging"])
