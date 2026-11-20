@@ -5590,23 +5590,24 @@ next_task: "35-03 (typing gates) or 35-06 (migration cross-version contract test
 updated: 2026-11-19
 ```
 
-#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS is still open (external audit 35-08)
+#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS names owners for the high-risk paths (external audit 35-08)
 ```yaml
 id: L19-24
 status: tests_pass
 env: local
 evidence_shas: [97e337d]
-files: [docs/claude-prompts/LEDGER.md]
+files: [.github/CODEOWNERS, docs/claude-prompts/LEDGER.md]
 tests_run:
   - {cmd: "gh api (read-only) repos/ydngemini/oracle-cinematic: vulnerability-alerts, automated-security-fixes, branches/main/protection, rulesets; tree", result: "before: vulnerability alerts off (404), automated security fixes off, no classic branch protection, rulesets main-protection and noah-branch-namespace active, no CODEOWNERS file", date: 2026-11-19}
   - {cmd: "with the owner's approval: gh api -X PUT .../vulnerability-alerts and .../automated-security-fixes; read back", result: "vulnerability alerts on (204), automated security fixes enabled:true", date: 2026-11-19}
+  - {cmd: "2026-11-20: gh api codeowners/errors on the branch; rulesets/27349721 read back; collaborators", result: "CODEOWNERS: 0 errors; main-protection: PR + 4 required checks, 0 approvals, require_code_owner_review false, no bypass actors; collaborators: ydngemini (admin) and Murtazadarya (write) — so the repository is NOT single-maintainer: a write collaborator could merge to main (which deploys staging) with no owner review", date: 2026-11-20}
 authz_checked: "Repository settings only, changed by the owner's explicit choice; security-fix PRs still go through CI and review before any merge."
 blockers:
-  - "Not done: a CODEOWNERS file naming reviewers for auth, billing, telephony, privacy, migrations and deployment, and whether rulesets should require that review. Owner decision (single-maintainer repository today)."
+  - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. Code-owner approval is to be required by a SEPARATE ruleset (main-code-owner-review) with a repository-admin bypass in pull-request mode, created after this file is on main: the owner's own PRs merge via the admin bypass (GitHub never counts an author's approval), a write collaborator needs the owner's review, and main-protection (required checks, no bypass) still binds everyone."
 audit_refs: [35-08]
 decision_refs: []
-next_task: "Owner: CODEOWNERS / required review."
-updated: 2026-11-19
+next_task: "After this merges: create ruleset main-code-owner-review (pull_request: require_code_owner_review true, 1 approval; bypass: repository admin, pull_request mode), then verify an owner PR shows REVIEW_REQUIRED and merges only with --admin while CI stays required."
+updated: 2026-11-20
 ```
 
 #### L19-25 A phase-1 static gate (ruff: syntax errors, undefined and unbound names) runs in CI, and the UnboundLocalError it found in the approved-email path is fixed (external audit 35-03; regression from L09-14)
