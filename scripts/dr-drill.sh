@@ -4,7 +4,9 @@
 #
 # Proves recovery by performing it:
 #
-#   seed → assert → back up → destroy → restore → validate → isolate → smoke
+#   seed → assert → back up (under live writes, in both scopes) → destroy →
+#   restore → validate → isolate → smoke → break the restore on purpose →
+#   validate again → restore and validate the other scope's backup
 #
 # Everything happens in disposable containers created and destroyed by this
 # script. It never touches production, never uses real customer data, and never
@@ -138,6 +140,14 @@ docker exec -i "$SRC" psql -U postgres -d neoh_src -q -v ON_ERROR_STOP=1 < "$HER
   && ok "fixture loaded — two isolated brokerages" \
   || bad "fixture failed to load"
 
+# REC-03: a table a live workload keeps writing to WHILE the backup runs (step
+# 4). Drill-only, never in the Neoh schema; the backup counts it like any
+# other table, which is the point.
+WRITES=dr_drill_concurrent_writes
+sq "CREATE TABLE public.$WRITES (id bigserial PRIMARY KEY, written_at timestamptz NOT NULL DEFAULT clock_timestamp());" >/dev/null
+[ "$(sq "SELECT to_regclass('public.$WRITES') IS NOT NULL;")" = "t" ] \
+  && ok "concurrent-write table created" || bad "could not create $WRITES"
+
 # ── 3. Pre-failure assertions ──────────────────────────────────────────────
 #
 # Written down BEFORE the disaster. Comparing the restore against numbers
@@ -170,8 +180,33 @@ ok "pre-failure state recorded"
 
 # ── 4. Backup, using the real tooling ──────────────────────────────────────
 
-phase "4. Back up"
+phase "4. Back up while a writer is committing"
 rm -f "$BACKUPS"/*
+
+# REC-03: the manifest's counts must be the DUMP's counts, not the counts of
+# whatever moment psql happened to ask. A writer commits one row every ~20 ms
+# for the whole backup; it stops when it sees row -1, which is inserted only
+# after the backup has finished (so it is never in the dump). Each INSERT is
+# its own transaction (COMMIT inside DO, allowed at top level since PG 11).
+docker exec "$SRC" psql -U postgres -d neoh_src -q -v ON_ERROR_STOP=1 -c "
+  DO \$\$ BEGIN
+    FOR i IN 1..15000 LOOP
+      EXIT WHEN EXISTS (SELECT 1 FROM public.$WRITES WHERE id = -1);
+      INSERT INTO public.$WRITES DEFAULT VALUES;
+      COMMIT;
+      PERFORM pg_sleep(0.02);
+    END LOOP;
+  END \$\$;" > "$WORK/writer.log" 2>&1 &
+WRITER_PID=$!
+W_BEFORE=0
+for _ in $(seq 1 50); do
+  W_BEFORE="$(sq "SELECT count(*) FROM public.$WRITES;")"
+  [ "${W_BEFORE:-0}" -ge 3 ] && break
+  sleep 0.2
+done
+[ "${W_BEFORE:-0}" -ge 3 ] && ok "writer is committing ($W_BEFORE rows before the backup starts)" \
+                           || bad "the concurrent writer never started — see $WORK/writer.log"
+
 B0="$(date +%s)"
 docker exec -i \
   -e PGPASSWORD="$PGPW" -e ORACLE_DB_HOST=localhost -e ORACLE_DB_NAME=neoh_src \
@@ -182,11 +217,31 @@ docker exec -i \
 BACKUP_RC=$?
 B1="$(date +%s)"
 BACKUP_SECONDS=$((B1 - B0))
+W_AFTER="$(sq "SELECT count(*) FROM public.$WRITES;")"
+
+# The OTHER scope too, still under the writer, so every run drills both: CI
+# runs this drill in `full` scope, and the nightly backup runs `authoritative`
+# (data of the rebuildable tables excluded, their human-touched leads carried
+# by an extract read in the same snapshot). Restored and verified in step 11.
+# A different ORACLE_ENV keeps its file names apart from the first backup's.
+if [ "${ORACLE_BACKUP_SCOPE:-full}" = "authoritative" ]; then OTHER_SCOPE=full; else OTHER_SCOPE=authoritative; fi
+docker exec -i \
+  -e PGPASSWORD="$PGPW" -e ORACLE_DB_HOST=localhost -e ORACLE_DB_NAME=neoh_src \
+  -e ORACLE_DB_USER=postgres -e ORACLE_ENV="drill-$OTHER_SCOPE" \
+  -e ORACLE_GIT_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  -e ORACLE_BACKUP_SCOPE="$OTHER_SCOPE" \
+  "$SRC" bash -s /backups < "$HERE/backup-postgres.sh" > "$WORK/backup-other.log" 2>&1
+OTHER_RC=$?
+W_END="$(sq "SELECT count(*) FROM public.$WRITES;")"
+sq "INSERT INTO public.$WRITES (id) VALUES (-1);" >/dev/null
+for _ in $(seq 1 50); do kill -0 "$WRITER_PID" 2>/dev/null || break; sleep 0.2; done
+kill "$WRITER_PID" 2>/dev/null
+wait "$WRITER_PID" 2>/dev/null
 
 [ "$BACKUP_RC" -eq 0 ] && ok "backup command succeeded (${BACKUP_SECONDS}s)" \
                        || bad "backup command exited $BACKUP_RC — see $WORK/backup.log"
 
-MANIFEST="$(ls "$BACKUPS"/*.manifest.json 2>/dev/null | head -1)"
+MANIFEST="$(ls "$BACKUPS"/neoh-drill-2*.manifest.json 2>/dev/null | head -1)"
 [ -n "$MANIFEST" ] && ok "manifest exists" || { bad "no manifest produced"; exit 1; }
 
 DUMP="$BACKUPS/$(grep -o '"dump_filename": "[^"]*"' "$MANIFEST" | cut -d'"' -f4)"
@@ -200,6 +255,32 @@ BACKUP_BYTES="$(wc -c < "$DUMP" | tr -d ' ')"
 grep -q '"git_sha": "[0-9a-f]\{7,\}"' "$MANIFEST" && ok "git SHA recorded" || bad "git SHA missing"
 grep -q "\"migration_head\": \"$HEAD\"" "$MANIFEST" && ok "migration head recorded ($HEAD)" \
                                                     || bad "migration head wrong or missing"
+
+# REC-03: the manifest must count every table whose data is in the dump, from
+# the dump's own snapshot. The writer table is the proof: rows committed after
+# the snapshot (before W_AFTER) are in neither the dump nor the manifest, so
+# the manifest's number is >= the count taken before the backup and < the count
+# taken after it. Step 8 then requires the restored table to hold exactly that
+# number.
+grep -q '"manifest_version": 2' "$MANIFEST" && ok "manifest_version 2 (per-table counts)" \
+                                            || bad "manifest is not version 2 — no per-table counts"
+M_TABLES="$(sed -n 's/^[[:space:]]*"table_counts_tables":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$MANIFEST" | head -1)"
+M_MISSING=""
+for t in tenants users clients property_media brokerage_invitations "$WRITES"; do
+  grep -q "^[[:space:]]*\"public\.$t\": [0-9]" "$MANIFEST" || M_MISSING="$M_MISSING $t"
+done
+if [ "${M_TABLES:-0}" -gt 100 ] && [ -z "$M_MISSING" ]; then
+  ok "manifest holds exact counts for $M_TABLES tables, not a four-table sample"
+else
+  bad "manifest counts ${M_TABLES:-no} tables; missing:${M_MISSING:- none}"
+fi
+M_WRITES="$(sed -n "s/^[[:space:]]*\"public\.$WRITES\":[[:space:]]*\([0-9][0-9]*\),\{0,1\}[[:space:]]*\$/\1/p" "$MANIFEST" | head -1)"
+if [ -n "$M_WRITES" ] && [ "${W_AFTER:-0}" -gt "${W_BEFORE:-0}" ] \
+   && [ "$M_WRITES" -ge "${W_BEFORE:-0}" ] && [ "$M_WRITES" -lt "${W_AFTER:-0}" ]; then
+  ok "writer committed $((W_AFTER - W_BEFORE)) row(s) during the backup; the manifest counted $M_WRITES (before: $W_BEFORE, after: $W_AFTER) — the snapshot's state, not a moment's"
+else
+  bad "snapshot consistency unproven: manifest counted '${M_WRITES:-nothing}' for $WRITES, writer saw $W_BEFORE before and $W_AFTER after the backup"
+fi
 
 # No secret may appear in the manifest or the log. Checked rather than assumed:
 # a backup artifact is copied into runbooks and incident channels.
@@ -294,6 +375,9 @@ else
   bad "validator FAILED"
   grep "  FAIL  " "$WORK/verify.log" | head -6 | sed 's/^/        /'
 fi
+grep -q "Row reconciliation: EXHAUSTIVE — all" "$WORK/verify.log" \
+  && ok "validator reconciled every table exhaustively" \
+  || bad "validator did not reconcile every table — see $WORK/verify.log"
 
 # ── 8. The data itself is back ─────────────────────────────────────────────
 
@@ -314,6 +398,9 @@ check "MLS entitlements"     "$EXP_ENTITLE"   "$(dq "SELECT count(*) FROM mls_fe
 check "inbound DID"          "$EXP_DID"       "$(dq "SELECT inbound_did FROM telephony_routes WHERE tenant_id='$A';")"
 check "MLS listing"          "$EXP_MLS"       "$(dq "SELECT mls_number FROM oracle_mls_listings LIMIT 1;")"
 check "object checksum"      "$EXP_OBJECT_SHA" "$(dq "SELECT encode(sha256(convert_to(url,'UTF8')),'hex') FROM property_media LIMIT 1;")"
+# REC-03: exactly the rows the manifest counted inside the dump's snapshot —
+# none of the writes committed after it, none missing.
+check "rows written during the backup" "${M_WRITES:-?}" "$(dq "SELECT count(*) FROM public.$WRITES;")"
 
 # The FK that a scoped backup broke once already.
 ORPHANS="$(dq "SELECT count(*) FROM property_media m LEFT JOIN leads l ON l.id = m.lead_id WHERE m.lead_id IS NOT NULL AND l.id IS NULL;")"
@@ -383,7 +470,123 @@ APP_READ="$(docker exec -e PGPASSWORD="$PGPW" "$DST" psql -U oracle_app_login -d
   && ok "the application role reads brokerage A's $APP_READ contacts through RLS" \
   || bad "the application role read '$APP_READ' contacts, expected $EXP_CLIENTS_A"
 
-# ── 10. Summary ────────────────────────────────────────────────────────────
+# ── 10. Break the restore on purpose: the validator must notice ────────────
+#
+# REC-03. The validator used to count tenants, users, clients and leads, so a
+# restore that lost rows in any other table passed it. Each run below breaks
+# the restored database in one way a real restore can fail silently, and the
+# validator must refuse it AND name what broke.
+
+phase "10. A damaged restore must fail validation"
+# run_verify <log> [database] [manifest]
+run_verify() {
+  docker exec -i \
+    -e PGPASSWORD="$PGPW" -e ORACLE_DB_HOST=127.0.0.1 -e ORACLE_DB_NAME="${2:-neoh_restore}" \
+    -e ORACLE_DB_USER=postgres -e ORACLE_DB_SSLMODE=disable \
+    -e ORACLE_ENCRYPTION_MASTER_KEY=drill-probe-key \
+    "$DST" bash -s "/backups/$(basename "${3:-$MANIFEST}")" < "$HERE/verify-restore.sh" > "$1" 2>&1
+}
+
+# (a) One row gone from a table outside the old four-table sample. property_media
+# is the row class pg_restore once dropped silently (rejected by its FK while
+# the restore reported "completed").
+dq "DELETE FROM property_media WHERE id = (SELECT id FROM property_media ORDER BY id LIMIT 1);" >/dev/null
+if run_verify "$WORK/verify-lost-row.log"; then
+  bad "validator PASSED a restore missing one property_media row"
+else
+  LOST_FAILS="$(grep -c "  FAIL  " "$WORK/verify-lost-row.log" || true)"
+  if grep -q "  FAIL  public.property_media: " "$WORK/verify-lost-row.log" && [ "$LOST_FAILS" = "1" ]; then
+    ok "validator refuses a restore missing one property_media row, and names that table alone"
+  else
+    bad "validator refused the restore but did not name public.property_media as the only failure ($LOST_FAILS FAIL line(s))"
+    grep "  FAIL  " "$WORK/verify-lost-row.log" | head -4 | sed 's/^/        /'
+  fi
+fi
+
+# (b) Referential integrity and indexes: one FK re-created NOT VALID, one index
+# dropped. Every row count still matches these two.
+NV_FK="$(dq "SELECT conname FROM pg_constraint WHERE conrelid = 'public.property_media'::regclass AND contype = 'f' AND convalidated ORDER BY conname LIMIT 1;")"
+NV_IDX="$(dq "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'public.property_media'::regclass AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid) ORDER BY c.relname LIMIT 1;")"
+if [ -n "$NV_FK" ] && [ -n "$NV_IDX" ]; then
+  dq "DO \$\$ DECLARE d text; BEGIN
+        SELECT pg_get_constraintdef(oid) INTO d FROM pg_constraint
+         WHERE conrelid = 'public.property_media'::regclass AND conname = '$NV_FK';
+        EXECUTE format('ALTER TABLE public.property_media DROP CONSTRAINT %I', '$NV_FK');
+        EXECUTE format('ALTER TABLE public.property_media ADD CONSTRAINT %I %s NOT VALID', '$NV_FK', d);
+      END \$\$;" >/dev/null
+  dq "DROP INDEX public.\"$NV_IDX\";" >/dev/null
+  run_verify "$WORK/verify-integrity.log"
+  grep -q "  FAIL  foreign key property_media.$NV_FK is NOT VALIDATED" "$WORK/verify-integrity.log" \
+    && ok "validator refuses an unvalidated foreign key ($NV_FK) the source had validated" \
+    || bad "validator did not catch foreign key $NV_FK left NOT VALID"
+  grep -q "  FAIL  .* indexes in public, but the backup had" "$WORK/verify-integrity.log" \
+    && ok "validator refuses a restore missing an index ($NV_IDX)" \
+    || bad "validator did not catch the dropped index $NV_IDX"
+else
+  bad "no validated FK or plain index on property_media to break (fk='$NV_FK' index='$NV_IDX')"
+fi
+
+# ── 11. The other scope's backup: restore it and validate it ───────────────
+#
+# Into a fresh database in the same restored cluster (the roles file is
+# idempotent). Same contract as steps 6–8: no pg_restore error, the validator
+# passes and reconciles every table exhaustively, and the writer table holds
+# exactly the count its manifest took inside its own snapshot. In
+# `authoritative` scope the validator must also hold `leads` to the extract.
+
+phase "11. The $OTHER_SCOPE-scope backup: restore and validate"
+MANIFEST2="$(ls "$BACKUPS"/neoh-drill-"$OTHER_SCOPE"-*.manifest.json 2>/dev/null | head -1)"
+if [ "$OTHER_RC" -eq 0 ] && [ -n "$MANIFEST2" ]; then
+  ok "$OTHER_SCOPE-scope backup succeeded under the same writer"
+else
+  bad "$OTHER_SCOPE-scope backup exited $OTHER_RC — see $WORK/backup-other.log"
+fi
+M2_WRITES="$(sed -n "s/^[[:space:]]*\"public\.$WRITES\":[[:space:]]*\([0-9][0-9]*\),\{0,1\}[[:space:]]*\$/\1/p" "${MANIFEST2:-/dev/null}" | head -1)"
+if [ -n "$M2_WRITES" ] && [ "$M2_WRITES" -ge "${W_AFTER:-0}" ] && [ "$M2_WRITES" -lt "${W_END:-0}" ]; then
+  ok "its manifest counted $M2_WRITES writer rows (before: $W_AFTER, after: $W_END)"
+else
+  bad "its manifest counted '${M2_WRITES:-nothing}' writer rows; before: $W_AFTER, after: $W_END"
+fi
+
+dq "CREATE DATABASE neoh_restore_other;" >/dev/null
+docker exec -i \
+  -e PGPASSWORD="$PGPW" -e ORACLE_DB_HOST=127.0.0.1 -e ORACLE_DB_NAME=neoh_restore_other \
+  -e ORACLE_DB_USER=postgres -e ORACLE_DB_SSLMODE=disable \
+  "$DST" bash -s "/backups/$(basename "${MANIFEST2:-none}")" < "$HERE/restore-postgres.sh" \
+  > "$WORK/restore-other.log" 2>&1
+RESTORE2_RC=$?
+if [ "$RESTORE2_RC" -eq 0 ] && ! grep -q "pg_restore: error" "$WORK/restore-other.log"; then
+  ok "restored into a fresh database with no pg_restore errors"
+else
+  bad "the $OTHER_SCOPE-scope restore exited $RESTORE2_RC — see $WORK/restore-other.log"
+fi
+
+run_verify "$WORK/verify-other.log" neoh_restore_other "$MANIFEST2"
+VERIFY2_RC=$?
+if [ "$VERIFY2_RC" -eq 0 ] && grep -q "Row reconciliation: EXHAUSTIVE — all" "$WORK/verify-other.log"; then
+  ok "validator passed and reconciled every table exhaustively"
+else
+  bad "validator did not pass the $OTHER_SCOPE-scope restore exhaustively"
+  grep "  FAIL  " "$WORK/verify-other.log" | head -4 | sed 's/^/        /'
+fi
+LEAKS2=0
+for secret in "$PGPW" PGPASSWORD api_key secret_key access_key BEGIN_PRIVATE; do
+  grep -qi -- "$secret" "${MANIFEST2:-/dev/null}" "$WORK/backup-other.log" 2>/dev/null && LEAKS2=1
+done
+[ "$LEAKS2" -eq 0 ] && ok "no secret in its manifest or log" || bad "the $OTHER_SCOPE-scope manifest or log leaks a secret"
+GOT2_WRITES="$(docker exec "$DST" psql -U postgres -d neoh_restore_other -tAX -c "SELECT count(*) FROM public.$WRITES;" 2>/dev/null)"
+check "rows written during the $OTHER_SCOPE backup" "${M2_WRITES:-?}" "$GOT2_WRITES"
+if [ "$OTHER_SCOPE" = "authoritative" ]; then
+  WANT_LEADS="$(sed -n 's/^[[:space:]]*"expected_leads":[[:space:]]*"\([0-9][0-9]*\)".*/\1/p' "${MANIFEST2:-/dev/null}" | head -1)"
+  if [ "${WANT_LEADS:-0}" -ge 1 ] \
+     && grep -q "  PASS  public.leads: $WANT_LEADS row(s), the authoritative extract's exact count" "$WORK/verify-other.log"; then
+    ok "leads came back through the in-snapshot extract: exactly its $WANT_LEADS row(s)"
+  else
+    bad "leads did not come back as the extract's ${WANT_LEADS:-unknown} row(s)"
+  fi
+fi
+
+# ── 12. Summary ────────────────────────────────────────────────────────────
 
 phase "Drill result"
 echo "  backup    ${BACKUP_SECONDS}s, $BACKUP_BYTES bytes"

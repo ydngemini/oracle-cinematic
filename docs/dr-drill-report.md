@@ -13,6 +13,30 @@
 
 Reproduce: `scripts/dr-drill.sh` and `scripts/dr-drill-redis.sh`.
 
+> **Update 2026-11-20 (external audit REC-03).** This report covers the
+> 2026-09-24 drill. Since then the backup counts **every** table whose data is
+> in the dump, inside the dump's own exported snapshot. The verifier requires
+> each count back exactly, together with the constraint, foreign-key and index
+> counts and the source's own set of `NOT VALID` foreign keys. In 2026-09-24
+> the verifier compared four tables. The drill now also:
+> - backs up while a writer is committing, and requires the restored count to
+>   equal the manifest's;
+> - breaks the restored database three ways (a deleted `property_media` row,
+>   an FK left `NOT VALID`, a dropped index) and requires the verifier to
+>   refuse each, naming it;
+> - backs up, restores and verifies the other scope as well, so CI, which runs
+>   `full`, also drills the nightly `authoritative` backup and its in-snapshot
+>   extract.
+>
+> Local result on `postgres:16-alpine`:
+> - 62/62 checks run in `full` scope;
+> - 61/61 run in `authoritative` scope.
+>
+> The CI result is recorded with the PR. Details are in
+> [disaster-recovery-state-map.md](disaster-recovery-state-map.md#what-a-restore-is-reconciled-against-rec-03-2026-11-20).
+> A manifest from before this change verifies only the four tables, and the
+> verifier says so ("NOT EXHAUSTIVE").
+
 ---
 
 ## Measurements
