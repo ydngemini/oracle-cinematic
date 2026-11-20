@@ -91,7 +91,7 @@ def test_spanish_changes_sentences_only(spanish):
              "safe_to_automate", "deadline", "action_type")
     for name in cases.DETECTORS:
         assert len(spanish[name]) == len(english[name])
-        for es, en in zip(spanish[name], english[name]):
+        for es, en in zip(spanish[name], english[name], strict=True):
             assert {k: es[k] for k in shape} == {k: en[k] for k in shape}
             assert [(e["source"], e["as_of"]) for e in es["evidence"]] == \
                    [(e["source"], e["as_of"]) for e in en["evidence"]]
@@ -174,7 +174,7 @@ def test_buyer_matching_records_each_matched_notes_key_and_values():
     said = oe._fit_notes({"matched_criteria": match.evidence, "matched_detail": match.matched_detail}, "en")
     assert said == match.evidence
     # Each key's English template reproduces buyer_matching's own note.
-    for note, detail in zip(match.evidence, match.matched_detail):
+    for note, detail in zip(match.evidence, match.matched_detail, strict=True):
         assert lang_.t(f"fit.{detail['key']}", "en", **detail["params"]) == note
     assert oe._fit_notes({"matched_criteria": match.evidence,
                           "matched_detail": match.matched_detail}, "es") == [

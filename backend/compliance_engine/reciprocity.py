@@ -145,7 +145,7 @@ class ReciprocityEngine:
                     conditions=data.get("conditions", []),
                     notes=data.get("notes", ""),
                 ))
-        for (h, t), rec in self._extra.items():
+        for (h, _host), rec in self._extra.items():
             if h == home and rec.level in ("full", "partial", "portability"):
                 results.append(rec)
         return sorted(results, key=lambda r: r.host_state)

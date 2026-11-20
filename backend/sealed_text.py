@@ -162,7 +162,10 @@ async def open_rows(conn: Any, rows: Iterable[Any], field: SealedField) -> list[
             )
         except Exception as exc:  # noqa: BLE001 — wrong key / corrupt data; never echo it
             raise SealError(f"{field.table} text could not be decrypted") from exc
-        for (index, _), text in zip(items, texts or []):
+        # One text per ciphertext, or the rows without one would read as empty.
+        if texts is None or len(texts) != len(items):
+            raise SealError(f"{field.table} decrypt answered {len(texts or [])} texts for {len(items)} rows")
+        for (index, _), text in zip(items, texts, strict=True):
             if field.json_keys:
                 try:
                     out[index][field.plain] = _merge_json(out[index].get(field.plain), text)

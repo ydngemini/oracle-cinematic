@@ -1479,7 +1479,7 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
         attempts.append((document, _coverage(document), None))
 
     scored = [(doc, cov, segmented)
-              for (doc, cov, exc), segmented in zip(attempts, modes)
+              for (doc, cov, exc), segmented in zip(attempts, modes, strict=True)
               if doc is not None]
     if not scored:
         # Both paths refused. Re-raise the geometric path's reason: it is the

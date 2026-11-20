@@ -502,6 +502,8 @@ def test_undo_only_restores_columns_on_its_allowlist():
     """`before` keys are interpolated into the UPDATE as column names. They come
     from our own ciphertext, but an allowlist makes that safe by construction."""
     for record_type, (table, columns) in ai_chat_store._UNDO_COLUMNS.items():
+        # the table is interpolated into the same UPDATE as the columns
+        assert table.replace("_", "").isalnum(), (record_type, table)
         assert columns, record_type
         assert all(column.replace("_", "").isalnum() for column in columns), record_type
     assert "clients" not in ai_chat_store._UNDO_DELETABLE_TABLES, (

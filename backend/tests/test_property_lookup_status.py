@@ -187,7 +187,7 @@ class _ReconcileConn(_LookupConn):
             return {"stage": self.client["stage"], "lead_score": self.client["lead_score"]}
         if text.startswith("INSERT INTO client_ai_state ( client_id,tenant_id,enabled"):
             self.state = {
-                **dict(zip(self._STATE_COLS, args)), "enabled": True, "score_mode": "auto",
+                **dict(zip(self._STATE_COLS, args, strict=True)), "enabled": True, "score_mode": "auto",
                 "stage_mode": "auto", "last_evaluated_at": datetime.now(timezone.utc),
             }
             return self.state

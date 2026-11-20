@@ -84,7 +84,10 @@ async def open_rows(conn: Any, rows: Iterable[Any]) -> list[dict]:
             raise
         except Exception as exc:  # noqa: BLE001 — wrong key / corrupt data; never echo it
             raise NoteSealError("client note could not be decrypted") from exc
-        for (index, _), text in zip(items, texts or []):
+        # One text per ciphertext, or the notes without one would read as empty.
+        if texts is None or len(texts) != len(items):
+            raise NoteSealError(f"note decrypt answered {len(texts or [])} texts for {len(items)} notes")
+        for (index, _), text in zip(items, texts, strict=True):
             out[index]["body"] = text
     return out
 

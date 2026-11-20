@@ -130,7 +130,7 @@ def cmd_lens_groups(images: str, out_dir: str) -> Dict[str, Any]:
     for old in glob.glob(os.path.join(out_dir, "lens_*.txt")):
         os.remove(old)
     files = []
-    for i, (key, members) in enumerate(groups.items()):
+    for i, members in enumerate(groups.values()):
         path = os.path.join(out_dir, f"lens_{i}.txt")
         with open(path, "w") as handle:
             handle.write("\n".join(members) + "\n")
@@ -169,7 +169,7 @@ def keep_mask(instance_masks: np.ndarray, labels: Sequence[str], scores: Sequenc
         return np.ones((h, w), dtype=bool)
     wanted = set(classes)
     hit = np.zeros(instance_masks.shape[1:], dtype=bool)
-    for mask, label, score in zip(instance_masks, labels, scores):
+    for mask, label, score in zip(instance_masks, labels, scores, strict=True):
         if label in wanted and float(score) >= score_min:
             hit |= mask >= 0.5
     if dilate_px > 0 and hit.any():
@@ -235,7 +235,7 @@ def cmd_masks(images: str, mask_dir: str, report_path: str, screens: bool = Fals
             masks = out["masks"][:, 0].float().cpu().numpy() if len(labels) else np.zeros((0,) + rgb.shape[:2])
             scores = out["scores"].tolist()
             keep = keep_mask(masks, labels, scores, classes=classes, shape=rgb.shape[:2])
-            for label in {l for l, sc in zip(labels, scores) if l in classes and sc >= MASK_SCORE_MIN}:
+            for label in {l for l, sc in zip(labels, scores, strict=True) if l in classes and sc >= MASK_SCORE_MIN}:
                 by_class[label] = by_class.get(label, 0) + 1
             masked = float(1.0 - keep.mean())
             if masked > 0.0:

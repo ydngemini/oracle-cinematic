@@ -117,7 +117,7 @@ def _resolves(path: str, mounted: list[list[str]]) -> bool:
             continue
         if all(
             a == _WILDCARD or b == _WILDCARD or a == b
-            for a, b in zip(wanted, candidate)
+            for a, b in zip(wanted, candidate, strict=True)
         ):
             return True
     return False

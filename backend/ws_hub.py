@@ -175,7 +175,7 @@ async def _fan_out(targets: list, text: str, drop) -> int:
         return 0
     results = await asyncio.gather(*(_send_one(_socket_of(t), text) for t in targets))
     delivered = 0
-    for target, ok in zip(targets, results):
+    for target, ok in zip(targets, results, strict=True):
         if ok:
             delivered += 1
         else:

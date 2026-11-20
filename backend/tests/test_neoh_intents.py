@@ -289,7 +289,7 @@ class TestPossibleMatchesEndToEnd:
         block = out["blocks"][0]["props"]
         assert block["title"] == "Possible matches for Sarah Chen"
         assert [o["id"] for o in block["options"]] == [c["public_record_id"] for c in candidates[:3]]
-        for option, record in zip(block["options"], candidates):
+        for option, record in zip(block["options"], candidates[:3], strict=True):
             assert option["href"] is None
             assert option["detail"].startswith(
                 f"Austin, TX 78701 · Parcel {record['parcel_id']} · Possible match by owner name (ignoring")

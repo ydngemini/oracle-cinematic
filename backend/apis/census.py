@@ -84,7 +84,7 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
 
         headers = data[0]
         values = data[1]
-        row = dict(zip(headers, values))
+        row = dict(zip(headers, values, strict=True))
 
         result = {"zip": zip_code, "name": row.get("NAME", "")}
         for name, code in _VARIABLES.items():
@@ -145,7 +145,7 @@ async def get_demographics_by_state_county(state_fips: str, county_fips: str) ->
 
         headers = data[0]
         values = data[1]
-        row = dict(zip(headers, values))
+        row = dict(zip(headers, values, strict=True))
 
         result = {"state_fips": state_fips, "county_fips": county_fips, "name": row.get("NAME", "")}
         for name, code in _VARIABLES.items():

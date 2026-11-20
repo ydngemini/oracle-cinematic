@@ -220,7 +220,7 @@ async def run(
             results = await geocoder.geocode_batch(addresses)
             matched = [
                 (str(row["id"]), float(result["lat"]), float(result["lng"]))
-                for row, result in zip(rows, results)
+                for row, result in zip(rows, results, strict=True)
                 if result.get("matched")
                 and result.get("lat") is not None
                 and result.get("lng") is not None
