@@ -90,7 +90,8 @@ def test_call_and_voice_frames_follow_the_record():
     import voice_intel
 
     for fn in (commands_api.call_telemetry, commands_api.record_call_consent,
-               commands_api.deliver_call_notes, voice_intel._broadcast_voice):
+               commands_api.deliver_call_notes, commands_api.save_call_note,
+               voice_intel._broadcast_voice):
         src = inspect.getsource(fn)
         assert "ws_hub.broadcast_record(" in src, fn.__name__
         assert "ws_hub.broadcast(" not in src, f"{fn.__name__} fans a record's content out tenant-wide"

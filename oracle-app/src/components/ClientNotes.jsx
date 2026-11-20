@@ -42,8 +42,9 @@ export default function ClientNotes({ clientId, onChange }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // A note can arrive from outside this pane — the AI's call notes land when
-  // the call ends (CALL_NOTES → crm:client-changed).
+  // A note can arrive from outside this pane — the AI's call note is saved
+  // and updated as each note is taken on the call (CALL_NOTES →
+  // crm:client-changed).
   useEffect(() => {
     const onChanged = (e) => { if (e.detail?.clientId === clientId) load(); };
     window.addEventListener('crm:client-changed', onChanged);

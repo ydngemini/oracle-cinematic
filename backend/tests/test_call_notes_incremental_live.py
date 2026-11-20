@@ -1,0 +1,257 @@
+"""A note the AI takes on a call is in the database before the AI says it is
+saved (external audit 34.4 / RUN-03), against real PostgreSQL with FORCE RLS
+(skipped without ORACLE_LIVE_DB_ADMIN_DSN).
+
+Owner decision 2026-11-20: one AI note per call, written when the first note
+is taken and appended to by each later one — through the path call-end
+delivery uses (sealed, author neoh-ai-call, review mode, the brokerage's
+client) — and delivery at call end writes no second note. Proves:
+- each save is committed when save_call_note returns (read back on another
+  connection), so a crash after two saves loses neither;
+- a retried tool call id appends nothing; a failed write keeps nothing;
+- an append reopens review in 'review' mode, keeps the agent's edits, and
+  'direct' mode never approves a proposed note;
+- a note the agent discarded mid-call is not resurrected;
+- the live frame goes to the requester and the assignee only;
+- call end: exactly one note and one timeline row; notes that could not be
+  saved are shown there, or in a task carrying no content.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import uuid
+
+import pytest
+
+DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
+pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
+
+MASTER = "live-test-incremental-call-notes-master-key-0123"
+CARD = "4" + "1" * 15  # the standard Luhn-valid test number
+
+
+def test_each_call_note_is_saved_when_taken_and_the_call_keeps_one_note(monkeypatch):
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
+    asyncio.run(_scenario())
+
+
+async def _scenario():
+    import asyncpg
+
+    import call_note_settings
+    import client_enterprise
+    import client_note_crypto
+    import commands_api
+    import ws_hub
+    from crypto import derive_tenant_key
+    from db import connection
+    from tenancy import Role, TenantContext
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=3)
+    tenant, client = str(uuid.uuid4()), uuid.uuid4()
+    key = derive_tenant_key(tenant, MASTER)
+    ref, direct_ref, fail_ref, lost_ref = (f"{p}-{uuid.uuid4()}" for p in ("inc", "direct", "fail", "lost"))
+    agent_c = f"agent-c-{uuid.uuid4().hex[:8]}@live.test"
+    pushes, tenant_wide = [], []
+
+    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True):
+        for user_id in user_ids:
+            pushes.append((user_id, payload, mirror))
+        return len(user_ids)
+
+    async def fake_tenant_push(tenant_id, payload):
+        tenant_wide.append(payload)
+        return 1
+
+    async def opened(note_id):
+        return await admin.fetchrow(
+            "SELECT body, author_id, review_state, reviewed_by, reviewed_at, "
+            "pgp_sym_decrypt(body_ciphertext, $2) AS text FROM client_notes WHERE id=$1",
+            uuid.UUID(note_id), key)
+
+    async def call_rows(provider_ref):
+        return await admin.fetch(
+            "SELECT summary, meta FROM client_activities WHERE client_id=$1 "
+            "AND meta->>'source'='ai_call_notes' AND meta->>'provider_call_id'=$2", client, provider_ref)
+
+    async def ai_notes():
+        return await admin.fetchval(
+            "SELECT count(*) FROM client_notes WHERE client_id=$1 AND author_id='neoh-ai-call'", client)
+
+    real_users_push, real_tenant_push = ws_hub.broadcast_users, ws_hub.broadcast
+    ws_hub.broadcast_users, ws_hub.broadcast = fake_users_push, fake_tenant_push
+    try:
+        save = commands_api.save_call_note
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Incremental notes test')",
+                            tenant, f"inc-{tenant[:8]}")
+        await admin.execute(
+            "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,'agent-b','agent','agent-b','scrypt$x$y')", uuid.uuid4(), tenant)
+        await admin.execute(
+            "INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,'Sarah','agent-b')",
+            client, tenant)
+        agent_a_id = uuid.uuid4()
+        await admin.execute(
+            "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,'agent-a','agent','agent-a','scrypt$x$y')", agent_a_id, tenant)
+        await admin.execute(
+            "INSERT INTO record_shares (tenant_id, resource_kind, resource_id, grantee_user_id, permission, "
+            "granted_by) VALUES ($1,'client',$2,$3,'edit','owner')", tenant, client, agent_a_id)
+        await admin.execute(
+            "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,$3,'agent',$3,'scrypt$x$y')", uuid.uuid4(), tenant, agent_c)
+        for provider_ref, creator in ((ref, "agent-a"), (direct_ref, agent_c), (fail_ref, "agent-a"),
+                                      (lost_ref, "agent-a")):
+            await admin.execute(
+                """INSERT INTO live_call_sessions (tenant_id, client_id, consent_recorded, consent_basis,
+                                                   transcript_status, provider_call_id, created_by)
+                   VALUES ($1,$2,false,'awaiting_explicit_live_transcription_consent','pending',$3,$4)""",
+                tenant, client, provider_ref, creator)
+
+        # Before a yes, nothing is written and nothing may be claimed.
+        refused = await save(ref, "Prefers afternoons", tool_call_id="t0")
+        assert refused.status == "refused" and not refused.saved and await ai_notes() == 0
+        assert await commands_api.record_call_note_consent(ref, True) is True
+
+        # The first note: committed when save returns (read on another connection).
+        first = await save(ref, "Prefers afternoon showings", tool_call_id="t1", conversation_id="conv-1")
+        assert (first.status, first.count) == ("saved", 1) and first.saved
+        note_id = first.note_id
+        row = await opened(note_id)
+        assert row["body"] == "", "an AI call note was stored in plaintext"
+        assert row["text"].endswith("\n- Prefers afternoon showings") and "the caller agreed to notes" in row["text"]
+        assert (row["author_id"], row["review_state"]) == ("neoh-ai-call", "proposed")
+        [activity] = await call_rows(ref)
+        assert activity["summary"] == "Call notes from Neoh (1) — waiting for your review"
+        assert sorted(u for u, _, _ in pushes) == ["agent-a", "agent-b"] and tenant_wide == []
+        assert all(p["note_id"] == note_id and p["notes"] == ["Prefers afternoon showings"]
+                   and p["review_state"] == "proposed" and m is False for _, p, m in pushes)
+
+        # The provider retries the same tool call: nothing is appended, nothing is sent.
+        pushes.clear()
+        again = await save(ref, "Prefers afternoon showings", tool_call_id="t1")
+        assert (again.status, again.note_id, again.saved) == ("duplicate", note_id, True)
+        assert (await opened(note_id))["text"].count("Prefers afternoon showings") == 1 and pushes == []
+
+        # The second note goes into the same note.
+        second = await save(ref, "Would love waterfront", tool_call_id="t2")
+        assert (second.note_id, second.count) == (note_id, 2)
+        # The bridge dies here (no call-end delivery): both are already kept.
+        text = (await opened(note_id))["text"]
+        assert "- Prefers afternoon showings\n- Would love waterfront" in text
+        assert await ai_notes() == 1 and len(await call_rows(ref)) == 1
+        assert pushes[-1][1]["notes"] == ["Prefers afternoon showings", "Would love waterfront"]
+
+        # Approved mid-call: new words reopen review.
+        agent_b = TenantContext(agent_id="agent-b", tenant_id=tenant, role=Role.AGENT)
+        await client_enterprise.approve_note(str(client), note_id, ctx=agent_b)
+        await save(ref, "Call back Friday", tool_call_id="t3")
+        row = await opened(note_id)
+        assert (row["review_state"], row["reviewed_by"], row["reviewed_at"]) == ("proposed", None, None)
+        assert row["text"].endswith("- Call back Friday")
+
+        # Edited mid-call: the agent's words stay, the new note follows them.
+        await client_enterprise.update_note(str(client), note_id, client_enterprise.NotePatch(
+            body="Sarah: afternoons, waterfront, call Friday."), ctx=agent_b)
+        await save(ref, f"Pays the deposit with card {CARD}", tool_call_id="t4")
+        row = await opened(note_id)
+        assert row["text"].startswith("Sarah: afternoons, waterfront, call Friday.\n- Pays the deposit with card")
+        assert CARD not in row["text"].replace(" ", ""), "a card number was stored"
+
+        # Call end: delivery finds the note and writes no second one.
+        pushes.clear()
+        delivered = await commands_api.deliver_call_notes(
+            ref, ["Prefers afternoon showings", "Would love waterfront", "Call back Friday", "x"], "conv-1")
+        assert delivered is None and pushes == []
+        assert await ai_notes() == 1 and len(await call_rows(ref)) == 1
+        assert await admin.fetchval(
+            "SELECT transcript_status FROM live_call_sessions WHERE provider_call_id=$1", ref) == "complete"
+        # A note the caller was told could not be saved shows on the call's row.
+        assert await commands_api.deliver_call_notes(ref, ["x"], unsaved=1) is None
+        [activity] = await call_rows(ref)
+        assert activity["summary"] == "Call notes from Neoh (4) — waiting for your review — 1 could not be saved"
+
+        # Discarded mid-call: it stays gone; the next note starts the call's new note.
+        await client_enterprise.delete_note(str(client), note_id, ctx=agent_b)
+        fresh = await save(ref, "Has a dog", tool_call_id="t5")
+        assert fresh.saved and fresh.note_id != note_id
+        assert await admin.fetchval("SELECT count(*) FROM client_notes WHERE id=$1", uuid.UUID(note_id)) == 0
+        [activity] = await call_rows(ref)
+        assert json.loads(activity["meta"])["note_id"] == fresh.note_id
+        assert (await opened(fresh.note_id))["text"].endswith("\n- Has a dog") and await ai_notes() == 1
+
+        # 'direct': approved at once, and an append never approves a proposed note.
+        ctx_c = TenantContext(agent_id=agent_c, tenant_id=tenant, role=Role.AGENT)
+        async with connection.tenant_tx(ctx_c) as conn:
+            assert await call_note_settings.write_mode(conn, tenant, agent_c, "direct") == "direct"
+        assert await commands_api.record_call_note_consent(direct_ref, True) is True
+        direct = await save(direct_ref, "Prefers mornings", tool_call_id="d1")
+        assert (await opened(direct.note_id))["review_state"] == "approved"
+        await admin.execute("UPDATE client_notes SET review_state='proposed' WHERE id=$1", uuid.UUID(direct.note_id))
+        await save(direct_ref, "Has two cats", tool_call_id="d2")
+        assert (await opened(direct.note_id))["review_state"] == "proposed"
+
+        # A failed write keeps nothing (rolled back); a retry of it is a fresh write.
+        assert await commands_api.record_call_note_consent(fail_ref, True) is True
+        os.environ.pop("ORACLE_ENCRYPTION_MASTER_KEY")
+        try:
+            with pytest.raises(client_note_crypto.NoteSealError):
+                await save(fail_ref, "Prefers afternoons", tool_call_id="f1")
+        finally:
+            os.environ["ORACLE_ENCRYPTION_MASTER_KEY"] = MASTER
+        assert await call_rows(fail_ref) == []
+        retry = await save(fail_ref, "Prefers afternoons", tool_call_id="f1")
+        assert retry.status == "saved" and retry.count == 1
+
+        # Nothing saved during a call at all: a task tells the requester, with no content.
+        assert await commands_api.record_call_note_consent(lost_ref, True) is True
+        for _ in range(2):
+            assert await commands_api.deliver_call_notes(lost_ref, [], unsaved=2) is None
+        tasks = await admin.fetch(
+            "SELECT client_id, title, details, assignee_id FROM client_tasks "
+            "WHERE tenant_id=$1 AND created_by='neoh-ai-call'", uuid.UUID(tenant))
+        assert len(tasks) == 1 and tasks[0]["title"] == "Call notes could not be saved"
+        assert tasks[0]["client_id"] == client and tasks[0]["assignee_id"] == "agent-a"
+        assert "could not save 2 note(s)" in tasks[0]["details"] and lost_ref in tasks[0]["details"]
+
+        # A lead with no client record: nowhere to keep it; the requester is told once.
+        prospect, prospect_ref = uuid.uuid4(), f"prospect-{uuid.uuid4()}"
+        await admin.execute(
+            "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, address) "
+            "VALUES ($1,$2,$3,'DE',50,'2 Prospect Ln')", prospect, tenant, f"PROS-{prospect.hex[:6]}")
+        await admin.execute(
+            """INSERT INTO live_call_sessions (tenant_id, lead_id, consent_recorded, consent_basis,
+                                               transcript_status, provider_call_id, created_by)
+               VALUES ($1,$2,true,'consented_on_ai_call','active',$3,'agent-a')""",
+            tenant, prospect, prospect_ref)
+        before = await admin.fetchval("SELECT count(*) FROM client_notes WHERE tenant_id=$1", uuid.UUID(tenant))
+        for call_id in ("p1", "p2"):
+            assert (await save(prospect_ref, "Wants to sell in spring", tool_call_id=call_id)).status == "no_client"
+        assert await admin.fetchval(
+            "SELECT count(*) FROM client_notes WHERE tenant_id=$1", uuid.UUID(tenant)) == before
+        told = await admin.fetch(
+            "SELECT details FROM client_tasks WHERE tenant_id=$1 AND created_by='neoh-ai-call' "
+            "AND title='Call notes were not kept: this lead has no client record'", uuid.UUID(tenant))
+        assert len(told) == 1 and "Wants to sell" not in told[0]["details"]
+    finally:
+        ws_hub.broadcast_users, ws_hub.broadcast = real_users_push, real_tenant_push
+        await admin.execute("SET session_replication_role = replica")
+        try:
+            tables = await admin.fetch(
+                """SELECT c.table_name, c.data_type FROM information_schema.columns c
+                     JOIN information_schema.tables t
+                       ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+                    WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id'
+                      AND t.table_type = 'BASE TABLE'""")
+            for row in tables:
+                cast = "uuid" if row["data_type"] == "uuid" else "text"
+                await admin.execute(f"DELETE FROM {row['table_name']} WHERE tenant_id = $1::{cast}", tenant)
+            await admin.execute("DELETE FROM tenants WHERE id=$1", uuid.UUID(tenant))
+        finally:
+            await admin.execute("SET session_replication_role = origin")
+            await admin.close()
+            await connection.close_pool()

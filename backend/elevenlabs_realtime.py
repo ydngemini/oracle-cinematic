@@ -27,9 +27,13 @@ and a failure mid-call hands an inbound caller to the agent.
 Outbound calls keep no transcript. The agent asks the callee whether it may
 take notes for their agent (client tool record_note_consent); only after a yes
 does save_note keep anything, and only the notes themselves — short facts the
-callee shared — which reach the agent as a note on the client's timeline when
-the call ends (commands_api.deliver_call_notes). Without a yes, save_note
-refuses, so the agent cannot claim to have noted what nothing kept.
+callee shared. Each one is written to the call's one AI note on the client's
+timeline when it is taken (commands_api.save_call_note), and the tool answers
+"saved" only after that write committed; a failed write answers an error the
+AI must say out loud (external audit 34.4 / RUN-03). At call end
+commands_api.deliver_call_notes finds that note and writes no second one.
+Without a yes, save_note refuses, so the agent cannot claim to have noted what
+nothing kept.
 """
 
 from __future__ import annotations
@@ -51,6 +55,30 @@ AUDIO_FORMAT = "ulaw_8000"
 TOOL_NOTE_CONSENT = "record_note_consent"
 TOOL_SAVE_NOTE = "save_note"
 _MAX_NOTES = 25
+#: The answer to a save_note whose write did not commit: the AI says so.
+NOTE_NOT_SAVED = ("Not saved: the note could not be saved. Tell them you couldn't save that note "
+                  "and suggest they tell their agent directly. Do not say it was saved or noted.")
+#: The answer once the call turns out to have nowhere to keep notes.
+NOTE_NOT_KEPT = ("Not saved: notes cannot be kept on this call. Tell them you couldn't save that "
+                 "note, take no more notes, and suggest they tell their agent directly.")
+
+
+#: Note writes in flight, kept referenced: a hang-up cancels the bridge, never a
+#: note write that already started (nothing was said about it yet either way).
+_NOTE_WRITES: set = set()
+
+
+def _note_write_done(task: "asyncio.Task") -> None:
+    _NOTE_WRITES.discard(task)
+    if not task.cancelled():
+        task.exception()  # retrieved; the write logged its own failure
+
+
+async def _shielded_note_write(coro: Awaitable[Any]) -> Any:
+    task = asyncio.ensure_future(coro)
+    _NOTE_WRITES.add(task)
+    task.add_done_callback(_note_write_done)
+    return await asyncio.shield(task)
 
 
 class ElevenLabsRealtimeError(RuntimeError):
@@ -151,8 +179,10 @@ def outbound_instructions(base: str, state: dict[str, Any]) -> tuple[str, Option
         f"answer. If they agree, call {TOOL_SAVE_NOTE} with one short factual note each time they "
         "share an interest, a preference, a question or a good time to talk or visit, in their "
         "own terms; only after the tool confirms may you say you have noted it for their agent. "
-        "If they decline or are unsure, or a tool reports an error, take no notes and never say "
-        "you have noted something or will pass it along; suggest they tell their agent directly. "
+        "If they decline or are unsure, take no notes. "
+        f"If {TOOL_SAVE_NOTE} reports an error, tell them you couldn't save that note. "
+        "Whenever they decline or a tool reports an error, never say you have noted "
+        "something or will pass it along; suggest they tell their agent directly. "
         "You cannot book or hold times: their agent will follow up to confirm."
     )
     from call_briefing import briefing_instructions
@@ -211,7 +241,16 @@ class PlivoElevenLabsBridge:
         #: None until the callee answers; notes are kept only after a True
         #: that the call's session row recorded.
         self.notes_consent: Optional[bool] = None
+        #: Notes whose write committed (34.4 / RUN-03) — never one that did not.
         self.notes: list[str] = []
+        #: Tool call id -> the answer it got, for each committed save_note: a
+        #: retried tool call is answered again and never appended twice.
+        self._saved_tool_calls: dict[str, str] = {}
+        #: Tool call ids ("" when the provider sent none) whose write failed
+        #: and the caller was told so; a later success of the same id clears it.
+        self.notes_unsaved: list[str] = []
+        #: The call has nowhere to keep notes (a lead with no client record).
+        self._notes_unavailable = False
         #: Card numbers/codes removed from save_note calls (counts only).
         self.pan_cards = 0
         self.pan_codes = 0
@@ -261,7 +300,7 @@ class PlivoElevenLabsBridge:
                 await self._hand_off_after_failure()
             raise
         finally:
-            if not inbound and self.notes:
+            if not inbound and (self.notes or self.notes_unsaved):
                 await self._deliver_notes()
             if inbound:
                 try:
@@ -326,7 +365,8 @@ class PlivoElevenLabsBridge:
             elif kind == "client_tool_call":
                 call = event.get("client_tool_call") or {}
                 result, is_error = await self._on_tool_call(
-                    str(call.get("tool_name") or ""), call.get("parameters") or {})
+                    str(call.get("tool_name") or ""), call.get("parameters") or {},
+                    str(call.get("tool_call_id") or ""))
                 await agent.send(json.dumps({
                     "type": "client_tool_result", "tool_call_id": call.get("tool_call_id"),
                     "result": result, "is_error": is_error}))
@@ -341,7 +381,7 @@ class PlivoElevenLabsBridge:
         state = self._call_state
         return str(state.get("reference") or state.get("request_uuid") or self.call_uuid)
 
-    async def _on_tool_call(self, name: str, params: Any) -> tuple[str, bool]:
+    async def _on_tool_call(self, name: str, params: Any, tool_call_id: str = "") -> tuple[str, bool]:
         params = params if isinstance(params, dict) else {}
         refuse = ("No notes can be kept. Do not take notes and do not say you have noted "
                   "anything; suggest they tell their agent directly.")
@@ -366,6 +406,12 @@ class PlivoElevenLabsBridge:
         if name == TOOL_SAVE_NOTE:
             if self.notes_consent is not True:
                 return "The caller has not agreed to notes. " + refuse, True
+            call_id = str(tool_call_id or "").strip()
+            if call_id and call_id in self._saved_tool_calls:
+                # A retried tool call: its note is saved once, never twice.
+                return self._saved_tool_calls[call_id], False
+            if self._notes_unavailable:
+                return NOTE_NOT_KEPT, True
             from pan_redaction import CVV_PLACEHOLDER, PAN_PLACEHOLDER, redact, report
 
             redaction = redact(str(params.get("note") or "").strip())
@@ -384,22 +430,67 @@ class PlivoElevenLabsBridge:
                             "them; any payment is made only through a secure payment link."), True
             if len(self.notes) >= _MAX_NOTES:
                 return "The note limit for this call is reached; nothing more was saved.", True
+            # Written now, and acknowledged only once the write committed
+            # (34.4 / RUN-03): a crash or hang-up cannot lose what the caller
+            # heard was saved, and nothing is claimed for a failed write.
+            try:
+                outcome = await _shielded_note_write(self._save_note(note, call_id))
+            except Exception:
+                self.notes_unsaved.append(call_id)
+                return NOTE_NOT_SAVED, True
+            if outcome.status == "refused":
+                self.notes_consent = False
+                return refuse, True
+            if outcome.status == "no_client":
+                self._notes_unavailable = True
+                return NOTE_NOT_KEPT, True
+            if outcome.status == "full":
+                return "The note limit for this call is reached; nothing more was saved.", True
+            if not outcome.saved:
+                logger.error("Call note NOT saved (%s); the caller is told: uuid=%s",
+                             outcome.status, self.call_uuid)
+                self.notes_unsaved.append(call_id)
+                return NOTE_NOT_SAVED, True
             self.notes.append(note)
+            if call_id in self.notes_unsaved:
+                self.notes_unsaved.remove(call_id)
             if redaction.changed:
-                return ("Saved for their agent without the card details, which are never kept. "
-                        "Do not repeat them; any payment is made only through a secure payment link."), False
-            return "Saved for their agent.", False
+                result = ("Saved for their agent without the card details, which are never kept. "
+                          "Do not repeat them; any payment is made only through a secure payment link.")
+            else:
+                result = "Saved for their agent."
+            if call_id:
+                self._saved_tool_calls[call_id] = result
+            return result, False
         return f"Unknown tool {name!r}.", True
 
-    async def _deliver_notes(self) -> None:
-        from commands_api import deliver_call_notes
+    async def _save_note(self, note: str, call_id: str) -> Any:
+        from commands_api import save_call_note
 
         try:
-            note_id = await deliver_call_notes(self._session_ref(), self.notes, self.conversation_id)
-            logger.info("Call notes delivered: uuid=%s notes=%d note_id=%s",
-                        self.call_uuid, len(self.notes), note_id)
+            return await save_call_note(self._session_ref(), note, tool_call_id=call_id,
+                                        conversation_id=self.conversation_id)
         except Exception:
-            logger.exception("Call notes NOT delivered: uuid=%s notes=%d", self.call_uuid, len(self.notes))
+            logger.exception("Call note NOT saved; the caller is told: uuid=%s", self.call_uuid)
+            raise
+
+    async def _deliver_notes(self) -> None:
+        """Call end. The notes are already saved, one by one, in the call's
+        note; delivery finds it and writes no second note. It closes the
+        session's transcript status and shows any notes that could not be
+        saved on the call's timeline row (or a task when none was saved)."""
+        from commands_api import deliver_call_notes
+
+        unsaved = len(self.notes_unsaved)
+        try:
+            note_id = await deliver_call_notes(self._session_ref(), self.notes, self.conversation_id,
+                                               unsaved=unsaved)
+            logger.info("Call notes closed: uuid=%s saved=%d unsaved=%d new_note_id=%s",
+                        self.call_uuid, len(self.notes), unsaved, note_id)
+        except Exception:
+            # The saved notes are already in the call's note; only the close-out failed.
+            logger.exception("Call notes close-out failed: uuid=%s saved=%d unsaved=%d",
+                             self.call_uuid, len(self.notes), unsaved)
 
     # ── transcript, limits, hand-off ────────────────────────────────────
     async def _on_transcript(self, role: str, text: str) -> None:

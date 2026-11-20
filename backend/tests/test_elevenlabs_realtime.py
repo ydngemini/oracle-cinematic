@@ -172,6 +172,7 @@ def test_the_agent_may_claim_a_note_only_after_consent_and_the_tool(state):
     assert el.TOOL_NOTE_CONSENT in prompt and el.TOOL_SAVE_NOTE in prompt
     assert "only after the tool confirms" in prompt
     assert "never say you have noted something" in prompt
+    assert "tell them you couldn't save that note" in prompt, "a failed save is said out loud (RUN-03)"
     assert "confirm a time" not in prompt and "cannot book" in prompt
 
 
@@ -186,19 +187,46 @@ def _results(agent):
 
 @pytest.fixture
 def notes_backend(monkeypatch):
+    return install_notes_backend(monkeypatch)
+
+
+def install_notes_backend(monkeypatch):
+    """commands_api's note writes, in memory. `saved` holds what a committed
+    save_call_note wrote (34.4 / RUN-03: each note as it is taken); set
+    `fail` to make that many writes raise before committing, or
+    `fail_after_commit` to make them commit and then raise (a lost ack)."""
     import commands_api
 
-    seen = {"consent": [], "delivered": []}
+    seen = {"consent": [], "delivered": [], "saved": [], "tool_ids": [], "unsaved": [],
+            "fail": 0, "fail_after_commit": 0, "status": "saved", "calls": 0}
 
     async def consent(ref, granted):
         seen["consent"].append((ref, granted))
         return seen.get("session_exists", True)
 
-    async def deliver(ref, notes, conversation_id=""):
+    async def save(ref, note, *, tool_call_id="", conversation_id=""):
+        seen["calls"] += 1
+        if seen["fail"]:
+            seen["fail"] -= 1
+            raise RuntimeError("database unavailable")
+        if seen["status"] != "saved":
+            return commands_api.CallNoteWrite(seen["status"])
+        if tool_call_id and tool_call_id in seen["tool_ids"]:
+            return commands_api.CallNoteWrite("duplicate", "note-1", len(seen["saved"]))
+        seen["tool_ids"].append(tool_call_id)
+        seen["saved"].append((ref, note))
+        if seen["fail_after_commit"]:
+            seen["fail_after_commit"] -= 1
+            raise ConnectionResetError("the commit's answer was lost")
+        return commands_api.CallNoteWrite("saved", "note-1", len(seen["saved"]))
+
+    async def deliver(ref, notes, conversation_id="", *, unsaved=0):
         seen["delivered"].append((ref, list(notes)))
-        return "note-1"
+        seen["unsaved"].append(unsaved)
+        return None
 
     monkeypatch.setattr(commands_api, "record_call_note_consent", consent)
+    monkeypatch.setattr(commands_api, "save_call_note", save)
     monkeypatch.setattr(commands_api, "deliver_call_notes", deliver)
     return seen
 
@@ -213,8 +241,9 @@ def test_notes_taken_after_a_yes_reach_the_agent(monkeypatch, notes_backend):
     results = _results(agent)
     assert [results[t]["is_error"] for t in ("t1", "t2", "t3")] == [False, False, False]
     assert notes_backend["consent"] == [("ref-1", True)], "consent keyed like the status callback"
-    assert notes_backend["delivered"] == [("ref-1", [
-        "Prefers afternoon showings", "Would love waterfront or a pond in the backyard"])]
+    taken = ["Prefers afternoon showings", "Would love waterfront or a pond in the backyard"]
+    assert notes_backend["saved"] == [("ref-1", n) for n in taken], "each note written when taken"
+    assert notes_backend["delivered"] == [("ref-1", taken)]
 
 
 def test_without_a_yes_save_note_refuses_and_nothing_is_delivered(monkeypatch, notes_backend):
@@ -226,7 +255,7 @@ def test_without_a_yes_save_note_refuses_and_nothing_is_delivered(monkeypatch, n
     results = _results(agent)
     assert results["t1"]["is_error"] and results["t3"]["is_error"]
     assert "do not say you have noted" in results["t3"]["result"]
-    assert notes_backend["delivered"] == []
+    assert notes_backend["delivered"] == [] and notes_backend["saved"] == []
 
 
 def test_a_yes_with_no_call_session_keeps_nothing(monkeypatch, notes_backend):
@@ -237,7 +266,7 @@ def test_a_yes_with_no_call_session_keeps_nothing(monkeypatch, notes_backend):
     ])
     results = _results(agent)
     assert results["t1"]["is_error"] and results["t2"]["is_error"]
-    assert bridge.notes == [] and notes_backend["delivered"] == []
+    assert bridge.notes == [] and notes_backend["delivered"] == [] and notes_backend["saved"] == []
 
 
 def test_inbound_calls_do_not_use_the_note_tools(monkeypatch, notes_backend):
