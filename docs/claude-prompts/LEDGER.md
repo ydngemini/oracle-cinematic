@@ -5553,10 +5553,13 @@ tests_run:
   - {cmd: "pip-compile 7.5.2 --generate-hashes in python:3.12-slim@sha256:2f17fc04… (the Dockerfile base); then a fresh container: pip install --require-hashes -r requirements.txt; pip check; import fastapi, asyncpg, numpy, cv2, onnxruntime, stripe, boto3, playwright, litellm", result: "134 packages locked with hashes; installs, no broken requirements, imports ok (numpy 2.5.5)", date: 2026-11-19}
   - {cmd: "pip-audit 2.10.1 --strict --skip-editable --require-hashes --disable-pip -r requirements.txt (the new CI step) in the same base image", result: "No known vulnerabilities found (now across all 134 locked packages)", date: 2026-11-19}
   - {cmd: "test_python_lock (3) + test_ci_security_gates + test_ci_build_contexts", result: "15 passed: the lock is a pip-compile output; every locked package is exact and hashed; every direct dependency is locked at a version requirements.in allows", date: 2026-11-19}
+  - {cmd: "independent review r1 (APPROVE; follow-ups applied); full unit suite 7029 passed; test_python_lock (5)", result: "pass: the lock's Python (3.12) must equal the Dockerfile's FROM python tag, so a base-image bump (e.g. open Dependabot PR #28, 3.14-slim) fails until re-locked; the perf image's copy now equals the lock and is guarded; SUP-1 status corrected in security-launch-review.md, security-launch-gate.json and the ISO 27001 policy and risk register; lock script pins --platform linux/amd64 and refreshes the perf copy", date: 2026-11-19}
 authz_checked: "No access change. Build and CI only: the Dockerfile and CI install the lock with --require-hashes (test tools install separately, unhashed); the dependency scan reads the lock without resolving."
 blockers:
   - "Dependabot's pip updater must handle requirements.in + its pip-compile output; if a Dependabot PR edits only one file, test_python_lock fails it and scripts/lock-python-deps.sh fixes it."
   - "Test tools (requirements-test.txt) are not hash-locked; they never ship in the production image."
+  - "Open Dependabot pip PRs (#31, #32, #55) and the owner's #34 edit the old-format requirements.txt and will conflict: let Dependabot rebase them (it treats the pair as a pip-compile project) rather than resolving by hand."
+  - "Not done: a minimum release age for newly published versions (regex==2026.11.19 was published the day of the lock)."
   - "The image itself was not rebuilt here (CI builds it). Not deployed (C4.4)."
 audit_refs: [35-01]
 decision_refs: []

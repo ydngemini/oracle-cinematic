@@ -56,7 +56,7 @@ def _require_cv():
     except ImportError as exc:  # pragma: no cover - env dependent
         raise RuntimeError(
             "Floor-plan extraction requires opencv-python-headless and numpy. "
-            "Add them to backend/requirements.txt to enable this route."
+            "Add them to backend/requirements.in (then scripts/lock-python-deps.sh) to enable this route."
         ) from exc
     return cv2, np
 

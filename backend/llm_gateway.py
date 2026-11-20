@@ -537,7 +537,7 @@ def _litellm():
     except ImportError as exc:  # pragma: no cover - exercised by the import test
         raise LLMUnavailable(
             "litellm is not installed, so no model can be reached. "
-            "Add it to backend/requirements.txt."
+            "Add it to backend/requirements.in (then scripts/lock-python-deps.sh)."
         ) from exc
     # Chatty by default, and it logs request bodies — which here contain client
     # records and draft outreach.
