@@ -70,3 +70,17 @@ def test_the_drill_waits_for_the_real_server_not_the_init_server():
     assert 'pg_isready -h 127.0.0.1' in DRILL
     assert DRILL.count("wait_ready \"$") == 2
     assert 'pg_isready -U postgres -q' not in DRILL
+
+
+def test_the_drill_publishes_no_fixed_host_port():
+    """A fixed port (55432) sits in Linux's ephemeral range, where an outbound
+    connection on the runner can already hold it: CI run 44803825496 failed
+    "address already in use". The drill reaches its clusters by docker exec,
+    so Docker picks a free loopback port, and a cluster that cannot start
+    ends the drill instead of producing follow-on FAILs."""
+    import re
+
+    assert DRILL.count('-p "127.0.0.1::5432"') == 2
+    assert not re.search(r'-p\s+"?[0-9.]*:?[0-9]+:5432', DRILL)
+    assert DRILL.count('|| { bad "could not start the') == 2
+    assert DRILL.count('never accepted connections"; exit 1; }') == 2

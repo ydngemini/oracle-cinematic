@@ -109,9 +109,12 @@ wait_ready() {
 phase "2. Build the disposable source"
 mkdir -p "$BACKUPS"
 docker rm -fv "$SRC" "$DST" >/dev/null 2>&1
+# A cluster that cannot start ends the drill here: every later step would
+# only print follow-on FAILs ("schema load looks wrong — only  tables").
 docker run -d --name "$SRC" -p "127.0.0.1::5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src "$PG_IMAGE" >/dev/null
-wait_ready "$SRC"
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src "$PG_IMAGE" >/dev/null \
+  || { bad "could not start the source cluster $SRC"; exit 1; }
+wait_ready "$SRC" || { bad "the source cluster $SRC never accepted connections"; exit 1; }
 
 if [ ! -f "$WORK/schema.sql" ]; then
   bad "no schema at $WORK/schema.sql — export one from a Neoh database first:
@@ -320,8 +323,9 @@ note "the source is now damaged; it is never restored over"
 
 phase "6. Restore into a clean database"
 docker run -d --name "$DST" -p "127.0.0.1::5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore "$PG_IMAGE" >/dev/null
-wait_ready "$DST"
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore "$PG_IMAGE" >/dev/null \
+  || { bad "could not start the restore cluster $DST"; exit 1; }
+wait_ready "$DST" || { bad "the restore cluster $DST never accepted connections"; exit 1; }
 
 EMPTY="$(dq "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r';")"
 [ "${EMPTY:-1}" = "0" ] && ok "target is genuinely empty" || bad "target already has $EMPTY tables"
