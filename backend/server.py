@@ -1615,6 +1615,9 @@ async def websocket_endpoint(websocket: WebSocket):
             mind_service=mind_service,
             tenant_id=tenant_id,
             user_id=user_id,
+            # make_engine_publisher drops record frames, so the engine's paid
+            # analysis has no audience and does not run (L03-16).
+            record_frames=False,
         ),
     )
 

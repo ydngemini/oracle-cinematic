@@ -753,21 +753,22 @@ id: L03-16
 status: tests_pass
 env: local
 evidence_shas: [ccc1d74]   # base; fix in the commit that adds this row
-files: [backend/server.py, backend/tests/test_realtime_fanout_scope.py]
+files: [backend/server.py, backend/workflow_engine.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_engine_analysis_needs_an_audience.py, backend/tests/test_engine_start_does_not_block.py]
 tests_run:
   - {cmd: "read server.websocket_endpoint._publish_to_tenant + workflow_engine._send at ccc1d74", result: "every engine frame went to ws_hub.deliver_local(tenant_id) — every socket of the brokerage on the replica; the engine's records come from the FIRST connecting user's own scope (real_leads.fetch_real_records), so DATA_PULLED (investorOffer, as-is value), TRANSCRIPT_LINE (owner name), LEGAL_PACKAGE (contract price) and PREDICTIVE_CACHE could expose a private client's lead to colleagues; the fan-out inventory mislabelled it 'public-record review candidates'", date: 2026-11-16}
   - {cmd: "tests (allowlist per frame type; the publisher checks it before deliver_local) against ccc1d74's server.py", result: "red: 10 failed", date: 2026-11-16}
   - {cmd: "after: fan-out scope + workflow-engine + websocket suites", result: "61 passed", date: 2026-11-16}
+  - {cmd: "owner decision 2026-11-20: switch the ambient engine's analysis off while it has no audience; pytest tests/test_engine_analysis_needs_an_audience.py tests/test_engine_start_does_not_block.py tests/test_ws_session_shape.py tests/test_legal_agent_seller.py tests/test_realtime_fanout_scope.py tests/test_static_gate.py; ruff check .", result: "77 passed; ruff clean. WorkflowEngine gains record_frames (true when it has a direct socket); the analysis loop (AnalystAgent.analyze_property: a paid AVM call via avm_client, then a contract package) and the predictive-cache loop start only when record frames reach someone. server.py builds the shared tenant engine with the tenant publisher, which drops record frames (make_engine_publisher), and record_frames=False, so neither loop starts there; STATUS_UPDATE/STAGE_PROPERTY and the scout loop are unchanged. The 4 new tests fail on origin/main's workflow_engine.py and server.py (one of them because the parameter does not exist there); test_engine_start_does_not_block's lifecycle fixture now passes record_frames=True so its analysis loop is still exercised", date: 2026-11-20}
 authz_checked: "make_engine_publisher is the engine's only tenant-wide publisher: STAGE_PROPERTY with no fields, and STATUS_UPDATE only with the engine's fixed content-free messages (the regional scout's parcel-id/score status and the now-misleading legal status are dropped); every other frame and any new type is dropped. Behavioural test + factory check (independent review of #85: inverted-guard and bypass mutants now fail)."
 blockers:
   - "Product effect: the ambient engine feed (DATA_PULLED property cards, PREDICTIVE_CACHE, LEGAL_PACKAGE, demo TRANSCRIPT_LINE) no longer reaches dashboards. Delivering them per lead audience needs the lead id threaded through the engine's graph (hits are keyed by address): follow-up if the feature is wanted."
-  - {type: owner, note: "Cost with no audience (review of #85): the engine still runs analyst.analyze_property each cycle (paid AVM via avm_client) and builds legal packages whose frames are now dropped. Decide: switch the ambient engine's analysis off, or deliver it per lead audience."}
+  - "Cost with no audience: decided 2026-11-20 (owner: 'continue all' on the open decisions) — switched off while nothing can receive it; see the 2026-11-20 tests_run entry. Per-lead delivery, if the feed is wanted, would re-enable it with record_frames=True."
   - "Privacy: independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [27.3]
 decision_refs: []
-next_task: "If the ambient feed is wanted: thread lead_id through the graph and deliver per lead audience (sensitive=True)."
-updated: 2026-11-16
+next_task: "If the ambient feed is wanted: thread lead_id through the graph, deliver per lead audience (sensitive=True), then build the engine with record_frames=True."
+updated: 2026-11-20
 ```
 
 

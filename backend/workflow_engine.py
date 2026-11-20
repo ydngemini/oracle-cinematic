@@ -71,8 +71,18 @@ COUNTY_HARVEST_ENABLED = os.environ.get("COUNTY_HARVEST_ENABLED", "").lower() in
 
 
 class WorkflowEngine:
-    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id="", publish=None):
+    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id="", publish=None,
+                 record_frames: bool = False):
         self.websocket = websocket
+        # Whether this engine's transport delivers RECORD frames (DATA_PULLED
+        # offers, LEGAL_PACKAGE prices, PREDICTIVE_CACHE property lists) to
+        # anyone. A direct socket does (its one user asked); the shared tenant
+        # engine's publisher drops them (server.make_engine_publisher, owner
+        # decision 2026-11-16), so its analysis would buy a paid AVM valuation
+        # and build a contract package every cycle for no audience (L03-16).
+        # The analysis and predictive-cache loops start only when someone can
+        # receive what they produce.
+        self.record_frames = record_frames or websocket is not None
         # Optional async `publish(payload: dict)`. When the engine is shared
         # across a tenant's sockets it has no socket of its own, and frames go
         # to the hub instead. Without this, a socketless engine would run every
@@ -133,8 +143,15 @@ class WorkflowEngine:
                 "County-assessor harvester disabled — no reachable Delaware portal "
                 "and COUNTY_HARVEST_ENABLED is off. Graph runs on _seed_real_leads()."
             )
-        self._analysis_task = asyncio.create_task(self._analysis_loop())
-        self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
+        if self.record_frames:
+            self._analysis_task = asyncio.create_task(self._analysis_loop())
+            self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
+        else:
+            logger.info(
+                "Workflow-engine analysis and predictive cache not started: this "
+                "engine's record frames reach no one, so a paid AVM valuation per "
+                "cycle would buy nothing (L03-16)."
+            )
         self._scout_task = asyncio.create_task(self._scout_loop())
 
         await self._emit_status("WORKFLOW ENGINE — all agents online")
