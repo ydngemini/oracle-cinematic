@@ -257,7 +257,7 @@ def test_it_recovers_a_capture_that_never_saw_the_ceiling():
     xs = [p[0] for w in doc.walls for p in (w.start, w.end)]
     ys = [p[1] for w in doc.walls for p in (w.start, w.end)]
     got = sorted([max(xs) - min(xs), max(ys) - min(ys)])
-    for actual, expected in zip(got, sorted([W, D])):
+    for actual, expected in zip(got, sorted([W, D]), strict=True):
         assert abs(actual - expected) / expected < 0.10
 
 

@@ -3,6 +3,8 @@ re-POSTs that the command ledger cannot see (resilience 2026-10-02)."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -13,8 +15,10 @@ class _Resp:
     text = '{"error":"server"}'
     headers = {"Content-Type": "application/json"}
 
-    def json(self):
-        return {"error": "server"}
+    def json(self, **kwargs):
+        # The SDK passes json.loads keywords (object_hook); a fake that refused
+        # them raised TypeError, which a blind pytest.raises took for the 500.
+        return json.loads(self.text, **kwargs)
 
 
 def test_plivo_call_create_is_not_reposted_to_fallback_hosts():
@@ -30,7 +34,7 @@ def test_plivo_call_create_is_not_reposted_to_fallback_hosts():
         return _Resp()
 
     client.session.send = fake_send
-    with pytest.raises(Exception):
+    with pytest.raises(plivo.exceptions.PlivoServerError, match="server"):
         client.calls.create(from_="+13025550100", to_="+13025550101",
                             answer_url="https://example.test/a", answer_method="POST")
     assert len(sent) == 1, sent
@@ -43,7 +47,7 @@ def test_plivo_without_the_pin_would_repost():
     client = plivo.RestClient("MAXXXXXXXXXXXXXXXXXX", "token")
     sent = []
     client.session.send = lambda req, **kw: (sent.append(req.url), _Resp())[1]
-    with pytest.raises(Exception):
+    with pytest.raises(plivo.exceptions.PlivoServerError, match="server"):
         client.calls.create(from_="+13025550100", to_="+13025550101",
                             answer_url="https://example.test/a", answer_method="POST")
     assert len(sent) == 3

@@ -5806,7 +5806,35 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [35-03]
 decision_refs: []
-next_task: "35-03 phase 5 candidates: B017 (7, blind pytest.raises(Exception)), B905 (46, zip without strict=), B011 (5, assert False), B007 (10, unused loop variable); UP/SIM are style."
+next_task: "Done in L19-31 (phase 5: B017, B011, B007, B905)."
+updated: 2026-11-20
+```
+
+#### L19-31 static gate phase 5: blind raises (B017), assert False (B011), unused loop variables (B007), zip without strict= (B905) (external audit 35-03 phase 5)
+```yaml
+id: L19-31
+status: tests_pass
+env: local
+evidence_shas: [3d7c468]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/tests/test_static_gate.py, backend/sealed_text.py, backend/client_note_crypto.py, backend/data_integrations/eviction_lab.py, backend/tests/test_eviction_lab_csv.py, backend/tests/test_sealed_text.py, backend/tests/test_client_note_sealing.py, backend/tests/test_provider_single_attempt.py, backend/tests/test_auth.py, "and 45 more files (one-line strict=/pairwise/islice/loop-variable edits; see the PR)"]
+tests_run:
+  - {cmd: "ruff --select B017,B011,B007,B905 at 3d7c468", result: "68 findings: B905 46, B007 10, B017 7, B011 5", date: 2026-11-20}
+  - {cmd: "B017: each blind pytest.raises(Exception) probed for what it actually caught", result: "both Plivo single-attempt tests caught a TypeError from their own fake response (json() refused the object_hook the SDK passes), never the provider's 500. The fake now parses with the SDK's hooks and the tests require PlivoServerError('server'); the three pydantic bodies pin [(type, loc)] exactly; the DSAR live test requires LifecycleError 503 (key required); the sealed-text live test requires HTTPException 503", date: 2026-11-20}
+  - {cmd: "B011: test_auth's five `assert False` acceptance checks", result: "a _assert_rejected helper uses pytest.fail, which fires whatever the interpreter flags. Mutation (decode_token accepts every token): 5 of 5 fail. The old form also failed under python -O here, because pytest rewrites test-module asserts; it would pass only under --assert=plain or in a module pytest does not rewrite (corrected after review r1: the first wording said -O alone defeated it)", date: 2026-11-20}
+  - {cmd: "B905: each of the 46 zip() sites decided", result: "strict=True where equal length is guaranteed (gather results, model outputs, three array_agg columns of one row, actual-vs-expected in tests: a short actual list used to pass); itertools.pairwise for sliding pairs (5); itertools.islice for the blob listing limit; explicit slices where tests were uneven on purpose (2). Three became fail-closed checks: sealed_text.open_rows and client_note_crypto.open_rows raise SealError/NoteSealError when the decrypt answer is short or null (zip left the leftover rows at their empty default); Eviction Lab rejects a ragged CSV row as a bad response (in the six published files sampled 2026-11-20, states plus DE/CA/RI county, tract and block-group files, all 7,234 rows carry exactly the header's 27 fields; about 200 files are published, so this is a sample)", date: 2026-11-20}
+  - {cmd: "new tests red on the old code (production files stashed)", result: "8 of 8 fail (eviction short/long, sealed_text null/empty/short, client notes null/empty/short); pass after", date: 2026-11-20}
+  - {cmd: "B007: ten unused loop variables", result: "renamed or dropped (.values()); test_ai_tool_policy's undo allowlist now also checks the table name it ignored is a plain identifier (it is interpolated into the same UPDATE)", date: 2026-11-20}
+  - {cmd: "test_static_gate", result: "pins all 14 families (one PINNED tuple for select and ignore checks); a new AST check requires a reason comment on any zip(..., strict=False) (none exist)", date: 2026-11-20}
+  - {cmd: "live: dsar_subject_truth, deal_record_access, comms_threads, ai_budget_hosted_calls, sealed_text_two (local dev DB)", result: "6 passed; test_slice_two_text_is_sealed_and_still_read fails identically on origin/main 3d7c468: the platform admin activity read meets a local interaction_logs row sealed under another master key (dev-DB residue; CI uses a fresh database)", date: 2026-11-20}
+  - {cmd: "full backend suite", result: "7303 passed, 1 failed: test_ai_tool_operations inspects the loop text and still named round_index; now `for _round in range(2):`, file re-run 20 passed", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES, wording only; no code defect found)", result: "fixed: the B011 -O claim (above, ruff.toml and the helper docstring); the Eviction Lab claim scoped to the sample; the parse message (physical line via reader.line_num, field counts) now reaches the fetch log, so an operator can find the row (public data, other errors still log their type only); the zip(strict=False) gate missed `strict = False`, strict=0 and builtins.zip and read a # inside a string as a comment (now AST for any falsy constant, tokenize for comments, probe-tested); pairwise count; import order. Reviewer evidence: test_sealed_text_two_live and test_dsar_subject_truth_live on a throwaway postgres with the full migration chain, 2 passed, and both fail when the 503s are mutated (500 / 409)", date: 2026-11-20}
+authz_checked: "No access change. Decrypt-count mismatch now refuses (503 via the existing RuntimeError handlers) instead of serving blank text."
+blockers:
+  - "UP/SIM families are style and stay unselected; B008 (FastAPI Depends defaults) stays unselected."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "35-03 correctness families selected through phase 5. Follow-ups seen (not lint): /api/demographics turns a Census failure into 404 'no data'; data_integrations/census fetch caches a failure as empty (the L11-03 pattern); crm.client_interactions puts the exception text in its 503 detail."
 updated: 2026-11-20
 ```
 

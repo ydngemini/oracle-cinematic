@@ -113,7 +113,7 @@ async def _scenario():
         print(f"comms rollup, {CLIENTS} clients x {TOUCHES} touches: old {old_ms:.1f} ms, new {new_ms:.1f} ms")
 
         assert [str(r["id"]) for r in old] == [t["client"]["id"] for t in new]
-        for o, n in zip(old, new):
+        for o, n in zip(old, new, strict=True):
             assert int(o["cnt"]) == n["count"]
             if o["created_at"] is None:
                 assert n["last"] is None

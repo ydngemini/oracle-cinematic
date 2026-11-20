@@ -263,7 +263,7 @@ def test_call_index_is_monotonic_across_rounds_and_provider_tiers():
 
     src = (BACKEND / "ai_chat_agent.py").read_text()
     assert "call_index = 0" not in src, "no tier may restart the turn's counter"
-    for loop in ("for round_index in range(2):", "for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):"):
+    for loop in ("for _round in range(2):", "for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):"):
         head = src.index(loop)
         assert "_next_call_index(bundle)" in src[head:head + 6000], f"`{loop}` must take the turn's index"
 

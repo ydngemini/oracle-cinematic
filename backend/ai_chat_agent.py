@@ -841,7 +841,7 @@ async def _foundry_generate(
 
     # Monotonic across the WHOLE turn — every round AND every provider tier
     # (_next_call_index): the ledger's identity is (assistant_id, call_index).
-    for round_index in range(2):
+    for _round in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
             content = response.output_text.strip()

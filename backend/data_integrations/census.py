@@ -81,7 +81,7 @@ class CensusACSSource(DataSource):
             return None
 
     def normalize(self, raw: dict) -> dict:
-        row = dict(zip(raw["headers"], raw["values"]))
+        row = dict(zip(raw["headers"], raw["values"], strict=True))
         result: dict = {"name": row.get("NAME", "")}
         for name, code in _ACS_VARS.items():
             result[name] = _parse_int(row.get(code))

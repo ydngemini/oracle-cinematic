@@ -48,6 +48,7 @@ def test_slice_two_text_is_sealed_and_still_read(monkeypatch):
 
 async def _scenario(monkeypatch):  # noqa: C901 - one ordered scenario
     import asyncpg
+    from fastapi import HTTPException
 
     import admin_ops
     import ai_chat_store
@@ -425,8 +426,9 @@ async def _scenario(monkeypatch):  # noqa: C901 - one ordered scenario
         try:
             with pytest.raises(RuntimeError):
                 await belief_store.beliefs_about(agent, "client", client)
-            with pytest.raises(Exception):
+            with pytest.raises(HTTPException) as exc:
                 await crm.client_interactions(client, 50, agent)
+            assert exc.value.status_code == 503, exc.value.detail
         finally:
             os.environ["ORACLE_ENCRYPTION_MASTER_KEY"] = MASTER
     finally:

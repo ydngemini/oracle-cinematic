@@ -1146,7 +1146,7 @@ async def broadcast_metrics():
                     "state": inst["state"],
                     "type": inst["type"],
                 }
-                for inst, cpu in zip(ec2_list, ec2_cpu)
+                for inst, cpu in zip(ec2_list, ec2_cpu, strict=True)
             }
             rds_metrics = {
                 db["id"]: {
@@ -1158,7 +1158,7 @@ async def broadcast_metrics():
                     "status": db["status"],
                     "engine": db["engine"],
                 }
-                for db, cpu, mem in zip(rds_list, rds_cpu, rds_memory)
+                for db, cpu, mem in zip(rds_list, rds_cpu, rds_memory, strict=True)
             }
             lambda_metrics = {
                 fn["name"]: {
@@ -1166,7 +1166,7 @@ async def broadcast_metrics():
                     "memory": fn["memory"],
                     "runtime": fn["runtime"],
                 }
-                for fn, inv in zip(lambda_list, lambda_invocations)
+                for fn, inv in zip(lambda_list, lambda_invocations, strict=True)
             }
             elb_metrics = {
                 lb["name"]: {"state": lb["state"], "type": lb["type"]}

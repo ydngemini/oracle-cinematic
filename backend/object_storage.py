@@ -32,6 +32,7 @@ signed_url() cares where the bytes physically live.
 from __future__ import annotations
 
 import datetime as _dt
+import itertools
 import logging
 import os
 import shutil
@@ -390,8 +391,8 @@ def list_prefix(prefix: str, limit: int = 100_000) -> list[str]:
         return sorted(keys)[:limit]
 
     if backend == "azure-blob":
-        return [b.name for _, b in zip(range(limit), _blob_service()
-                .get_container_client(BLOB_CONTAINER).list_blobs(name_starts_with=prefix))]
+        blobs = _blob_service().get_container_client(BLOB_CONTAINER).list_blobs(name_starts_with=prefix)
+        return [b.name for b in itertools.islice(blobs, limit)]
 
     if not S3_BUCKET:
         raise StorageError("ORACLE_STORAGE_BACKEND=s3 but ORACLE_S3_BUCKET (or RECON_S3_BUCKET) is unset")

@@ -377,7 +377,7 @@ class EdgeUnderwriter:
         )
 
         results = []
-        for prop, out in zip(properties, outputs):
+        for prop, out in zip(properties, outputs, strict=True):
             raw = out.outputs[0].text if out.outputs else ""
             parsed = _safe_json(raw)
             if parsed is None:
@@ -413,7 +413,7 @@ class EdgeUnderwriter:
         outputs = self._hot_swap(scope, identifier).underwrite_batch(inputs)
         passed = 0
         details = []
-        for case, output in zip(cases, outputs):
+        for case, output in zip(cases, outputs, strict=True):
             parsed = output.get("parsed")
             expected = case.get("expected_verdict")
             ok = parsed is not None and (expected is None or parsed.get("verdict") == expected)

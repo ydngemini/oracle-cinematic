@@ -358,7 +358,7 @@ def test_each_signed_call_uses_a_fresh_incremented_nonce(
 
     nonce_calls = [r for r in session.requests if r[1].endswith("/api/services/nonce")]
     signed_calls = []
-    for method, url, extra in session.requests:
+    for _method, _url, extra in session.requests:
         payload = extra.get("json") if isinstance(extra.get("json"), dict) else None
         params = extra.get("params") or {}
         for source in (payload, params):
