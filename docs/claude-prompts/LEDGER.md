@@ -5634,20 +5634,21 @@ next_task: "A behavioural test for the email command branch; then widen the gate
 updated: 2026-11-19
 ```
 
-#### L19-26 rollback.sh judges the set of migrations between two releases, not a filename range, so a late lower-numbered migration can no longer slip past the safety verdict (external audit 35-06, follow-up F1)
+#### L19-26 rollback.sh judges the set of migrations between two releases (union the old filename range), so a late lower-numbered migration can no longer slip past the safety verdict (external audit 35-06, follow-up F1)
 ```yaml
 id: L19-26
 status: tests_pass
 env: local
 evidence_shas: [2eeb8b4]   # base; fix in the commit that adds this row
-files: [scripts/rollback.sh, scripts/build-release-manifest.sh, backend/tests/test_rollback_set_gap.py, backend/tests/test_release_immutability.py]
+files: [scripts/rollback.sh, scripts/build-release-manifest.sh, docs/deploy-digitalocean.md, backend/tests/test_rollback_set_gap.py, backend/tests/test_release_immutability.py]
 tests_run:
   - {cmd: "read scripts/rollback.sh and build-release-manifest.sh at 2eeb8b4", result: "confirmed: the gap was `target_head < name <= current_head`; 0144_drop_duplicate_tenant_policies landed while the head was 0145, so a rollback from a release with 0144 to one without it (same head) classified an EMPTY gap and was allowed, although the classifier calls 0144 non-additive. Manifests recorded only migration_head, migration_count and a hash", date: 2026-11-20}
   - {cmd: "test_rollback_set_gap against 2eeb8b4's rollback.sh", result: "red: 2 failed (the late-file rollback was allowed; the count mismatch was not refused)", date: 2026-11-20}
   - {cmd: "after: test_rollback_set_gap (4, runs the real script's dry run) + test_release_immutability (fixtures given realistic counts/lists)", result: "73 passed: a target missing only 0144 is a 1-migration gap and UNSAFE (exit 3); an older list-less manifest whose counts disagree with the range is refused as unprovable; identical sets have nothing to check; manifests now record the sorted migration list", date: 2026-11-20}
-authz_checked: "No access change. Release tooling only: stricter, never looser — the classifier (migration_safety, DEP-05) is unchanged and still the only authority."
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed; test_rollback_set_gap (9) + test_release_immutability; red against 2eeb8b4", result: "78 passed; 5 of the new tests red on 2eeb8b4. Review r1 showed the set alone was LOOSER than the range when the live manifest omits a file applied independently of the image (TO..0172, FROM..0179 without 0173 was allowed): the gap is now the union of the set difference and the range, and that case passes on 2eeb8b4 too (never looser). A migration only the target has is refused (live schema not a superset); a gap file missing from the checkout is refused; a non-list or non-.sql 'migrations' value makes the script refuse; 'no migrations were applied' is printed only for a safe empty gap; the builder test runs the real script with a stub docker", date: 2026-11-20}
+authz_checked: "No access change. Release tooling only: the gap is the old range plus the set difference, so it is stricter, never looser; the classifier (migration_safety, DEP-05) is unchanged and still the only authority."
 blockers:
-  - "Manifests built before this change carry no list: their rollbacks use the range only when migration_count proves it is the whole set, and are refused otherwise."
+  - "Manifests built before this change carry no list: their rollbacks use the range only when the migration counts are consistent with it (a necessary condition, not proof — a removed file plus a late one would balance; history has no removed or renamed migrations), and are refused otherwise."
   - "The rest of 35-06 (a CI job that boots the previous release and runs its live suite on the new schema) is the next PR; the judged design is recorded in the session's workflow output and the ledger next_task."
   - "Not deployed (C4.4)."
 audit_refs: [35-06]
