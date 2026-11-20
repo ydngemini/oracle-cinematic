@@ -5590,7 +5590,7 @@ next_task: "35-03 (typing gates) or 35-06 (migration cross-version contract test
 updated: 2026-11-19
 ```
 
-#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS is still open (external audit 35-08)
+#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS names owners for the high-risk paths (external audit 35-08)
 ```yaml
 id: L19-24
 status: tests_pass
@@ -5602,10 +5602,10 @@ tests_run:
   - {cmd: "with the owner's approval: gh api -X PUT .../vulnerability-alerts and .../automated-security-fixes; read back", result: "vulnerability alerts on (204), automated security fixes enabled:true", date: 2026-11-19}
 authz_checked: "Repository settings only, changed by the owner's explicit choice; security-fix PRs still go through CI and review before any merge."
 blockers:
-  - "Not done: a CODEOWNERS file naming reviewers for auth, billing, telephony, privacy, migrations and deployment, and whether rulesets should require that review. Owner decision (single-maintainer repository today)."
+  - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. require_code_owner_review stays OFF in ruleset main-protection (27349721): single-maintainer repository, every PR is authored with the owner's account (GitHub forbids self-approval) and the ruleset has no bypass actors, so requiring it would block every merge. Turn it on once a second reviewer exists."
 audit_refs: [35-08]
 decision_refs: []
-next_task: "Owner: CODEOWNERS / required review."
+next_task: "Require code-owner review once a second reviewer exists."
 updated: 2026-11-19
 ```
 

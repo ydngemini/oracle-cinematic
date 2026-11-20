@@ -1,0 +1,51 @@
+# Code owners for the high-risk areas (external audit 35-08).
+#
+# GitHub requests a review from these owners on any PR that touches a listed
+# path. The main ruleset does NOT require code-owner approval today: this is a
+# single-maintainer repository and every PR is authored with the owner's own
+# account, which GitHub does not let approve its own PR, and the ruleset has no
+# bypass actors — requiring it would block every merge. Turn on
+# "require_code_owner_review" once a second reviewer exists.
+#
+# Later patterns win, so the catch-all comes first.
+
+*                                   @ydngemini
+
+# Authentication, sessions, tenancy and operator access
+/backend/auth.py                    @ydngemini
+/backend/tenancy.py                 @ydngemini
+/backend/mfa_api.py                 @ydngemini
+/backend/operator_api.py            @ydngemini
+/backend/webhook_auth.py            @ydngemini
+/backend/security_alerts.py         @ydngemini
+
+# Billing and metering
+/backend/billing*.py                @ydngemini
+/backend/ai_budget.py               @ydngemini
+
+# Telephony, messaging and outbound actions
+/backend/commands_api.py            @ydngemini
+/backend/telephony_api.py           @ydngemini
+/backend/inbound_voice.py           @ydngemini
+/backend/*_call_handler.py          @ydngemini
+/backend/voice_*.py                 @ydngemini
+/backend/telnyx_signing.py          @ydngemini
+/backend/outreach_*.py              @ydngemini
+/backend/contact_truth.py           @ydngemini
+
+# Privacy, encryption and customer data
+/backend/privacy_*.py               @ydngemini
+/backend/sealed_text.py             @ydngemini
+/backend/crypto.py                  @ydngemini
+
+# Database migrations
+/backend/db/migrations/             @ydngemini
+
+# Build, deploy and supply chain
+/.github/                           @ydngemini
+/infra/                             @ydngemini
+/scripts/rollback.sh                @ydngemini
+/scripts/lock-python-deps.sh        @ydngemini
+/backend/Dockerfile                 @ydngemini
+/backend/requirements.*             @ydngemini
+/oracle-app/Dockerfile*             @ydngemini
