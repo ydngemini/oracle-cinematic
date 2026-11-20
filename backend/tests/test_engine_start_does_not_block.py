@@ -31,7 +31,9 @@ def _engine(monkeypatch) -> WorkflowEngine:
     The loops must genuinely never finish — that is the condition under which
     the old start() never returned.
     """
-    engine = WorkflowEngine(websocket=None, publish=None, tenant_id="t")
+    # record_frames=True: these tests are about the loops' lifecycle, so the
+    # analysis loop must be among them (without an audience it is not started).
+    engine = WorkflowEngine(websocket=None, publish=None, tenant_id="t", record_frames=True)
 
     async def forever(self=None):
         await asyncio.Event().wait()
