@@ -3,8 +3,16 @@
 # comparisons (F63), misplaced return/yield/break (F7) and undefined or
 # unbound names (F82, which caught an UnboundLocalError in the email send
 # path). Widen the selection one rule family at a time, fixing as you go.
+#
+# Phase 2 adds F841 (a local assigned and never read) and F811 (a name
+# redefined before its first binding was used). Both hide logic slips: a
+# value computed for a check that never ran, or a test whose real call was
+# replaced by a copy of the rule it meant to test.
+# Where a finding is intended, such as a test parameter that is a pytest
+# fixture imported from another module, the line carries a targeted
+# `# noqa: F811` with its reason, never a file- or rule-wide ignore.
 target-version = "py312"
 extend-exclude = ["venv", "node_modules", "pascal-editor"]
 
 [lint]
-select = ["E9", "F63", "F7", "F82"]
+select = ["E9", "F63", "F7", "F82", "F841", "F811"]

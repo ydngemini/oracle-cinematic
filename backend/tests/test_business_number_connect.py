@@ -381,20 +381,15 @@ def test_configure_route_ignores_client_supplied_verified_true(monkeypatch):
         # The spoofing attempt: claiming verified with nothing behind it.
         voice_caller_id_verified=True,
     )
-    request = object()  # unused by configure_route before _route_json, which
-    # this test does not reach — the assertion is on what was upserted.
 
-    async def run():
-        values = body.model_dump()
-        route_existing = await telephony_api.get_telephony_route(CTX)
-        values["voice_caller_id_verified"] = bool(
-            route_existing
-            and route_existing.get("voice_caller_id_verified")
-            and route_existing.get("voice_caller_id_e164") == values.get("voice_caller_id_e164")
-        )
-        return await telephony_api.upsert_telephony_route(CTX, values)
-
-    asyncio.run(run())
+    # This test used to run a copy of configure_route's rule in its own body,
+    # so it stayed green whatever the route did; the `request` it built for
+    # the real call was never used (ruff F841, audit 35-03 phase 2). It now
+    # drives configure_route itself. _route_json only formats the reply (it
+    # needs a real Request for the base URL); the assertion is on what was
+    # upserted.
+    monkeypatch.setattr(telephony_api, "_route_json", lambda row, request: row)
+    asyncio.run(telephony_api.configure_route(body, request=object(), ctx=CTX))
     assert captured["voice_caller_id_verified"] is False, (
         "a client must never be able to self-attest a verified caller ID"
     )
@@ -411,7 +406,18 @@ def test_configure_route_preserves_verified_when_number_is_unchanged(monkeypatch
     async def fake_get_route(ctx):
         return existing
 
+    captured: dict[str, Any] = {}
+
+    async def fake_upsert(ctx, values):
+        captured.update(values)
+        return {
+            "id": "r", "tenant_id": TENANT_ID, "agent_id": AGENT_ID,
+            "endpoint_key": "e", **values,
+        }
+
     monkeypatch.setattr(telephony_api, "get_telephony_route", fake_get_route)
+    monkeypatch.setattr(telephony_api, "upsert_telephony_route", fake_upsert)
+    monkeypatch.setattr(telephony_api, "_route_json", lambda row, request: row)
 
     body = telephony_api.TelephonyRouteUpsert(
         inbound_did=HIDDEN_DID,
@@ -420,18 +426,10 @@ def test_configure_route_preserves_verified_when_number_is_unchanged(monkeypatch
         voice_caller_id_verified=False,  # client sends nothing special either way
     )
 
-    async def run():
-        values = body.model_dump()
-        route_existing = await telephony_api.get_telephony_route(CTX)
-        values["voice_caller_id_verified"] = bool(
-            route_existing
-            and route_existing.get("voice_caller_id_verified")
-            and route_existing.get("voice_caller_id_e164") == values.get("voice_caller_id_e164")
-        )
-        return values
-
-    values = asyncio.run(run())
-    assert values["voice_caller_id_verified"] is True
+    # Drives the real route, like the test above (it too used to assert on a
+    # copy of the rule written in the test; audit 35-03 phase 2).
+    asyncio.run(telephony_api.configure_route(body, request=object(), ctx=CTX))
+    assert captured["voice_caller_id_verified"] is True
 
 
 # ── command_providers.py: the raw Twilio adapters, mocked at the SDK edge ──

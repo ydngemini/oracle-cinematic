@@ -53,10 +53,15 @@ from twilio_call_handler import (
     twilio_media_websocket_url,
     twilio_qwen_enabled,
 )
+# get_voice_provider is not imported at module level. The four Plivo webhook
+# handlers that use it import it inside the function, at call time, so a patch
+# of voice_provider.get_voice_provider (as the tests do) reaches them; a
+# module-level copy is bound once at import and would not see it. That copy
+# was never used, and each local import redefined it (ruff F811, audit 35-03
+# phase 2).
 from voice_provider import (
     PROVIDER_PLIVO,
     PROVIDER_TWILIO,
-    get_voice_provider,
     voice_provider_name,
 )
 

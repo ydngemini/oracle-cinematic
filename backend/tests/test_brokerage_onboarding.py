@@ -286,7 +286,7 @@ def _setup_conn(**over):
 
 
 def test_setup_state_recommends_the_first_outstanding_required_step():
-    state = asyncio.run(compute := bo.compute_setup_state(_setup_conn(), OWNER))
+    state = asyncio.run(bo.compute_setup_state(_setup_conn(), OWNER))
     assert state["capabilities"]["brokerage_profile"] == "NEEDS_ACTION"
     assert state["recommended_next"] == "brokerage_profile"
 

@@ -74,14 +74,10 @@ def test_no_status_row_means_backfill():
         return {"state": "succeeded"}
 
     f._backfill_once = fake_backfill
-    import data_integrations.bridge_listings_feed as mod
-    import os
-    os.environ["ORACLE_INGEST_TENANT_ID"] = "00000000-0000-0000-0000-000000000000"
-    orig = mod.__dict__.get("tenant_tx")
-    try:
-        asyncio.run(_run_sync(f, conn))
-    finally:
-        pass
+    # _run_sync sets the ingest tenant and patches tenant_tx itself. This test
+    # also saved the module's tenant_tx in `orig` and never restored or read it
+    # (ruff F841, audit 35-03 phase 2); there was nothing to restore.
+    asyncio.run(_run_sync(f, conn))
     assert called.get("backfill")
 
 
@@ -120,8 +116,12 @@ def test_a_completed_backfill_hands_over_to_delta():
 
 
 async def _run_sync(f, conn):
-    import data_integrations.bridge_listings_feed as mod
     import os
+
+    # Restored afterwards, like tenant_tx below: a bare assignment outlived
+    # this file and handed every later test in the session an ingest tenant
+    # it never set (found alongside audit 35-03 phase 2).
+    previous_tenant = os.environ.get("ORACLE_INGEST_TENANT_ID")
     os.environ["ORACLE_INGEST_TENANT_ID"] = "00000000-0000-0000-0000-000000000000"
 
     @asynccontextmanager
@@ -136,6 +136,10 @@ async def _run_sync(f, conn):
         return await f.sync_once()
     finally:
         dbc.tenant_tx = real
+        if previous_tenant is None:
+            os.environ.pop("ORACLE_INGEST_TENANT_ID", None)
+        else:
+            os.environ["ORACLE_INGEST_TENANT_ID"] = previous_tenant
 
 
 # ---------------------------------------------------------------------------

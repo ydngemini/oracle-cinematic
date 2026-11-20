@@ -56,8 +56,13 @@ class AlabamaJeffersonHarvester(ArcGISHarvester):
 
         # Mailing address — used for absentee detection
         mail_addr = str(row.get("PROP_MAIL") or "").strip()
-        mail_city = str(row.get("CITYMAIL") or "").strip()
-        mail_zip = str(row.get("ZIP_MAIL") or "").strip()[:10]
+        # CITYMAIL and ZIP_MAIL are deliberately not compared (they were read
+        # and never used: ruff F841, audit 35-03 phase 2). Measured on 8000 live
+        # rows: the AL `ZIP` field maps 1:1 to Property_City (a municipality
+        # code), and a ZIP rule flipped 47 of 2595 same-street-line parcels to
+        # absentee although 37 of those street lines exist as a single parcel
+        # county-wide. A cross-municipality rule needs a county-wide street-line
+        # index, not a per-row ZIP check.
         mail_state = str(row.get("STATE_Mail") or "").strip().upper()
 
         # Absentee: mailing address differs from situs OR owner is out-of-state

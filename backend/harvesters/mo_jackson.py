@@ -50,8 +50,11 @@ class MissouriJacksonHarvester(ArcGISHarvester):
             return None
 
         owner_addr = str(row.get("owneraddress") or "").strip()
-        owner_city = str(row.get("ownercity") or "").strip()
-        owner_zip = str(row.get("ownerzipcode") or "").strip()[:10]
+        # ownercity and ownerzipcode are deliberately not compared (they were
+        # read and never used: ruff F841, audit 35-03 phase 2). Measured on 8000
+        # live rows: a ZIP rule flipped 87 of 3164 same-street-line parcels to
+        # absentee, 64 of them with the same city on both sides (BLUE SPRINGS
+        # 64014/64015), and all 40 sampled street lines exist as one parcel.
 
         site_city = str(row.get("SitusCity") or "").strip()
         site_zip = str(row.get("SitusZipCode") or "").strip()[:10]

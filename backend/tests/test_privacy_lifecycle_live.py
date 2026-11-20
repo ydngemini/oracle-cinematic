@@ -255,7 +255,7 @@ async def _scenario(monkeypatch, media_root):
         assert mid["state"] == "running"
         assert json.loads(mid["result"])["cleanup_pending"] == ["objects", "directive"]
         assert (media_root / ids["media_key"]).exists()
-        result = await pl.run_erasure(op_id)
+        await pl.run_erasure(op_id)  # the retry; its outcome is read from the row below
         op = await admin.fetchrow("SELECT state, receipt, error FROM privacy_operations WHERE id=$1", op_id)
         receipt = json.loads(op["receipt"])
         assert op["state"] == "succeeded", (op["error"], receipt.get("verification"))

@@ -70,7 +70,9 @@ async def _owner_tenant_id(owner_agent_id: str) -> str:
 async def onboard(*, agent_id: str, name: str, public_email: str, brokerage: str, tenant_id: str) -> None:
     ctx = TenantContext(agent_id="onboard-ai-agent", tenant_id=tenant_id, role=Role.BROKER_OWNER)
     async with tenant_tx(ctx) as conn:
-        user = await conn.fetchrow(
+        # The returned row was bound to a name nothing read (ruff F841, audit
+        # 35-03 phase 2): user_profiles keys on the text agent_id, not users.id.
+        await conn.fetchrow(
             """
             INSERT INTO users (tenant_id, agent_id, role, is_active, password_hash, full_name)
             VALUES ($1::uuid, $2, 'agent', true, NULL, $3)

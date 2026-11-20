@@ -211,10 +211,10 @@ def classify_sql(filename: str, sql: str) -> Verdict:
             (k for k in _REPLACEABLE if f"DROP\\s+{k}" in pattern), None
         )
         if kind is not None:
-            dropped_here = {
-                n for (k, n) in
-                {(k, n) for (k, n) in _drop_recreate_pairs(body)} if k == kind
-            }
+            # `replaced` was computed once above for this and then never read;
+            # the pairs were rebuilt here for every breaking pattern instead
+            # (ruff F841, audit 35-03 phase 2). Same set, so same verdicts.
+            dropped_here = {n for (k, n) in replaced if k == kind}
             all_dropped = {
                 m.group(1).strip('"').lower()
                 for m in re.finditer(
