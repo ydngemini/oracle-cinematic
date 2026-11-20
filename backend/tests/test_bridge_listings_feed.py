@@ -4,7 +4,6 @@ MLS sink both it and RESOListingsFeed write through."""
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -17,7 +16,6 @@ from data_integrations.bridge_listings_feed import (
 )
 from data_integrations.mls_sink import (
     reject_reason,
-    upsert_mls_records,
     upsert_mls_records_and_status,
 )
 

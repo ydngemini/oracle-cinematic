@@ -15,7 +15,6 @@ configurable interval and streaming discovered records into graph_engine.
 import asyncio
 import hashlib
 import logging
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional

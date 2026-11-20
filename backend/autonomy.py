@@ -24,7 +24,7 @@ the save — `assert_ceilings_match_database` exists to catch the two drifting.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from db.connection import tenant_tx
 from tenancy import TenantContext

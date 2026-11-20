@@ -28,7 +28,6 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from record_json import clean as _clean
 from tenancy import TenantContext
 
 

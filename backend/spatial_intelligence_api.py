@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from automation_jobs import enqueue_job, register_handler
 from db.connection import tenant_tx

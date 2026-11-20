@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from .base import ArcGISHarvester, classify_owner, norm, to_float
+from .base import ArcGISHarvester, classify_owner, to_float
 from .property_adapter import PropertyRecord
 
 # DOCDATE is encoded as MMDDYY (e.g. "081713" → 2013-08-17)

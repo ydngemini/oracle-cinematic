@@ -20,7 +20,6 @@ from inbound_voice import (
     InboundVoiceError,
     check_business_number_verification,
     complete_business_number_verification,
-    connect_business_number,
     connect_business_number_generic,
     finalize_inbound_voice_call,
     get_inbound_call,

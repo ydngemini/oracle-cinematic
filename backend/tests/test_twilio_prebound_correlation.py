@@ -16,7 +16,6 @@ import inspect
 import json
 import uuid
 from types import SimpleNamespace
-from urllib.parse import urlencode
 
 import pytest
 from starlette.datastructures import FormData

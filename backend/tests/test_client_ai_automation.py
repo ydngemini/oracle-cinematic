@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 import asyncio
 
-import client_ai_automation
 from client_ai_automation import (
     ModelSignals,
     _assert_client_beliefs,

@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 import automation_jobs
 from command_providers import ProviderConfigurationError
 

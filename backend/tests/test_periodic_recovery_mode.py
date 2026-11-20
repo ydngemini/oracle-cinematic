@@ -7,8 +7,6 @@ Tasks that touch only this database now still run there; nothing else does.
 """
 import asyncio
 
-import pytest
-
 from data_integrations import periodic
 
 

@@ -237,7 +237,7 @@ class VeoProvider(VideoProvider):
         if not self._project:
             return (False, "set ORACLE_VEO_PROJECT to a billing-enabled GCP project")
         try:
-            import google.auth  # noqa: F401
+            import google.auth  # noqa: F401 - availability probe: is google-auth installed
         except ImportError:
             return (False, "google-auth is not installed (pip install google-auth)")
         if not self._adc_token():
@@ -586,7 +586,7 @@ class MockProvider(VideoProvider):
 
     def available(self) -> tuple[bool, str]:
         try:
-            import av  # noqa: F401
+            import av  # noqa: F401 - availability probe: is PyAV installed
         except ImportError:
             return (False, "PyAV is not installed, so the mock provider cannot encode")
         return (True, "")

@@ -10,10 +10,9 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 DISTRESS_MODEL_VERSION = "public-pre-distress-2026.07"

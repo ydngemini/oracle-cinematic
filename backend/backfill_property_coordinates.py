@@ -30,7 +30,6 @@ import argparse
 import asyncio
 import csv
 import io
-import os
 import sys
 import urllib.error
 import urllib.request

@@ -9,7 +9,6 @@ Any time a new data source is added to the backend, its licence tier and gate mu
 added to data-access-tiers.md *in the same commit*, and this test will catch omissions.
 """
 
-import os
 import re
 from pathlib import Path
 

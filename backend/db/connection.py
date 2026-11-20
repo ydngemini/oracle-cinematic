@@ -38,7 +38,6 @@ import os
 import ssl
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from tenancy import TenantContext, apply_rls_context
 

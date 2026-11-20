@@ -33,7 +33,7 @@ from typing import Any, Optional
 from platform_policy import Feature, feature_enabled
 from tenancy import TenantContext
 
-from . import costs, planner, policy, simulator
+from . import costs, planner, policy
 
 logger = logging.getLogger(__name__)
 

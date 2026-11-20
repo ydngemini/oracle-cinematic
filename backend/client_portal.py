@@ -17,7 +17,6 @@ SECURITY:
 
 import hashlib
 import logging
-import os
 import secrets
 import asyncio
 import json

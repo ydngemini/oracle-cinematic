@@ -8,9 +8,6 @@ connection is always encrypted and why there is no default host to fall back on.
 from __future__ import annotations
 
 import smtplib
-import ssl
-import sys
-import types
 
 import pytest
 

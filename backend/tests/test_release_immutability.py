@@ -267,7 +267,6 @@ def test_the_release_checklist_exists_and_is_short(runbook):
 def test_the_checklist_snippet_actually_runs():
     """A runbook command that does not work is worse than no command: it is
     discovered mid-incident. This one is executed here."""
-    import pathlib as _p
 
     from migration_safety import classify_files
 

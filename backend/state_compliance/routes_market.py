@@ -1,64 +1,27 @@
 """State/county market aggregates, flood zone, school district, and zoning lookups."""
 from __future__ import annotations
 
-import logging
-import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi import Depends, HTTPException, Query, status
 
-from db.connection import tenant_tx
-from tenancy import TenantContext, Role, require_context, require_role
-
-# Authoritative attorney-at-closing list — single source of truth shared with
-# the compliance engine so the public state-profile API and ComplianceEngine
-# never disagree about whether a state requires an attorney at closing.
-from compliance_engine.closing import ATTORNEY_CLOSE_STATES
+from tenancy import TenantContext, require_context
 
 from ._common import (
     router, logger,
-    _STATE_RE, _FIPS_RE, _UUID_RE,
-    ALL_STATE_CODES, _ATTORNEY_REVIEW_STATES, _MANDATORY_DISCLOSURE_STATES,
-    _TDS_STATES, _FEDERAL_LEAD_PAINT_THRESHOLD_YEAR,
-    _iso, _num, _require_state, _require_uuid, _fetch, _fetchrow,
+    _FIPS_RE, _num, _require_state, _fetch, _fetchrow,
     _require_dataset_loaded,
 )
-from .models import (  # noqa: F401  (re-exported for route handlers)
-    StateSummary,
-    DisclosureForm,
-    ContractTemplate,
-    AdvertisingRule,
-    StateProfile,
-    LicenseRequirements,
-    ReciprocityInfo,
-    AgentLicense,
-    AgentLicenseStatus,
-    CECreditBody,
-    CECreditResponse,
-    MLSRegion,
-    MLSSyncStatus,
-    MLSSearchBody,
-    NormalizedListing,
-    MLSSearchResponse,
+from .models import (
     StateMarketOverview,
     CountyMarketData,
     FloodZoneResult,
     SchoolDistrict,
     SchoolsResponse,
     ZoningResult,
-    TransactionContext,
-    RequiredDisclosure,
-    ComplianceCheckResponse,
-    DisclosureChecklistItem,
-    ComplianceChecklist,
-    FormValidationBody,
-    ValidationError,
-    FormValidationResponse,
 )
-from .engine import _engine  # noqa: F401
 
 # Residential market aggregates older than a quarter should not be priced
 # against without the caller knowing.

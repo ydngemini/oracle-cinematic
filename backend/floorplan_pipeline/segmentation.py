@@ -65,7 +65,7 @@ def available() -> tuple[bool, str]:
     a caller that logs one message for both teaches nobody anything.
     """
     try:
-        import onnxruntime  # noqa: F401
+        import onnxruntime  # noqa: F401 - availability probe: is onnxruntime installed
     except ImportError:
         return (False, "onnxruntime is not installed")
     if model_path() is None:

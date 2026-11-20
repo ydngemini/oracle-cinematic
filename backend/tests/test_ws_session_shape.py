@@ -25,8 +25,6 @@ import asyncio
 import inspect
 import pathlib
 
-import pytest
-
 
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 

@@ -27,7 +27,7 @@ catalogued as sources.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 KINDS = ("public_records_harvester", "valuation_api", "market_data", "geocoder",
