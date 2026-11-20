@@ -9,7 +9,6 @@ from fastapi import Depends, HTTPException, Query, status
 
 from tenancy import TenantContext, require_context
 
-
 from ._common import (
     router, logger,
     _FIPS_RE, _num, _require_state, _fetch, _fetchrow,

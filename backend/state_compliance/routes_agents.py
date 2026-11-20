@@ -9,7 +9,6 @@ from fastapi import Depends, HTTPException, status
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
-
 from ._common import (
     router, logger,
     _CE_HOURS_BY_STATE,

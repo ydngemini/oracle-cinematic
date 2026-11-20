@@ -12,7 +12,6 @@ from mls_switch import require_mls_enabled
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
-
 from ._common import (
     router, logger,
     _num, _require_state, _require_uuid, _fetch, _fetchrow,

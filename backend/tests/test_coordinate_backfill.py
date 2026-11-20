@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-
 import backfill_property_coordinates as backfill
 
 

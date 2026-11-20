@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
-
 from ._common import (
     router, logger,
     _require_state, _require_uuid, _fetch, _fetchrow,

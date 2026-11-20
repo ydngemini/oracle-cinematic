@@ -16,7 +16,6 @@ tell them apart.
 
 import asyncio
 
-
 import opportunity_engine as oe
 from tenancy import Role, TenantContext
 

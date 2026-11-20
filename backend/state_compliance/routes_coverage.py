@@ -1,13 +1,11 @@
 """National data-coverage reporting and harvest task control."""
 from __future__ import annotations
 
-
 from fastapi import Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from admin_ops import require_platform_admin
 from tenancy import TenantContext, require_context
-
 
 from ._common import (
     router, _iso,

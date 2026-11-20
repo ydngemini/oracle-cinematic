@@ -15,15 +15,15 @@ import asyncio
 import pytest
 
 import commands_api
-from tests.test_ai_budget_hosted_calls import (  # noqa: F401  (controls is a fixture)
+from tests.test_ai_budget_hosted_calls import (
     CALLER,
     OTHER_TENANT,
     TENANT,
     _MEDIA_ROUTES,
     _bridge_recorder,
     _refusal_was_said,
-    controls,
 )
+from tests.test_ai_budget_hosted_calls import controls  # noqa: F401 - pytest fixture, used by parameter name
 
 ROUTES = ["acs", "twilio", "plivo", "plivo-elevenlabs"]
 

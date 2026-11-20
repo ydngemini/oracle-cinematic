@@ -4,7 +4,6 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-
 from ._common import (
     logger,
     _ATTORNEY_REVIEW_STATES, _MANDATORY_DISCLOSURE_STATES,

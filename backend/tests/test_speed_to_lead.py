@@ -18,7 +18,6 @@ import asyncio
 import functools
 from datetime import datetime, timedelta, timezone
 
-
 import speed_to_lead
 from outreach_compliance import OutreachDecision
 from speed_to_lead import _enabled, _opening_draft, _resolve_channel

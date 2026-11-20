@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 
-
 import ai_tools_gated as gated
 import ai_tools_read as read_tools
 from tenancy import Role, TenantContext

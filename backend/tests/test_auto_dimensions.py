@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 
-
 from floorplan_pipeline.dimensions import (
     DEFAULT_FOOTPRINT_AREA_M2,
     MODEL_VERSION,

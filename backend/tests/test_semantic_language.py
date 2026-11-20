@@ -38,10 +38,11 @@ import semantic_frame as sf
 import semantic_language as lang_
 import semantic_turn
 import source_status as ss
-from tests.test_frame_constraints import (  # noqa: F401 — fixtures
+from tests.test_frame_constraints import (
     ASSISTANT, CTX, NOW, SARAH, FakeGateway, _bundle, _final, _ledger_refusals, _stored,
-    _tool_call, chat, turn_env,
+    _tool_call,
 )
+from tests.test_frame_constraints import chat, turn_env  # noqa: F401 - pytest fixtures, used by parameter name
 
 CASES = semantic_eval.load_cases()
 DEV = [c for c in CASES if c.split == "dev"]

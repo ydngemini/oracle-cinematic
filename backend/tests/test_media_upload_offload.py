@@ -17,7 +17,6 @@ import asyncio
 import inspect
 import threading
 
-
 import property_view_api
 
 
