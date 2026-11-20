@@ -345,7 +345,9 @@ Two things, and they answer different questions.
 
 **`release-manifest.json`** (`scripts/build-release-manifest.sh`, uploaded by
 CI) is what the release *is*: `release_id`, both image digests, the tags, the
-migration head, an aggregate `migrations_sha256`, and the build run id. It is
+migration head, the sorted `migrations` list, an aggregate `migrations_sha256`,
+and the build run id. `rollback.sh` classifies the migrations the live release
+lists and the target does not, plus the old filename range (35-06 F1). It is
 what makes "promote the artifact that passed staging" checkable rather than
 intended, and it is the input to `scripts/rollback.sh`.
 

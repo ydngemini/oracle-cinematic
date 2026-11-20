@@ -108,6 +108,10 @@ MIGRATION_COUNT="$(migration_files "$MIGRATIONS_DIR" | wc -l | tr -d ' ')"
 MIGRATIONS_SHA256="$(migration_files "$MIGRATIONS_DIR" | while IFS= read -r f; do cat "$MIGRATIONS_DIR/$f"; done | sha256sum | cut -d' ' -f1)"
 
 [ -n "$MIGRATION_HEAD" ] || die "found no migrations to hash"
+# The whole set, not only its head (35-06 F1): a migration merged late with a
+# lower number (0144 landed after 0145) is invisible to a filename range, so
+# rollback.sh classifies the set difference between two manifests.
+MIGRATIONS_JSON="$(migration_files "$MIGRATIONS_DIR" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
 
 cat <<JSON
 {
@@ -127,6 +131,7 @@ cat <<JSON
   "migration_head": "$MIGRATION_HEAD",
   "migration_count": $MIGRATION_COUNT,
   "migrations_sha256": "$MIGRATIONS_SHA256",
+  "migrations": $MIGRATIONS_JSON,
 
   "expected_api_version": "$GIT_SHA",
   "expected_frontend_version": "$GIT_SHA",
