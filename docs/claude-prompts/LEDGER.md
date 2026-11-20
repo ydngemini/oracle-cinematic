@@ -5720,14 +5720,16 @@ files: [.github/workflows/ci.yml, scripts/cross-version-contract.sh, scripts/cro
 tests_run:
   - {cmd: "design: 3 independent designs + judge (workflow wf_6e8e5ace-122)", result: "per-PR job chosen; follow-up F1 (rollback.sh set gap) landed first as L19-26/#151", date: 2026-11-20}
   - {cmd: "offline: test_cross_version_contract + test_cross_version_wiring + CI/env/release/rollback tests; ruff (phase 2 rules) incl. scripts/cross_version", result: "210 passed; All checks passed. Red: INCOMPATIBLE downgraded to DRIFT → 6 failed; canary accepting DRIFT → 1 failed; all-skipped check removed → 1 failed. The tests exposed a harness bug (the classifier loaded without sys.modules → every record HARNESS) and a setup gap (REASSIGN/DROP OWNED lost the migrations' ALTER DEFAULT PRIVILEGES → copied to the doadmin stand-in)", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed: first CI canary (run 44741248526) was green for the wrong reason — asyncpg's relative frame 'asyncpg/protocol/protocol.pyx' resolved under the previous backend, so test-code SQL errors counted as app frames", result: "app frames now absolute + existing + under the previous backend (regression tests with the real relative frame); canary adds CHECK (false) NOT VALID on process_heartbeats (the previous worker upserts it at startup); the boot probe maps PostgreSQL message texts to SQLSTATEs and judges boot-log errors against the control. 127 offline tests; red: old _is_app_path → 6 failed, name-only scan → 13 failed", date: 2026-11-20}
+  - {cmd: "PR #155 CI, canary mode (run 44744355231)", result: "pass in 5m07s: P@B ok, P@C FAILED and N@C FAILED with 23514 on process_heartbeats/xv_canary_hb (the server log shows the app's own INSERT INTO process_heartbeats); previous suite 168 collected, 145 passed, 23 DRIFT (leads, raised from test code) listed under drift_only; canary detected via boot P@C only; contract_result incompatible as designed; security scans green", date: 2026-11-20}
 authz_checked: "No access change. CI only: no secrets, permissions contents: read (fork-safe); not in release.needs or promote.needs; no declaration file, flag or env var relaxes an outcome; migration_safety.py and rollback.sh unchanged (DEP-05)."
 blockers:
-  - "Only a real CI run proves the database setup on postgres:16-alpine, the PRE_DEPLOY rehearsal as the doadmin stand-in, the previous app booting in staging mode, the noise level of the previous suite, and that the canary yields an INCOMPATIBLE 23514 — this PR's own CI runs canary mode."
+  - "Proven in CI (run 44744355231): database setup on postgres:16-alpine, the PRE_DEPLOY rehearsal as the doadmin stand-in, the previous app booting in staging mode with no baseline boot-log errors, and canary detection through an app write. Not yet measured: the false-red rate over real gap PRs (needed before F7)."
   - "Not a required check yet (owner decision F7 in docs/cross-version-contract.md, after the false-red rate is measured); rollback.sh does not read the record until follow-up F2."
   - "Not deployed (C4.4)."
 audit_refs: [35-06]
 decision_refs: []
-next_task: "Record this PR's CI canary result and timings here; then F2 (rollback.sh requires a passing record for the exact pair)."
+next_task: "Measure the false-red rate over the next migration PRs; then F2 (rollback.sh requires a passing record for the exact pair) and F7 (owner: make it required)."
 updated: 2026-11-20
 ```
 
