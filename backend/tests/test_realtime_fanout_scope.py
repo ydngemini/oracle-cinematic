@@ -54,9 +54,9 @@ def _tenant_wide_calls() -> set[tuple[str, str, str]]:
 
         class Visitor(ast.NodeVisitor):
             def _scope(self, node):
-                stack.append(node.name)
+                stack.append(node.name)  # noqa: B023 - the visitor runs within this iteration
                 self.generic_visit(node)
-                stack.pop()
+                stack.pop()  # noqa: B023 - the visitor runs within this iteration
 
             visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
 
@@ -69,7 +69,7 @@ def _tenant_wide_calls() -> set[tuple[str, str, str]]:
                 elif isinstance(func, ast.Name) and func.id in FANOUT:
                     name = func.id
                 if name:
-                    found.add((rel, ".".join(stack), name))
+                    found.add((rel, ".".join(stack), name))  # noqa: B023 - the visitor runs within this iteration
                 self.generic_visit(node)
 
         Visitor().visit(tree)

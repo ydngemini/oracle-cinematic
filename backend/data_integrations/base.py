@@ -195,7 +195,7 @@ class DataSource(ABC):
                         ra = _parse_retry_after(
                             e.headers.get("Retry-After") if e.headers else None
                         )
-                        raise RetryableError(f"HTTP {e.code} from {self.source_name}", ra)
+                        raise RetryableError(f"HTTP {e.code} from {self.source_name}", ra) from e
                     raise
 
             body = await asyncio.to_thread(_blocking)

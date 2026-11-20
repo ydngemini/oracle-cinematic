@@ -1602,7 +1602,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 f"{provider.name}:{provider.model}",
             )
         except SpendRefused as refused:
-            raise _with_receipts(refused, provider_actions, f"{provider.name}:{provider.model}")
+            raise _with_receipts(refused, provider_actions, f"{provider.name}:{provider.model}") from refused
         except Exception as provider_error:  # noqa: BLE001
             if _turn_has_effects(bundle, provider_actions):
                 logger.warning(
@@ -1626,7 +1626,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 ctx, bundle, system_prompt, assistant_id, fireworks_actions
             )
         except SpendRefused as refused:
-            raise _with_receipts(refused, fireworks_actions, f"fireworks:{FIREWORKS_MODEL}")
+            raise _with_receipts(refused, fireworks_actions, f"fireworks:{FIREWORKS_MODEL}") from refused
         except Exception as fireworks_error:  # noqa: BLE001
             # Same rule as every other tier: writes that already committed must
             # come back with their receipts, or the retry double-applies them.
@@ -1650,7 +1650,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 ctx, bundle, assistant_id, runtime_context, applied=foundry_actions
             )
         except SpendRefused as refused:
-            raise _with_receipts(refused, foundry_actions, f"azure-foundry:{_FOUNDRY_MODEL}")
+            raise _with_receipts(refused, foundry_actions, f"azure-foundry:{_FOUNDRY_MODEL}") from refused
         except Exception as foundry_error:  # noqa: BLE001
             # Same rule as the Bedrock and local branches below: writes that
             # already committed must come back with their receipts. Falling
@@ -1704,7 +1704,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             response = await _bedrock_round(messages, system_prompt, tool_config, documents)
         raise RuntimeError("The assistant exceeded the safe tool-call limit")
     except SpendRefused as refused:
-        raise _with_receipts(refused, actions, MODEL_ID)
+        raise _with_receipts(refused, actions, MODEL_ID) from refused
     except Exception as bedrock_error:  # noqa: BLE001
         logger.warning("Nova chat request failed; attempting text-only local fallback: %s", bedrock_error)
         if _turn_has_effects(bundle, actions):

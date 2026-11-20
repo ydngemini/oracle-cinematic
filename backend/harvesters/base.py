@@ -1255,7 +1255,7 @@ class BaseHarvester(ABC):
                     if e.code in (429, 503):
                         ra = e.headers.get("Retry-After") if e.headers else None
                         raise Retryable(f"HTTP {e.code} from {self.SOURCE_LABEL}",
-                                        retry_after=_parse_retry_after(ra))
+                                        retry_after=_parse_retry_after(ra)) from e
                     raise
 
             body = await asyncio.to_thread(_blocking)

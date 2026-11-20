@@ -920,12 +920,12 @@ def decode_token(raw_token: str) -> dict:
 
     try:
         payload = jwt.decode(raw_token, SECRET_KEY, **decode_kwargs)
-    except jwt.ExpiredSignatureError:
+    except jwt.ExpiredSignatureError as exc2:
         log.debug("Token validation failed: expired signature.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired.",
-        )
+        ) from exc2
     except jwt.InvalidTokenError as exc:
         # Log at DEBUG only — never at WARNING/ERROR to avoid log-spamming from
         # probes, and never surfacing internal jwt error messages to callers.
@@ -933,7 +933,7 @@ def decode_token(raw_token: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token.",
-        )
+        ) from exc
 
     # Explicit expiry check — belt-and-suspenders against library edge cases.
     exp = payload.get("exp")
@@ -1422,8 +1422,8 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
     _check_new_password(body.new_password)
     try:
         claims = decode_token(body.token)  # validates signature + expiry
-    except HTTPException:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
+    except HTTPException as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL) from exc
 
     jti = claims.get("jti")
     agent_id = claims.get("sub")
@@ -1440,8 +1440,8 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
     try:
         tenant_id = str(UUID(tenant_claim))
-    except (ValueError, AttributeError):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL) from exc
 
     from db.connection import tenant_tx
 

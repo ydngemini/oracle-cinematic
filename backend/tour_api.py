@@ -1291,8 +1291,8 @@ async def signed_space_asset(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
     try:
         tenant = str(UUID(t))
-    except ValueError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.") from exc
     # A brokerage-scope pipeline: the signature is the authorization (minted
     # only inside an authorized read of this row). As a plain agent identity
     # with no user, a client's house's space (0143) answered 404 to the very
@@ -1323,8 +1323,8 @@ async def signed_space_asset(
         except ValueError:
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
         data, size = await asyncio.to_thread(space_assets.read_range, key, rng)
-    except FileNotFoundError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.") from exc
     if rng is None:
         return Response(content=data, media_type="application/octet-stream", headers=headers)
     headers["Content-Range"] = f"bytes {rng[0]}-{rng[0] + len(data) - 1}/{size}"

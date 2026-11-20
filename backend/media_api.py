@@ -814,24 +814,24 @@ async def generate_assignment_contract(
             ctx,
             expiration_seconds=expiration_seconds,
         )
-    except RuntimeError:
+    except RuntimeError as exc:
         log.exception("Contract data service unavailable for client_id=%s", client_id)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Contract data service unavailable.",
-        )
-    except (ValueError, VaultUploadError):
+        ) from exc
+    except (ValueError, VaultUploadError) as exc:
         log.exception("Contract vault failed for client_id=%s tenant=%s", client_id, ctx.tenant_id)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Contract vault unavailable.",
-        )
-    except Exception:  # noqa: BLE001
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
         log.exception("Assignment contract generation failed for client_id=%s", client_id)
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             "Assignment contract generation failed.",
-        )
+        ) from exc
 
     if result.get("status") != "SUCCESS":
         raise HTTPException(
@@ -963,8 +963,8 @@ async def portal_upload_media(
     token = authorization.removeprefix("Bearer ").strip()
     try:
         claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.InvalidTokenError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired session.")
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired session.") from exc
 
     if claims.get("role") != "portal_client":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a portal session token.")

@@ -2314,7 +2314,7 @@ def _hosted_sites() -> set[str]:
                     elif child.attr == "create" and isinstance(child.value, ast.Attribute) \
                             and child.value.attr == "responses":
                         name = "responses.create"
-                    elif child.attr == "urlopen" and rel == "ml_forge/bedrock_client.py":
+                    elif child.attr == "urlopen" and rel == "ml_forge/bedrock_client.py":  # noqa: B023 - the visitor runs within this iteration
                         name = "urlopen"
                     elif (child.attr == "connect" and isinstance(child.value, ast.Name)
                           and child.value.id == "websockets"):
@@ -2323,7 +2323,7 @@ def _hosted_sites() -> set[str]:
                 if name in _HOSTED_NAMES or name in {"complete", "stream", "responses.create", "urlopen",
                                                      "websockets.connect"}:
                     if owner != "<module>":
-                        found.add(f"{rel}::{owner}")
+                        found.add(f"{rel}::{owner}")  # noqa: B023 - the visitor runs within this iteration
                 visit(child, owner)
 
         visit(tree, "<module>")

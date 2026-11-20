@@ -121,11 +121,11 @@ class ConditionEvaluator:
         try:
             a = float(actual)
             e = float(expected)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Numeric comparison on field '{field}' requires numeric values. "
                 f"Got: actual={actual!r}, expected={expected!r}."
-            )
+            ) from exc
         return {"lt": a < e, "lte": a <= e, "gt": a > e, "gte": a >= e}[op]
 
     @staticmethod

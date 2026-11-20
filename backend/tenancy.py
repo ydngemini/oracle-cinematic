@@ -396,12 +396,12 @@ def _context_from_authorization(
 
     try:
         role = Role(raw_role)
-    except ValueError:
+    except ValueError as exc:
         log.debug("Token contains unknown role %r — rejecting.", raw_role)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unrecognised role in token — re-authenticate.",
-        )
+        ) from exc
 
     agent_id = payload.get("sub", "")
     if len(agent_id) > _MAX_AGENT_ID_LEN:

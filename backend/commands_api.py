@@ -242,12 +242,12 @@ def _validate_twilio_webhook_signature(
 
     try:
         from twilio.request_validator import RequestValidator
-    except Exception:
+    except Exception as exc:
         logger.exception("twilio request validator import failed")
         raise HTTPException(
             status_code=503,
             detail="Twilio request validation is unavailable.",
-        )
+        ) from exc
 
     for token in tokens:
         if RequestValidator(token).validate(webhook_url, params, signature):

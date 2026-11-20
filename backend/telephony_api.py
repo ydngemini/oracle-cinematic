@@ -1062,8 +1062,8 @@ async def twilio_agent_status(request: Request) -> Response:
     intent_id = str(request.query_params.get("intent_id") or "")
     try:
         uuid.UUID(intent_id)
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=404, detail="Call intent not found.")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Call intent not found.") from exc
     intent = await _agent_intent_platform(intent_id)
     if intent is None:
         raise HTTPException(status_code=404, detail="Call intent not found.")
@@ -1119,8 +1119,8 @@ async def twilio_inbound_webhook(endpoint_key: str, request: Request) -> Respons
     """Resolve DID to tenant+agent, disclose AI, then open the existing bridge."""
     try:
         uuid.UUID(endpoint_key)
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=404, detail="Inbound route not found.")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Inbound route not found.") from exc
     suffix = f"/api/telephony/webhooks/twilio/inbound/{endpoint_key}"
     form = await request.form()
     call_sid = str(form.get("CallSid") or "")
@@ -1390,8 +1390,8 @@ async def plivo_inbound_webhook(endpoint_key: str, request: Request) -> Response
     adapter = get_voice_provider(PROVIDER_PLIVO)
     try:
         uuid.UUID(endpoint_key)
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=404, detail="Inbound route not found.")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Inbound route not found.") from exc
     suffix = f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}"
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")

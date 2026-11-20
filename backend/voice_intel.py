@@ -328,8 +328,8 @@ async def log_walkthrough(
     Heavy work (Whisper, Bedrock, DB) happens in the worker pool — never here."""
     try:
         uuid.UUID(lead_id)
-    except ValueError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID") from exc
 
     suffix = Path(audio_file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -370,11 +370,11 @@ async def log_walkthrough(
     try:
         size = await asyncio.to_thread(_stage_upload, audio_file.file, staged)
         audio = await asyncio.to_thread(staged.read_bytes)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             f"audio exceeds {MAX_AUDIO_BYTES // (1024 * 1024)} MiB cap",
-        )
+        ) from exc
     finally:
         staged.unlink(missing_ok=True)
 
