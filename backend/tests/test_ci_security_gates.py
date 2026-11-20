@@ -85,14 +85,37 @@ def test_the_drill_waits_for_the_real_server_not_the_init_server():
 _SEPARATORS = {"||", "&&", ";", ";;", "|", "|&", "&", "{", "}", "(", ")"}
 _DOCKER_GLOBAL_VALUE_OPTS = {"-H", "--host", "-c", "--context", "--config",
                              "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"}
-# `docker run` long options that take no value (Docker 28 `docker run --help`).
-# Any other `--x` without `=` takes the next word unless that word is itself a
-# flag (a letter after the dash: `-1` for "unlimited" is still a value), so a
-# boolean flag missing from this list cannot hide the one after it.
-_RUN_BOOLEAN_LONG = {"--rm", "--detach", "--interactive", "--tty", "--init",
-                     "--privileged", "--read-only", "--no-healthcheck",
-                     "--oom-kill-disable", "--sig-proxy", "--disable-content-trust",
-                     "--quiet", "--use-api-socket", "--help"}
+# `docker run`'s long options, from Docker 28.2.2 `docker run --help`: the 14
+# that take no value (--publish-all is read separately), and the 85 that take
+# one plus the hidden aliases --net and --net-alias. A listed value option
+# always takes the next word, as Docker's parser does (`--entrypoint -x`,
+# `--pids-limit -1`). An option in neither list takes the next word unless that
+# word is a flag (a dash and a letter), so a future boolean cannot hide the
+# option after it.
+_RUN_BOOLEAN_LONG = {"--detach", "--disable-content-trust", "--help", "--init",
+                     "--interactive", "--no-healthcheck", "--oom-kill-disable",
+                     "--privileged", "--quiet", "--read-only", "--rm", "--sig-proxy",
+                     "--tty", "--use-api-socket"}
+_RUN_VALUE_LONG = {
+    "--add-host", "--annotation", "--attach", "--blkio-weight", "--blkio-weight-device",
+    "--cap-add", "--cap-drop", "--cgroup-parent", "--cgroupns", "--cidfile",
+    "--cpu-period", "--cpu-quota", "--cpu-rt-period", "--cpu-rt-runtime", "--cpu-shares",
+    "--cpus", "--cpuset-cpus", "--cpuset-mems", "--detach-keys", "--device",
+    "--device-cgroup-rule", "--device-read-bps", "--device-read-iops",
+    "--device-write-bps", "--device-write-iops", "--dns", "--dns-option", "--dns-search",
+    "--domainname", "--entrypoint", "--env", "--env-file", "--expose", "--gpus",
+    "--group-add", "--health-cmd", "--health-interval", "--health-retries",
+    "--health-start-interval", "--health-start-period", "--health-timeout", "--hostname",
+    "--ip", "--ip6", "--ipc", "--isolation", "--kernel-memory", "--label", "--label-file",
+    "--link", "--link-local-ip", "--log-driver", "--log-opt", "--mac-address", "--memory",
+    "--memory-reservation", "--memory-swap", "--memory-swappiness", "--mount", "--name",
+    "--network", "--network-alias", "--oom-score-adj", "--pid", "--pids-limit",
+    "--platform", "--publish", "--pull", "--restart", "--runtime", "--security-opt",
+    "--shm-size", "--stop-signal", "--stop-timeout", "--storage-opt", "--sysctl",
+    "--tmpfs", "--ulimit", "--user", "--userns", "--uts", "--volume", "--volume-driver",
+    "--volumes-from", "--workdir",
+    "--net", "--net-alias",
+}
 # Short flags that take no value: -d, -i, -t, -q (and -P, read as a publish).
 _RUN_BOOLEAN_SHORT = "ditq"
 _FLAG_WORD = __import__("re").compile(r"--?[A-Za-z]")
@@ -111,8 +134,10 @@ def _publish_options(args: list[str]) -> list[str]:
             break
         if tok.startswith("--"):
             name, eq, value = tok.partition("=")
-            takes_next = (not eq and name not in _RUN_BOOLEAN_LONG
-                          and name != "--publish-all" and not _FLAG_WORD.match(nxt))
+            takes_next = not eq and (
+                name in _RUN_VALUE_LONG
+                or (name not in _RUN_BOOLEAN_LONG and name != "--publish-all"
+                    and not _FLAG_WORD.match(nxt)))
             if takes_next:
                 value = nxt
             if name == "--publish":
@@ -215,6 +240,12 @@ def _docker_run_args(script: str) -> list[list[str]]:
             args = []
             try:
                 for word in words:
+                    if word in ("(", "((") and args and args[-1].endswith("$"):
+                        # An unquoted $(...) / $((...)): its `(` would read as
+                        # a separator and hide every option after it.
+                        raise ValueError("command substitution")
+                    if word.count("`") % 2:
+                        raise ValueError("backtick substitution")
                     if word in _SEPARATORS:
                         break
                     if word in ("<(", ">("):
@@ -276,6 +307,11 @@ def test_the_publish_reader_sees_the_spellings_in_its_probe():
         ("docker run -d --pids-limit -1 -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
         ("docker run -d --memory-swap -1 --network host img", ["--network=host"]),
         ("docker run -d --oom-score-adj -500 -p 1:2 img", ["1:2"]),
+        # A known value option keeps a dash-letter value, as Docker's parser does (r4).
+        ("docker run -d --entrypoint -x -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
+        ("docker run -d --hostname -h --network host img", ["--network=host"]),
+        # A quoted substitution is one word and reads fine.
+        ('docker run -d -e "T=$(date +%s)" -p 1:2 img', ["1:2"]),
         # A quoted command name is still the command.
         ('"docker" run -d -p 0.0.0.0:6379:6379 img', ["0.0.0.0:6379:6379"]),
         ("'docker' run -d -p 1:2 img", ["1:2"]),
@@ -301,7 +337,11 @@ def test_the_publish_reader_reads_only_dockers_own_options():
     for unreadable in ('eval "docker run -d -p 56379:6379 img"',
                        "docker run {fd}>/tmp/x -p 1:2 img",
                        "docker run --rm <(env) -p 1:2 img",
-                       "docker run --env-file <(env) -p 1:2 img"):
+                       "docker run --env-file <(env) -p 1:2 img",
+                       "docker run -d -e T=$(date +%s) -p 0.0.0.0:6379:6379 img",
+                       "docker run -d -e N=$((1+2)) -p 1:2 img",
+                       "docker run -d -e T=`date +%s` -p 1:2 img",
+                       '"docker" run -d -e T=$(date +%s) -p 0.0.0.0:6379:6379 img'):
         try:
             _published_ports(unreadable)
         except AssertionError:
