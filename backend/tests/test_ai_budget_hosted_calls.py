@@ -229,7 +229,7 @@ def test_invoke_async_under_a_scope_holds_and_settles_through_the_gateway(monkey
     assert [lane for lane, _ in scope.before_calls] == ["fireworks"]
     assert scope.settled == [("hold-1", answer)]
     assert fake.calls[0]["messages"][0] == {"role": "system", "content": "rules"}
-    assert fake.calls[0]["model"].endswith("glm-5p2-fast"), "SECONDARY maps onto the fast ladder"
+    assert fake.calls[0]["model"].endswith(llm_gateway.FIREWORKS_FAST_DEFAULT), "SECONDARY maps onto the fast ladder"
     assert no_direct_path == []
 
 
