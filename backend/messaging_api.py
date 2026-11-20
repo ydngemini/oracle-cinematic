@@ -56,17 +56,36 @@ def _texting_provider() -> str:
         raise HTTPException(status_code=503, detail="Texting is not configured on this server.") from exc
 
 
-def _provider_refusals() -> tuple[type[BaseException], ...]:
-    """A definite no from the provider, or from the guard in front of it: the
-    text is written for the broker owner fixing a registration. Anything else
-    _ask_registration already turns into RegistrationUnconfirmed, so what is
-    left under it is the database or sealing layer, whose text is not."""
+def _provider_outcomes() -> tuple[type[BaseException], ...]:
+    """What _ask_registration re-raises as a definite outcome. Anything else it
+    turns into RegistrationUnconfirmed, so what is left under a registration
+    route after these is the database or sealing layer."""
     import recovery_mode
     from command_providers import ProviderConfigurationError, ProviderRejectedError
     from messaging_provider import MessagingProviderError
 
-    return (ProviderConfigurationError, ProviderRejectedError, MessagingProviderError,
+    return (ProviderRejectedError, ProviderConfigurationError, MessagingProviderError,
             NotImplementedError, recovery_mode.RecoveryModeBlocked)
+
+
+def _provider_outcome(exc: BaseException) -> HTTPException:
+    """Only a real rejection reaches the owner in the provider's words (the
+    adapter writes "Telnyx rejected the brand registration: ..."), for the
+    owner fixing the registration. The other outcomes never reached the
+    provider: a missing server key (TELNYX_API_KEY), recovery mode, a provider
+    with no 10DLC support. They answer a fixed sentence; the text is logged."""
+    import recovery_mode
+    from command_providers import ProviderRejectedError
+
+    if isinstance(exc, ProviderRejectedError):
+        return HTTPException(status_code=502, detail=str(exc))
+    logger.error("Texting registration not sent to the provider: %s: %s", type(exc).__name__, exc)
+    if isinstance(exc, recovery_mode.RecoveryModeBlocked):
+        return HTTPException(status_code=503, detail="Texting is paused while Neoh is in recovery mode.")
+    if isinstance(exc, NotImplementedError):
+        return HTTPException(status_code=501,
+                             detail="This server's texting provider cannot register brands or campaigns.")
+    return HTTPException(status_code=503, detail="Texting is not configured on this server.")
 
 router = APIRouter(prefix="/api/messaging", tags=["Messaging"])
 
@@ -387,8 +406,8 @@ async def register_brand(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except _provider_refusals() as exc:
-        raise HTTPException(status_code=502, detail=f"The texting provider refused the brand registration: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
     except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
         raise memory_core_offline(exc, "brand registration not recorded") from exc
 
@@ -419,8 +438,8 @@ async def register_campaign(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except _provider_refusals() as exc:
-        raise HTTPException(status_code=502, detail=f"The texting provider refused the campaign submission: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
     except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
         raise memory_core_offline(exc, "campaign submission not recorded") from exc
 
@@ -465,8 +484,8 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except _provider_refusals() as exc:
-        raise HTTPException(status_code=502, detail=f"The texting provider refused the number assignment: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
     except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
         raise memory_core_offline(exc, "number assignment not recorded") from exc
 

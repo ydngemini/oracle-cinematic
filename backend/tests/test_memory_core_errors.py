@@ -139,14 +139,13 @@ def test_registration_separates_a_provider_refusal_from_a_database_failure(monke
     calls = _registration_calls(messaging_api)
 
     async def refused(*_a, **_k):
-        raise ProviderRejectedError("10DLC brand EIN does not match the legal name")
+        raise ProviderRejectedError("Telnyx rejected the brand registration: EIN does not match the legal name")
 
     monkeypatch.setattr(messaging_api, target, refused)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(calls[route]())
-    assert exc.value.status_code == 502
-    assert exc.value.detail.startswith("The texting provider refused the ")
-    assert exc.value.detail.endswith(": 10DLC brand EIN does not match the legal name")
+    assert (exc.value.status_code, exc.value.detail) == (
+        502, "Telnyx rejected the brand registration: EIN does not match the legal name")
 
     async def database_down(*_a, **_k):
         raise DatabaseUnavailable("DB pool not initialized — call init_pool() at startup.")
@@ -155,6 +154,66 @@ def test_registration_separates_a_provider_refusal_from_a_database_failure(monke
     with pytest.raises(HTTPException) as exc:
         asyncio.run(calls[route]())
     assert (exc.value.status_code, exc.value.detail) == (503, f"Memory Core offline — {outcome}.")
+
+
+@pytest.mark.parametrize("make,status,detail", [
+    (lambda: __import__("command_providers").ProviderConfigurationError("TELNYX_API_KEY is not configured"),
+     503, "Texting is not configured on this server."),
+    (lambda: __import__("messaging_provider").MessagingProviderError("Unknown messaging provider 'x'"),
+     503, "Texting is not configured on this server."),
+    (lambda: __import__("recovery_mode").RecoveryModeBlocked("ORACLE_RECOVERY_MODE=1 refuses side effects"),
+     503, "Texting is paused while Neoh is in recovery mode."),
+    (lambda: NotImplementedError(), 501, "This server's texting provider cannot register brands or campaigns."),
+], ids=["config", "provider-name", "recovery", "unsupported"])
+def test_an_outcome_that_never_reached_the_provider_names_no_setting(monkeypatch, caplog, make, status, detail):
+    """Only a real rejection is the provider's word. A missing server key,
+    recovery mode or a provider without 10DLC support never reached it, and
+    their text names the server's settings (or is empty)."""
+    import messaging_api
+
+    async def creds(_ctx):
+        return {}
+
+    async def outcome(*_a, **_k):
+        raise make()
+
+    monkeypatch.setenv("ORACLE_MESSAGING_PROVIDER", "telnyx")
+    monkeypatch.setattr(messaging_api, "_telnyx_credentials", creds)
+    monkeypatch.setattr(messaging_api, "register_messaging_brand", outcome)
+    with caplog.at_level(logging.ERROR), pytest.raises(HTTPException) as exc:
+        asyncio.run(_registration_calls(messaging_api)["brand"]())
+    assert (exc.value.status_code, exc.value.detail) == (status, detail)
+    assert "not sent to the provider" in caplog.text, "the operator still sees why"
+
+
+def test_a_suppressed_context_is_not_logged_as_a_cause(caplog):
+    try:
+        try:
+            raise OSError("secret-shaped detail")
+        except OSError:
+            raise RuntimeError("x") from None
+    except RuntimeError as exc:
+        with caplog.at_level(logging.ERROR, logger="oracle.memory_core"):
+            memory_core_offline(exc)
+    assert "caused by" not in caplog.text
+
+
+def test_the_state_compliance_read_logs_a_database_error_by_type(monkeypatch, caplog):
+    from state_compliance import _common
+
+    class _Rejected(Exception):
+        pass
+
+    @asynccontextmanager
+    async def rejecting(_ctx):
+        raise _Rejected('invalid input syntax for type uuid: "jane@client.test"')
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(_common, "tenant_tx", rejecting)
+    with caplog.at_level(logging.ERROR), pytest.raises(HTTPException) as exc:
+        asyncio.run(_common._fetch(AGENT, "SELECT 1"))
+    assert exc.value.status_code == 503
+    assert "_Rejected" in caplog.text and "jane@client.test" not in caplog.text
 
 
 def test_the_admin_read_logs_a_database_error_by_type(monkeypatch, caplog):
@@ -211,7 +270,7 @@ _BROAD = {"RuntimeError", "Exception", "BaseException", "CryptoError", "SealErro
 #: Reviewed: the exception's text IS the message meant for the reader.
 _ALLOWED = {
     "ai_chat_api.py::upload_attachments": "ClamAV wrapper raises fixed sentences only",
-    "data_sources_api.py::regrid_parcel": "RegridAuthError tells the operator to rotate the token",
+    "data_sources_api.py::regrid_parcel": "RegridAuthError names the token to rotate (deliberate, pre-existing; reaches any signed-in agent)",
     "messaging_api.py::upload_hosted_document": "the try wraps only the Telnyx document upload",
     "sales_api.py::send_test_email": "the tenant's own SMTP server's answer, for the tenant",
 }
@@ -232,7 +291,12 @@ def _type_names(node) -> set[str]:
 def _http_details_quoting_the_exception(tree: ast.AST):
     """(function, line) for each HTTPException built in a broad handler whose
     detail (any argument but the status) reads the caught name: str(exc),
-    f"{exc}", "%s" % exc, "..." + str(exc), exc.args, across lines too."""
+    f"{exc}", "%s" % exc, "..." + str(exc), exc.args, across lines, or through
+    one local assigned from it (`msg = str(exc)`).
+
+    Not seen: a handler for a specific RuntimeError subclass, text built in
+    another function, and a new leak inside an allowlisted function. The
+    behaviour tests above cover the routes this PR changed."""
     owner: dict[int, str] = {}
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -241,18 +305,24 @@ def _http_details_quoting_the_exception(tree: ast.AST):
     for handler in ast.walk(tree):
         if not (isinstance(handler, ast.ExceptHandler) and handler.name and _type_names(handler.type) & _BROAD):
             continue
-        for node in ast.walk(ast.Module(body=handler.body, type_ignores=[])):
+        body = ast.Module(body=handler.body, type_ignores=[])
+        tainted = {handler.name}
+        for node in ast.walk(body):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(x, ast.Name) and x.id == handler.name for x in ast.walk(node.value)):
+                tainted |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(body):
             func = getattr(node, "func", None)
             if not (isinstance(node, ast.Call) and (
                     (isinstance(func, ast.Name) and func.id == "HTTPException")
                     or (isinstance(func, ast.Attribute) and func.attr == "HTTPException"))):
                 continue
             detail = list(node.args[1:]) + [k.value for k in node.keywords if k.arg != "status_code"]
-            if any(isinstance(x, ast.Name) and x.id == handler.name for part in detail for x in ast.walk(part)):
+            if any(isinstance(x, ast.Name) and x.id in tainted for part in detail for x in ast.walk(part)):
                 yield owner.get(id(handler), "<module>"), node.lineno
 
 
-def test_the_gate_sees_every_spelling():
+def test_the_gate_sees_the_common_spellings():
     src = '''
 async def route():
     try:
@@ -267,8 +337,11 @@ async def route():
                             + str(e))
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+    except BaseException as exc:
+        msg = f"offline: {exc}"
+        raise HTTPException(503, msg)
 '''
-    assert [line for _, line in _http_details_quoting_the_exception(ast.parse(src))] == [6, 8, 10]
+    assert [line for _, line in _http_details_quoting_the_exception(ast.parse(src))] == [6, 8, 10, 17]
 
 
 def test_no_route_sends_an_infrastructure_error_text():
