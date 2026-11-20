@@ -240,9 +240,11 @@ def _docker_run_args(script: str) -> list[list[str]]:
             args = []
             try:
                 for word in words:
-                    if word in ("(", "((") and args and args[-1].endswith("$"):
-                        # An unquoted $(...) / $((...)): its `(` would read as
-                        # a separator and hide every option after it.
+                    if word.startswith("(") and args and args[-1].endswith("$"):
+                        # An unquoted $(...), $((...)) or $(<file): its `(`
+                        # (which shlex may merge with what follows, as `(<`)
+                        # would read as a separator or the image and hide
+                        # every option after it.
                         raise ValueError("command substitution")
                     if word.count("`") % 2:
                         raise ValueError("backtick substitution")
@@ -341,6 +343,9 @@ def test_the_publish_reader_reads_only_dockers_own_options():
                        "docker run -d -e T=$(date +%s) -p 0.0.0.0:6379:6379 img",
                        "docker run -d -e N=$((1+2)) -p 1:2 img",
                        "docker run -d -e T=`date +%s` -p 1:2 img",
+                       "docker run -d -e T=$(<f) -p 0.0.0.0:6379:6379 img",
+                       '"docker" run -e T=$(<f) --net=host img',
+                       "docker run -e T=$(<<<x cat) -p 1:2 img",
                        '"docker" run -d -e T=$(date +%s) -p 0.0.0.0:6379:6379 img'):
         try:
             _published_ports(unreadable)
