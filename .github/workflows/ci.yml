@@ -284,7 +284,12 @@ jobs:
       # restore into a clean cluster, validate, and prove isolation as
       # oracle_app_login. The schema it drills is the one this job just built
       # from every migration, so a migration that breaks restore fails here.
-      # ~45 s; no secret, no provider, no network beyond the image pull.
+      # REC-03: the backup runs while a writer commits, and the manifest's
+      # per-table counts (taken inside the dump's own snapshot) must equal the
+      # restore exactly; then the restore is damaged on purpose (a deleted
+      # row, an FK left NOT VALID, a dropped index) and the validator must
+      # refuse it, naming what broke.
+      # ~1 min; no secret, no provider, no network beyond the image pull.
       - name: Disaster-recovery drill (backup, destroy, restore, verify)
         env:
           ORACLE_DRILL_DIR: ${{ runner.temp }}/neoh-drill

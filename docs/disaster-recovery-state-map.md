@@ -299,6 +299,92 @@ because 0003 revokes EXECUTE from PUBLIC — so the policy errored and the
 failure read as a cross-tenant leak. The drill now uses `oracle_app_login`,
 which is both correct and the role that actually matters.
 
+## What a restore is reconciled against (REC-03, 2026-11-20)
+
+Until 2026-11-20 the manifest counted four tables (`tenants`, `users`,
+`clients`, `leads`), each in its own psql session **before** `pg_dump` started,
+and `verify-restore.sh` compared only those four, skipping any it could not
+read. A restore that lost rows in any other table passed. On a live database
+even the four could disagree with the dump, because they described a different
+moment.
+
+**The backup** (`scripts/backup-postgres.sh`, manifest_version 2) now holds one
+session in a `REPEATABLE READ, READ ONLY` transaction, exports its snapshot
+(`pg_export_snapshot()`, no superuser needed), runs `pg_dump --snapshot=<id>`,
+and, while the dump runs, counts every table whose data is in the dump from that
+same session. Everything else in the manifest comes from that snapshot too: the
+migration head, the RLS counts, the constraint/foreign-key/index counts in
+`public`, the list of foreign keys the source itself never validated, and the
+authoritative-row extract (a second session that imports the snapshot). The
+session is held until `pg_dump` and the extract have finished, and closed on
+every exit path. A backup that fails part-way leaves no dump, extract, roles
+file or manifest behind.
+
+| Manifest field | What it is |
+|---|---|
+| `table_counts` | exact `count(*)` of every table whose rows `pg_dump` writes: ordinary tables and leaf partitions in every non-system schema; not temporary or extension-owned tables |
+| `table_counts_tables`, `table_counts_rows` | how many entries and rows; the verifier fails unless it read exactly that many entries |
+| `excluded_tables` | tables whose data the `authoritative` scope leaves out (built in the same loop as `--exclude-table-data`); deliberately not counted |
+| `constraints_public`, `foreign_keys_public`, `indexes_public` | catalogue counts (NOT NULL excluded; indexes `pg_dump` would skip excluded) |
+| `foreign_keys_not_validated` | FKs that were `NOT VALID` in the source (ten at head `0180`, e.g. `lead_response_events_command_fk` from 0122); `pg_dump` preserves `NOT VALID` |
+| `snapshot_id` | the shared snapshot, recorded as evidence only |
+
+All version-1 fields are still written with their old meaning.
+
+**The verifier**, for a version-2 manifest, fails when:
+- any listed table comes back with a different count, or is missing (the
+  message names the table);
+- a table is present after the restore that the manifest neither counts nor
+  lists as excluded;
+- it cannot read every `table_counts` entry (for example no jq or python3 and a
+  re-formatted manifest). It never calls zero entries a match;
+- an excluded table is missing, or `leads` differs from the authoritative
+  extract's count;
+- the constraint, foreign-key or index count in `public` differs;
+- any foreign key is left unvalidated that the source had validated, or a
+  source `NOT VALID` key is gone. Because `pg_restore` validates every other
+  foreign key as it creates it, this is the referential-integrity check. "Zero
+  unvalidated" would fail every Neoh restore, because the source has ten by
+  design.
+
+**A version-1 manifest** (any backup taken before this change) still gets the
+old four-table check. The verifier then prints that row reconciliation was
+**NOT EXHAUSTIVE**, and its summary reads `RESTORE VERIFIED, BUT NOT
+EXHAUSTIVELY`. Take a new backup to get full reconciliation.
+
+**Still not reconciled.** Counts prove every row came back, not that every
+value did. A row whose contents changed and whose count did not would pass.
+Only the drill's object checksum and the decryption sample in section 4 look at
+values. Data in `excluded_tables` is rebuildable by definition, and is not
+reconciled.
+
+**The drill proves it.** `scripts/dr-drill.sh` now:
+- backs up while a writer commits a row every ~20 ms, then requires the
+  manifest's count for that table to lie strictly between the counts taken
+  before and after the backup, and the restored table to hold exactly the
+  manifest's count;
+- requires the clean restore to reconcile exhaustively;
+- breaks the restored database on purpose and requires the verifier to refuse
+  it:
+  - (a) one `property_media` row deleted: the verifier must fail, naming that
+    table as the only failure;
+  - (b) one foreign key re-created `NOT VALID` and one index dropped: the
+    verifier must name both.
+
+Exercised locally on 2026-11-20 against a schema built from all 172 migrations
+(head `0180`), in throwaway `postgres:16-alpine` containers, with `docker cp`
+standing in for the bind mount:
+- 55/55 drill checks in `full` scope (178 tables reconciled);
+- 55/55 in `authoritative` scope (175 tables, 3 excluded, `leads` matched to
+  the extract);
+- a backup as a non-superuser `BYPASSRLS` role (a stand-in for doadmin)
+  succeeded;
+- a backup as a role subject to RLS failed with "query would be affected by
+  row-level security policy" and left no artifact.
+
+CI runs the drill on `postgres:16` (Debian). Its result for this change is
+recorded with the PR, not here.
+
 ## Recovery mode
 
 A restored Neoh is a *complete* Neoh — same Telnyx key, same Plivo credentials,

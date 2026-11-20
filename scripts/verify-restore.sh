@@ -71,6 +71,72 @@ print(d)" "$MANIFEST" "$key" 2>/dev/null && return
     "$MANIFEST" | head -1
 }
 
+TAB="$(printf '\t')"
+
+# What a backup and a verifier must agree on. BYTE-IDENTICAL to the copies in
+# backup-postgres.sh (test_backup_restore_scripts.py fails if they differ): if
+# the two counted different things, a perfect restore would fail, and the fix
+# someone reaches for then is loosening the check. backup-postgres.sh explains
+# each predicate.
+DATA_TABLES_SQL="SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND c.relpersistence <> 't' AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+CONSTRAINTS_SQL="FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND k.contype <> 'n' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+INDEXES_SQL="FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND (i.indisvalid OR c.relkind = 'p') AND i.indisready AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+
+# The manifest's table_counts, one `"schema.table"<TAB>n` line per entry, the
+# name JSON-encoded exactly as PostgreSQL's to_json() writes it — the same form
+# the restored side is counted in, so the two compare byte for byte.
+#
+# It is the manifest's one object, so it is never read with m(). jq, then
+# python3, then plain bash over the one-entry-per-line shape backup-postgres.sh
+# writes (a stock postgres image has neither jq nor python3). Whatever reads it,
+# section 2 requires the number of entries to equal table_counts_tables, so a
+# reader that stops early, or reads nothing, cannot pass for a match.
+manifest_table_counts() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(.table_counts // {}) | to_entries[] | "\(.key | tojson)\t\(.value)"' "$MANIFEST" 2>/dev/null && return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1])).get("table_counts") or {}
+for k, v in d.items():
+    print(json.dumps(k, ensure_ascii=False) + "\t" + str(v))' "$MANIFEST" 2>/dev/null && return
+  fi
+  local inside=0 line key n
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [ "$inside" = 0 ]; then
+      case "$line" in
+        '"table_counts"'*'{'*'}'*) return ;;     # an empty object on one line
+        '"table_counts"'*'{'*) inside=1 ;;
+      esac
+      continue
+    fi
+    case "$line" in
+      '}'*) return ;;
+      '') continue ;;
+    esac
+    line="${line%,}"
+    n="${line##*:}"
+    key="${line%:*}"
+    n="${n#"${n%%[![:space:]]*}"}"
+    n="${n%"${n##*[![:space:]]}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    printf '%s\t%s\n' "$key" "$n"
+  done < "$MANIFEST"
+}
+
+# Exact count(*) of every data table in the restored database, in the same
+# `"schema.table"<TAB>n` form. $1: SQL text[] of tables not to count.
+restored_table_counts() {
+  printf '%s\n' "SET row_security = off;" \
+    "SELECT format('SELECT %L || E''\\t'' || count(*) FROM ONLY %I.%I', to_json(t.nspname || '.' || t.relname)::text, t.nspname, t.relname) FROM ($DATA_TABLES_SQL) t WHERE (t.nspname || '.' || t.relname) <> ALL ($1) ORDER BY t.nspname, t.relname" \
+    '\gexec' | "${Q[@]}" -q -v ON_ERROR_STOP=1 -f - 2>&1
+}
+
+# "public.leads" -> public.leads, for messages.
+unq() { local k="${1#\"}"; printf '%s' "${k%\"}"; }
+
 # The one field every check depends on. If this cannot be read, the manifest is
 # unparsed and every comparison below would be "" against "" — green, and
 # meaningless.
@@ -100,18 +166,120 @@ GOT_COUNT="$("${Q[@]}" -c "SELECT count(*)::text FROM schema_migrations;" 2>/dev
   && ok "$GOT_COUNT migrations recorded" \
   || bad "$GOT_COUNT migrations recorded, manifest says $WANT_COUNT"
 
-# ── 2. The rows that define a successful restore ───────────────────────────
+# ── 2. Every row the backup held (REC-03) ──────────────────────────────────
+#
+# A manifest from backup-postgres.sh since 2026-11-20 (manifest_version 2)
+# carries the exact row count of EVERY table whose data is in the dump, read
+# inside the dump's own snapshot. Every one must come back exactly; a table in
+# the manifest that is missing fails; a table present after the restore that
+# the manifest does not list fails unless the manifest lists it as excluded.
+#
+# An older manifest counted four tables only, outside the dump's snapshot.
+# For one of those this keeps the old four-table check — and says, here and in
+# the summary, that the reconciliation was NOT exhaustive: a restore that lost
+# rows in any other table would pass it.
 
 echo
 echo "2. Row counts"
-for table in tenants users clients leads; do
-  want="$(m "expected_$table")"
-  [ -n "$want" ] || continue
-  got="$("${Q[@]}" -c "SELECT count(*)::text FROM $table;" 2>/dev/null)"
-  [ "$got" = "$want" ] \
-    && ok "$table: $got" \
-    || bad "$table: $got, expected $want"
-done
+WANT_TABLES="$(m table_counts_tables)"
+MANIFEST_VERSION="$(m manifest_version)"
+EXHAUSTIVE=0
+RECONCILED="NOT EXHAUSTIVE"
+if [ -n "$WANT_TABLES" ]; then
+  EXHAUSTIVE=1
+  RECONCILED="EXHAUSTIVE — but it FAILED, see section 2"
+  EXCLUDED="$(m excluded_tables)"
+  case "$EXCLUDED" in
+    *[!A-Za-z0-9_.\ ]*) bad "excluded_tables in the manifest is not a list of table names: '$EXCLUDED'"; EXCLUDED="" ;;
+  esac
+  if [ -n "$EXCLUDED" ]; then
+    EXCLUDED_SQL="string_to_array('$EXCLUDED', ' ')"
+  else
+    EXCLUDED_SQL="ARRAY[]::text[]"
+  fi
+
+  WANT_COUNTS="$(manifest_table_counts)"
+  PARSED="$(printf '%s\n' "$WANT_COUNTS" | grep -c . || true)"
+  GOT_RAW="$(restored_table_counts "$EXCLUDED_SQL")"
+  GOT_RC=$?
+  GOT_COUNTS="$(printf '%s\n' "$GOT_RAW" | grep "^\".*\"$TAB[0-9][0-9]*\$" || true)"
+
+  if [ "$PARSED" != "$WANT_TABLES" ]; then
+    bad "read $PARSED of the $WANT_TABLES table counts this manifest declares — it cannot be parsed in full here, so no table can be called reconciled (install jq or python3)"
+  elif [ "$GOT_RC" -ne 0 ]; then
+    bad "could not count every restored table: $(printf '%s\n' "$GOT_RAW" | grep -v "^\".*\"$TAB" | head -1)"
+  else
+    # One pass over both lists. Counts compare as strings: exact, no rounding.
+    RESULT="$( { printf '%s\n' "$WANT_COUNTS"; echo "@@restored@@"; printf '%s\n' "$GOT_COUNTS"; } | awk -F "$TAB" '
+      $0 == "@@restored@@" { side = 1; next }
+      $0 == ""             { next }
+      side == 0 { want[$1] = $2; order[++n] = $1; next }
+      { got[$1] = $2; if (!($1 in want)) extra[++e] = $1 }
+      END {
+        for (i = 1; i <= n; i++) {
+          k = order[i]
+          if (!(k in got))               print "MISSING\t" k "\t" want[k]
+          else if (got[k] "" != want[k] "") print "DIFF\t" k "\t" got[k] "\t" want[k]
+          else                           matched++
+        }
+        for (i = 1; i <= e; i++) print "EXTRA\t" extra[i] "\t" got[extra[i]]
+        print "MATCHED\t" (matched + 0)
+      }')"
+    MATCHED=0; MISMATCHED=0
+    while IFS="$TAB" read -r kind key a b; do
+      case "$kind" in
+        MISSING) bad "$(unq "$key"): the backup had $a row(s); the table is MISSING after the restore"; MISMATCHED=$((MISMATCHED+1)) ;;
+        DIFF)    bad "$(unq "$key"): $a row(s) after the restore, the backup's snapshot had $b"; MISMATCHED=$((MISMATCHED+1)) ;;
+        EXTRA)   bad "$(unq "$key"): present after the restore ($a rows) but not in the backup's table_counts — nothing to reconcile it against"; MISMATCHED=$((MISMATCHED+1)) ;;
+        MATCHED) MATCHED="$key" ;;
+      esac
+    done <<EOF
+$RESULT
+EOF
+    if [ "$MISMATCHED" -eq 0 ] && [ "$MATCHED" = "$WANT_TABLES" ]; then
+      ok "every one of the $WANT_TABLES tables in the backup's snapshot came back with exactly its row count ($(m table_counts_rows) rows)"
+      RECONCILED="EXHAUSTIVE — all $WANT_TABLES tables in the backup's snapshot matched exactly"
+    fi
+  fi
+
+  # Tables whose data the backup's scope left out: not in table_counts, by
+  # design. Their schema must still be back. leads returns through the
+  # authoritative extract, whose row count the manifest records.
+  for t in $EXCLUDED; do
+    exists="$("${Q[@]}" -c "SELECT (to_regclass('$t') IS NOT NULL)::text;" 2>/dev/null)"
+    if [ "$exists" != "true" ]; then
+      bad "$t: the table is MISSING after the restore (its data was excluded by scope, but its schema is in the dump)"
+      continue
+    fi
+    want="$(m "expected_${t#public.}")"
+    # -q: without it psql 16 prints the SET's command tag ahead of the count.
+    got="$("${Q[@]}" -q -c "SET row_security = off; SELECT count(*)::text FROM ONLY $t;" 2>/dev/null)"
+    if [ -n "$want" ] && [ "$t" = "public.${t#public.}" ]; then
+      [ "$got" = "$want" ] \
+        && ok "$t: $got row(s), the authoritative extract's exact count (data otherwise excluded by scope)" \
+        || bad "$t: ${got:-none} row(s), the authoritative extract held $want"
+    else
+      echo "  NOTE  $t: ${got:-?} row(s); data excluded by the backup's scope (rebuildable), not reconciled"
+    fi
+  done
+elif [ "${MANIFEST_VERSION:-1}" != "1" ]; then
+  bad "manifest_version is '$MANIFEST_VERSION' but there is no table_counts_tables — the manifest is damaged or was not parsed; row reconciliation is impossible"
+  RECONCILED="IMPOSSIBLE — damaged manifest"
+else
+  echo "  WARN  This manifest predates per-table counts (manifest_version 1), so only"
+  echo "        tenants, users, clients and leads can be compared — and their counts"
+  echo "        were taken outside the dump's snapshot. Row reconciliation is NOT"
+  echo "        EXHAUSTIVE: a restore that lost rows in any other table passes here."
+  for table in tenants users clients leads; do
+    want="$(m "expected_$table")"
+    [ -n "$want" ] || continue
+    got="$("${Q[@]}" -c "SELECT count(*)::text FROM $table;" 2>/dev/null)"
+    [ "$got" = "$want" ] \
+      && ok "$table: $got" \
+      || bad "$table: $got, expected $want"
+  done
+  RECONCILED="NOT EXHAUSTIVE — a manifest_version 1 manifest names only tenants, users, clients and leads; take a new backup with the current backup-postgres.sh to reconcile every table"
+fi
 
 # ── 3. Tenant isolation survived ───────────────────────────────────────────
 #
@@ -308,9 +476,68 @@ EMPTY_TABLES="$("${Q[@]}" -c "
   && ok "$EMPTY_TABLES tables present" \
   || bad "only $EMPTY_TABLES tables present — the restore looks truncated"
 
+# ── 8. Constraints, indexes and referential integrity (REC-03) ─────────────
+#
+# pg_restore creates every foreign key after the data and VALIDATES it on the
+# way in, so a restored FK that is not validated is one the source never
+# validated either (0122 adds lead_response_events_command_fk NOT VALID, and
+# pg_dump preserves NOT VALID). The manifest names those; any other unvalidated
+# FK fails. A constraint or index that did not come back fails on its count —
+# its table's rows can all be there while the database no longer refuses what
+# the source refused.
+
 echo
+echo "8. Constraints and indexes"
+GOT_NV="$("${Q[@]}" -c "SELECT coalesce(string_agg(c.relname || '.' || k.conname, ' ' ORDER BY c.relname, k.conname), '') $CONSTRAINTS_SQL AND k.contype = 'f' AND NOT k.convalidated;" 2>/dev/null)"
+if [ "$EXHAUSTIVE" = 1 ]; then
+  for pair in "constraints_public:constraints:$CONSTRAINTS_SQL" \
+              "foreign_keys_public:foreign keys:$CONSTRAINTS_SQL AND k.contype = 'f'" \
+              "indexes_public:indexes:$INDEXES_SQL"; do
+    key="${pair%%:*}"; rest="${pair#*:}"; label="${rest%%:*}"; from="${rest#*:}"
+    want="$(m "$key")"
+    got="$("${Q[@]}" -c "SELECT count(*)::text $from;" 2>/dev/null)"
+    if [ -z "$want" ]; then
+      bad "the manifest has no $key — cannot compare $label"
+    elif [ "$got" = "$want" ]; then
+      ok "$got $label in public, as backed up"
+    else
+      bad "${got:-?} $label in public, but the backup had $want — the restore did not bring the schema back whole"
+    fi
+  done
+  WANT_NV="$(m foreign_keys_not_validated)"
+  if [ "$GOT_NV" = "$WANT_NV" ]; then
+    if [ -z "$GOT_NV" ]; then
+      ok "every foreign key is validated: referential integrity was enforced as the data came back"
+    else
+      ok "every foreign key the source validated is validated; NOT VALID exactly as in the source: $GOT_NV"
+    fi
+  else
+    for fk in $GOT_NV; do
+      case " $WANT_NV " in
+        *" $fk "*) ;;
+        *) bad "foreign key $fk is NOT VALIDATED after the restore, but the source had validated it — referential integrity of its rows is unproven" ;;
+      esac
+    done
+    for fk in $WANT_NV; do
+      case " $GOT_NV " in
+        *" $fk "*) ;;
+        *) bad "foreign key $fk was NOT VALID in the source; after the restore it is validated or gone" ;;
+      esac
+    done
+  fi
+else
+  echo "  WARN  This manifest predates constraint and index counts; not compared."
+  [ -n "$GOT_NV" ] && echo "  NOTE  foreign keys not validated after the restore: $GOT_NV"
+fi
+
+echo
+echo "  Row reconciliation: $RECONCILED."
 if [ "$FAIL" -eq 0 ]; then
-  echo "  $PASS checks passed. RESTORE VERIFIED."
+  if [ "$EXHAUSTIVE" = 1 ]; then
+    echo "  $PASS checks passed. RESTORE VERIFIED."
+  else
+    echo "  $PASS checks passed. RESTORE VERIFIED, BUT NOT EXHAUSTIVELY — see 'Row reconciliation' above."
+  fi
   echo
   exit 0
 fi
