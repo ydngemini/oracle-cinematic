@@ -152,6 +152,53 @@ def test_recovery_mode_block_is_not_sent_and_not_unknown(env, monkeypatch):
     assert _statuses(env) == ["queued"]
 
 
+def _real_smtp_sender(monkeypatch):
+    """The real command_providers.send_smtp_email, with the mail server a
+    tripwire: what it refuses, it refuses before connecting."""
+    import command_providers
+    import commands_api
+    import smtp_mailer
+
+    reached = []
+
+    def server(**_k):
+        reached.append("smtp")
+        raise AssertionError("the mail server must not be reached")
+
+    monkeypatch.setattr(smtp_mailer, "send", server)
+    monkeypatch.setattr(commands_api, "_resolve_email_provider",
+                        lambda: (command_providers.send_smtp_email, "smtp"))
+    return reached
+
+
+def test_an_email_refused_before_the_mail_server_is_failed_not_delivery_unknown(env, monkeypatch):
+    """PR #147 review: an address send_smtp_email refuses before connecting was
+    a plain ProviderRequestError, so the outbox filed a definitely-unsent email
+    as 'delivery unknown' (status 'sending', never resent, never failed)."""
+    monkeypatch.delenv("ORACLE_RECOVERY_MODE", raising=False)
+    monkeypatch.setitem(ROW, "to_email", "not-an-address")
+    reached = _real_smtp_sender(monkeypatch)
+    assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "failed"}   # final: the job does not retry
+    assert _statuses(env) == ["failed"]
+    error = next(args[3] for sql, args in env.executed if "SET status=$3" in sql)
+    assert error.startswith("Not sent:") and email_outbox.UNKNOWN_DELIVERY not in error
+    assert reached == []
+
+
+def test_the_real_smtp_sender_in_recovery_mode_is_still_held_for_later(env, monkeypatch):
+    """The send adapter's recovery-mode refusal is a RecoveryModeBlocked
+    subclass now (so the command worker can tell it is certain): the outbox
+    must still hold the email in the queue for after recovery, not fail it."""
+    import recovery_mode
+
+    monkeypatch.setenv("ORACLE_RECOVERY_MODE", "1")
+    reached = _real_smtp_sender(monkeypatch)
+    with pytest.raises(recovery_mode.RecoveryModeBlocked):
+        asyncio.run(email_outbox.deliver(T, "o1"))
+    assert _statuses(env) == ["queued"]
+    assert reached == []
+
+
 def test_an_opt_out_after_queueing_blocks_the_send(env, monkeypatch):
     """CONTRACT C3.4: crm.send_message checked the opt-out list when the row was
     queued; deliver re-checks at execution, so an unsubscribe in between (from

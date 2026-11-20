@@ -54,7 +54,9 @@ from audit_ledger import AuditCategory, ledger
 from automation_jobs import JobApprovalError, enqueue_job_in_tx, register_handler
 from command_providers import (
     ProviderConfigurationError,
+    ProviderRefusedBeforeSend,
     ProviderRejectedError,
+    RecoveryModeRefusedBeforeSend,
     abort_twilio_call,
     create_google_calendar_event,
     place_custom_http_call,
@@ -89,11 +91,35 @@ _mind_service: Optional["MindService"] = None
 def _provider_submission_is_uncertain(
     submission_started: bool,
     exc: Exception,
+    *,
+    provider_returned: bool = False,
 ) -> bool:
-    """Return true only when a provider might have accepted the side effect."""
-    return submission_started and not isinstance(
+    """Return true only when a provider might have accepted the side effect.
+
+    Certain ("not sent", recorded 'failed'): a configuration error, a definite
+    provider rejection, and a refusal an adapter makes before any network I/O
+    (ProviderRefusedBeforeSend, RecoveryModeRefusedBeforeSend). Before those
+    two existed, an invalid target or a recovery-mode refusal raised after
+    submission_started was filed as reconciliation_required, and the
+    recovery-mode one came back as a success-shaped result, so the job
+    "succeeded" and was never dead-lettered (PR #147 review, L09-16).
+
+    `provider_returned`: the provider call itself returned, so the side effect
+    exists. Whatever fails after that (a state write, then a hang-up that is
+    refused) can never make it "not sent".
+    """
+    if not submission_started:
+        return False
+    if provider_returned:
+        return True
+    return not isinstance(
         exc,
-        (ProviderConfigurationError, ProviderRejectedError),
+        (
+            ProviderConfigurationError,
+            ProviderRejectedError,
+            ProviderRefusedBeforeSend,
+            RecoveryModeRefusedBeforeSend,
+        ),
     )
 
 
@@ -704,6 +730,10 @@ def _validate_command_payload(
             raise ValueError("EMAIL target requires a valid email")
         if not str(draft.get("subject") or "").strip():
             raise ValueError("EMAIL draft requires subject")
+        if "\r" in str(draft["subject"]) or "\n" in str(draft["subject"]):
+            # A mail header cannot carry a line break; refuse it now rather
+            # than at send time (L09-16 review).
+            raise ValueError("EMAIL subject must be a single line")
         if not str(draft.get("body") or "").strip():
             raise ValueError("EMAIL draft requires body")
         if len(str(draft["subject"])) > 200 or len(str(draft["body"])) > 20_000:
@@ -3912,6 +3942,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
 
     await reporter.progress(15, "compliance check")
     submission_started = False
+    # Assigned only by a provider call that returned: every branch below sets
+    # it from the adapter's result and nothing else. A failure after that point
+    # is never "not sent" (see _provider_submission_is_uncertain).
+    provider_result = None
     try:
         # Approved while the brokerage was entitled is not enough: a send
         # queued (or scheduled) before the subscription lapsed must not go out
@@ -4277,7 +4311,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         logger.warning("Twilio call %s already managed by its early-bound state; worker state write skipped",
                                        provider_result.reference, exc_info=True)
                 except ProviderConfigurationError:
-                    if not os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
+                    # Never a second rail once Twilio returned a call: that
+                    # would place the same approved call twice.
+                    if provider_result is not None or not os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
                         raise
                     # A custom call URL is configured as the fallback; let its own
                     # ProviderConfigurationError (if any) propagate instead of
@@ -4306,7 +4342,13 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 event_draft, access_token=google_token
             )
     except Exception as exc:
-        uncertain = _provider_submission_is_uncertain(submission_started, exc)
+        # A certain failure is recorded 'failed' and re-raised, so the job
+        # worker sees it: a recovery-mode refusal is dead-lettered as
+        # RECOVERY_MODE_BLOCKED and a ProviderRefusedBeforeSend is terminal,
+        # instead of the success-shaped "reconciliation_required" result below.
+        uncertain = _provider_submission_is_uncertain(
+            submission_started, exc, provider_returned=provider_result is not None
+        )
         try:
             async with tenant_tx(ctx) as conn:
                 await conn.execute(

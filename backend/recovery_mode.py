@@ -199,6 +199,7 @@ def guard(
     detail: Optional[str] = None,
     kind: Optional[str] = None,
     destination: Optional[str] = None,
+    refusal: type[RecoveryModeBlocked] = RecoveryModeBlocked,
 ) -> None:
     """Refuse `action` when in recovery mode. A no-op in normal operation.
 
@@ -209,6 +210,13 @@ def guard(
     `kind` + `destination` are passed only by the message-send and call-place
     paths; they let an explicitly allowlisted demo recipient through on a
     non-production instance (see DEMO_ALLOWLIST_ENV_VAR above).
+
+    `refusal` is the RecoveryModeBlocked subclass to raise. The send adapters
+    pass command_providers.RecoveryModeRefusedBeforeSend from their first
+    statement, which tells the command worker the email, text, call or invite
+    was definitely not sent (PR #147 review). Every other caller keeps the
+    plain type: a guard that refuses a hang-up AFTER a call was placed proves
+    nothing about that call.
     """
     if not is_recovery_mode():
         return
@@ -220,7 +228,7 @@ def guard(
         )
         return
     log.warning("RECOVERY MODE: refused to %s", action)
-    raise RecoveryModeBlocked(action, detail)
+    raise refusal(action, detail)
 
 
 def describe() -> dict:

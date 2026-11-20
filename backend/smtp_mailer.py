@@ -43,6 +43,11 @@ class SmtpSendError(RuntimeError):
     """The server accepted the connection but refused the message."""
 
 
+class SmtpMessageInvalid(SmtpSendError):
+    """The message could not be built (a line break in a header, say), so no
+    connection was made and nothing was sent: a definite "not sent"."""
+
+
 class SmtpUncertainError(SmtpSendError):
     """The connection failed after the message may have been handed over.
 
@@ -290,16 +295,21 @@ def send(
     yet" apart from "set up but refused"."""
     recovery_mode.guard(f"send email to {recipient}")
     settings = resolve_settings(credentials)
-    message = build_message(
-        sender=settings["sender"],
-        sender_name=settings["sender_name"],
-        recipient=recipient,
-        subject=subject,
-        text=text,
-        html=html,
-        reply_to=reply_to,
-        list_unsubscribe_url=list_unsubscribe_url,
-    )
+    try:
+        message = build_message(
+            sender=settings["sender"],
+            sender_name=settings["sender_name"],
+            recipient=recipient,
+            subject=subject,
+            text=text,
+            html=html,
+            reply_to=reply_to,
+            list_unsubscribe_url=list_unsubscribe_url,
+        )
+    except (ValueError, TypeError) as exc:
+        # The email package refuses a header with a line break (and similar)
+        # here, before any connection (L09-16 review).
+        raise SmtpMessageInvalid(f"the message could not be built: {exc}") from exc
 
     # Phase 1 — connect, STARTTLS, login. Nothing has been handed over yet,
     # so every failure here is a definite "not sent".
