@@ -131,24 +131,51 @@ if [ -z "$CURRENT_HEAD" ]; then
   say "(pass --from <current-manifest.json> to use the deployed release instead)"
 fi
 
+# The gap is the SET of migrations the live release has and the target does
+# not (35-06 F1). A filename range (target_head < name <= current_head) missed a
+# migration merged late with a lower number: 0144 landed while the head was
+# 0145, so a rollback across it saw an empty gap although the classifier calls
+# 0144 UNKNOWN. Manifests now record their migration list; for an older target
+# manifest without one, the range is used only when the counts prove it is the
+# whole set, and refused otherwise.
 VERDICT_JSON="$(
-  cd "$REPO/backend" && python3 - "$TARGET_HEAD" "$CURRENT_HEAD" <<'PY' 2>/dev/null
+  cd "$REPO/backend" && python3 - "$TO" "${FROM:-}" "$TARGET_HEAD" "$CURRENT_HEAD" <<'PY' 2>/dev/null
 import json, pathlib, sys
 sys.path.insert(0, ".")
 from migration_safety import classify_files, rollback_is_safe
 
-target_head, current_head = sys.argv[1], sys.argv[2]
-paths = sorted(pathlib.Path("db/migrations").glob("*.sql"))
-# Everything strictly AFTER the target's head, up to and including the current.
-gap = [p for p in paths if target_head < p.name <= current_head]
-verdicts = classify_files(gap)
+to_path, from_path, target_head, current_head = sys.argv[1:5]
+to_manifest = json.load(open(to_path))
+from_manifest = json.load(open(from_path)) if from_path else {}
+on_disk = sorted(p.name for p in pathlib.Path("db/migrations").glob("*.sql"))
+current = from_manifest.get("migrations") or (on_disk if not from_path else None)
+target = to_manifest.get("migrations")
+note = ""
+if target is not None and current is not None:
+    gap_names = sorted(set(current) - set(target))
+    method = "set"
+else:
+    gap_names = [n for n in on_disk if target_head < n <= current_head]
+    method = "range"
+    to_count, from_count = to_manifest.get("migration_count"), from_manifest.get("migration_count")
+    if from_count is None and not from_path:
+        from_count = len(on_disk)
+    if not isinstance(to_count, int) or not isinstance(from_count, int) or from_count - to_count != len(gap_names):
+        print(json.dumps({"count": len(gap_names), "safe": False, "method": method, "files": gap_names,
+                          "blocking": [f"the migration set between the two releases cannot be proven: "
+                                       f"{from_count} - {to_count} migrations recorded, {len(gap_names)} in the "
+                                       f"filename range (a late, lower-numbered migration?) — rebuild the manifests "
+                                       f"with their migration lists"]}))
+        raise SystemExit(0)
+missing = [n for n in gap_names if not (pathlib.Path("db/migrations") / n).exists()]
+if missing:
+    print(json.dumps({"count": len(gap_names), "safe": False, "method": method, "files": gap_names,
+                      "blocking": [f"{n}: not in this checkout, so it cannot be classified" for n in missing]}))
+    raise SystemExit(0)
+verdicts = classify_files([pathlib.Path("db/migrations") / n for n in gap_names])
 safe, blocking = rollback_is_safe(verdicts)
-print(json.dumps({
-    "count": len(gap),
-    "safe": safe,
-    "blocking": blocking,
-    "files": [p.name for p in gap],
-}))
+print(json.dumps({"count": len(gap_names), "safe": safe, "blocking": blocking, "method": method,
+                  "files": gap_names}))
 PY
 )"
 
