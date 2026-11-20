@@ -85,12 +85,15 @@ def test_the_drill_waits_for_the_real_server_not_the_init_server():
 _SEPARATORS = {"||", "&&", ";", ";;", "|", "|&", "&", "{", "}", "(", ")"}
 _DOCKER_GLOBAL_VALUE_OPTS = {"-H", "--host", "-c", "--context", "--config",
                              "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"}
-# `docker run` long options that take no value; any other `--x` without `=`
-# takes the next word.
+# `docker run` long options that take no value (Docker 28 `docker run --help`).
+# Any other `--x` without `=` takes the next word unless that word is itself an
+# option, so a boolean flag missing from this list cannot hide the one after it.
 _RUN_BOOLEAN_LONG = {"--rm", "--detach", "--interactive", "--tty", "--init",
                      "--privileged", "--read-only", "--no-healthcheck",
                      "--oom-kill-disable", "--sig-proxy", "--disable-content-trust",
-                     "--quiet"}
+                     "--quiet", "--use-api-socket", "--help"}
+# Short flags that take no value: -d, -i, -t, -q (and -P, read as a publish).
+_RUN_BOOLEAN_SHORT = "ditq"
 
 
 def _publish_options(args: list[str]) -> list[str]:
@@ -106,7 +109,9 @@ def _publish_options(args: list[str]) -> list[str]:
             break
         if tok.startswith("--"):
             name, eq, value = tok.partition("=")
-            if not eq and name not in _RUN_BOOLEAN_LONG and name != "--publish-all":
+            takes_next = (not eq and name not in _RUN_BOOLEAN_LONG
+                          and name != "--publish-all" and not nxt.startswith("-"))
+            if takes_next:
                 value = nxt
             if name == "--publish":
                 found.append(value)
@@ -114,17 +119,17 @@ def _publish_options(args: list[str]) -> list[str]:
                 found.append("--publish-all")
             elif name in ("--network", "--net") and value == "host":
                 found.append("--network=host")
-            i += 1 if (eq or name in _RUN_BOOLEAN_LONG or name == "--publish-all") else 2
+            i += 2 if takes_next else 1
             continue
         if tok.startswith("-") and len(tok) > 1:
-            # A cluster of short flags: -d, -i, -t and -P take no value; the
-            # first other letter takes the rest of the word, or the next word.
+            # A cluster of short flags: -d, -i, -t, -q and -P take no value;
+            # the first other letter takes the rest of the word, or the next word.
             took_next = False
             for j, ch in enumerate(tok[1:], start=1):
                 if ch == "P":
                     found.append("-P")
                     continue
-                if ch in "dit":
+                if ch in _RUN_BOOLEAN_SHORT:
                     continue
                 rest = tok[j + 1:]
                 took_next = not rest
@@ -151,7 +156,7 @@ def _strip_comment(line: str) -> str:
                 quote = None
         elif ch in "'\"":
             quote = ch
-        elif ch == "#" and (i == 0 or line[i - 1] in " \t;&|(){}"):
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t;&|()"):
             return line[:i]
         i += 1
     return line
@@ -163,8 +168,10 @@ def _docker_run_args(script: str) -> list[list[str]]:
 
     Each command is read from where `docker` starts and only as far as needed:
     a `docker exec ... -c "` that opens a multi-line SQL string is recognised
-    as exec and left alone. A run|create whose words cannot be read fails the
-    test rather than being skipped."""
+    as exec and left alone, and so is `docker` inside a quoted message. A
+    run|create whose words cannot be read fails the test rather than being
+    skipped. Redirections (`2>/dev/null`, `>&2`, `&>log`) are dropped wherever
+    they stand: bash allows them before the options too."""
     import re
     import shlex
 
@@ -172,7 +179,9 @@ def _docker_run_args(script: str) -> list[list[str]]:
     for line in script.replace("\\\n", " ").splitlines():
         line = _strip_comment(line)
         for match in re.finditer(r"(?<![\w/.$-])(?:[\w./-]*/)?docker(?![\w.-])", line):
-            lexer = shlex.shlex(line[match.start():], posix=True, punctuation_chars=True)
+            # An fd number written onto its redirection (`2>`) is part of it.
+            text = re.sub(r"(?<=\s)\d+(?=[<>])", "", line[match.start():])
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
             lexer.whitespace_split = True
             lexer.commenters = ""
             words = iter(lexer)
@@ -185,12 +194,18 @@ def _docker_run_args(script: str) -> list[list[str]]:
                     word = next(words, "")
                 if word == "container":
                     word = next(words, "")
-                if word not in ("run", "create"):
-                    continue
-                args = []
+            except ValueError:
+                continue                  # not a command (a quoted message)
+            if word not in ("run", "create"):
+                continue
+            args = []
+            try:
                 for word in words:
                     if word in _SEPARATORS:
                         break
+                    if set(word) <= set("<>&|") and set(word) & set("<>"):
+                        next(words, "")                       # and its target
+                        continue
                     args.append(word)
             except ValueError as exc:
                 raise AssertionError(f"cannot read this docker command: {line.strip()!r}") from exc
@@ -227,6 +242,18 @@ def test_the_publish_reader_sees_the_spellings_in_its_probe():
         ("/usr/bin/docker run -p 1:2 img", ["1:2"]),
         ("docker run -d -e X=a#b -p 56379:6379 img", ["56379:6379"]),
         ("docker run -d -e 'A=1' --name n -v /a:/b -p 1:2 img", ["1:2"]),
+        # Boolean flags must not swallow the option after them (review r2).
+        ('docker run -d --name x -p "127.0.0.1::6379" -q -p 0.0.0.0:6379:6379 img',
+         ["127.0.0.1::6379", "0.0.0.0:6379:6379"]),
+        ("docker run -d --use-api-socket -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
+        ("docker run -dq --network host img", ["--network=host"]),
+        ("docker run -d --some-future-flag -p 1:2 img", ["1:2"]),
+        # A redirection before the options does not end them.
+        ("docker run 2>/dev/null -d -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
+        ("docker run >/dev/null -p 1:2 img", ["1:2"]),
+        ("docker run &>/tmp/log -p 1:2 img 2>&1", ["1:2"]),
+        # ${#...} is a length, not a comment.
+        ("docker run -e N=${#ARR[@]} -p 0.0.0.0:6379:6379 img", ["0.0.0.0:6379:6379"]),
     ]:
         assert _published_ports(line) == expected, line
 
@@ -241,6 +268,16 @@ def test_the_publish_reader_reads_only_dockers_own_options():
     assert _published_ports("docker run -d img  # -p 1:2 was the old way") == []
     assert _published_ports("docker run -d --publish-all=false img") == []
     assert _published_ports("docker port c 6379/tcp; docker exec c redis-cli -p 6379 ping") == []
+    # `docker` in a quoted message is not a command and must not fail the test.
+    assert _published_ports('echo "  could not start docker"') == []
+    assert _published_ports('echo "is docker running?"; docker run -p 127.0.0.1::1 img') == ["127.0.0.1::1"]
+    # A run whose words cannot be read still fails loudly.
+    try:
+        _published_ports('eval "docker run -d -p 56379:6379 img"')
+    except AssertionError:
+        pass
+    else:
+        pytest.fail("an unreadable docker run was skipped")
 
 
 def test_the_drill_publishes_no_fixed_host_port():
