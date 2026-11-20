@@ -167,7 +167,7 @@ role neither superuser, BYPASSRLS nor owner, no TEMP.
 | WEB-3 | The SPA on the DO static site ships no response headers (nginx.conf never applies) | **Fixed** — `web` now runs as the frontend image's nginx service (CSP incl. `frame-ancestors 'none'`, XFO, HSTS, nosniff); build-time `<meta>` CSP as a second layer; inline theme script moved to a file; smoke test asserts the headers after every deploy |
 | WEB-5 | WebSocket `OBSERVE` wrote unbounded caller-keyed text into a global cross-tenant store; no frame limit or rate | Fixed — removed; 1 MiB frames; 10 frames/s per socket |
 | AUD-1 | The audit middleware attributed only Bearer tokens; production browsers use the cookie → every browser mutation unattributed | Fixed |
-| SUP-1 | Python dependencies not locked/hashed | **Closed** — `backend/requirements.txt` is a hash-locked pip-compile of `requirements.in`, installed with `--require-hashes` and scanned in full (L19-23, audit 35-01) |
+| SUP-1 | Python dependencies not locked/hashed | **Closed in the repository** (not yet in a deployed image) — `backend/requirements.txt` is a hash-locked pip-compile of `requirements.in`, installed with `--require-hashes` and scanned in full (L19-23, audit 35-01) |
 | CI-1 | Environment protection rules not verifiable from the repo | **External** |
 
 ### Low / informational (abbreviated)

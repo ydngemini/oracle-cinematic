@@ -104,7 +104,7 @@
     {
       "id": "dependency_supply_chain_gate",
       "pass": true,
-      "evidence": "pip-audit --strict, Trivy, SBOM, gitleaks, bandit baseline, SHA-pinned actions; SUP-1 closed: hash-locked Python dependencies installed with --require-hashes (L19-23)"
+      "evidence": "pip-audit --strict, Trivy, SBOM, gitleaks, bandit baseline, SHA-pinned actions; SUP-1 closed in the repository (not yet in a deployed image): hash-locked Python dependencies installed with --require-hashes (L19-23)"
     },
     {
       "id": "staging_dast_no_blocker",
