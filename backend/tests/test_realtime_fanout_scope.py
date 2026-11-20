@@ -454,8 +454,6 @@ def test_scoped_frames_cross_replicas_to_the_named_agents_only(hub, monkeypatch)
 
     class Pool:
         def acquire(self):
-            pool = self
-
             class Ctx:
                 async def __aenter__(self_inner):
                     return Conn()

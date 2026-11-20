@@ -5684,6 +5684,29 @@ next_task: "35-06 main: cross_version CI job (previous app boot + previous live 
 updated: 2026-11-20
 ```
 
+#### L19-27 static gate phase 2: unused locals (F841) and redefinitions (F811), every finding read and classified (external audit 35-03 phase 2)
+```yaml
+id: L19-27
+status: tests_pass
+env: local
+evidence_shas: [a7d4caf]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/tests/test_static_gate.py, backend/requirements-test.txt, .github/workflows/ci.yml, backend/migration_safety.py, backend/state_compliance/models.py, backend/telephony_api.py, backend/tests/test_ai_tools_read.py, backend/tests/test_business_number_connect.py, backend/tests/test_mls_backfill_resume.py, backend/tests/test_harvester_mailing_zip_absentee.py, "backend/harvesters/*.py", "and the dead-binding files listed in the PR"]
+tests_run:
+  - {cmd: "ruff with F841+F811 over a7d4caf's backend", result: "red: 54 findings (29 F841, 25 F811); phase-1 rules alone pass", date: 2026-11-20}
+  - {cmd: "after: ruff check . ; unit tests of the changed modules (33 .py files in the diff); test_static_gate; harvester tests", result: "All checks passed; 1150 + 1351 passed. Classified: 4 real (2 weak tests — the ai_tools radius-before-ZIP assertion matched SQL both tiers contain, and the caller-ID anti-spoofing test ran a copy of the rule instead of configure_route (plus its sibling); migration_safety's precomputed 'replaced' set now used; a fastapi import shadowed by a model field), 32 dead (bindings dropped, calls that do work kept), 18 intended with a reasoned noqa (pytest fixtures imported from another module). Also: _run_sync leaked ORACLE_INGEST_TENANT_ID into later tests", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed", result: "the implementer had 'fixed' two harvesters (al_jefferson, mo_jackson) to compare the mailing ZIP for absentee detection; the reviewer measured 8000 live rows per county (read-only public ArcGIS) and the rule flagged owner-occupants (AL 47 of 2595 same-street-line parcels, the AL ZIP field being a municipality code; MO 87 of 3164, 64 with the same city on both sides). Reverted: the ZIP and city reads are dead and dropped with the measurement cited; the test now asserts a ZIP alone never flips an owner to absentee. onboard_ai_agent keeps its original SQL. The gate test rejects prefix ignores (F8, F84). Comments say phases 1-2", date: 2026-11-20}
+  - {cmd: "independent review r2 + full backend suite", result: "APPROVE (mutation-checked the rewritten tests); 7066 passed, 0 failed. Low notes: the gate test does not catch ignore=ALL, extend-ignore or a file-level ruff noqa (none exist); OUT_FIELDS still fetches the unused mailing city/ZIP columns", date: 2026-11-20}
+authz_checked: "No access change. Two test files now exercise the real route (configure_route) instead of a copy of its rule; no production behaviour changes except removing dead reads."
+blockers:
+  - "A cross-municipality absentee rule (same street line, another town) needs a county-wide street-line index; not attempted."
+  - "Wider families (B, UP, SIM) are later phases; B008 (509) and F401 (324) dominate and need their own triage."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "35-03 phase 3: F401 unused imports (324) in bounded batches, then B023/B904."
+updated: 2026-11-20
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

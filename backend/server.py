@@ -1598,7 +1598,12 @@ async def websocket_endpoint(websocket: WebSocket):
     # 2026-11-16): see make_engine_publisher.
     _publish_to_tenant = make_engine_publisher(tenant_id)
 
-    engine = await tenant_engines.acquire(
+    # Called for its claim, not its value: acquire() takes this socket's
+    # reference on the tenant engine (starting it if it is the first), and the
+    # finally block below releases it. Nothing on this socket calls the engine
+    # directly, so the returned engine was bound to a name nothing read (ruff
+    # F841, audit 35-03 phase 2).
+    await tenant_engines.acquire(
         tenant_id,
         factory=lambda: WorkflowEngine(
             websocket=None,

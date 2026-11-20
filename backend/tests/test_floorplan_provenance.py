@@ -288,7 +288,7 @@ def test_get_floorplan_unknown_revision_is_404(monkeypatch):
 def test_get_floorplan_revision_with_no_plan_at_all_is_404_not_empty(monkeypatch):
     """Distinguishes 'no plan yet' (empty-state, 200) from 'this revision link
     is stale' (404) — the drawer renders those very differently."""
-    conn = _patch(monkeypatch, _FakeConn())
+    _patch(monkeypatch, _FakeConn())  # an empty store: no plan at all
 
     with pytest.raises(fp.HTTPException) as excinfo:
         asyncio.run(fp.get_floorplan(lead_id=LEAD_ID, listing_id=None, revision=1, ctx=CTX))
@@ -299,7 +299,7 @@ def test_revision_response_derives_ai_disclosure_from_embedded_provenance(monkey
     """The revisions table has no ai_generated/model_version columns of its
     own — the disclosure must come from the document's own embedded
     provenance, or a historical AI-generated plan would read as human-made."""
-    conn = _patch(monkeypatch, _FakeConn())
+    _patch(monkeypatch, _FakeConn())  # the store the save writes and the read-back reads
     ai_document = dict(MINIMAL_DOCUMENT)
     ai_document["provenance"] = {
         "source": "ai_vision", "ai_generated": True, "model_version": "cv-1.0",

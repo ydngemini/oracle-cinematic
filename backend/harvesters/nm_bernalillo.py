@@ -48,10 +48,11 @@ class NewMexicoBernalilloHarvester(ArcGISHarvester):
         if not owner:
             return None
 
-        # Absentee detection: compare situs zip to owner mailing zip.
+        # Absentee detection: compare situs zip to owner mailing zip. OWNADD
+        # was read here and never compared (ruff F841, audit 35-03 phase 2);
+        # this source's rule is the ZIP alone, so the read is gone.
         situs_zip = str(row.get("SITUSZIP") or "").strip()
         own_zip = str(row.get("OWNZIPCODE") or "").strip()
-        own_addr = str(row.get("OWNADD") or "").strip()
         absentee = bool(own_zip) and own_zip != situs_zip
 
         # TOTVALUE = LANDVALUE + IMPTVALUE (both always present in this layer).

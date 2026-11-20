@@ -907,5 +907,10 @@ class TelnyxMessagingProvider(MessagingProvider):
             except APIStatusError as exc:
                 raise ProviderRejectedError(f"Telnyx rejected the number assignment: {exc}") from exc
 
-        response = await asyncio.wait_for(asyncio.to_thread(_assign), timeout=20.0)
+        # The response is not read: Telnyx completes an assignment
+        # asynchronously, so what create() returns is not yet the assignment's
+        # status. The caller reads ASSIGNED from get_number_campaign()
+        # afterwards (messaging_data, 25.2). The binding was never used (ruff
+        # F841, audit 35-03 phase 2).
+        await asyncio.wait_for(asyncio.to_thread(_assign), timeout=20.0)
         return ProviderResult("telnyx_number_campaign", phone_number, "assigned", {"campaign_id": campaign_id})

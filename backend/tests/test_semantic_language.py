@@ -216,14 +216,14 @@ def _contact_refused(turn):
 
 class TestTurns:
     @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
-    def test_a_correct_parser_is_enforced_as_stated(self, case, chat, monkeypatch):
+    def test_a_correct_parser_is_enforced_as_stated(self, case, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         turn = _turn(case.text, _LabelGW(CASES), monkeypatch)
         assert turn.status == "parsed" and turn.backstop == []
         assert semantic_eval._preserved(case.expect["constraints"], frozenset(c.kind for c in turn.active))
         assert bool(turn.active) == bool(case.expect["constraints"])
 
     @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
-    def test_a_parser_that_forgets_the_constraint_is_backed_up(self, case, chat, monkeypatch):
+    def test_a_parser_that_forgets_the_constraint_is_backed_up(self, case, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         turn = _turn(case.text, _LabelGW(CASES, forget_constraints=True), monkeypatch)
         kinds = frozenset(c.kind for c in turn.active)
         assert semantic_eval._preserved(case.expect["constraints"], kinds)
@@ -238,12 +238,12 @@ class TestTurns:
 
     @pytest.mark.parametrize("case", [c for c in CASES if c.lang != "en"],
                              ids=_ids([c for c in CASES if c.lang != "en"]))
-    def test_a_parser_that_translates_its_quotes_is_refused_and_backed_up(self, case, chat, monkeypatch):
+    def test_a_parser_that_translates_its_quotes_is_refused_and_backed_up(self, case, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         turn = _turn(case.text, _LabelGW(CASES, translate=True), monkeypatch)
         assert turn.frame is None and turn.status == "unavailable"
         assert semantic_eval._preserved(case.expect["constraints"], frozenset(c.kind for c in turn.active))
 
-    def test_the_stored_summary_carries_the_language_and_no_words(self, chat, monkeypatch):
+    def test_the_stored_summary_carries_the_language_and_no_words(self, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         text = "No le mandes nada a Sarah todavía"
         _turn(text, FakeGateway(sf.FrameUnavailable("down")), monkeypatch)
         stored = _stored(chat)
@@ -251,7 +251,7 @@ class TestTurns:
         blob = json.dumps(stored, ensure_ascii=False)
         assert "Sarah" not in blob and "mandes" not in blob and "todavía" not in blob
 
-    def test_a_later_short_turn_answers_in_the_conversation_language(self, chat, monkeypatch):
+    def test_a_later_short_turn_answers_in_the_conversation_language(self, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         first = _turn("No le mandes nada todavía", FakeGateway(sf.FrameUnavailable("x")), monkeypatch)
         prior = [{"id": str(uuid.uuid4()), "role": "user", "content": "No le mandes nada todavía"},
                  {"id": str(uuid.uuid4()), "role": "assistant", "content": "Entendido.",
@@ -278,7 +278,7 @@ class TestUnrecognisedLanguage:
     FR = "Montre-moi les maisons pour elle"
 
     @pytest.mark.parametrize("failure", [sf.FrameUnavailable("down"), "not json"])
-    def test_parser_failure_takes_the_strict_pair(self, chat, monkeypatch, failure):
+    def test_parser_failure_takes_the_strict_pair(self, chat, monkeypatch, failure):  # noqa: F811 - the parameter is the pytest fixture imported above
         answers = [failure, failure] if isinstance(failure, str) else [failure]
         turn = _turn(self.PT, FakeGateway(*answers), monkeypatch)
         assert turn.detected == "other" and turn.frame is None
@@ -287,19 +287,19 @@ class TestUnrecognisedLanguage:
         assert _contact_refused(turn).code == "FRAME_NO_SEND"
         assert turn.lang == "en"     # answered in the default language
 
-    def test_it_still_goes_to_the_parser_and_the_parser_reading_stands(self, chat, monkeypatch):
+    def test_it_still_goes_to_the_parser_and_the_parser_reading_stands(self, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         gw = FakeGateway(_frame_answer(self.PT, ["no_send"]))
         turn = _turn(self.PT, gw, monkeypatch)
         assert gw.calls == 1 and turn.status == "parsed" and turn.backstop == []
         assert [c.kind for c in turn.active] == ["no_send"]
 
-    def test_a_parsed_request_with_no_restriction_gets_none(self, chat, monkeypatch):
+    def test_a_parsed_request_with_no_restriction_gets_none(self, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         turn = _turn(self.FR, FakeGateway(_frame_answer(self.FR)), monkeypatch)
         assert turn.detected == "other" and turn.active == []
 
     @pytest.mark.parametrize("text", ["ok", "Sarah Chen", "What did she say about the kitchen?",
                                       "¿Qué dijo de la cocina?"])
-    def test_a_recognised_request_with_no_restriction_is_not_made_strict(self, chat, monkeypatch, text):
+    def test_a_recognised_request_with_no_restriction_is_not_made_strict(self, chat, monkeypatch, text):  # noqa: F811 - the parameter is the pytest fixture imported above
         turn = _turn(text, FakeGateway(sf.FrameUnavailable("down")), monkeypatch)
         assert turn.active == []
 
@@ -358,7 +358,7 @@ class TestRefusalLanguage:
         semantic_turn.bind(ASSISTANT, [], "xx")
         assert semantic_turn.language_for(ASSISTANT) == "en"
 
-    def test_spanish_chat_turn_refusal_reaches_the_model_in_spanish(self, turn_env, chat, monkeypatch):
+    def test_spanish_chat_turn_refusal_reaches_the_model_in_spanish(self, turn_env, chat, monkeypatch):  # noqa: F811 - the parameter is the pytest fixture imported above
         import llm_gateway
 
         seen = []

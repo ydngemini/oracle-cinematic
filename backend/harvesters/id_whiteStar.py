@@ -5,7 +5,7 @@ Endpoint: https://gis1.idl.idaho.gov/arcgis/rest/services/Portal/WhiteStar_Parce
 Coverage: Statewide — all 44 Idaho counties (multi-county composite).
 Owner field: owner1 (+ owner2 for co-owners).
 Value field: totalvalue (assessed total); landval / improvval available as components.
-Absentee detection: property state (propstate) vs. mail state (mailstate) mismatch,
+Absentee detection: a mail state (mailstate) other than ID,
   OR property city/zip vs. mail city/zip when both are ID.
 Last-sale date: latsaldate (Unix ms epoch from ArcGIS Date field).
 """
@@ -50,8 +50,10 @@ class IdahoWhiteStarHarvester(ArcGISHarvester):
         )
 
         # Absentee-owner detection: compare property address vs. mailing address.
+        # propstate is not read: this is Idaho's statewide layer, so the
+        # out-of-state test below compares the mailing state with "ID" (the
+        # value was read and never used: ruff F841, audit 35-03 phase 2).
         prop_city  = str(row.get("propcity")  or "").strip()
-        prop_state = str(row.get("propstate") or "").strip()
         prop_zip   = str(row.get("propzip")   or "").strip()
         mail_addr  = str(row.get("mailfuladd") or "").strip()
         mail_city  = str(row.get("mailcity")   or "").strip()

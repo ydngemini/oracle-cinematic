@@ -512,7 +512,7 @@ def test_portal_and_perception_payloads_hold_no_card(monkeypatch):
 from tests.test_elevenlabs_realtime import _results, _run, _tool, notes_backend  # noqa: E402,F401
 
 
-def test_save_note_never_keeps_a_card_and_tells_the_agent_why(monkeypatch, notes_backend, _no_audit_writes):
+def test_save_note_never_keeps_a_card_and_tells_the_agent_why(monkeypatch, notes_backend, _no_audit_writes):  # noqa: F811 - the parameter is the pytest fixture imported above
     import elevenlabs_realtime as el
 
     _, agent, _, bridge = _run(monkeypatch, [], [

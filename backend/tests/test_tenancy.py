@@ -273,10 +273,7 @@ def test_brokerage_scope_never_reaches_a_user_session():
 
 def test_apply_rls_context_sets_record_scope():
     import asyncio
-    import asyncio
     import uuid
-
-    from tenancy import apply_rls_context
 
     from tenancy import apply_rls_context, brokerage_scope
 

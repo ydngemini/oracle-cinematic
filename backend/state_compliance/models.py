@@ -7,7 +7,10 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+# fastapi's `status` is not imported: no model here returns an HTTP status,
+# no route module takes it from this one, and MLSSearchBody.status (a field)
+# silently shadowed it (ruff F811, audit 35-03 phase 2).
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx

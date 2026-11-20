@@ -219,8 +219,10 @@ def assess_risk_factors(record: dict, metrics: dict) -> list[str]:
 def generate_cot_reasoning(record: dict) -> dict:
     metrics = compute_deal_metrics(record)
     risks = assess_risk_factors(record, metrics)
+    # The original contract is not read here: its figures reach the reasoning
+    # through compute_deal_metrics(). The lookup bound to a name nothing used
+    # (ruff F841, audit 35-03 phase 2).
     prop = record.get("property", {})
-    orig = record.get("original_contract", {})
     legal = record.get("legal_clauses", {})
     notar = record.get("notarization", {})
 
