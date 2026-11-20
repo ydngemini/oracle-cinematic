@@ -529,6 +529,55 @@ _ALWAYS_TOOLS = sorted(set(
 _READ_ONLY_TOOL_NAMES = frozenset(_READ_ONLY_TOOLS)
 
 
+def _note_staged(bundle: dict, receipt: Any) -> None:
+    """Record a staged request on the turn (AI32-03). A staged text, email,
+    call, event or contract is a durable side effect like an applied record
+    change: once one exists, no later provider tier may regenerate the turn
+    and stage another."""
+    if isinstance(receipt, dict) and receipt.get("ok") and (receipt.get("command_id") or receipt.get("approval_id")):
+        bundle.setdefault("staged_effects", []).append({
+            "id": str(receipt.get("command_id") or receipt.get("approval_id")),
+            "action_type": str(receipt.get("action_type") or ""),
+        })
+
+
+def _turn_has_effects(bundle: dict, actions: list) -> bool:
+    """Applied record changes or staged requests: either ends the provider
+    ladder (a fall-through would replay the conversation and repeat them)."""
+    return bool(actions) or bool(bundle.get("staged_effects"))
+
+
+_STAGED_NOUNS = {
+    "draft_sms": "text", "draft_email": "email", "call_contact": "call",
+    "schedule_event": "calendar event", "draft_contract": "contract draft",
+    "publish_to_marketplace": "marketplace listing",
+}
+
+
+def _interrupted_reply(bundle: dict, actions: list) -> str:
+    """Names only what this turn actually did (AI32-03 review): a request cut
+    short must not read as if all of it was staged. A re-staged request that
+    returned the same id counts once."""
+    unique: dict[str, str] = {}
+    for effect in bundle.get("staged_effects") or []:
+        unique.setdefault(effect.get("id", ""), effect.get("action_type", ""))
+    if not unique:
+        return "The requested record update was applied, but the assistant response was interrupted."
+    counts: dict[str, int] = {}
+    for action_type in unique.values():
+        noun = _STAGED_NOUNS.get(action_type, "request")
+        counts[noun] = counts.get(noun, 0) + 1
+    parts = [(f"an {noun}" if noun[0] in "aeiou" else f"a {noun}") if n == 1 else f"{n} {noun}s"
+             for noun, n in counts.items()]
+    named = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    one = len(unique) == 1
+    done = "A record update was applied and " if actions else ""
+    sentence = (f"{done}{named} {'was' if one else 'were'} prepared and {'is' if one else 'are'} waiting in "
+                "Approvals; nothing was sent. The assistant response was interrupted before the rest of the "
+                "request, so check what is still missing and ask again for it.")
+    return sentence[0].upper() + sentence[1:]
+
+
 def _is_record_change(name: str, receipt: dict) -> bool:
     """Only real mutations belong in the broadcast `actions` list.
 
@@ -811,6 +860,7 @@ async def _foundry_generate(
             )
             if _is_record_change(call.name, receipt):
                 actions.append(receipt)
+            _note_staged(bundle, receipt)
             tool_outputs.append({
                 "type": "function_call_output",
                 "call_id": call.call_id,
@@ -1255,6 +1305,7 @@ async def _local_fallback(
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
+                _note_staged(bundle, receipt)
             # Which tools a turn actually ran, and whether they worked — the
             # one thing needed to tell "the model never asked" from "the tool
             # refused" when a reply claims an action. No arguments, no PII.
@@ -1506,13 +1557,13 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         except SpendRefused as refused:
             raise _with_receipts(refused, provider_actions, f"{provider.name}:{provider.model}")
         except Exception as provider_error:  # noqa: BLE001
-            if provider_actions:
+            if _turn_has_effects(bundle, provider_actions):
                 logger.warning(
                     "%s interrupted after applying writes: %s",
                     provider.name, provider_error,
                 )
                 return (
-                    "The requested record update was applied, but the assistant response was interrupted.",
+                    _interrupted_reply(bundle, provider_actions),
                     provider_actions,
                     f"{provider.name}:{provider.model}",
                 )
@@ -1532,12 +1583,12 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         except Exception as fireworks_error:  # noqa: BLE001
             # Same rule as every other tier: writes that already committed must
             # come back with their receipts, or the retry double-applies them.
-            if fireworks_actions:
+            if _turn_has_effects(bundle, fireworks_actions):
                 logger.warning(
                     "Fireworks interrupted after applying writes: %s", fireworks_error
                 )
                 return (
-                    "The requested record update was applied, but the assistant response was interrupted.",
+                    _interrupted_reply(bundle, fireworks_actions),
                     fireworks_actions,
                     f"fireworks:{FIREWORKS_MODEL}",
                 )
@@ -1558,12 +1609,12 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             # already committed must come back with their receipts. Falling
             # through to the next tier would replay the whole conversation and
             # re-execute those non-idempotent CRM writes a second time.
-            if foundry_actions:
+            if _turn_has_effects(bundle, foundry_actions):
                 logger.warning(
                     "Foundry agent interrupted after applying writes: %s", foundry_error
                 )
                 return (
-                    "The requested record update was applied, but the assistant response was interrupted.",
+                    _interrupted_reply(bundle, foundry_actions),
                     foundry_actions,
                     f"azure-foundry:{_FOUNDRY_MODEL}",
                 )
@@ -1596,6 +1647,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 )
                 if _is_record_change(tool_use.get("name", ""), receipt):
                     actions.append(receipt)
+                _note_staged(bundle, receipt)
                 results.append({"toolResult": {
                     "toolUseId": tool_use["toolUseId"],
                     "content": [{"json": receipt}],
@@ -1608,8 +1660,8 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         raise _with_receipts(refused, actions, MODEL_ID)
     except Exception as bedrock_error:  # noqa: BLE001
         logger.warning("Nova chat request failed; attempting text-only local fallback: %s", bedrock_error)
-        if actions:
-            return "The requested record update was applied, but the assistant response was interrupted.", actions, MODEL_ID
+        if _turn_has_effects(bundle, actions):
+            return _interrupted_reply(bundle, actions), actions, MODEL_ID
         local_actions: list[dict] = []
         try:
             text, local_actions = await _local_fallback(
@@ -1627,10 +1679,10 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             # Same rule as the Bedrock branch above: writes that already
             # committed must come back with their receipts, or the user is told
             # nothing happened and their retry double-applies the change.
-            if local_actions:
+            if _turn_has_effects(bundle, local_actions):
                 logger.warning("Local fallback interrupted after applying writes: %s", local_error)
                 return (
-                    "The requested record update was applied, but the assistant response was interrupted.",
+                    _interrupted_reply(bundle, local_actions),
                     local_actions,
                     "local-tool-fallback",
                 )

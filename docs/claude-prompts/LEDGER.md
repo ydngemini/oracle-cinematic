@@ -1590,6 +1590,31 @@ next_task: "AI32-03 (after AI32-01 merges: same file)."
 updated: 2026-11-19
 ```
 
+#### L07-10 A staged request ends the provider ladder like an applied change: a later tier can no longer regenerate the turn and stage another (external audit AI32-03)
+```yaml
+id: L07-10
+status: tests_pass
+env: local
+evidence_shas: [f250a37]   # base; fix in the commit that adds this row
+files: [backend/ai_chat_agent.py, backend/tests/test_ai_chat_staged_effects.py]
+tests_run:
+  - {cmd: "read ai_chat_agent._generate tiers and the three execute_safe_tool sites at f250a37", result: "confirmed AI32-03: each tier stopped falling through only when its own applied-actions list was non-empty (_is_record_change needs an action_id); a staged draft_sms/draft_email/call_contact/schedule_event receipt (command_id/approval_id, sent false) was kept in a local list the ladder never saw, so a tier failing after staging let the next tier replay the conversation and stage again (the stage key ai:<message>:<tool>:<anchor> reuses the row for the same tool and record, so the real exposure is another channel, another record, a contract draft, or a reply describing a draft other than the reused one)", date: 2026-11-19}
+  - {cmd: "test_ai_chat_staged_effects against f250a37's ai_chat_agent.py with only the two helpers added", result: "red: 3 failed (the ladder fell through to the second provider after staging)", date: 2026-11-19}
+  - {cmd: "after: test_ai_chat_staged_effects (5) + persona, frame-constraints, completion-boundary, budget tests", result: "317 passed: a tier failing after staging ends the ladder and says it was staged for approval; applied + staged are both named; a tier failing before any effect still falls through; only a successful staging counts; every execute site records staged effects (source guard)", date: 2026-11-19}
+  - {cmd: "after review r1: test_ai_chat_staged_effects (6) + persona, frame-constraints, completion-boundary tests", result: "221 passed: the interrupted reply names exactly what was staged (a text; a text and an email), says it is waiting in Approvals and that nothing was sent, and asks the person to check what is still missing; a Fireworks tier that staged blocks the later tiers; the source guard also requires all five fall-through checks", date: 2026-11-19}
+  - {cmd: "after review r2 (APPROVE, nit): test_ai_chat_staged_effects (7); full unit suite 6978 passed (before the nit)", result: "pass: a re-staged request that returned the same id counts once ('A text was prepared'); two contract drafts count as two", date: 2026-11-19}
+authz_checked: "No access change. One per-turn list of staged command/approval ids on the turn bundle, read by every tier's fall-through check; nothing is executed or sent differently."
+blockers:
+  - "A budget refusal after a staging (SpendRefused) still ends the turn as failed with the refusal message (or, when a record change also applied, as degraded); the staged request exists and shows in Approvals, but neither reply names it."
+  - "If the turn deadline cancels after a staging, the CancelledError skips every tier's check and the turn ends failed with 'try again'; a retry is a new message, so a new stage key."
+  - "Independent review r1 (REQUEST CHANGES), fixed: 'the rest was staged' / 'your request was staged' claimed the whole request; the reply now names only what was staged and says nothing was sent. Tests now cover a second tier (Fireworks) and the five fall-through checks."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-03]
+decision_refs: []
+next_task: "AI32-05 (action-claim verification is provider-specific)."
+updated: 2026-11-19
+```
+
 #### L07-11 The generated profile summary reaches the prompt as labelled, bounded background, never as instructions, and the summarizer no longer collects "standing instructions" (external audit AI32-06)
 ```yaml
 id: L07-11
