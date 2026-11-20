@@ -21,7 +21,10 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:  # the "asyncio.Task" annotation only
+    import asyncio
 
 from fastapi import Header, HTTPException, Request, status
 

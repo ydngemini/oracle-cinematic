@@ -5586,6 +5586,28 @@ next_task: "Owner: CODEOWNERS / required review."
 updated: 2026-11-19
 ```
 
+#### L19-25 A phase-1 static gate (ruff: syntax errors, undefined and unbound names) runs in CI, and the UnboundLocalError it found in the approved-email path is fixed (external audit 35-03; regression from L09-14)
+```yaml
+id: L19-25
+status: tests_pass
+env: local
+evidence_shas: [1afe3bc]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/requirements-test.txt, .github/workflows/ci.yml, backend/commands_api.py, backend/rate_limiter.py, backend/reconstruction_providers.py, backend/tenancy.py, backend/tests/test_static_gate.py]
+tests_run:
+  - {cmd: "ruff 0.14.6 check --select E9,F63,F7,F82 on backend at 1afe3bc", result: "8 findings: F823 commands_api.py:3973 load_agent_identity referenced before assignment (REAL: a local `from agent_profile import load_agent_identity` added inside _execute_command_job for call briefings in L09-14 / PR #132 made the name local to the whole function, so every approved email command raised UnboundLocalError before sending; merged 2026-11-19, not deployed — staging cannot receive deploys while the DigitalOcean token is expired); 7 undefined names in string annotations (rate_limiter Redis, reconstruction_providers Any, tenancy asyncio — harmless under postponed annotations)", date: 2026-11-19}
+  - {cmd: "test_static_gate against 1afe3bc's commands_api.py", result: "red: the symtable check finds load_agent_identity local to _execute_command_job", date: 2026-11-19}
+  - {cmd: "after: ruff check (All checks passed) + test_static_gate (2) + CI-shape tests", result: "pass: the worker uses the module-level loader; the annotation names are imported for type checking; CI runs `python -m ruff check .` with backend/ruff.toml", date: 2026-11-19}
+authz_checked: "No access change. The email fix restores the code path L09-14 broke; the gate is CI-only."
+blockers:
+  - "Phase 1 only (E9, F63, F7, F82). Not done from 35-03: wider ruff families, mypy/pyright on service boundaries, typed command/event contracts, checkJs for sensitive frontend flows, a changed-code coverage gate."
+  - "No test exercises the approved-email branch of _execute_command_job end to end; the regression was found by the static gate, not a test. A behavioural test for that branch is still owed."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "A behavioural test for the email command branch; then widen the gate (F401/F811 or B-family) one family at a time."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 
