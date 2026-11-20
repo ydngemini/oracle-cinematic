@@ -50,8 +50,20 @@ _VARIABLES = {
 }
 
 
+class CensusUnavailable(RuntimeError):
+    """Census could not be asked, or did not answer usably.
+
+    Distinct from "no data": a ZCTA the ACS has no row for is an answer (None),
+    an outage is not. Folding both into None turned every Census outage into a
+    404 "no data for this zip" — a false statement about the ZIP code."""
+
+
 async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
-    """Fetch key housing and demographic stats for a ZIP code."""
+    """Fetch key housing and demographic stats for a ZIP code.
+
+    Returns None when Census has no row for the ZCTA. Raises CensusUnavailable
+    when the request failed or the answer could not be read.
+    """
     var_list = ",".join(_VARIABLES.values())
     params = {
         "get": f"NAME,{var_list}",
@@ -70,6 +82,10 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
             raw = await asyncio.to_thread(
                 lambda: urllib.request.urlopen(req, timeout=15).read().decode()
             )
+            # The Census API answers a geography it has no data for with
+            # 204 No Content: an answer, not a fault.
+            if not raw.strip():
+                return {"rows": []}
             return {"rows": json.loads(raw)}
 
         payload = await cached_external(
@@ -78,10 +94,15 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
             fetch_upstream,
             ttl=365 * 86_400,
         )
-        data = payload.get("rows") or []
-        if len(data) < 2:
-            return None
+    except Exception as e:
+        logger.warning("Census API failed for zip %s: %s", zip_code, e)
+        raise CensusUnavailable("the Census API did not answer") from e
 
+    data = payload.get("rows") or []
+    if len(data) < 2:
+        return None
+
+    try:
         headers = data[0]
         values = data[1]
         row = dict(zip(headers, values, strict=True))
@@ -90,19 +111,19 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
         for name, code in _VARIABLES.items():
             val = row.get(code)
             result[name] = int(val) if val and val != "-666666666" else None
+    except (TypeError, ValueError) as e:
+        logger.warning("Census API answered an unreadable row for zip %s: %s", zip_code, e)
+        raise CensusUnavailable("the Census API answer could not be read") from e
 
-        # Compute derived metrics
-        total_housing = result.get("total_housing_units") or 0
-        if total_housing > 0:
-            owner = result.get("owner_occupied") or 0
-            vacant = result.get("vacant_units") or 0
-            result["owner_occupied_pct"] = round(owner / total_housing * 100, 1)
-            result["vacancy_rate_pct"] = round(vacant / total_housing * 100, 1)
+    # Compute derived metrics
+    total_housing = result.get("total_housing_units") or 0
+    if total_housing > 0:
+        owner = result.get("owner_occupied") or 0
+        vacant = result.get("vacant_units") or 0
+        result["owner_occupied_pct"] = round(owner / total_housing * 100, 1)
+        result["vacancy_rate_pct"] = round(vacant / total_housing * 100, 1)
 
-        return result
-    except Exception as e:
-        logger.warning("Census API failed for zip %s: %s", zip_code, e)
-        return None
+    return result
 
 
 async def get_demographics_by_state_county(state_fips: str, county_fips: str) -> Optional[dict]:

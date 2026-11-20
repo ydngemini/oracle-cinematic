@@ -4834,7 +4834,30 @@ tests_run:
   - {cmd: "full backend suite (merged with main at 4f85242)", result: "7319 passed, 0 failed", date: 2026-11-20}
 authz_checked: "No access change. Status codes changed only on the three messaging registration routes (brand, campaign, assign-number), which the frontend never calls (it calls only /registration/refresh): a database failure, ProviderConfigurationError, MessagingProviderError and RecoveryModeBlocked were 502 'Telnyx rejected' and are now 503; NotImplementedError is now 501; an exception that is not a RuntimeError now reaches the global handlers or a 500. The 41 Memory Core routes keep 503. No frontend reads the old text (MarketplaceBrowse.test.jsx asserts the fixed 'Memory Core offline.'; apiClient handles 502/503/504 by status). Unchanged here: friendlyError shows any 502 as the generic 'temporarily unavailable', so only API callers see a provider rejection's words."
 blockers:
-  - "Routes that send `detail=str(exc)` for the app's own validation errors (messaging, telephony, commands) keep doing so: those messages are written for the user. property_view_api names GOOGLE_STREETVIEW_API_KEY / MAPILLARY_TOKEN in a not-configured 503 and returns splat-transform's output tail; noted, not changed here."
+  - "Routes that send `detail=str(exc)` for the app's own validation errors (messaging, telephony, commands) keep doing so: those messages are written for the user. property_view_api names GOOGLE_STREETVIEW_API_KEY / MAPILLARY_TOKEN in a not-configured 503 and returns splat-transform's output tail; noted, not changed here (since fixed: L17-55)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: ""
+updated: 2026-11-20
+```
+
+#### L17-55 Property View imagery and scan uploads keep server settings and converter output in the log; a Census outage is no longer "no data for this zip" (follow-up to L17-54)
+```yaml
+id: L17-55
+status: tests_pass
+env: local
+evidence_shas: [617d848]   # base; fix in the commit that adds this row
+files: [backend/property_view_api.py, backend/reconstruction_worker.py, backend/apis/census.py, backend/server.py, backend/tests/test_video_mock_and_imagery.py, backend/tests/test_property_scan_ingest.py, backend/tests/test_census_demographics.py]
+tests_run:
+  - {cmd: "read at 617d848", result: "POST /api/crm/property-view/imagery answered 503 with PropertyImagerySource.available()'s reason ('set GOOGLE_STREETVIEW_API_KEY (server-side key, no HTTP-referrer restriction) or MAPILLARY_TOKEN') and with ImageryAuthError / ImageryConfigurationError text (both name GOOGLE_STREETVIEW_API_KEY); a test pinned the variable name in the detail. POST /api/crm/property-view/scan answered every converter ProviderError as 422 'That scan could not be converted for delivery: <text>': a converter failure carried the last 400 bytes of splat-transform's output (temp paths, Node internals), and a server with no converter told the uploader to fix their file and to run 'npm i -g @playcanvas/splat-transform@<pin>'. apis/census.get_demographics_by_zip returned None for a failed request, an unreadable answer and a ZCTA with no row alike, and /api/demographics answered all three 404 'no data for this zip'", date: 2026-11-20}
+  - {cmd: "fix", result: "Imagery: a missing or unusable configuration answers 503 'Street-level imagery isn't set up on this server. Photos you upload still work.'; a refused key or exhausted quota (ImageryAuthError) answers 503 'Street-level imagery is unavailable on this server right now. Photos you upload still work.'; the reason is logged on oracle.property_view. Scan: reconstruction_worker raises ConverterMissing (a ProviderError subclass, so the GPU pipeline's keep-the-raw-output handling is unchanged) when neither splat-transform nor npx exists; the route answers it 503 'Scan conversion isn't available on this server. Photos and 360° scenes still work.' and logs the install hint; any other converter failure answers 422 'That SPZ|PLY scan could not be converted for the tour. Export it again from your scanning app as SPZ (preferred) or PLY and upload the new file.' and logs the input suffix and the converter text. Census: get_demographics_by_zip raises CensusUnavailable for a failed request (logged with its text, as before), a non-JSON answer or a row that does not match the header; an empty 204 body or a header with no row returns None; /api/demographics answers CensusUnavailable 502 {'error': 'census data unavailable'} (the /api/flood-zone shape) and keeps 404 for no data", date: 2026-11-20}
+  - {cmd: "the changed and new tests against origin/main's four production files", result: "11 of 16 red (two imagery fetch outcomes, unconfigured imagery, converter failure detail, missing converter 503, ConverterMissing type, four Census outage shapes, the 502 route); the other 5 (204 and header-only answers are None, a real row is read, 404 and 200 routes) pass on both — they pin behaviour that must not change", date: 2026-11-20}
+  - {cmd: "pytest tests/test_census_demographics.py tests/test_property_scan_ingest.py tests/test_video_mock_and_imagery.py tests/test_property_imagery.py tests/test_memory_core_errors.py tests/test_static_gate.py; ruff check .", result: "82 passed; ruff clean", date: 2026-11-20}
+authz_checked: "No access change. Status codes: the scan route's missing-converter case moves 422 -> 503 (the uploader's file was never the problem); /api/demographics' Census outage moves 404 -> 502. No frontend calls /crm/property-view/imagery, /crm/property-view/scan or /api/demographics (grep of oracle-app/src), so no UI text changes."
+blockers:
+  - "The GPU pipeline still records a converter failure's text on the reconstruction job (ConversionFailure(str(exc))); not reviewed here."
+  - "data_integrations/census (not wired to any route) and get_demographics_by_state_county (no caller) keep their old None-on-failure shape."
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []

@@ -45,6 +45,19 @@ from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.property_view")
 
+# Fixed sentences for a server-side gap. The reason (a variable name, a key
+# restriction, an install command) goes to the log, never to the caller.
+IMAGERY_NOT_SET_UP = (
+    "Street-level imagery isn't set up on this server. Photos you upload still work."
+)
+IMAGERY_REFUSED = (
+    "Street-level imagery is unavailable on this server right now. Photos you "
+    "upload still work."
+)
+SCAN_CONVERSION_UNAVAILABLE = (
+    "Scan conversion isn't available on this server. Photos and 360° scenes still work."
+)
+
 router = APIRouter(prefix="/api", tags=["property-view"])
 
 # Client links are short-lived by default; an upload link is a capability URL
@@ -716,16 +729,22 @@ async def import_licensed_imagery(
     source = PropertyImagerySource()
     ready, why = source.available()
     if not ready:
-        # Forwarded verbatim, the way every other provider seam here does it:
-        # "use a server-side key" is actionable, "imagery unavailable" is not.
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, why)
+        # The reason names server settings (GOOGLE_STREETVIEW_API_KEY, the key's
+        # restriction). The operator who can change them reads the log; the
+        # caller cannot act on a variable name, and a browser should never be
+        # told which credentials this server holds (L17-54).
+        log.warning("property-view imagery: not configured: %s", why)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, IMAGERY_NOT_SET_UP)
 
     try:
         found = await source.fetch(address=address.strip(), lat=lat, lng=lng)
-    except ImageryAuthError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except ImageryConfigurationError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        log.warning("property-view imagery: not configured: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, IMAGERY_NOT_SET_UP) from exc
+    except ImageryAuthError as exc:
+        # A refused key or an exhausted quota: set up, but not working now.
+        log.warning("property-view imagery: provider refused this server: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, IMAGERY_REFUSED) from exc
 
     if not found.get("matched"):
         # Not an error: plenty of addresses have no street-level coverage.
@@ -902,7 +921,7 @@ async def upload_property_scan(
     from pathlib import Path as _Path
 
     from reconstruction_providers import ProviderError
-    from reconstruction_worker import _convert_to_delivery, _store_splat
+    from reconstruction_worker import ConverterMissing, _convert_to_delivery, _store_splat
 
     with tempfile.TemporaryDirectory(prefix="scan_") as tmp:
         work = _Path(tmp)
@@ -912,10 +931,20 @@ async def upload_property_scan(
             # The same converter the GPU pipeline ends in, so there stays exactly
             # one thing that decides what a delivered splat looks like.
             delivered = await _convert_to_delivery(raw, work, media_id)
+        except ConverterMissing as exc:
+            # The install hint is for whoever runs this server, not the uploader.
+            log.error("property-view scan: %s", exc)
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, SCAN_CONVERSION_UNAVAILABLE) from exc
         except ProviderError as exc:
+            # The converter's own output (its tail names this server's temp
+            # paths and Node internals) is logged with the input format, which
+            # is what tells an operator an SPZ v4 met a converter too old for it.
+            log.warning("property-view scan: %s conversion failed: %s", suffix, exc)
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"That scan could not be converted for delivery: {exc}",
+                f"That {suffix.lstrip('.').upper()} scan could not be converted for the "
+                "tour. Export it again from your scanning app as SPZ (preferred) or "
+                "PLY and upload the new file.",
             ) from exc
 
         url, s3_key = await _store_splat(

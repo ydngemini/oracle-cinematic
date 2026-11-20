@@ -597,7 +597,7 @@ app.include_router(privacy_router)
 app.include_router(privacy_admin_router)
 
 from apis.geocoding import geocode_checked, reverse_geocode
-from apis.census import get_demographics_by_zip
+from apis.census import CensusUnavailable, get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone
 from apis.market_data import get_market_snapshot
 
@@ -889,7 +889,12 @@ async def api_demographics(zip_code: str, ctx: TenantContext = Depends(require_c
     """Get housing demographics for a ZIP code (US Census ACS 5-year)."""
     if not zip_code.isdigit() or len(zip_code) != 5:
         return JSONResponse({"error": "invalid zip code"}, status_code=400)
-    result = await get_demographics_by_zip(zip_code)
+    try:
+        result = await get_demographics_by_zip(zip_code)
+    except CensusUnavailable:
+        # An outage is not "no data": a 404 here would state something false
+        # about the ZIP code. Same shape as /api/flood-zone's upstream failure.
+        return JSONResponse({"error": "census data unavailable"}, status_code=502)
     if not result:
         return JSONResponse({"error": "no data for this zip"}, status_code=404)
     return JSONResponse(result)

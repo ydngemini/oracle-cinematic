@@ -567,6 +567,15 @@ def _carry_companions(src: Path, out: Path) -> None:
             logger.info("Could not carry %s to %s (%s)", source.name, out.name, exc)
 
 
+class ConverterMissing(ProviderError):
+    """This server has no splat converter — a deployment fault, not the file's.
+
+    A ProviderError still, so the pipeline's existing handling (keep the raw
+    output, retry later) is unchanged. The scan-upload route tells the two
+    apart: a missing converter is a 503 for the operator, a file the converter
+    refused is a 422 the uploader can act on."""
+
+
 async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path:
     """Convert a provider's raw output into the format the viewer is served.
 
@@ -620,7 +629,7 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
         cmd = ["npx", "-y", f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}",
                str(src), str(out)]
     else:
-        raise ProviderError(
+        raise ConverterMissing(
             f"splat-transform not installed — cannot convert {src.suffix} to "
             f"{DELIVERY_SUFFIX} (npm i -g "
             f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}; needs Node >= 22)"

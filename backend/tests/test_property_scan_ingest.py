@@ -65,6 +65,17 @@ def test_a_filename_cannot_make_something_a_scan():
 
 # --- the route ---------------------------------------------------------------
 
+# What the real converter's failure carries: this server's temp path and the
+# tail of Node's output. The log needs it; the uploader must not get it.
+_CONVERTER_TEXT = (
+    "splat-transform could not convert upload.spz to .sog: Error: unsupported "
+    "SPZ version 4 at /tmp/scan_k3j2/upload.spz (node:internal/fs/promises:638)"
+)
+_MISSING_TEXT = (
+    "splat-transform not installed — cannot convert .spz to .sog (npm i -g "
+    "@playcanvas/splat-transform@1.9.0; needs Node >= 22)"
+)
+
 class _Conn:
     def __init__(self, exists=True):
         self._exists = exists
@@ -84,7 +95,7 @@ class _Conn:
         self.inserted.append((query, args))
 
 
-def _patch(monkeypatch, *, conn=None, storage=True, convert_fails=False):
+def _patch(monkeypatch, *, conn=None, storage=True, convert_fails=False, converter_missing=False):
     conn = conn or _Conn()
 
     @asynccontextmanager
@@ -102,8 +113,10 @@ def _patch(monkeypatch, *, conn=None, storage=True, convert_fails=False):
     stored: dict = {}
 
     async def _convert(src, work_dir, media_id):
+        if converter_missing:
+            raise worker.ConverterMissing(_MISSING_TEXT)
         if convert_fails:
-            raise ProviderError("splat-transform could not convert upload.spz to .sog")
+            raise ProviderError(_CONVERTER_TEXT)
         out = Path(work_dir) / f"{media_id}.sog"
         out.write_bytes(b"SOG\x00converted")
         return out
@@ -254,20 +267,63 @@ def test_exactly_one_property_anchor_is_required(monkeypatch):
     assert exc.value.status_code == 422
 
 
-def test_a_conversion_failure_is_reported_not_swallowed(monkeypatch):
-    """An SPZ v4 hitting a splat-transform too old to read it fails here, and
-    the message has to name the format rather than say 'upload failed'."""
+def test_a_conversion_failure_is_reported_not_swallowed(monkeypatch, caplog):
+    """An SPZ v4 hitting a splat-transform too old to read it fails here. The
+    uploader is told which of their files failed and what to export instead;
+    the converter's own words, with this server's paths in them, go to the log
+    with the input format an operator needs to spot an old converter pin."""
     conn, _, _ = _patch(monkeypatch, convert_fails=True)
 
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(api.upload_property_scan(
-            lead_id=LEAD_ID, listing_id=None, file=_upload(b"NGSP\x04\x00\x00\x00"),
-            capture_app="scaniverse", attested=True, ctx=CTX,
-        ))
+    with caplog.at_level("WARNING", logger="oracle.property_view"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(api.upload_property_scan(
+                lead_id=LEAD_ID, listing_id=None, file=_upload(b"NGSP\x04\x00\x00\x00"),
+                capture_app="scaniverse", attested=True, ctx=CTX,
+            ))
 
     assert exc.value.status_code == 422
-    assert ".sog" in exc.value.detail
+    assert exc.value.detail.startswith("That SPZ scan could not be converted")
+    assert "SPZ (preferred) or PLY" in exc.value.detail
+    for leaked in ("/tmp/", "node:", "splat-transform", ".sog"):
+        assert leaked not in exc.value.detail
+    assert ".spz conversion failed" in caplog.text and _CONVERTER_TEXT in caplog.text
     assert conn.inserted == []
+
+
+def test_a_server_without_the_converter_is_a_503_not_the_uploaders_fault(monkeypatch, caplog):
+    """Nothing about the file is wrong, so a 422 telling the uploader to fix it
+    would send them re-exporting a good scan; the install hint is the operator's."""
+    conn, stored, _ = _patch(monkeypatch, converter_missing=True)
+
+    with caplog.at_level("ERROR", logger="oracle.property_view"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(api.upload_property_scan(
+                lead_id=LEAD_ID, listing_id=None, file=_upload(b"NGSP\x04\x00\x00\x00"),
+                capture_app="scaniverse", attested=True, ctx=CTX,
+            ))
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail == api.SCAN_CONVERSION_UNAVAILABLE
+    assert _MISSING_TEXT in caplog.text
+    assert conn.inserted == [] and stored == {}
+
+
+def test_the_real_converter_reports_a_missing_install_as_its_own_type(monkeypatch, tmp_path):
+    """The route can only tell the two apart if the converter does. It stays a
+    ProviderError, so the pipeline keeps the GPU output for a retry as before."""
+    import asyncio as _asyncio
+    import shutil
+
+    import reconstruction_worker as worker
+    from reconstruction_providers import ProviderError
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    src = tmp_path / "upload.spz"
+    src.write_bytes(b"NGSP\x04\x00\x00\x00")
+
+    with pytest.raises(worker.ConverterMissing) as exc:
+        _asyncio.run(worker._convert_to_delivery(src, tmp_path, "m1"))
+    assert isinstance(exc.value, ProviderError)
 
 
 def test_no_storage_backend_refuses_before_converting(monkeypatch):
