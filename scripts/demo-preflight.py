@@ -222,13 +222,22 @@ async def run(base_url: str, tenant_id: str, expected_sha: str, *, chat_check: b
                 "phone is the operator's own number; state/timezone on file"
                 if sarah else "missing")
         consent = await conn.fetch(
-            """SELECT channel, consent_type FROM outreach_consent
+            """SELECT channel, consent_type, evidence_status FROM outreach_consent
                 WHERE tenant_id = $1::uuid AND contact = $2 AND revoked_at IS NULL""",
             tenant_id, common.DEMO_RECIPIENT)
         channels = {r["channel"]: r["consent_type"] for r in consent}
-        rep.add("consent on file (sms + written voice)",
-                channels.get("sms") is not None and channels.get("voice") == "express_written",
-                f"channels: {sorted(channels)}")
+        # 0183 (26.5/26.6): the AI call and the (unclassified, so marketing)
+        # text count only DOCUMENTED written consent. The seed records an
+        # attested claim; it is not upgraded here — that would invent evidence.
+        documented = sorted({r["channel"] for r in consent if r["consent_type"] == "express_written"
+                             and r["evidence_status"] == "documented"})
+        rep.add("consent on file (documented written sms + voice)",
+                {"sms", "voice"} <= set(documented),
+                f"channels: {sorted(channels)}; documented written: {documented or 'none'}"
+                + ("" if {"sms", "voice"} <= set(documented) else
+                   " — an attested claim does not authorise the AI call or a marketing text; record "
+                   "the operator's consent again in the consent ledger with its capture method, "
+                   "disclosure text and evidence reference"))
         route = await conn.fetchrow(
             """SELECT provider, outbound_verification_status FROM telephony_routes
                 WHERE tenant_id = $1::uuid AND agent_id = $2 AND active""",

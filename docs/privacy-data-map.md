@@ -66,7 +66,7 @@ Counts are from the dev database. They show shape, not production volume.
 - `agent_call_intents`, `contact_nurture_jobs`, `lead_response_events`.
 
 **Consent / suppression**:
-- `outreach_consent`: proof text and IP, plaintext contact.
+- `outreach_consent`: proof text and IP, plaintext contact. Since 0183 (external audit 26.6): `evidence_status` (`documented` / `attested_unverified`, set by the server), `evidence_ref` (the agent's free-text reference to the signed event, envelope, document, message or recording; may identify the person's evidence) and `recorded_by` (the recording user's email). Erased with the row. `expires_at` is consent validity, not a retention date.
 - `outreach_suppression`, `outreach_attempt_log`. An email unsubscribe (the footer link or RFC 8058 one-click, `email_unsubscribe_api.py`) adds an `outreach_suppression` row (channel `email`). The link itself carries no readable personal data: the token is an AES-GCM ciphertext of brokerage + address (`commercial_email.py`), and it is masked in access logs.
 - `suppression_tombstones` (new): keyed hash only.
 

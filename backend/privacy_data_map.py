@@ -154,7 +154,11 @@ TABLES: dict[str, TableEntry] = {
     "lead_response_events": TableEntry(C.COMMUNICATION_METADATA, E),
     # ── consent ──────────────────────────────────────────────────────────
     "outreach_consent": TableEntry(C.CONSENT_SUPPRESSION, E,
-                                   "plaintext proof; opt-outs survive as tombstones"),
+                                   "plaintext proof; 0183 (26.6): evidence_status (server-set), "
+                                   "evidence_ref (the agent's reference to the signed event, "
+                                   "envelope, document, message or recording) and recorded_by "
+                                   "(the recording user's email), erased with the row; "
+                                   "opt-outs survive as tombstones"),
     "outreach_suppression": TableEntry(C.CONSENT_SUPPRESSION, T),
     "outreach_attempt_log": TableEntry(C.CONSENT_SUPPRESSION, E),
     "suppression_tombstones": TableEntry(C.CONSENT_SUPPRESSION, R, "keyed hash only, 5 years"),

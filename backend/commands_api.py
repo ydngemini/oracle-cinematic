@@ -68,7 +68,7 @@ from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
 from llm_gateway import SpendRefused, SpendUnavailable
-from outreach_compliance import Channel, guard_outreach
+from outreach_compliance import Channel, Purpose, guard_outreach
 from platform_policy import (
     ActionRisk,
     Feature,
@@ -3973,6 +3973,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 channel=Channel.EMAIL,
                 contact=str(target["email"]),
                 state_code=target.get("state_code"),
+                # Purpose: an approved free-text email is not classified, so strict (26.5);
+                # the email gate does not read it (opt-out model, footer on every send).
+                purpose=Purpose.MARKETING,
             )
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
@@ -4036,6 +4039,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: an approved free-text text may promote a listing or service and
+                # nothing classifies it, so strict: documented written consent (26.5).
+                purpose=Purpose.MARKETING,
             )
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
@@ -4123,6 +4129,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: an approved AI call is not classified, so strict (26.5); AI voice
+                # needs documented written consent whatever it says.
+                purpose=Purpose.MARKETING,
             )
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))

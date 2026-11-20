@@ -297,8 +297,8 @@ class _ClaimConn:
     async def fetchrow(self, sql, *args):
         self.log.append("count")
         self.args["count"] = args
-        return {"suppressed": False, "has_consent": True, "has_written_consent": True,
-                "vp_consent": False, "recent_voice": self.recent_voice}
+        return {"suppressed": False, "has_consent": True, "has_prior_business": False,
+                "has_written_consent": True, "vp_consent": False, "recent_voice": self.recent_voice}
 
 
 def _claim_env(monkeypatch):
@@ -407,3 +407,225 @@ def test_a_voiceprint_release_is_refused_off_the_voice_channel(monkeypatch, chan
     with pytest.raises(HTTPException) as err:
         asyncio.run(outreach_compliance.record_consent(body, ctx=None))
     assert err.value.status_code == 422
+
+
+# ── 26.6: consent evidence is computed by the server ─────────────────────────
+from datetime import timedelta  # noqa: E402
+
+from outreach_compliance import (  # noqa: E402
+    DOCUMENTED_PROOF_SOURCES,
+    EVIDENCE_ATTESTED,
+    EVIDENCE_DOCUMENTED,
+    UNVERIFIED_CONSENT_NOTICE,
+    Purpose,
+    consent_evidence_status,
+)
+
+_FULL = dict(proof_source="e_signature", proof_text="I agree to receive marketing texts and AI calls.",
+             evidence_ref="envelope-123", captured_at=NOON_ISH_UTC - timedelta(days=1),
+             now_utc=NOON_ISH_UTC)
+
+
+def test_the_documented_capture_methods_are_the_owners_six():
+    assert DOCUMENTED_PROOF_SOURCES == {"web_form", "e_signature", "signed_document",
+                                        "recorded_call", "sms_keyword_reply", "ivr_keypress"}
+
+
+@pytest.mark.parametrize("source", sorted(DOCUMENTED_PROOF_SOURCES))
+def test_each_recognised_method_with_full_evidence_is_documented(source):
+    assert consent_evidence_status(**{**_FULL, "proof_source": source}) == EVIDENCE_DOCUMENTED
+
+
+@pytest.mark.parametrize("change, why", [
+    ({"proof_source": None}, "no capture method"),
+    ({"proof_source": "demo_operator_attestation"}, "an unrecognised method"),
+    ({"proof_source": "signed_doc"}, "0015's example spelling is not one of the six"),
+    ({"proof_text": None}, "no disclosure text"),
+    ({"proof_text": "  \n\t "}, "a blank disclosure text"),
+    ({"evidence_ref": None}, "no evidence reference"),
+    ({"evidence_ref": "   "}, "a blank evidence reference"),
+    ({"captured_at": NOON_ISH_UTC + timedelta(seconds=1)}, "a capture time in the future"),
+])
+def test_anything_less_is_attested_unverified(change, why):
+    assert consent_evidence_status(**{**_FULL, **change}) == EVIDENCE_ATTESTED, why
+
+
+def test_capture_now_or_unstated_is_not_the_future():
+    assert consent_evidence_status(**{**_FULL, "captured_at": NOON_ISH_UTC}) == EVIDENCE_DOCUMENTED
+    assert consent_evidence_status(**{**_FULL, "captured_at": None}) == EVIDENCE_DOCUMENTED
+    naive_future = (NOON_ISH_UTC + timedelta(hours=1)).replace(tzinfo=None)
+    assert consent_evidence_status(**{**_FULL, "captured_at": naive_future}) == EVIDENCE_ATTESTED
+    assert consent_evidence_status(**{**_FULL, "proof_source": " Web_Form "}) == EVIDENCE_DOCUMENTED
+
+
+class _InsertConn:
+    def __init__(self):
+        self.args = None
+
+    async def fetchrow(self, sql, *args):
+        assert "INSERT INTO outreach_consent" in sql
+        self.args = args
+        return {"id": "11111111-1111-1111-1111-111111111111", "evidence_status": args[10]}
+
+
+def _record_env(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import outreach_compliance
+    from tenancy import Role, TenantContext
+
+    conn = _InsertConn()
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    monkeypatch.setattr(outreach_compliance, "tenant_tx", tx)
+    ctx = TenantContext(agent_id="agent@brokerage.test",
+                        tenant_id="00000000-0000-0000-0000-0000000000aa", role=Role.AGENT)
+    return asyncio, outreach_compliance, ctx, conn
+
+
+def test_the_route_stores_a_bare_written_claim_as_attested_and_says_so(monkeypatch):
+    asyncio, oc, ctx, conn = _record_env(monkeypatch)
+    out = asyncio.run(oc.record_consent(ConsentRecord(
+        contact="(302) 555-0142", channel=Channel.SMS, consent_type="express_written",
+        proof_text="agreed on the phone"), ctx))
+    assert out["evidence_status"] == EVIDENCE_ATTESTED
+    assert out["evidence_notice"] == UNVERIFIED_CONSENT_NOTICE
+    assert "will not authorise AI calls, voiceprint recording or marketing texts" in out["evidence_notice"]
+    assert conn.args[10] == EVIDENCE_ATTESTED
+    assert conn.args[12] == "agent@brokerage.test"  # recorded_by: the signed-in user
+
+
+def test_a_client_cannot_set_the_status_or_the_recorder(monkeypatch):
+    asyncio, oc, ctx, conn = _record_env(monkeypatch)
+    body = ConsentRecord.model_validate({
+        "contact": "+13025550142", "channel": "voice", "consent_type": "biometric_voiceprint",
+        "evidence_status": "documented", "recorded_by": "someone-else@x.test"})
+    out = asyncio.run(oc.record_consent(body, ctx))
+    assert out["evidence_status"] == EVIDENCE_ATTESTED and out["evidence_notice"]
+    assert conn.args[10] == EVIDENCE_ATTESTED and conn.args[12] == "agent@brokerage.test"
+
+
+def test_full_evidence_is_documented_and_carries_no_notice(monkeypatch):
+    asyncio, oc, ctx, conn = _record_env(monkeypatch)
+    out = asyncio.run(oc.record_consent(ConsentRecord(
+        contact="+13025550142", channel=Channel.SMS, consent_type="express_written",
+        proof_source="web_form", proof_text="I agree to receive marketing texts.",
+        evidence_ref=" form-event-77 "), ctx))
+    assert out == {"consent_id": "11111111-1111-1111-1111-111111111111", "contact": "+13025550142",
+                   "evidence_status": EVIDENCE_DOCUMENTED, "evidence_notice": None}
+    # proof_source, proof_text, evidence_ref are stored trimmed; captured_at defaults in SQL.
+    assert conn.args[7] == "web_form" and conn.args[11] == "form-event-77" and conn.args[13] is None
+
+
+def test_a_future_capture_time_is_kept_but_not_documented(monkeypatch):
+    from datetime import datetime as _dt
+
+    asyncio, oc, ctx, conn = _record_env(monkeypatch)
+    future = _dt.now(timezone.utc) + timedelta(days=2)
+    out = asyncio.run(oc.record_consent(ConsentRecord(
+        contact="+13025550142", channel=Channel.SMS, consent_type="express_written",
+        proof_source="web_form", proof_text="I agree.", evidence_ref="form-1",
+        captured_at=future), ctx))
+    assert out["evidence_status"] == EVIDENCE_ATTESTED and conn.args[13] == future
+
+
+def test_oral_consent_without_evidence_gets_no_notice(monkeypatch):
+    """Oral consent never authorises AI calls or marketing texts, documented or
+    not, so the notice is for written claims and voiceprint releases only."""
+    asyncio, oc, ctx, _conn = _record_env(monkeypatch)
+    out = asyncio.run(oc.record_consent(ConsentRecord(
+        contact="+13025550142", channel=Channel.SMS, consent_type="express_oral"), ctx))
+    assert out["evidence_status"] == EVIDENCE_ATTESTED and out["evidence_notice"] is None
+
+
+# ── 26.5: a text's purpose decides which consent it needs ────────────────────
+def _sms(**over):
+    base = dict(channel=Channel.SMS, contact="+13055550142", state_code="FL",
+                now_utc=NOON_ISH_UTC, suppressed=False, has_consent=False)
+    base.update(over)
+    return evaluate(**base)
+
+
+def test_a_marketing_text_needs_documented_written_consent():
+    assert not _sms(has_consent=True, purpose=Purpose.MARKETING).allowed  # oral / attested
+    assert not _sms(has_prior_business=True, purpose=Purpose.MARKETING).allowed
+    blocked = _sms(has_consent=True, purpose=Purpose.MARKETING)
+    assert any("documented" in b and "marketing text" in b for b in blocked.blockers)
+    assert _sms(has_consent=True, has_written_consent=True, purpose=Purpose.MARKETING).allowed
+
+
+def test_the_default_purpose_is_marketing():
+    assert not _sms(has_consent=True).allowed
+    assert _sms(has_consent=True, has_written_consent=True).allowed
+
+
+def test_an_informational_text_needs_express_consent_not_a_business_relationship():
+    assert _sms(has_consent=True, purpose="informational").allowed
+    no_ebr = _sms(has_prior_business=True, purpose=Purpose.INFORMATIONAL)
+    assert not no_ebr.allowed
+    assert any("prior business relationship does not count" in b for b in no_ebr.blockers)
+
+
+def test_a_prior_business_relationship_remains_a_basis_for_a_live_agent_call_only():
+    agent = _voice(has_consent=False, has_prior_business=True, has_written_consent=False,
+                   voice_mode=VoiceMode.AGENT, recording_enabled=False)
+    assert agent.allowed
+    ai = _voice(has_consent=False, has_prior_business=True, has_written_consent=False)
+    assert not ai.allowed
+
+
+def test_purpose_does_not_change_voice_or_email():
+    for purpose in Purpose:
+        assert _voice(purpose=purpose).allowed
+        assert not _voice(has_written_consent=False, purpose=purpose).allowed
+        assert evaluate(channel=Channel.EMAIL, contact="a@b.test", state_code=None,
+                        now_utc=NOON_ISH_UTC, suppressed=False, has_consent=False,
+                        purpose=purpose).allowed
+
+
+def test_an_unknown_purpose_is_refused():
+    with pytest.raises(ValueError):
+        _sms(has_consent=True, has_written_consent=True, purpose="transactional")
+
+
+def test_the_dry_run_check_defaults_to_marketing_and_forwards_the_purpose(monkeypatch):
+    import asyncio
+
+    import outreach_compliance
+    from outreach_compliance import CheckRequest, OutreachDecision
+
+    seen = {}
+
+    async def guard(_ctx, **kwargs):
+        seen.update(kwargs)
+        return OutreachDecision(allowed=True, channel="sms", contact="+13025550142", state_code="DE")
+
+    monkeypatch.setattr(outreach_compliance, "guard_outreach", guard)
+    asyncio.run(outreach_compliance.check_outreach(
+        CheckRequest(contact="+13025550142", channel=Channel.SMS, state_code="DE"), ctx=None))
+    assert seen["purpose"] is Purpose.MARKETING and seen["log"] is False
+    asyncio.run(outreach_compliance.check_outreach(
+        CheckRequest(contact="+13025550142", channel=Channel.SMS, state_code="DE",
+                     purpose="informational"), ctx=None))
+    assert seen["purpose"] is Purpose.INFORMATIONAL
+
+
+def test_the_gate_reads_written_and_voiceprint_consent_only_when_documented():
+    """SQL shape pin; the behaviour is proved on PostgreSQL in
+    tests/test_consent_evidence_live.py."""
+    import inspect
+    import re
+
+    import outreach_compliance
+
+    sql = inspect.getsource(outreach_compliance.ConsentLedger.gather_state)
+    blocks = dict((m[1], m[0]) for m in re.findall(r"(EXISTS\(SELECT 1 FROM outreach_consent.*?\)\)\s+AS (\w+))", sql, re.S))
+    assert set(blocks) == {"has_consent", "has_prior_business", "has_written_consent", "vp_consent"}
+    assert "prior_business" not in blocks["has_consent"]
+    assert "evidence_status = 'documented'" in blocks["has_written_consent"]
+    assert "evidence_status = 'documented'" in blocks["vp_consent"]
+    assert "evidence_status" not in blocks["has_consent"] and "evidence_status" not in blocks["has_prior_business"]

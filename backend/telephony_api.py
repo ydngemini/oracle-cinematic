@@ -39,7 +39,7 @@ from inbound_voice import (
 from commands_api import _load_provider_credential
 from contacts_api import _CONTACT_SELECT, _contact_json
 from db.connection import tenant_tx
-from outreach_compliance import Channel, VoiceMode, guard_outreach
+from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach
 from platform_policy import Feature, require_feature
 from tenancy import Role, TenantContext, brokerage_scope, require_context, require_role
 import record_access
@@ -879,6 +879,9 @@ async def prepare_agent_call(
         log=False,
         voice_mode=VoiceMode.AGENT,
         recording_enabled=False,
+        # Purpose: what the agent will say is unknown, so strict (26.5); a live agent
+        # call keeps consent or a prior business relationship as its basis.
+        purpose=Purpose.MARKETING,
     )
     if not decision.allowed:
         raise HTTPException(
@@ -1020,6 +1023,9 @@ async def twilio_agent_outbound(request: Request) -> Response:
         log=True,
         voice_mode=VoiceMode.AGENT,
         recording_enabled=False,
+        # Purpose: what the agent will say is unknown, so strict (26.5); a live agent
+        # call keeps consent or a prior business relationship as its basis.
+        purpose=Purpose.MARKETING,
     )
     if not decision.allowed:
         async with tenant_tx(tenant_ctx) as conn:
