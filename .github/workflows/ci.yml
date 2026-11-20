@@ -288,7 +288,9 @@ jobs:
       # per-table counts (taken inside the dump's own snapshot) must equal the
       # restore exactly; then the restore is damaged on purpose (a deleted
       # row, an FK left NOT VALID, a dropped index) and the validator must
-      # refuse it, naming what broke.
+      # refuse it, naming what broke. A second backup in authoritative scope
+      # (what the nightly backup runs, with its in-snapshot extract) is
+      # restored into a fresh database and verified too.
       # ~1 min; no secret, no provider, no network beyond the image pull.
       - name: Disaster-recovery drill (backup, destroy, restore, verify)
         env:

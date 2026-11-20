@@ -199,12 +199,15 @@ if [ -n "$WANT_TABLES" ]; then
   fi
 
   WANT_COUNTS="$(manifest_table_counts)"
+  READ_RC=$?
   PARSED="$(printf '%s\n' "$WANT_COUNTS" | grep -c . || true)"
   GOT_RAW="$(restored_table_counts "$EXCLUDED_SQL")"
   GOT_RC=$?
   GOT_COUNTS="$(printf '%s\n' "$GOT_RAW" | grep "^\".*\"$TAB[0-9][0-9]*\$" || true)"
 
-  if [ "$PARSED" != "$WANT_TABLES" ]; then
+  if [ "$READ_RC" -ne 0 ]; then
+    bad "the manifest's table_counts could not be read (reader exited $READ_RC) — no table can be called reconciled"
+  elif [ "$PARSED" != "$WANT_TABLES" ]; then
     bad "read $PARSED of the $WANT_TABLES table counts this manifest declares — it cannot be parsed in full here, so no table can be called reconciled (install jq or python3)"
   elif [ "$GOT_RC" -ne 0 ]; then
     bad "could not count every restored table: $(printf '%s\n' "$GOT_RAW" | grep -v "^\".*\"$TAB" | head -1)"
@@ -225,7 +228,8 @@ if [ -n "$WANT_TABLES" ]; then
         for (i = 1; i <= e; i++) print "EXTRA\t" extra[i] "\t" got[extra[i]]
         print "MATCHED\t" (matched + 0)
       }')"
-    MATCHED=0; MISMATCHED=0
+    CMP_RC=$?
+    MATCHED=""; MISMATCHED=0
     while IFS="$TAB" read -r kind key a b; do
       case "$kind" in
         MISSING) bad "$(unq "$key"): the backup had $a row(s); the table is MISSING after the restore"; MISMATCHED=$((MISMATCHED+1)) ;;
@@ -236,9 +240,17 @@ if [ -n "$WANT_TABLES" ]; then
     done <<EOF
 $RESULT
 EOF
-    if [ "$MISMATCHED" -eq 0 ] && [ "$MATCHED" = "$WANT_TABLES" ]; then
+    # Fail closed. Only a comparison that ran to the end, found no mismatch
+    # AND confirmed every listed table passes; anything short of that — awk
+    # failing, its output cut off, a count that does not add up — is a FAIL,
+    # never a silent gap between PASS and FAIL.
+    if [ "$CMP_RC" -ne 0 ]; then
+      bad "the comparison of backup and restored counts did not run (awk exited $CMP_RC) — nothing is reconciled"
+    elif [ "$MISMATCHED" -eq 0 ] && [ "$MATCHED" = "$WANT_TABLES" ]; then
       ok "every one of the $WANT_TABLES tables in the backup's snapshot came back with exactly its row count ($(m table_counts_rows) rows)"
       RECONCILED="EXHAUSTIVE — all $WANT_TABLES tables in the backup's snapshot matched exactly"
+    elif [ "$MISMATCHED" -eq 0 ]; then
+      bad "only ${MATCHED:-none} of the $WANT_TABLES tables could be confirmed as matching, and no mismatch was reported — the comparison did not complete, so nothing is reconciled"
     fi
   fi
 

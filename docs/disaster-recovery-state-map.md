@@ -315,10 +315,33 @@ and, while the dump runs, counts every table whose data is in the dump from that
 same session. Everything else in the manifest comes from that snapshot too: the
 migration head, the RLS counts, the constraint/foreign-key/index counts in
 `public`, the list of foreign keys the source itself never validated, and the
-authoritative-row extract (a second session that imports the snapshot). The
-session is held until `pg_dump` and the extract have finished, and closed on
-every exit path. A backup that fails part-way leaves no dump, extract, roles
-file or manifest behind.
+authoritative-row extract (a second session that imports the snapshot and runs
+alongside `pg_dump`). The snapshot is released the moment the counts, `pg_dump`
+and the extract have finished reading. The table-of-contents check, the
+checksums, the extract file and the manifest all come after the release. A
+backup that fails part-way, or is interrupted (Ctrl-C, SIGTERM), terminates
+its counting session on the server, not just the psql client: a server-side
+`count(*)` does not notice a vanished client until it finishes. It also leaves
+no dump, extract, roles file, manifest or log behind.
+
+**What it costs production.** Not yet measured on production data:
+- **An extra read of every counted table, while `pg_dump` runs.** In `full`
+  scope that includes `leads` (~29 GB) and `public_property_records` (~17 GB),
+  so a backup reads roughly twice the data it used to.
+- **`authoritative` scope** (the nightly scope) does not count those two tables
+  or `di_cache`. It reads `leads` twice:
+  - once in the snapshot session, for the source count and the extract count
+    together;
+  - once by the extract's `COPY`.
+
+  The script before this change read `leads` three times.
+- **VACUUM is held back while the snapshot is open.** No dead row newer than the
+  snapshot can be removed from any table. `pg_dump` alone has always held that
+  same horizon for its whole run. The counts and the extract run alongside it,
+  so the hold lasts as long as the slowest of the three, not their sum. Nothing
+  after the release extends it.
+- **Reference point:** the 2026-09-24 `authoritative` backup of the 47 GB source
+  took 152 s with the old script. It has not been re-timed with this one.
 
 | Manifest field | What it is |
 |---|---|
@@ -338,6 +361,8 @@ All version-1 fields are still written with their old meaning.
   lists as excluded;
 - it cannot read every `table_counts` entry (for example no jq or python3 and a
   re-formatted manifest). It never calls zero entries a match;
+- the comparison itself fails or stops short (for example `awk` fails). Only a
+  comparison that confirmed every listed table counts as a pass;
 - an excluded table is missing, or `leads` differs from the authoritative
   extract's count;
 - the constraint, foreign-key or index count in `public` differs;
@@ -359,10 +384,18 @@ values. Data in `excluded_tables` is rebuildable by definition, and is not
 reconciled.
 
 **The drill proves it.** `scripts/dr-drill.sh` now:
-- backs up while a writer commits a row every ~20 ms, then requires the
-  manifest's count for that table to lie strictly between the counts taken
-  before and after the backup, and the restored table to hold exactly the
-  manifest's count;
+- backs up while a writer commits a row every ~20 ms. The manifest's count for
+  that table must be >= the count taken before the backup and < the count
+  taken after it, and the restored table must hold exactly the manifest's
+  count;
+- takes a second backup in the other scope under the same writer
+  (`authoritative` when the drill runs in `full`, which is how CI runs it).
+  It restores that backup into a fresh database and requires:
+  - an exhaustive verification;
+  - the writer table to match that manifest;
+  - in `authoritative` scope, `leads` to match the in-snapshot extract.
+
+  So every run drills both scopes;
 - requires the clean restore to reconcile exhaustively;
 - breaks the restored database on purpose and requires the verifier to refuse
   it:
@@ -374,13 +407,19 @@ reconciled.
 Exercised locally on 2026-11-20 against a schema built from all 172 migrations
 (head `0180`), in throwaway `postgres:16-alpine` containers, with `docker cp`
 standing in for the bind mount:
-- 55/55 drill checks in `full` scope (178 tables reconciled);
-- 55/55 in `authoritative` scope (175 tables, 3 excluded, `leads` matched to
-  the extract);
+- 62/62 drill checks run in `full` scope (178 tables reconciled), including its
+  `authoritative` second pass (`leads` matched to the extract);
+- 61/61 run in `authoritative` scope (175 tables, 3 excluded), including its
+  `full` second pass;
+- 48 s each, end to end;
 - a backup as a non-superuser `BYPASSRLS` role (a stand-in for doadmin)
   succeeded;
 - a backup as a role subject to RLS failed with "query would be affected by
-  row-level security policy" and left no artifact.
+  row-level security policy" and left no artifact;
+- the same doadmin stand-in, blocked mid-count behind another session's lock:
+  - before: its count and `pg_dump` were both waiting with `backend_xmin` set;
+  - SIGTERM to the backup made it exit 143 within 0.3 s;
+  - no session of that role remained afterwards, and no file was left.
 
 CI runs the drill on `postgres:16` (Debian). Its result for this change is
 recorded with the PR, not here.

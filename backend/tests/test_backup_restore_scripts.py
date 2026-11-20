@@ -614,16 +614,20 @@ case " $* " in
       *"SHOW server_version"*) echo "16.14" ;;
       *"CREATE ROLE"*) echo 'DO $$BEGIN CREATE ROLE oracle_app; END$$;' ;;
       *pg_auth_members*) : ;;
+      *pg_terminate_backend*) : > "$L.terminated"; echo t ;;
       *) echo "unexpected -c: $SQL" >&2; exit 1 ;;
     esac ;;
-  *" -f - "*)
-    SQL="$(cat)"; printf '%s\n' "$SQL" >> "$L.import"
+  *" -f "*)
+    for ((i = 1; i <= $#; i++)); do [ "${!i}" = "-f" ] && { j=$((i + 1)); F="${!j}"; }; done
+    SQL="$(cat "$F")"; printf '%s\n' "$SQL" >> "$L.import"
+    [ -e "$L.open" ] && echo import:session-open >> "$L.events" || echo import:session-closed >> "$L.events"
     case "$SQL" in *"COPY (SELECT"*) printf '%b' "$FAKE_TSV" ;; esac ;;
   *)
     while IFS= read -r line; do
       printf '%s\n' "$line" >> "$L.session"
       case "$line" in
         *"pg_export_snapshot()"*) echo "snapshot=$FAKE_SNAPSHOT"; : > "$L.open" ;;
+        *"'backend='"*) echo "backend=4242:20261120140540123456" ;;
         *"'migration_head='"*) echo "migration_head=0999_x.sql" ;;
         *"'migration_count='"*) echo "migration_count=172" ;;
         *"'ciphertext_columns='"*) echo "ciphertext_columns=42" ;;
@@ -635,10 +639,17 @@ case " $* " in
         *"'foreign_keys_not_validated='"*) echo "foreign_keys_not_validated=lead_response_events.lead_response_events_command_fk" ;;
         *"'indexes_public='"*) echo "indexes_public=566" ;;
         *"'referenced_sql='"*) echo "referenced_sql=SELECT lead_id FROM property_media WHERE lead_id IS NOT NULL" ;;
-        *"'extract_rows='"*) echo "extract_rows=$FAKE_EXTRACT_ROWS" ;;
-        *"'source_leads='"*) echo "source_leads=10273553" ;;
+        *"'extract_rows='"*) echo "source_leads=10273553"; echo "extract_rows=$FAKE_EXTRACT_ROWS" ;;
         '\gexec')
           if [ -n "$FAKE_COUNT_FAIL" ]; then echo "ERROR:  permission denied for table leads" >&2; exit 3; fi
+          if [ -n "$FAKE_COUNT_BLOCK" ]; then
+            # A count still running on the server: only terminating the
+            # backend ends it, exactly as with real PostgreSQL.
+            : > "$L.counting"
+            while [ ! -e "$L.terminated" ]; do sleep 0.1; done
+            echo terminated-by-backend-kill >> "$L.events"
+            echo "FATAL:  terminating connection due to administrator command" >&2; exit 2
+          fi
           printf '%b' "$FAKE_COUNTS" ;;
         'COMMIT;') rm -f "$L.open"; echo committed >> "$L.events" ;;
         'ROLLBACK;') rm -f "$L.open"; echo rolled-back >> "$L.events" ;;
@@ -660,14 +671,15 @@ exit "${FAKE_DUMP_RC:-0}"
 """
 
 FAKE_PG_RESTORE_LIST = r"""#!/usr/bin/env bash
+echo toc-listed >> "$FAKE_LOG.events"
 for i in $(seq 1 60); do echo "$i; 0 0 TABLE DATA public t$i postgres"; done
 """
 
 COUNTS = '"public.clients"\\t5\\n"public.leads"\\t1\\n"public.property_media"\\t1\\n"public.tenants"\\t2\\n"public.users"\\t4\\n'
 
 
-def _backup(tmp_path, *, scope="full", counts=COUNTS, count_fail="", dump_rc=0, dump_sleep="0.3",
-            tsv="", extract_rows="0"):
+def _backup_env(tmp_path, *, scope="full", counts=COUNTS, count_fail="", count_block="", dump_rc=0,
+                dump_sleep="0.3", tsv="", extract_rows="0"):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("psql", FAKE_BACKUP_PSQL), ("pg_dump", FAKE_PG_DUMP),
@@ -684,16 +696,21 @@ def _backup(tmp_path, *, scope="full", counts=COUNTS, count_fail="", dump_rc=0, 
                ORACLE_ENV="test", ORACLE_GIT_SHA="0123456789abcdef", ORACLE_BACKUP_SCOPE=scope,
                FAKE_LOG=str(log), FAKE_SNAPSHOT=SNAPSHOT, FAKE_COUNTS=counts, FAKE_COUNT_FAIL=count_fail,
                FAKE_DUMP_RC=str(dump_rc), FAKE_DUMP_SLEEP=dump_sleep, FAKE_TSV=tsv,
-               FAKE_EXTRACT_ROWS=extract_rows)
-    started = _time.monotonic()
-    done = _subprocess.run(["bash", str(BACKUP), str(out)], env=env, capture_output=True, text=True,
-                           timeout=60)
-    elapsed = _time.monotonic() - started
+               FAKE_EXTRACT_ROWS=extract_rows, FAKE_COUNT_BLOCK=count_block)
 
     def read(suffix):
         path = pathlib.Path(f"{log}.{suffix}")
         return path.read_text() if path.exists() else ""
 
+    return env, out, tmp, log, read
+
+
+def _backup(tmp_path, **kwargs):
+    env, out, tmp, _, read = _backup_env(tmp_path, **kwargs)
+    started = _time.monotonic()
+    done = _subprocess.run(["bash", str(BACKUP), str(out)], env=env, capture_output=True, text=True,
+                           timeout=60)
+    elapsed = _time.monotonic() - started
     manifests = sorted(out.glob("*.manifest.json"))
     manifest = _json.loads(manifests[0].read_text()) if manifests else None
     return done, manifest, read, out, tmp, elapsed
@@ -706,8 +723,9 @@ def test_the_dump_and_the_counts_share_one_snapshot_held_open_until_the_dump_end
     for flag in ("--format=custom", "--compress=6", "--no-owner"):
         assert flag in read("pg_dump")
     events = read("events").split()
-    assert events[:2] == ["dump-start:session-open", "dump-end:session-open"], events
-    assert events[-1] == "committed", "the snapshot is released only after pg_dump finished"
+    assert events == ["dump-start:session-open", "dump-end:session-open", "committed", "toc-listed"], (
+        "held until pg_dump finished, and released before anything that does not read the "
+        f"database (the table-of-contents check, the checksums): {events}")
     session = read("session")
     assert "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;" in session
     assert session.index("SET row_security = off;") < session.index("pg_export_snapshot()")
@@ -747,6 +765,14 @@ def test_an_authoritative_backup_leaves_excluded_tables_uncounted_and_extracts_i
         assert f"--exclude-table-data=public.{t}" in read("pg_dump")
     imported = read("import")
     assert f"SET TRANSACTION SNAPSHOT '{SNAPSHOT}';" in imported and "COPY (SELECT * FROM leads" in imported
+    events = read("events").split()
+    assert "import:session-open" in events, "the extract must import while the exporter is open"
+    assert events.index("committed") > max(events.index("import:session-open"),
+                                           events.index("dump-end:session-open"))
+    assert events[-1] == "toc-listed", f"nothing after the release reads the database: {events}"
+    assert "extract_rows=" in session and "source_leads=" in session
+    assert session.index("referenced_sql=") < session.index("\\gexec"), (
+        "the extract's predicate is read before the counts, so the extract runs alongside the dump")
     assert manifest["expected_leads"] == "2" and manifest["authoritative_extract_rows"] == "2"
     assert manifest["source_rows_leads"] == "10273553", "source_rows_leads keeps the source's count"
     extract = next(out.glob("*.authoritative-rows.sql")).read_text()
@@ -763,8 +789,10 @@ def test_an_extract_that_disagrees_with_the_snapshot_count_is_refused(tmp_path):
 def test_a_failed_dump_releases_the_snapshot_and_leaves_no_artifact(tmp_path):
     done, manifest, read, out, tmp, _ = _backup(tmp_path, dump_rc=1)
     assert done.returncode != 0 and "pg_dump failed" in done.stderr
-    assert manifest is None and not list(out.glob("neoh-*")), list(out.iterdir())
-    assert "rolled-back" in read("events").split()
+    assert manifest is None and list(out.iterdir()) == [], list(out.iterdir())
+    # The snapshot is released as soon as pg_dump has finished, before its exit
+    # status is even looked at, so a failed dump does not hold it either.
+    assert read("events").split()[-1] == "committed"
     assert list(tmp.iterdir()) == []
 
 
@@ -774,7 +802,42 @@ def test_a_count_that_fails_stops_the_dump_and_leaves_no_artifact(tmp_path):
     assert "permission denied for table leads" in done.stderr, "the session's own error is shown"
     assert elapsed < 15, "the running pg_dump must be stopped, not waited for"
     assert "dump-end" not in read("events")
-    assert manifest is None and not list(out.glob("neoh-*")), list(out.iterdir())
+    assert manifest is None and list(out.iterdir()) == [], list(out.iterdir())
+    assert list(tmp.iterdir()) == []
+
+
+def test_a_signal_during_a_running_count_terminates_the_server_backend(tmp_path):
+    """Killing the psql client does not stop a count already running on the
+    server: PostgreSQL notices a vanished client only when it next writes to
+    it, and count(*) writes nothing until it is done — holding back VACUUM the
+    whole time. The backup must end the BACKEND, by pid and start time, from a
+    separate connection, and do it promptly rather than after the count."""
+    import signal
+
+    env, out, tmp, log, read = _backup_env(tmp_path, count_block="yes", dump_sleep="20")
+    proc = _subprocess.Popen(["bash", str(BACKUP), str(out)], env=env, stdout=_subprocess.PIPE,
+                             stderr=_subprocess.PIPE, text=True)
+    try:
+        deadline = _time.monotonic() + 20
+        while not pathlib.Path(f"{log}.counting").exists():
+            assert _time.monotonic() < deadline and proc.poll() is None, "the count never started"
+            _time.sleep(0.05)
+        started = _time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=20)
+        elapsed = _time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 143
+    assert elapsed < 10, "SIGTERM must not wait for the count to finish"
+    argv = read("argv")
+    assert argv.count("pg_terminate_backend") == 1, argv
+    terminate = argv[argv.index("pg_terminate_backend"):]
+    assert "WHERE pid = 4242" in terminate and "= '20261120140540123456'" in terminate, terminate
+    assert "terminated-by-backend-kill" in read("events").split()
+    assert "dump-end" not in read("events"), "the running pg_dump is stopped too"
+    assert list(out.iterdir()) == [], list(out.iterdir())
     assert list(tmp.iterdir()) == []
 
 
@@ -965,6 +1028,51 @@ def test_a_lost_constraint_or_index_fails_on_its_count(tmp_path, field, label):
                      "did not bring the schema back whole"], fails
 
 
+# Fail closed: a comparison that did not complete is a FAIL, never a gap
+# between PASS and FAIL that lets an otherwise clean run print VERIFIED.
+
+BROKEN = {
+    "awk-fails": "#!/usr/bin/env bash\nexit 2\n",
+    "awk-prints-nothing": "#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(BROKEN))
+def test_a_comparison_that_does_not_complete_fails_the_restore(tmp_path, kind):
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "awk").write_text(BROKEN[kind])
+    (broken / "awk").chmod(0o755)
+    real_path = _os.environ["PATH"]
+    try:
+        _os.environ["PATH"] = f"{broken}:{real_path}"
+        done, out, fails = _verify(tmp_path, V2)
+    finally:
+        _os.environ["PATH"] = real_path
+    assert done.returncode == 1 and "RESTORE VERIFIED" not in out, out
+    assert len(fails) == 1, fails
+    assert ("awk exited 2" in fails[0]) if kind == "awk-fails" else ("only none of the 3 tables" in fails[0])
+    assert "Row reconciliation: EXHAUSTIVE — all" not in out
+
+
+def test_a_reader_that_returns_nothing_fails_the_restore(tmp_path):
+    """jq present but returning nothing (and exiting 0) must not read as an
+    empty match."""
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "jq").write_text("#!/usr/bin/env bash\n"
+                               "case \"$*\" in *to_entries*) exit 0 ;; esac\n"
+                               f"exec {_shutil.which('jq') or 'false'} \"$@\"\n")
+    (broken / "jq").chmod(0o755)
+    real_path = _os.environ["PATH"]
+    try:
+        _os.environ["PATH"] = f"{broken}:{real_path}"
+        done, out, fails = _verify(tmp_path, V2)
+    finally:
+        _os.environ["PATH"] = real_path
+    assert done.returncode == 1 and any("read 0 of the 3 table counts" in f for f in fails), out
+
+
 # ── the drill proves it on real PostgreSQL ─────────────────────────────────
 
 def test_the_drill_backs_up_under_a_concurrent_writer_and_checks_the_snapshot():
@@ -985,3 +1093,17 @@ def test_the_drill_breaks_the_restore_and_requires_the_validator_to_name_it():
     assert 'grep -q "  FAIL  public.property_media: "' in negative
     assert "NOT VALID" in negative and "DROP INDEX" in negative
     assert "Row reconciliation: EXHAUSTIVE — all" in text, "the clean restore must reconcile every table"
+
+
+def test_the_drill_also_restores_and_verifies_the_other_scope():
+    """CI runs the drill in `full` scope; the nightly backup runs
+    `authoritative`, whose in-snapshot extract must be drilled too."""
+    text = DRILL.read_text(encoding="utf-8")
+    assert 'OTHER_SCOPE=authoritative' in text and '-e ORACLE_BACKUP_SCOPE="$OTHER_SCOPE"' in text
+    second = text.index('"$SRC" bash -s /backups < "$HERE/backup-postgres.sh" > "$WORK/backup-other.log"')
+    assert text.index("WRITER_PID=$!") < second < text.index("VALUES (-1);"), "under the same writer"
+    other = text[text.index('phase "11. The $OTHER_SCOPE-scope backup: restore and validate"'):]
+    assert "CREATE DATABASE neoh_restore_other" in other
+    assert 'grep -q "Row reconciliation: EXHAUSTIVE — all" "$WORK/verify-other.log"' in other
+    assert "the authoritative extract's exact count" in other
+    assert 'check "rows written during the $OTHER_SCOPE backup"' in other

@@ -182,7 +182,8 @@ MANIFEST_PATH="$OUT_DIR/neoh-${ENVIRONMENT}-${BACKUP_ID}.manifest.json"
 # down), and the one exit handler that cleans up after them. Installed here,
 # before the first artifact is written, so every failure from now on leaves
 # nothing behind that looks like a backup.
-SNAP_DIR=""; SNAP_PID=""; DUMP_PID=""; SNAPSHOT_ID=""; BACKUP_DONE=0
+SNAP_DIR=""; SNAP_PID=""; DUMP_PID=""; EXTRACT_PID=""; SNAPSHOT_ID=""; BACKUP_DONE=0
+SNAP_BACKEND_PID=""; SNAP_BACKEND_START=""; SNAP_REPLY=""
 SNAP_EOR="__neoh_snapshot_end_of_reply__"
 # Per-line read timeout on the session: a guard against a hung connection, not
 # a budget. One line arrives per counted table, so it bounds the slowest
@@ -190,19 +191,35 @@ SNAP_EOR="__neoh_snapshot_end_of_reply__"
 SNAP_TIMEOUT="${ORACLE_BACKUP_SNAPSHOT_TIMEOUT:-21600}"
 TAB="$(printf '\t')"
 
-# Every exit path, including die and Ctrl-C: stop a running pg_dump, end the
-# snapshot transaction, remove the FIFOs, and remove every artifact of a backup
-# that did not finish — a dump without its manifest is a file that looks like
-# a backup and cannot be verified.
+# Every exit path, including die, Ctrl-C and SIGTERM: stop a running pg_dump
+# and extract, end the snapshot session ON THE SERVER, remove the FIFOs, and
+# remove every artifact of a backup that did not finish — a dump without its
+# manifest is a file that looks like a backup and cannot be verified.
+#
+# Killing the psql client is not enough. PostgreSQL notices a vanished client
+# only when it next writes to it, and count(*) writes nothing until it is done,
+# so a count killed client-side kept running on the server, holding back VACUUM
+# for as long as it took (found in review, 2026-11-20). So the session's
+# BACKEND is terminated from a short separate connection — a role may
+# terminate its own backends — matched by pid AND start time, so a pid the
+# server has since reused for someone else's session is never touched.
 on_exit() {
   local rc=$? f
   trap - EXIT
   set +e   # cleanup must run to the end; a failed kill of an exited pid is fine
-  if [ -n "$DUMP_PID" ] && kill -0 "$DUMP_PID" 2>/dev/null; then
-    kill "$DUMP_PID" 2>/dev/null
-    wait "$DUMP_PID" 2>/dev/null
-  fi
+  for f in "$DUMP_PID" "$EXTRACT_PID"; do
+    if [ -n "$f" ] && kill -0 "$f" 2>/dev/null; then
+      kill "$f" 2>/dev/null
+      wait "$f" 2>/dev/null
+    fi
+  done
   if [ -n "$SNAP_PID" ]; then
+    if [ -n "$SNAP_BACKEND_PID" ]; then
+      PGCONNECT_TIMEOUT=5 "${PSQL[@]}" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE pid = $SNAP_BACKEND_PID
+          AND to_char(backend_start AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') = '$SNAP_BACKEND_START';" \
+        >/dev/null 2>&1 8>&- 9<&-
+    fi
     trap '' PIPE
     printf 'ROLLBACK;\n\\q\n' 2>/dev/null >&8
     exec 8>&-
@@ -217,7 +234,7 @@ on_exit() {
   [ -n "$SNAP_DIR" ] && rm -rf "$SNAP_DIR"
   if [ "$BACKUP_DONE" != 1 ]; then
     for f in "${DUMP_PATH:-}" "${EXTRACT_PATH:-}" "${ROLES_PATH:-}" "${MANIFEST_PATH:-}" \
-             "$OUT_DIR/.leads.tsv"; do
+             "$OUT_DIR/.leads.tsv" "$OUT_DIR/.extract.err" "$OUT_DIR/.dump.log" "$OUT_DIR/.toc.txt"; do
       [ -n "$f" ] && rm -f "$f"
     done
   fi
@@ -306,11 +323,16 @@ echo "  roles     $ROLE_COUNT role(s) -> $ROLES_NAME (no passwords)"
 # lets it see. statement/lock/idle timeouts are off for the same reason
 # pg_dump turns them off: a count that is cut short is no count.
 
-# Send SQL (and psql meta-commands) to the snapshot session and print its
-# reply. `\echo` marks the end of the reply; psql runs with ON_ERROR_STOP, so
-# any SQL error ends the session, the read sees EOF, and this returns non-zero.
+# Send SQL (and psql meta-commands) to the snapshot session; its reply lands in
+# SNAP_REPLY. `\echo` marks the end of the reply; psql runs with ON_ERROR_STOP,
+# so any SQL error ends the session, the read sees EOF, and this returns
+# non-zero. It runs in THIS shell, never in a $(...) subshell: bash defers a
+# trap until a subshell it is waiting on returns, so a count reading through a
+# subshell made Ctrl-C and SIGTERM wait for the count to finish. A trapped
+# signal interrupts `read` here at once.
 snap_query() {
   local line rc
+  SNAP_REPLY=""
   trap '' PIPE
   printf '%s\n\\echo %s\n' "$1" "$SNAP_EOR" >&8
   rc=$?
@@ -318,7 +340,8 @@ snap_query() {
   [ "$rc" -eq 0 ] || return 1
   while IFS= read -r -t "$SNAP_TIMEOUT" line <&9; do
     if [ "$line" = "$SNAP_EOR" ]; then return 0; fi
-    printf '%s\n' "$line"
+    SNAP_REPLY="$SNAP_REPLY$line
+"
   done
   return 1
 }
@@ -332,19 +355,7 @@ snap_fail() {
 }
 
 # `key=value` lines from a reply.
-reply_value() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
-
-# Run SQL from stdin in a NEW session that imports the backup's snapshot, so it
-# reads exactly what the dump and the counts read.
-in_snapshot() {
-  {
-    printf 'SET statement_timeout = 0;\nSET row_security = off;\n'
-    printf 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n'
-    printf "SET TRANSACTION SNAPSHOT '%s';\n" "$SNAPSHOT_ID"
-    cat
-    printf 'COMMIT;\n'
-  } | "${PSQL[@]}" -q -v ON_ERROR_STOP=1 -f - 8>&- 9<&-
-}
+reply_value() { printf '%s' "$1" | sed -n "s/^$2=//p" | head -1; }
 
 # What a backup has to agree with a restore about. verify-restore.sh carries
 # byte-identical copies of these three definitions, and
@@ -379,16 +390,25 @@ SNAP_PID=$!
 exec 8> "$SNAP_DIR/in"
 exec 9< "$SNAP_DIR/out"
 
-REPLY_TEXT="$(snap_query "SET statement_timeout = 0;
+snap_query "SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
 SET row_security = off;
 BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;
-SELECT 'snapshot=' || pg_export_snapshot();")" \
+SELECT 'snapshot=' || pg_export_snapshot();
+SELECT 'backend=' || pg_backend_pid() || ':' || to_char(backend_start AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') FROM pg_stat_activity WHERE pid = pg_backend_pid();" \
   || snap_fail "could not open a REPEATABLE READ transaction and export its snapshot."
-SNAPSHOT_ID="$(reply_value "$REPLY_TEXT" snapshot)"
+SNAPSHOT_ID="$(reply_value "$SNAP_REPLY" snapshot)"
 case "$SNAPSHOT_ID" in
   ''|*[!0-9A-Fa-f-]*) snap_fail "pg_export_snapshot() returned '$SNAPSHOT_ID', which is not a snapshot id." ;;
+esac
+# Which server backend to terminate if this script dies mid-count (on_exit).
+SNAP_BACKEND="$(reply_value "$SNAP_REPLY" backend)"
+case "$SNAP_BACKEND" in
+  [0-9]*:[0-9]*) SNAP_BACKEND_PID="${SNAP_BACKEND%%:*}"; SNAP_BACKEND_START="${SNAP_BACKEND#*:}" ;;
+esac
+case "$SNAP_BACKEND_PID$SNAP_BACKEND_START" in
+  *[!0-9]*) SNAP_BACKEND_PID=""; SNAP_BACKEND_START="" ;;
 esac
 echo "  snapshot  $SNAPSHOT_ID (the dump and every count below read this one state)"
 
@@ -399,10 +419,10 @@ echo "  snapshot  $SNAPSHOT_ID (the dump and every count below read this one sta
 # (0111_mls_drop_unfed_columns.sql), and there is no version column. Getting
 # that wrong does not error: the failure would turn into "unknown" in the
 # manifest, and the backup would look fine — hence the refusal below.
-REPLY_TEXT="$(snap_query "SELECT 'migration_head=' || coalesce(max(filename), 'none') FROM schema_migrations;
-SELECT 'migration_count=' || count(*) FROM schema_migrations;")" || REPLY_TEXT=""
-MIGRATION_HEAD="$(reply_value "$REPLY_TEXT" migration_head)"
-MIGRATION_COUNT="$(reply_value "$REPLY_TEXT" migration_count)"
+snap_query "SELECT 'migration_head=' || coalesce(max(filename), 'none') FROM schema_migrations;
+SELECT 'migration_count=' || count(*) FROM schema_migrations;" || SNAP_REPLY=""
+MIGRATION_HEAD="$(reply_value "$SNAP_REPLY" migration_head)"
+MIGRATION_COUNT="$(reply_value "$SNAP_REPLY" migration_count)"
 MIGRATION_HEAD="${MIGRATION_HEAD:-unknown}"
 
 # A manifest whose migration head is "unknown" cannot be verified against
@@ -423,15 +443,16 @@ fi
 #                        lead_response_events_command_fk NOT VALID, and
 #                        pg_dump preserves that). The verifier allows exactly
 #                        these and fails on any other.
-REPLY_TEXT="$(snap_query "SELECT 'ciphertext_columns=' || count(*) FROM information_schema.columns WHERE data_type='bytea' AND table_schema='public';
+snap_query "SELECT 'ciphertext_columns=' || count(*) FROM information_schema.columns WHERE data_type='bytea' AND table_schema='public';
 SELECT 'rls_tables=' || count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity;
 SELECT 'rls_forced_tables=' || count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity;
 SELECT 'rls_policies=' || count(*) FROM pg_policies WHERE schemaname='public';
 SELECT 'constraints_public=' || count(*) $CONSTRAINTS_SQL;
 SELECT 'foreign_keys_public=' || count(*) $CONSTRAINTS_SQL AND k.contype = 'f';
 SELECT 'foreign_keys_not_validated=' || coalesce(string_agg(c.relname || '.' || k.conname, ' ' ORDER BY c.relname, k.conname), '') $CONSTRAINTS_SQL AND k.contype = 'f' AND NOT k.convalidated;
-SELECT 'indexes_public=' || count(*) $INDEXES_SQL;")" \
+SELECT 'indexes_public=' || count(*) $INDEXES_SQL;" \
   || snap_fail "could not read the schema inventory inside the backup's snapshot."
+REPLY_TEXT="$SNAP_REPLY"
 CIPHERTEXT_COLUMNS="$(reply_value "$REPLY_TEXT" ciphertext_columns)"
 RLS_TABLES="$(reply_value "$REPLY_TEXT" rls_tables)"
 RLS_FORCED="$(reply_value "$REPLY_TEXT" rls_forced_tables)"
@@ -446,6 +467,77 @@ for v in "$CIPHERTEXT_COLUMNS" "$RLS_TABLES" "$RLS_FORCED" "$RLS_POLICIES" \
     ''|*[!0-9]*) snap_fail "the schema inventory came back incomplete ('$v'). Refusing to write a manifest the verifier would compare against blanks." ;;
   esac
 done
+
+# ── The rows inside the rebuildable tables that are NOT rebuildable ─────────
+#
+# A lead the harvester produced can be produced again. A lead someone signed a
+# contract on, or attached a client to, cannot — re-harvesting the parcel gives
+# back the address, not the deal. Excluding the table's data wholesale would
+# quietly drop those, and the restore would look complete.
+#
+# So `authoritative` scope pairs the dump with a plain-SQL extract of exactly
+# those rows. It is small by construction: if it ever is not, that is a signal
+# the classification above has drifted from reality and should be re-measured.
+#
+# Every read for it happens inside the backup's snapshot (REC-03): a child row
+# in the dump points at a lead as of the snapshot, so the parent has to be read
+# as of the snapshot too. Read later, a lead deleted in between would be
+# missing from the extract while its child sat in the dump. The predicate is
+# worked out here, before the dump starts, so the extract can run alongside it
+# (below) instead of after it, while the snapshot is still held.
+
+EXTRACT_NAME=""
+EXTRACT_SHA256=""
+EXTRACT_ROWS="0"
+TOUCHED=""
+if [ "$SCOPE" = "authoritative" ]; then
+  EXTRACT_NAME="neoh-${ENVIRONMENT}-${BACKUP_ID}.authoritative-rows.sql"
+  EXTRACT_PATH="$OUT_DIR/$EXTRACT_NAME"
+
+  # The predicate that defines "a human or a tenant touched this".
+  # `dossier_status <> 'draft'` and not `IS NOT NULL`: the column is NOT NULL
+  # with a 'draft' default, so the obvious null-check matches all 10.27M rows.
+  # That mistake was made once already while measuring this.
+  HUMAN_TOUCHED="seller_client_id IS NOT NULL
+        OR contract_execution_date IS NOT NULL
+        OR marketing_generated_at IS NOT NULL
+        OR coalesce(dossier_status, 'draft') <> 'draft'"
+
+  # ...plus every lead any RETAINED table still points at.
+  #
+  # Found by running this drill, which is the only reason it is here. Excluding
+  # the leads data while keeping the thirteen tables that carry a lead_id
+  # foreign key is incoherent: pg_restore loaded the children, their FKs had no
+  # parent, and 567 property_media rows, 7 reconstruction jobs, 3 interaction
+  # logs, 2 client portals and 1 live call session were REJECTED. The restore
+  # reported "completed" and had silently dropped them.
+  #
+  # A scoped backup must be closed under its own foreign keys. Derived from
+  # pg_constraint rather than a hand-written list of table names, so a child
+  # table added next year is covered without anyone remembering to come back.
+  #
+  # Every query here runs inside the backup's snapshot (REC-03): a child row in
+  # the dump points at a lead as of the snapshot, so the parent has to be read
+  # as of the snapshot too. Read later, a lead deleted in between would be
+  # missing from the extract while its child sat in the dump.
+  snap_query "SELECT 'referenced_sql=' || coalesce(string_agg(
+               format('SELECT %I FROM %s WHERE %I IS NOT NULL',
+                      a.attname, c.conrelid::regclass, a.attname),
+               ' UNION '), '')
+        FROM pg_constraint c
+        JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+       WHERE c.contype='f' AND c.confrelid = 'public.leads'::regclass;" \
+    || snap_fail "could not read which tables reference leads."
+  REFERENCED_SQL="$(reply_value "$SNAP_REPLY" referenced_sql)"
+
+  if [ -z "$REFERENCED_SQL" ]; then
+    TOUCHED="$HUMAN_TOUCHED"
+    echo "  note      no table references leads; extract is human-touched rows only"
+  else
+    TOUCHED="($HUMAN_TOUCHED) OR id IN ($REFERENCED_SQL)"
+  fi
+fi
 
 # ── The dump ────────────────────────────────────────────────────────────────
 #
@@ -483,6 +575,24 @@ pg_dump \
   --file="$DUMP_PATH" 2> "$OUT_DIR/.dump.log" 8>&- 9<&- &
 DUMP_PID=$!
 
+# The authoritative rows, from a second session that IMPORTS the same snapshot
+# (SET TRANSACTION SNAPSHOT), alongside pg_dump. Server-side COPY TO STDOUT
+# needs no privilege beyond SELECT, and unlike \copy it may span lines. Run as
+# a plain background psql (not a function or pipeline) so that $! is psql
+# itself and on_exit can stop it.
+if [ "$SCOPE" = "authoritative" ]; then
+  {
+    printf 'SET statement_timeout = 0;\nSET row_security = off;\n'
+    printf 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n'
+    printf "SET TRANSACTION SNAPSHOT '%s';\n" "$SNAPSHOT_ID"
+    printf 'COPY (SELECT * FROM leads WHERE %s) TO STDOUT;\n' "$TOUCHED"
+    printf 'COMMIT;\n'
+  } > "$SNAP_DIR/extract.sql"
+  "${PSQL[@]}" -q -v ON_ERROR_STOP=1 -f "$SNAP_DIR/extract.sql" \
+    > "$OUT_DIR/.leads.tsv" 2> "$OUT_DIR/.extract.err" 8>&- 9<&- &
+  EXTRACT_PID=$!
+fi
+
 # ── Count every table the dump carries — same snapshot, while it runs ───────
 #
 # Exact count(*), not pg_class.reltuples (an estimate) and not
@@ -492,14 +602,14 @@ DUMP_PID=$!
 # The tables whose data this scope excludes are not counted and are listed in
 # the manifest as excluded instead (EXCLUDED_SQL mirrors --exclude-table-data).
 echo "Counting every table in the snapshot ..."
-COUNT_LINES="$(snap_query "SELECT format('SELECT %L || E''\\t'' || count(*) FROM ONLY %I.%I', to_json(t.nspname || '.' || t.relname)::text, t.nspname, t.relname)
+snap_query "SELECT format('SELECT %L || E''\\t'' || count(*) FROM ONLY %I.%I', to_json(t.nspname || '.' || t.relname)::text, t.nspname, t.relname)
   FROM ($DATA_TABLES_SQL) t
  WHERE (t.nspname || '.' || t.relname) <> ALL ($EXCLUDED_SQL)
  ORDER BY t.nspname, t.relname
-\\gexec")" \
+\\gexec" \
   || snap_fail "could not count every table inside the backup's snapshot. A manifest
   without exact per-table counts cannot prove a restore complete."
-
+COUNT_LINES="$SNAP_REPLY"
 TABLE_COUNTS_JSON=""
 TABLE_COUNT_TABLES=0
 TABLE_COUNT_ROWS=0
@@ -532,18 +642,53 @@ EOF
 
 # `source_rows_leads` keeps its old meaning — the SOURCE's lead count — even
 # when this scope excludes the leads data and so leaves it out of table_counts.
-if [ "$LEAD_COUNT" = unknown ] && [ "$SCOPE" = "authoritative" ]; then
-  REPLY_TEXT="$(snap_query "SELECT 'source_leads=' || count(*) FROM leads;")" \
+# In that scope the same single scan of leads also counts the rows the extract
+# must hold: COPY's text format is one line per row, so the extract is later
+# required to have exactly this many lines.
+if [ "$SCOPE" = "authoritative" ]; then
+  snap_query "SELECT 'source_leads=' || count(*) || E'\\n' || 'extract_rows=' || count(*) FILTER (WHERE $TOUCHED) FROM leads;" \
     || snap_fail "could not count the source's leads inside the snapshot."
-  LEAD_COUNT="$(reply_value "$REPLY_TEXT" source_leads)"
+  LEAD_COUNT="$(reply_value "$SNAP_REPLY" source_leads)"
+  EXTRACT_ROWS="$(reply_value "$SNAP_REPLY" extract_rows)"
+  case "$LEAD_COUNT$EXTRACT_ROWS" in
+    ''|*[!0-9]*) snap_fail "the lead counts came back as '$LEAD_COUNT' / '$EXTRACT_ROWS'." ;;
+  esac
 fi
 echo "  counted   $TABLE_COUNT_TABLES table(s), $TABLE_COUNT_ROWS row(s)${EXCLUDED_TABLES:+; data excluded by scope: $EXCLUDED_TABLES}"
 
+# ── Release the snapshot ────────────────────────────────────────────────────
+#
+# Holding a snapshot stops VACUUM from removing any row that died after it, on
+# every table, so it is released at the first moment nothing needs it: the
+# counts are done (above), and pg_dump and the extract session have finished
+# their reads. Waiting for those two costs nothing extra — each holds the same
+# snapshot in its own transaction until it ends, so VACUUM is held back until
+# then whatever this session does — and it is the only way to be sure both
+# imported the snapshot before the transaction exporting it ended.
+# Everything that does not read the database — checking the dump's table of
+# contents, assembling the extract, the checksums, the manifest — comes after.
 set +e
 wait "$DUMP_PID"
 DUMP_RC=$?
+EXTRACT_RC=0
+if [ -n "$EXTRACT_PID" ]; then
+  wait "$EXTRACT_PID"
+  EXTRACT_RC=$?
+fi
 set -e
-DUMP_PID=""
+DUMP_PID=""; EXTRACT_PID=""
+
+snap_query "COMMIT;" || snap_fail "the snapshot transaction did not end cleanly."
+printf '\\q\n' >&8
+exec 8>&-
+set +e
+wait "$SNAP_PID"
+SNAP_RC=$?
+set -e
+exec 9<&-
+SNAP_PID=""
+[ "$SNAP_RC" -eq 0 ] || die "the snapshot session exited $SNAP_RC after COMMIT."
+echo "  released  snapshot $SNAPSHOT_ID"
 
 if [ "$DUMP_RC" -ne 0 ]; then
   echo "--- pg_dump output (last 20 lines) ---" >&2
@@ -568,83 +713,9 @@ if [ "$TOC_ENTRIES" -lt 50 ]; then
   few for this schema. Refusing to record it as a valid backup."
 fi
 
-# ── The rows inside the rebuildable tables that are NOT rebuildable ─────────
-#
-# A lead the harvester produced can be produced again. A lead someone signed a
-# contract on, or attached a client to, cannot — re-harvesting the parcel gives
-# back the address, not the deal. Excluding the table's data wholesale would
-# quietly drop those, and the restore would look complete.
-#
-# So `authoritative` scope pairs the dump with a plain-SQL extract of exactly
-# those rows. It is small by construction: if it ever is not, that is a signal
-# the classification above has drifted from reality and should be re-measured.
-
-EXTRACT_NAME=""
-EXTRACT_SHA256=""
-EXTRACT_ROWS="0"
+# The extract file: what the second session read inside the snapshot.
 if [ "$SCOPE" = "authoritative" ]; then
-  EXTRACT_NAME="neoh-${ENVIRONMENT}-${BACKUP_ID}.authoritative-rows.sql"
-  EXTRACT_PATH="$OUT_DIR/$EXTRACT_NAME"
-
-  # The predicate that defines "a human or a tenant touched this".
-  # `dossier_status <> 'draft'` and not `IS NOT NULL`: the column is NOT NULL
-  # with a 'draft' default, so the obvious null-check matches all 10.27M rows.
-  # That mistake was made once already while measuring this.
-  HUMAN_TOUCHED="seller_client_id IS NOT NULL
-        OR contract_execution_date IS NOT NULL
-        OR marketing_generated_at IS NOT NULL
-        OR coalesce(dossier_status, 'draft') <> 'draft'"
-
-  # ...plus every lead any RETAINED table still points at.
-  #
-  # Found by running this drill, which is the only reason it is here. Excluding
-  # the leads data while keeping the thirteen tables that carry a lead_id
-  # foreign key is incoherent: pg_restore loaded the children, their FKs had no
-  # parent, and 567 property_media rows, 7 reconstruction jobs, 3 interaction
-  # logs, 2 client portals and 1 live call session were REJECTED. The restore
-  # reported "completed" and had silently dropped them.
-  #
-  # A scoped backup must be closed under its own foreign keys. Derived from
-  # pg_constraint rather than a hand-written list of table names, so a child
-  # table added next year is covered without anyone remembering to come back.
-  #
-  # Every query here runs inside the backup's snapshot (REC-03): a child row in
-  # the dump points at a lead as of the snapshot, so the parent has to be read
-  # as of the snapshot too. Read later, a lead deleted in between would be
-  # missing from the extract while its child sat in the dump.
-  REPLY_TEXT="$(snap_query "SELECT 'referenced_sql=' || coalesce(string_agg(
-               format('SELECT %I FROM %s WHERE %I IS NOT NULL',
-                      a.attname, c.conrelid::regclass, a.attname),
-               ' UNION '), '')
-        FROM pg_constraint c
-        JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
-        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
-       WHERE c.contype='f' AND c.confrelid = 'public.leads'::regclass;")" \
-    || snap_fail "could not read which tables reference leads."
-  REFERENCED_SQL="$(reply_value "$REPLY_TEXT" referenced_sql)"
-
-  if [ -z "$REFERENCED_SQL" ]; then
-    TOUCHED="$HUMAN_TOUCHED"
-    echo "  note      no table references leads; extract is human-touched rows only"
-  else
-    TOUCHED="($HUMAN_TOUCHED) OR id IN ($REFERENCED_SQL)"
-  fi
-
-  REPLY_TEXT="$(snap_query "SELECT 'extract_rows=' || count(*) FROM leads WHERE $TOUCHED;")" \
-    || snap_fail "could not count the authoritative lead rows inside the snapshot."
-  EXTRACT_ROWS="$(reply_value "$REPLY_TEXT" extract_rows)"
-
-  {
-    echo "-- Neoh authoritative-row extract for backup $BACKUP_ID"
-    echo "-- Rows inside rebuildable tables that re-harvesting would NOT restore."
-    echo "-- Apply AFTER pg_restore of the matching dump."
-    echo "BEGIN;"
-  } > "$EXTRACT_PATH"
-
-  # A second session that imports the same snapshot. Server-side COPY TO
-  # STDOUT needs no privilege beyond SELECT, and unlike \copy it may span lines.
-  if ! printf 'COPY (SELECT * FROM leads WHERE %s) TO STDOUT;\n' "$TOUCHED" | in_snapshot \
-        > "$OUT_DIR/.leads.tsv" 2>"$OUT_DIR/.extract.err"; then
+  if [ "$EXTRACT_RC" -ne 0 ]; then
     cat "$OUT_DIR/.extract.err" >&2
     rm -f "$DUMP_PATH" "$EXTRACT_PATH" "$OUT_DIR/.leads.tsv" "$OUT_DIR/.extract.err"
     die "could not extract the authoritative lead rows. Refusing to record a
@@ -660,11 +731,15 @@ if [ "$SCOPE" = "authoritative" ]; then
   fi
 
   {
+    echo "-- Neoh authoritative-row extract for backup $BACKUP_ID"
+    echo "-- Rows inside rebuildable tables that re-harvesting would NOT restore."
+    echo "-- Apply AFTER pg_restore of the matching dump."
+    echo "BEGIN;"
     echo "COPY public.leads FROM STDIN;"
     cat "$OUT_DIR/.leads.tsv"
     echo "\\."
     echo "COMMIT;"
-  } >> "$EXTRACT_PATH"
+  } > "$EXTRACT_PATH"
   rm -f "$OUT_DIR/.leads.tsv" "$OUT_DIR/.extract.err"
 
   EXTRACT_SHA256="$(sha256sum "$EXTRACT_PATH" | cut -d' ' -f1)"
@@ -683,23 +758,6 @@ fi
 DUMP_BYTES="$(wc -c < "$DUMP_PATH" | tr -d ' ')"
 DUMP_SHA256="$(sha256sum "$DUMP_PATH" | cut -d' ' -f1)"
 rm -f "$OUT_DIR/.dump.log" "$OUT_DIR/.toc.txt"
-
-# ── Release the snapshot ────────────────────────────────────────────────────
-#
-# pg_dump and the extract are done with it. Holding a snapshot open stops
-# VACUUM from removing rows that died after it, so it is released as soon as
-# nothing needs it, and before anything slow (the checksum above is the last
-# read of the dump).
-snap_query "COMMIT;" >/dev/null || snap_fail "the snapshot transaction did not end cleanly."
-printf '\\q\n' >&8
-exec 8>&-
-set +e
-wait "$SNAP_PID"
-SNAP_RC=$?
-set -e
-exec 9<&-
-SNAP_PID=""
-[ "$SNAP_RC" -eq 0 ] || die "the snapshot session exited $SNAP_RC after COMMIT."
 
 # ── The manifest ────────────────────────────────────────────────────────────
 #

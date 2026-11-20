@@ -23,10 +23,16 @@ Reproduce: `scripts/dr-drill.sh` and `scripts/dr-drill-redis.sh`.
 >   equal the manifest's;
 > - breaks the restored database three ways (a deleted `property_media` row,
 >   an FK left `NOT VALID`, a dropped index) and requires the verifier to
->   refuse each, naming it.
+>   refuse each, naming it;
+> - backs up, restores and verifies the other scope as well, so CI, which runs
+>   `full`, also drills the nightly `authoritative` backup and its in-snapshot
+>   extract.
 >
-> Local result: 55/55 checks in `full` and `authoritative` scope, on
-> `postgres:16-alpine`. The CI result is recorded with the PR. Details are in
+> Local result on `postgres:16-alpine`:
+> - 62/62 checks run in `full` scope;
+> - 61/61 run in `authoritative` scope.
+>
+> The CI result is recorded with the PR. Details are in
 > [disaster-recovery-state-map.md](disaster-recovery-state-map.md#what-a-restore-is-reconciled-against-rec-03-2026-11-20).
 > A manifest from before this change verifies only the four tables, and the
 > verifier says so ("NOT EXHAUSTIVE").
