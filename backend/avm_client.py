@@ -437,7 +437,7 @@ async def _value_property_uncached(subject: dict) -> AVMResult:
             return_exceptions=True,
         )
     estimates, statuses = [], {}
-    for provider, outcome in zip(("rentcast", "attom"), outcomes):
+    for provider, outcome in zip(("rentcast", "attom"), outcomes, strict=True):
         if isinstance(outcome, BaseException):
             estimates.append(None)
             statuses[provider] = ss.failure(outcome)

@@ -225,7 +225,7 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
             "transaction_parties": "INSERT INTO transaction_parties (tenant_id, transaction_id, party_role, "
                                    "display_name) VALUES ($1,$2,'title','t')",
         }
-        for table, sql in inserts.items():
+        for sql in inserts.values():
             for who, k in (("a", "lead_b"), ("c", "lead_b"), ("c", "client_b")):
                 with pytest.raises(asyncpg.InsufficientPrivilegeError):
                     async with connection.tenant_tx(ctx(who)) as conn:

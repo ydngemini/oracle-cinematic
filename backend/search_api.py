@@ -412,7 +412,7 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
     results: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     statuses: dict[str, dict[str, Any]] = {}
-    for kind, (outcome, elapsed_ms) in zip(kinds, outcomes):
+    for kind, (outcome, elapsed_ms) in zip(kinds, outcomes, strict=True):
         if isinstance(outcome, BaseException):
             logger.warning("search leg %s failed after %d ms", kind, elapsed_ms, exc_info=outcome)
             counts[kind] = 0

@@ -24,6 +24,7 @@ import os
 import re
 import urllib.request
 import uuid
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -322,7 +323,7 @@ async def _walkthrough_backed_off():  # noqa: C901 — one scenario, read top to
             await asyncio.sleep(0.05)
         row = await job_row()
         assert row["attempts"] == voice_intel.MAX_ATTEMPTS == len(attempted)
-        gaps = [later - earlier for earlier, later in zip(attempted, attempted[1:])]
+        gaps = [later - earlier for earlier, later in pairwise(attempted)]
         assert all(gap >= 0.9 for gap in gaps), f"attempts not backed off per job: {gaps}"
         assert row["audio"] is None and row["error"].startswith("AI_BUDGET_UNAVAILABLE")
         assert sent == [], "a model was asked with the budget unreadable"

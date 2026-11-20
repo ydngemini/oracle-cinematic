@@ -1404,7 +1404,7 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
         "tenant_id": str(d["tenant_id"]), "name": d["name"], "flagged_at": _iso(d["flagged_at"]),
         "subscriptions": [{"stripe_subscription_ref": ref, "status": st, "since": _iso(at)}
                           for ref, st, at in zip(d["subscriptions"] or [], d["statuses"] or [],
-                                                 d["created"] or [])],
+                                                 d["created"] or [], strict=True)],
     } for d in duplicates if str(d["tenant_id"]) != _PLATFORM_TENANT_ID]
 
     metering_on = billing_usage.metering_configured()

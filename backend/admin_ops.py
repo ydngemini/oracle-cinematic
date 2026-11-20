@@ -563,7 +563,7 @@ async def users(ctx: TenantContext = Depends(require_platform_admin)):
         merged.append(_entry(agent_id, tenant_id=tenant_id, tenant_name=None, role=role,
                              profile=by_id.pop(agent_id.lower(), None) or {}, is_active=True))
     # Profile rows with no account at all (orphans worth seeing).
-    for user_id, profile in by_id.items():
+    for profile in by_id.values():
         merged.append(_entry(str(profile["user_id"]), tenant_id=profile.get("tenant_id"),
                              tenant_name=profile.get("tenant_name"), role="unknown",
                              profile=profile, is_active=None))

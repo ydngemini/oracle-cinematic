@@ -94,6 +94,23 @@ def test_a_decrypt_failure_names_no_content(monkeypatch):
     assert "secret" not in str(err.value)
 
 
+@pytest.mark.parametrize("answer", [None, [], ["only one"]], ids=["null", "empty", "short"])
+def test_a_short_decrypt_answer_fails_closed(monkeypatch, answer):
+    """One text per ciphertext. zip() over a short answer left the rest of the
+    rows at their plaintext default (empty), so sealed messages read as blank."""
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+
+    class _Conn:
+        async def fetchval(self, *_a):
+            return answer
+
+    field = sealed_text.INTERACTION
+    rows = [{"id": i, "content": "", "content_ciphertext": b"x", "content_ciphertext_tenant_id": TENANT}
+            for i in (1, 2)]
+    with pytest.raises(sealed_text.SealError, match=r"answered \d texts for 2 rows"):
+        asyncio.run(sealed_text.open_rows(_Conn(), rows, field))
+
+
 def _sql_literals(tree: ast.AST):
     """Every string literal or f-string, with {name} for each interpolation."""
     parts = {id(p) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for p in n.values}

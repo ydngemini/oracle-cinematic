@@ -346,7 +346,7 @@ class CensusGeocoder(DataSource):
             recovered = await self._batch_pass(
                 [rows[i] for i in retry], [parts[i] for i in retry], shape=shape,
             )
-            for slot, rec in zip(retry, recovered):
+            for slot, rec in zip(retry, recovered, strict=True):
                 if rec.get("matched"):
                     results[slot] = rec
                 elif (rec.get("lookup_status") in FAILED

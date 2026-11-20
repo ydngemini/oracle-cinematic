@@ -109,7 +109,7 @@ class FakeRoutesConn:
             )
             if row is None:
                 return None
-            for name, value in zip(names, values):
+            for name, value in zip(names, values, strict=True):
                 row[name] = value
             self.set_updates.append(dict(row))
             return dict(row)

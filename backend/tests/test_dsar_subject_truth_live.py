@@ -130,15 +130,16 @@ async def _scenario(monkeypatch):
         # without the key the request is refused before any operation exists
         # (subject_ref needs the key); _access_bundle's own 503 is unit-tested
         monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY")
-        with pytest.raises(Exception):
+        with pytest.raises(pl.LifecycleError, match="ORACLE_ENCRYPTION_MASTER_KEY is required") as exc:
             await ask(email=f"x-{s}@client.test")
+        assert exc.value.status_code == 503
         assert await admin.fetchval("SELECT count(*) FROM privacy_operations WHERE tenant_id=$1 "
                                     "AND state='running'", T) == 0
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
-            for table, ttype in await admin.fetch(
-                    "SELECT c.table_name, c.udt_name FROM information_schema.columns c "
+            for (table,) in await admin.fetch(
+                    "SELECT c.table_name FROM information_schema.columns c "
                     "JOIN information_schema.tables t USING (table_schema, table_name) "
                     "WHERE c.table_schema='public' AND c.column_name='tenant_id' "
                     "AND t.table_type='BASE TABLE' AND c.table_name <> 'tenants'"):

@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 import privacy_api as api
 from tenancy import Role, TenantContext
@@ -129,8 +130,9 @@ def test_lifecycle_errors_become_their_status_codes(monkeypatch, calls):
 
 
 def test_bodies_reject_unknown_fields():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError) as exc:
         api.ClosureRequest(confirm_name="B", reason="closing", password="x", erase_now=True)
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [("extra_forbidden", ("erase_now",))]
 
 
 def test_published_policy_lists_every_category():

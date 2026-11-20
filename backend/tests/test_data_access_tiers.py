@@ -101,7 +101,7 @@ def test_data_access_tiers_completeness():
 
     # Check that every code module is documented
     missing = []
-    for module_name, module_info in code_modules.items():
+    for module_info in code_modules.values():
         module_path = module_info["path"]
         if module_path not in documented_modules:
             missing.append(f"{module_path} (pulls {', '.join(module_info['sources'][:2])}...)")
