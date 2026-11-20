@@ -426,7 +426,7 @@ _FULL = dict(proof_source="e_signature", proof_text="I agree to receive marketin
              now_utc=NOON_ISH_UTC)
 
 
-def test_the_documented_capture_methods_are_the_owners_six():
+def test_the_documented_capture_methods_are_the_chosen_six():
     assert DOCUMENTED_PROOF_SOURCES == {"web_form", "e_signature", "signed_document",
                                         "recorded_call", "sms_keyword_reply", "ivr_keypress"}
 

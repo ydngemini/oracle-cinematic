@@ -1,13 +1,15 @@
-"""Every send path says why it sends (external audit 26.5; owner decision
-2026-11-20).
+"""Every send path says why it sends (external audit 26.5; rules chosen
+conservatively under the owner's 2026-11-20 instruction, revisable by the owner).
 
 ``guard_outreach`` takes a ``purpose`` ('informational' | 'marketing'): a
 marketing text needs documented written consent, an informational one prior
 express consent. Its default is the strict MARKETING, so a forgotten argument
-fails closed — but the owner asked for every call site to be classified on
-purpose, with a one-line reason in the code. This test finds every production
-call to ``guard_outreach`` / ``enforce_outreach`` by AST and pins the table, so
-a new call site (or a quiet reclassification) has to come through here.
+fails closed — but every call site is classified on purpose, with a one-line
+reason in the code. The one human-declared purpose is the approved one-to-one
+text (commands_api SMS: what the approver declared for that approval,
+tests/test_sms_declared_purpose.py). This test finds every production call to
+``guard_outreach`` / ``enforce_outreach`` by AST and pins the table, so a new
+call site (or a quiet reclassification) has to come through here.
 """
 
 from __future__ import annotations
@@ -19,10 +21,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 GATES = {"guard_outreach", "enforce_outreach"}
 
 # (file, enclosing function, gate, purpose expression). Where the content is
-# not classified anywhere, the owner's rule is: strict (MARKETING).
+# not classified anywhere, the rule is: strict (MARKETING).
 EXPECTED = [
     ("commands_api.py", "_execute_command_job", "guard_outreach", "Purpose.MARKETING"),  # approved email
-    ("commands_api.py", "_execute_command_job", "guard_outreach", "Purpose.MARKETING"),  # approved text
+    ("commands_api.py", "_execute_command_job", "guard_outreach", "sms_purpose"),  # approved text: declared
     ("commands_api.py", "_execute_command_job", "guard_outreach", "Purpose.MARKETING"),  # approved AI call
     ("crm.py", "send_message", "enforce_outreach", "Purpose.MARKETING"),
     ("email_outbox.py", "deliver", "guard_outreach", "outreach_compliance.Purpose.MARKETING"),

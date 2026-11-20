@@ -23,6 +23,28 @@ const OFFER_GUIDANCE = {
   red: 'Over your maximum',
 };
 
+// External audit 26.5: the person approving a one-to-one text says what it is
+// for. Marketing (preselected) needs documented written consent; informational
+// needs the person's consent to be texted. The server decides what each needs
+// and refuses informational for campaign texts — this only asks.
+const PURPOSE_OPTIONS = [
+  ['marketing', 'Marketing', 'Promotes a listing, your services or an offer. Needs documented written consent.'],
+  ['informational', 'Informational',
+    'A reply to them, a showing or appointment confirmation, or a document or deadline reminder, with no promotion. Needs their consent to be texted.'],
+];
+// Texts a pipeline wrote for a campaign stay marketing (mirrors the server).
+const CAMPAIGN_SOURCES = {
+  'speed-to-lead': 'speed-to-lead',
+  'smart-plan': 'a sales sequence',
+  'our-ai-sales-agent': 'the AI sales agent',
+};
+
+function campaignOrigin(command) {
+  const context = command.draft?.context || {};
+  if (context.mission_id || String(command.created_by || '').startsWith('mission:')) return 'a mission';
+  return CAMPAIGN_SOURCES[context.source] || null;
+}
+
 function commandLabel(command) {
   return COMMAND_LABELS[command.command_type] || 'Action';
 }
@@ -48,6 +70,7 @@ export function CommandApprovalPanel() {
   const [draft, setDraft] = useState('');
   const [reason, setReason] = useState('Reviewed target, content, timing, and compliance context.');
   const [busy, setBusy] = useState('');
+  const [purposes, setPurposes] = useState({});
 
   const load = useCallback(() => crmGet('/api/commands?limit=50').then(
     (data) => { setCommands(Array.isArray(data?.commands) ? data.commands : []); setError(''); },
@@ -58,7 +81,11 @@ export function CommandApprovalPanel() {
 
   const decide = (command, decision) => {
     setBusy(command.id);
-    crmPost(`/api/commands/${command.id}/${decision}`, { reason: reason.trim() })
+    const body = { reason: reason.trim() };
+    if (decision === 'approve' && command.command_type === 'SMS' && !campaignOrigin(command)) {
+      body.purpose = purposes[command.id] || 'marketing';
+    }
+    crmPost(`/api/commands/${command.id}/${decision}`, body)
       .then(load).catch((failure) => setError(friendlyError(failure, { fallback: 'That decision didn’t save. Try again.' })))
       .finally(() => setBusy(''));
   };
@@ -129,6 +156,28 @@ export function CommandApprovalPanel() {
                 <li key={command.id}>
                   <header><strong>{commandLabel(command)}</strong><span>{RISK_LABELS[command.risk_class] || 'Needs review'}</span></header>
                   <p>{commandSummary(command)}</p>
+                  {command.command_type === 'SMS' && campaignOrigin(command) ? (
+                    <p className={styles.purposeNote}>
+                      This text comes from {campaignOrigin(command)}, so it is treated as marketing: it needs documented written consent.
+                    </p>
+                  ) : null}
+                  {command.command_type === 'SMS' && !campaignOrigin(command) ? (
+                    <fieldset className={styles.purpose}>
+                      <legend>What is this text for?</legend>
+                      {PURPOSE_OPTIONS.map(([value, label, hint]) => (
+                        <label key={value}>
+                          <input
+                            type="radio"
+                            name={`purpose-${command.id}`}
+                            value={value}
+                            checked={(purposes[command.id] || 'marketing') === value}
+                            onChange={() => setPurposes((current) => ({ ...current, [command.id]: value }))}
+                          />
+                          <span><strong>{label}</strong><small>{hint}</small></span>
+                        </label>
+                      ))}
+                    </fieldset>
+                  ) : null}
                   {editing === command.id ? (
                     <details className={styles.editor} open>
                       <summary>Advanced: edit the raw draft</summary>

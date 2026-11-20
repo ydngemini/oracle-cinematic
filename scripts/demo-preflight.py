@@ -226,18 +226,28 @@ async def run(base_url: str, tenant_id: str, expected_sha: str, *, chat_check: b
                 WHERE tenant_id = $1::uuid AND contact = $2 AND revoked_at IS NULL""",
             tenant_id, common.DEMO_RECIPIENT)
         channels = {r["channel"]: r["consent_type"] for r in consent}
-        # 0183 (26.5/26.6): the AI call and the (unclassified, so marketing)
-        # text count only DOCUMENTED written consent. The seed records an
-        # attested claim; it is not upgraded here — that would invent evidence.
+        # 0183 (26.5/26.6): the AI call counts only DOCUMENTED written
+        # consent. A text needs documented written consent too, unless the
+        # person approving it declares it informational (a showing
+        # confirmation, a reply): then express consent (written in any
+        # evidence status, or oral) is enough. The seed records an attested
+        # claim; it is not upgraded here — that would invent evidence.
         documented = sorted({r["channel"] for r in consent if r["consent_type"] == "express_written"
                              and r["evidence_status"] == "documented"})
-        rep.add("consent on file (documented written sms + voice)",
-                {"sms", "voice"} <= set(documented),
+        express_sms = any(r["channel"] == "sms" and r["consent_type"] in ("express_written", "express_oral")
+                          for r in consent)
+        notes = []
+        if "voice" not in documented:
+            notes.append("an attested claim does not authorise the AI call: record the operator's consent "
+                         "again in the consent ledger with its capture method, disclosure text and evidence "
+                         "reference")
+        if express_sms and "sms" not in documented:
+            notes.append("the text goes out only if the approver declares it informational (marketing "
+                         "needs documented written sms consent)")
+        rep.add("consent on file (documented written voice; express sms)",
+                "voice" in documented and express_sms,
                 f"channels: {sorted(channels)}; documented written: {documented or 'none'}"
-                + ("" if {"sms", "voice"} <= set(documented) else
-                   " — an attested claim does not authorise the AI call or a marketing text; record "
-                   "the operator's consent again in the consent ledger with its capture method, "
-                   "disclosure text and evidence reference"))
+                + (" — " + "; ".join(notes) if notes else ""))
         route = await conn.fetchrow(
             """SELECT provider, outbound_verification_status FROM telephony_routes
                 WHERE tenant_id = $1::uuid AND agent_id = $2 AND active""",

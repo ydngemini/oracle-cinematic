@@ -1,5 +1,5 @@
 """A consent record authorises only what its evidence supports (external audit
-26.5 / 26.6; owner decisions 2026-11-20), against real PostgreSQL with FORCE
+26.5 / 26.6), against real PostgreSQL with FORCE
 RLS as the application role (skipped without ORACLE_LIVE_DB_ADMIN_DSN).
 
 Before 0183 any active 'express_written' row cleared an AI call and a text, any

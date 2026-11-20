@@ -32,8 +32,10 @@ Legal basis (audit observation IDs in parens):
   recording an IL recipient.
 - A2P 10DLC (2790): SMS requires a registered brand+campaign before delivery.
 
-Consent evidence and message purpose (external audit 26.5 / 26.6; owner
-decisions 2026-11-20, a conservative reading that counsel has not reviewed):
+Consent evidence and message purpose (external audit 26.5 / 26.6). The rules
+were chosen conservatively by the Claude session under the owner's instruction
+of 2026-11-20 ("continue all" on the open decisions); the owner may revise them
+and counsel has not reviewed them:
 - A consent row is 'documented' only when the server saw a recognised capture
   method, the disclosure text agreed to, an evidence reference and a capture
   time not in the future (``consent_evidence_status``); anything else is stored
@@ -135,8 +137,9 @@ def consent_evidence_status(
     *, proof_source: Optional[str], proof_text: Optional[str], evidence_ref: Optional[str],
     captured_at: Optional[datetime], now_utc: datetime,
 ) -> str:
-    """The evidence status the SERVER assigns a consent row (owner decision
-    2026-11-20 on 26.6). 'documented' needs all four: a recognised capture
+    """The evidence status the SERVER assigns a consent row (26.6; rule chosen
+    conservatively under the owner's 2026-11-20 instruction, revisable by the
+    owner). 'documented' needs all four: a recognised capture
     method, the disclosure text the person agreed to, a reference the evidence
     can be retrieved by, and a capture time that is not in the future (None =
     recorded now). Anything less is 'attested_unverified'."""
@@ -929,7 +932,7 @@ async def record_consent(body: ConsentRecord, ctx: TenantContext = Depends(requi
     norm = normalize_contact(body.contact, body.channel)
     # A claim without documented evidence is still kept (it is what the agent
     # says happened) but stored attested_unverified, and the answer says what
-    # that means (26.6, owner decision 2026-11-20).
+    # that means (26.6).
     consent_id, evidence_status = await ConsentLedger.record_consent(
         ctx, contact=norm, channel=body.channel, consent_type=body.consent_type,
         state_code=(body.state_code or None), proof_source=body.proof_source,

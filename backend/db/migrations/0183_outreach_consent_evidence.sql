@@ -1,6 +1,8 @@
 -- ---------------------------------------------------------------------------
--- 0183 — a consent record carries its evidence (external audit 26.6; owner
--- decisions of 2026-11-20 on 26.5 / 26.6 and the two L09-13 blockers).
+-- 0183 — a consent record carries its evidence (external audit 26.6, and the
+-- two L09-13 blockers). Rules chosen conservatively by the Claude session under
+-- the owner's instruction of 2026-11-20 ("continue all" on the open
+-- decisions); the owner may revise them; not counsel-reviewed.
 --
 -- 26.6: POST /api/compliance/outreach/consent stored any 'express_written' or
 -- 'biometric_voiceprint' row on the caller's word (proof optional), and the
