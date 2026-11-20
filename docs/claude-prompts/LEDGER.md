@@ -5624,7 +5624,7 @@ tests_run:
 authz_checked: "No access change. The email fix restores the code path L09-14 broke; the gate is CI-only."
 blockers:
   - "Phase 1 only (E9, F63, F7, F82). Not done from 35-03: wider ruff families, mypy/pyright on service boundaries, typed command/event contracts, checkJs for sensitive frontend flows, a changed-code coverage gate."
-  - "No test exercises the approved-email branch of _execute_command_job end to end; the regression was found by the static gate, not a test. A behavioural test for that branch is still owed."
+  - "Owed behavioural test added 2026-11-20: backend/tests/test_command_email_branch_live.py runs the approved-email branch of _execute_command_job on real PostgreSQL with only the SMTP sender stubbed — sent with the commercial footer and the drafter's identity (load_agent_identity unpatched: re-inserting the #146 shadowing import fails it), a credential that cannot be loaded ends 'failed' and is retryable, a provider rejection ends 'failed', an uncertain provider error ends reconciliation_required. Independent skeptic review: APPROVE (low notes: the stub accepts any keyword arguments; the job payload is built by the test, mirroring _queue_execution_in_tx)."
   - "Pre-existing, fixed in L09-16: submission_started=True was set before the email branch loads its credentials and identity, so any error in that window (this UnboundLocalError included) was filed as reconciliation_required ('submission began…') instead of a plain failure."
   - "Not deployed (C4.4)."
 audit_refs: [35-03]
