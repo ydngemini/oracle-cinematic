@@ -389,6 +389,13 @@ async def _session_no_longer_valid(request: Request, exc: Exception):
 _ALLOWED_ORIGINS = get_allowed_origins()
 
 app.add_middleware(AuditMiddleware)
+# Every HTTP request carrying an environment-operator token proves its
+# operator_sessions row first, including routes that answer from memory
+# (0181, audit 28.3). Inside the rate limiter and CSRF, so neither a flood nor
+# a forged cross-site request reaches the database through it.
+from operator_sessions import OperatorSessionMiddleware
+
+app.add_middleware(OperatorSessionMiddleware)
 app.add_middleware(RateLimitMiddleware, enabled=not os.environ.get("ORACLE_DISABLE_RATE_LIMIT"))
 # Cookie authentication is a built-in browser authentication path, so CSRF
 # protection is not optional. CSRFMiddleware protects every unsafe method,

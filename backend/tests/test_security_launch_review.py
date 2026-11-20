@@ -63,8 +63,13 @@ def test_server_built_contexts_keep_the_plain_guc_path():
 
 def test_environment_identities_skip_the_row_check_only_on_an_exact_match(monkeypatch):
     monkeypatch.setitem(auth.DEMO_TENANCY, "operator@x.test", ("00000000-0000-0000-0000-000000000000", "platform_admin"))
-    exact = auth._issue_jwt("operator@x.test", "00000000-0000-0000-0000-000000000000", "platform_admin")
-    assert tenancy.require_context(f"Bearer {exact}").verify_session is False
+    # No users row to check; an environment operator's session is its
+    # operator_sessions row instead (0181, audit 28.3), so it needs a jti.
+    jti = "j" * 43
+    exact = auth._issue_jwt("operator@x.test", "00000000-0000-0000-0000-000000000000", "platform_admin",
+                            extra={"jti": jti})
+    ctx = tenancy.require_context(f"Bearer {exact}")
+    assert ctx.verify_session is False and ctx.operator_session == jti
     # Same address, any other tenant or role: an ordinary account, checked.
     other = auth._issue_jwt("operator@x.test", TENANT, "broker_owner")
     assert tenancy.require_context(f"Bearer {other}").verify_session is True
