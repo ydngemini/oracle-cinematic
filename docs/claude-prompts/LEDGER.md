@@ -5606,7 +5606,7 @@ blockers:
   - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. Code-owner approval is to be required by a SEPARATE ruleset (main-code-owner-review) with a repository-admin bypass in pull-request mode, created after this file is on main: the owner's own PRs merge via the admin bypass (GitHub never counts an author's approval), a write collaborator needs the owner's review, and main-protection (required checks, no bypass) still binds everyone."
 audit_refs: [35-08]
 decision_refs: []
-next_task: "Require code-owner review once a second reviewer exists."
+next_task: "After this merges: create ruleset main-code-owner-review (pull_request: require_code_owner_review true, 1 approval; bypass: repository admin, pull_request mode), then verify an owner PR shows REVIEW_REQUIRED and merges only with --admin while CI stays required."
 updated: 2026-11-20
 ```
 
