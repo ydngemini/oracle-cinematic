@@ -22,7 +22,6 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 CONTAINER=neoh-dr-valkey
-PORT=56379
 PY="$REPO/venv/bin/python"
 
 PASS=0; FAIL=0
@@ -37,9 +36,19 @@ trap cleanup EXIT
 
 phase "1. Start a real Valkey"
 docker rm -fv "$CONTAINER" >/dev/null 2>&1
-docker run -d --name "$CONTAINER" -p "$PORT:6379" valkey/valkey:8-alpine >/dev/null 2>&1 \
-  || docker run -d --name "$CONTAINER" -p "$PORT:6379" redis:7-alpine >/dev/null 2>&1 \
+# Loopback only, and Docker picks the port. A fixed host port (this was 56379)
+# sits in Linux's ephemeral range, where an outbound connection can already
+# hold it: the Postgres drill failed CI that way ("address already in use",
+# run 44803825496). And publishing on every interface put an unauthenticated
+# Valkey on the network for the length of the drill.
+docker run -d --name "$CONTAINER" -p "127.0.0.1::6379" valkey/valkey:8-alpine >/dev/null 2>&1 \
+  || { docker rm -fv "$CONTAINER" >/dev/null 2>&1
+       docker run -d --name "$CONTAINER" -p "127.0.0.1::6379" redis:7-alpine >/dev/null 2>&1; } \
   || { echo "  could not start valkey or redis"; exit 2; }
+PORT="$(docker port "$CONTAINER" 6379/tcp 2>/dev/null | head -n1)"
+PORT="${PORT##*:}"
+[[ "$PORT" =~ ^[0-9]+$ ]] \
+  || { bad "the drill container is not running or Docker published no port for it"; exit 1; }
 for _ in $(seq 1 30); do
   docker exec "$CONTAINER" sh -c 'valkey-cli ping 2>/dev/null || redis-cli ping' 2>/dev/null | grep -q PONG && break
   sleep 1
