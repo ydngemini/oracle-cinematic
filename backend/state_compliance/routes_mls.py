@@ -309,7 +309,7 @@ async def mls_search(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("MLS search failed: %s", exc)
+        logger.error("MLS search failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",

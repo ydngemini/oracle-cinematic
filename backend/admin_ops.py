@@ -325,7 +325,8 @@ async def _fetch(ctx: TenantContext, query: str, *args, sealed: tuple = ()) -> l
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — connection/pool failures
-        logger.error("Admin query failed (Memory Core offline?): %s", exc)
+        # The type only: a database error's text can carry the value it rejected.
+        logger.error("Admin query failed (Memory Core offline?): %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",

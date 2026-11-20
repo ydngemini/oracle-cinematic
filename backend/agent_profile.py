@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from approval_service import create_approval, decide_approval
 from db.connection import tenant_tx
+from memory_core_errors import memory_core_offline
 from platform_policy import ActionRisk, communication_preferences
 from tenancy import Role, TenantContext, require_context, require_role
 from log_redaction import actor_ref
@@ -180,10 +181,7 @@ async def save_onboarding_profile(
             )
     except RuntimeError as exc:
         # tenant_tx raises when the pool never initialized (DB-less dev run).
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — profile not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "profile not persisted") from exc
 
     if result == "INSERT 0 0":
         # ON CONFLICT fired but the WHERE tenant guard rejected the update.

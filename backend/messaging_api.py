@@ -36,10 +36,56 @@ from messaging_data import (
     register_messaging_brand,
     register_messaging_campaign,
 )
+from memory_core_errors import memory_core_offline
 from tenancy import Role, TenantContext, require_context, require_role
 from billing import require_active_subscription
 
 logger = logging.getLogger("oracle.messaging")
+
+
+def _texting_provider() -> str:
+    """The configured provider, or a fixed 503. MessagingProviderError's text
+    names the server's environment variable and its value; the broker owner
+    reading the answer can set neither, so it goes to the log only."""
+    from messaging_provider import MessagingProviderError, messaging_provider_name
+
+    try:
+        return messaging_provider_name()
+    except MessagingProviderError as exc:
+        logger.error("Messaging provider misconfigured: %s", exc)
+        raise HTTPException(status_code=503, detail="Texting is not configured on this server.") from exc
+
+
+def _provider_outcomes() -> tuple[type[BaseException], ...]:
+    """What _ask_registration re-raises as a definite outcome. Anything else it
+    turns into RegistrationUnconfirmed, so what is left under a registration
+    route after these is the database or sealing layer."""
+    import recovery_mode
+    from command_providers import ProviderConfigurationError, ProviderRejectedError
+    from messaging_provider import MessagingProviderError
+
+    return (ProviderRejectedError, ProviderConfigurationError, MessagingProviderError,
+            NotImplementedError, recovery_mode.RecoveryModeBlocked)
+
+
+def _provider_outcome(exc: BaseException) -> HTTPException:
+    """Only a real rejection reaches the owner in the provider's words (the
+    adapter writes "Telnyx rejected the brand registration: ..."), for the
+    owner fixing the registration. The other outcomes never reached the
+    provider: a missing server key (TELNYX_API_KEY), recovery mode, a provider
+    with no 10DLC support. They answer a fixed sentence; the text is logged."""
+    import recovery_mode
+    from command_providers import ProviderRejectedError
+
+    if isinstance(exc, ProviderRejectedError):
+        return HTTPException(status_code=502, detail=str(exc))
+    logger.error("Texting registration not sent to the provider: %s: %s", type(exc).__name__, exc)
+    if isinstance(exc, recovery_mode.RecoveryModeBlocked):
+        return HTTPException(status_code=503, detail="Texting is paused while Neoh is in recovery mode.")
+    if isinstance(exc, NotImplementedError):
+        return HTTPException(status_code=501,
+                             detail="This server's texting provider does not support 10DLC registration.")
+    return HTTPException(status_code=503, detail="Texting is not configured on this server.")
 
 router = APIRouter(prefix="/api/messaging", tags=["Messaging"])
 
@@ -347,12 +393,12 @@ async def register_brand(
     exists, or while a submission is unresolved, is a 409 and reaches no
     provider — no adapter can update a brand in place yet."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     credentials = await _telnyx_credentials(ctx)
     try:
         return await register_messaging_brand(
-            ctx, body.model_dump(exclude_none=True), provider=messaging_provider_name(), credentials=credentials
+            ctx, body.model_dump(exclude_none=True), provider=provider, credentials=credentials
         )
     except RegistrationConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -360,8 +406,10 @@ async def register_brand(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the brand registration: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "brand registration not recorded") from exc
 
 
 @router.put("/business/registration/campaign", dependencies=[Depends(require_active_subscription)])
@@ -372,7 +420,7 @@ async def register_campaign(
     """10DLC Campaign — one per brokerage at the provider (L10-09), same
     guards as register_brand."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     credentials = await _telnyx_credentials(ctx)
     try:
@@ -381,7 +429,7 @@ async def register_campaign(
             description=body.description,
             usecase=body.usecase,
             extra=body.model_dump(exclude={"description", "usecase"}, exclude_none=True),
-            provider=messaging_provider_name(),
+            provider=provider,
             credentials=credentials,
         )
     except RegistrationConflict as exc:
@@ -390,8 +438,10 @@ async def register_campaign(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the campaign submission: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "campaign submission not recorded") from exc
 
 
 @router.post("/business/registration/refresh")
@@ -400,12 +450,7 @@ async def refresh_registration(ctx: TenantContext = Depends(require_context)) ->
     now (25.2). A broker owner only; reads, never submits. Two owners racing
     are safe: the newer provider answer wins."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import MessagingProviderError, messaging_provider_name
-
-    try:
-        provider = messaging_provider_name()
-    except MessagingProviderError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    provider = _texting_provider()
     credentials = await _telnyx_credentials(ctx)
     # Throttled: repeated clicks within 30 s answer from what was just read.
     result = await refresh_registration_status(ctx, provider=provider, credentials=credentials,
@@ -420,7 +465,7 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
     answered from the ledger, a racing or unresolved one is a 409, an
     ambiguous provider answer is a 502 that waits for an operator."""
     require_role(ctx, Role.BROKER_OWNER)
-    from messaging_provider import messaging_provider_name
+    provider = _texting_provider()
 
     business_number = await get_public_business_number(ctx)
     if business_number is None:
@@ -430,7 +475,7 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
         return await assign_messaging_campaign_number(
             ctx,
             phone_number=str(business_number["voice_caller_id_e164"]),
-            provider=messaging_provider_name(),
+            provider=provider,
             credentials=credentials,
         )
     except RegistrationConflict as exc:
@@ -439,8 +484,10 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except MessagingDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Telnyx rejected the number assignment: {exc}") from exc
+    except _provider_outcomes() as exc:
+        raise _provider_outcome(exc) from exc
+    except RuntimeError as exc:  # DatabaseUnavailable, SealError, CryptoError under tenant_tx
+        raise memory_core_offline(exc, "number assignment not recorded") from exc
 
 
 # ── Telnyx webhooks (signed, tenant-safe, idempotent) ───────────────────────

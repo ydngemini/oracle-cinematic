@@ -129,7 +129,7 @@ async def _fetch(ctx: TenantContext, query: str, *args) -> list[dict]:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("State compliance DB query failed: %s", exc)
+        logger.error("State compliance DB query failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory Core offline.",
