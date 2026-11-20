@@ -3951,7 +3951,6 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 tenant_id, recipient=str(target["email"]), body=str(draft.get("body") or "")
             )
             await reporter.progress(45, "submitting approved email")
-            submission_started = True
             # One sender, chosen by configuration. SMTP is the default, so mail
             # leaves through a server the operator controls rather than any
             # third party's API.
@@ -3984,6 +3983,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 if not isinstance(credentials, dict):
                     raise ProviderConfigurationError(malformed)
             reply_to = str(identity.get("public_email") or "").strip() or None
+            # Only now can the provider have accepted anything: a failure
+            # loading the sender, its credentials or the drafter's identity
+            # above is a definite "not sent", not reconciliation_required.
+            submission_started = True
             provider_result = await sender(
                 {**draft, "target": target, "body": commercial.body},
                 credentials=credentials,

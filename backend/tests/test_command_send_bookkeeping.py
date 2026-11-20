@@ -92,3 +92,19 @@ def test_acceptance_moves_the_first_response_to_accepted_not_delivered():
     assert "reconcile_command_delivery" in helper
     assert "SET disposition = 'sent'" not in helper
     assert "Stage.DELIVERED" not in helper, "acceptance is not delivery"
+
+
+def test_an_email_is_submission_started_only_at_the_provider_call():
+    """A failure loading the sender, its credentials or the drafter's identity
+    is a definite "not sent". Flagging the submission before them filed every
+    such failure (including the L19-25 UnboundLocalError) as
+    reconciliation_required."""
+    import inspect
+
+    worker = inspect.getsource(ca._execute_command_job)
+    start = worker.index('"submitting approved email"')
+    branch = worker[start:worker.index("provider_result = await sender(", start)]
+    flag = branch.rindex("submission_started = True")
+    for local_step in ("_resolve_email_provider()", "load_agent_identity(drafting_ctx)", "json.loads(raw)"):
+        assert branch.index(local_step) < flag, local_step
+    assert branch.count("submission_started = True") == 1

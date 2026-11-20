@@ -2109,6 +2109,27 @@ next_task: "34.4 / RUN-03 (owner decision on mid-call note writes)."
 updated: 2026-11-19
 ```
 
+#### L09-16 An approved email is flagged as submitted only at the provider call: a local failure before it is a definite "not sent", not reconciliation_required (follow-up to L19-25)
+```yaml
+id: L09-16
+status: tests_pass
+env: local
+evidence_shas: [76b6c71]   # base; fix in the commit that adds this row
+files: [backend/commands_api.py, backend/tests/test_command_send_bookkeeping.py]
+tests_run:
+  - {cmd: "read commands_api._execute_command_job email branch at 76b6c71", result: "submission_started=True was set right after the 'submitting approved email' progress, before _resolve_email_provider(), the credential load/parse and load_agent_identity; _provider_submission_is_uncertain therefore filed any failure in those local steps (including the L19-25 UnboundLocalError) as reconciliation_required ('submission began…') although no provider was contacted", date: 2026-11-19}
+  - {cmd: "test_an_email_is_submission_started_only_at_the_provider_call against 76b6c71", result: "red", date: 2026-11-19}
+  - {cmd: "after: test_command_send_bookkeeping (8) + commercial-email + static-gate tests; ruff check", result: "pass: the flag is set once, after the sender, credentials and identity are loaded, immediately before `await sender(`", date: 2026-11-19}
+authz_checked: "No access change. Only the failure classification of local errors before the provider call changes (failed instead of reconciliation_required); provider-side errors are classified as before."
+blockers:
+  - "Source-order test, not a behavioural run of the email branch (still owed, L19-25)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "A live behavioural test of the approved-email branch (approve → send stub → succeeded; credential failure → failed)."
+updated: 2026-11-19
+```
+
 ### L10
 Communications and calendars.
 
