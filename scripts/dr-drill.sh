@@ -34,8 +34,13 @@ PG_IMAGE="${ORACLE_DRILL_PG_IMAGE:-postgres:16}"
 
 SRC=neoh-dr-source
 DST=neoh-dr-restored
-SRC_PORT=55432
-DST_PORT=55433
+# No fixed host ports. The drill reaches both clusters through `docker exec`;
+# a published port exists only so --keep can say where to connect. A fixed
+# port (55432 before) sits inside Linux's ephemeral range (32768-60999), where
+# any outbound connection on the runner can already hold it: CI run
+# 44803825496 failed "address already in use" before the drill began. Docker
+# picks a free loopback port at start, and nothing listens on 0.0.0.0.
+host_port() { docker port "$1" 5432/tcp 2>/dev/null | head -n1; }
 # Distinctive on purpose. The secret-leak check below greps the manifest and
 # the log for this value, and a password that is also an ordinary word ("drill"
 # appears in the environment name, the filenames and the fixture) makes that
@@ -62,7 +67,7 @@ dq()  { docker exec "$DST" psql -U postgres -d neoh_restore -tAX -c "$1" 2>/dev/
 # A drill that cannot be run repeatedly is not a drill.
 cleanup() {
   if [ "$KEEP" = "--keep" ]; then
-    echo; echo "  --keep: $SRC (port $SRC_PORT) and $DST (port $DST_PORT) left running."
+    echo; echo "  --keep: $SRC ($(host_port "$SRC")) and $DST ($(host_port "$DST")) left running."
     return
   fi
   docker rm -fv "$SRC" "$DST" >/dev/null 2>&1
@@ -104,9 +109,12 @@ wait_ready() {
 phase "2. Build the disposable source"
 mkdir -p "$BACKUPS"
 docker rm -fv "$SRC" "$DST" >/dev/null 2>&1
-docker run -d --name "$SRC" -p "$SRC_PORT:5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src "$PG_IMAGE" >/dev/null
-wait_ready "$SRC"
+# A cluster that cannot start ends the drill here: every later step would
+# only print follow-on FAILs ("schema load looks wrong — only  tables").
+docker run -d --name "$SRC" -p "127.0.0.1::5432" -v "$BACKUPS:/backups" \
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src "$PG_IMAGE" >/dev/null \
+  || { bad "could not start the source cluster $SRC"; exit 1; }
+wait_ready "$SRC" || { bad "the source cluster $SRC never accepted connections"; exit 1; }
 
 if [ ! -f "$WORK/schema.sql" ]; then
   bad "no schema at $WORK/schema.sql — export one from a Neoh database first:
@@ -314,9 +322,10 @@ note "the source is now damaged; it is never restored over"
 # ── 6. Restore into a NEW database ─────────────────────────────────────────
 
 phase "6. Restore into a clean database"
-docker run -d --name "$DST" -p "$DST_PORT:5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore "$PG_IMAGE" >/dev/null
-wait_ready "$DST"
+docker run -d --name "$DST" -p "127.0.0.1::5432" -v "$BACKUPS:/backups" \
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore "$PG_IMAGE" >/dev/null \
+  || { bad "could not start the restore cluster $DST"; exit 1; }
+wait_ready "$DST" || { bad "the restore cluster $DST never accepted connections"; exit 1; }
 
 EMPTY="$(dq "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r';")"
 [ "${EMPTY:-1}" = "0" ] && ok "target is genuinely empty" || bad "target already has $EMPTY tables"
