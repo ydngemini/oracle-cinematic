@@ -80,8 +80,8 @@ class WorkflowEngine:
         # engine's publisher drops them (server.make_engine_publisher, owner
         # decision 2026-11-16), so its analysis would buy a paid AVM valuation
         # and build a contract package every cycle for no audience (L03-16).
-        # The analysis and predictive-cache loops start only when someone can
-        # receive what they produce.
+        # None of the engine's work (lead seed, analysis, predictive cache,
+        # harvest, scout) starts unless someone can receive what it produces.
         self.record_frames = record_frames or websocket is not None
         # Optional async `publish(payload: dict)`. When the engine is shared
         # across a tenant's sockets it has no socket of its own, and frames go
@@ -130,6 +130,20 @@ class WorkflowEngine:
 
         await self._emit_status("WORKFLOW ENGINE — initializing pipeline")
 
+        if not self.record_frames:
+            # Every product of this engine — offers, contract packages, property
+            # lists, scout parcels — is a record frame, and this engine's
+            # transport delivers none of them (server.make_engine_publisher). So
+            # nothing is seeded (no lead rows, owner names included, held in a
+            # graph nobody reads), no paid AVM valuation is bought and no portal
+            # is polled (L03-16). It says so rather than claiming agents online.
+            logger.info(
+                "Workflow engine idle: its record frames reach no one, so no lead "
+                "seed, analysis, predictive cache, harvest or scout runs (L03-16)."
+            )
+            await self._emit_status("WORKFLOW ENGINE — ambient analysis off (no audience)")
+            return
+
         # Seed the graph from REAL leads before the analysis loop runs, so the
         # novelty → CMA → contact pipeline operates on real parcels even when the
         # live county portals are unreachable. Best-effort: degrades to whatever
@@ -143,15 +157,8 @@ class WorkflowEngine:
                 "County-assessor harvester disabled — no reachable Delaware portal "
                 "and COUNTY_HARVEST_ENABLED is off. Graph runs on _seed_real_leads()."
             )
-        if self.record_frames:
-            self._analysis_task = asyncio.create_task(self._analysis_loop())
-            self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
-        else:
-            logger.info(
-                "Workflow-engine analysis and predictive cache not started: this "
-                "engine's record frames reach no one, so a paid AVM valuation per "
-                "cycle would buy nothing (L03-16)."
-            )
+        self._analysis_task = asyncio.create_task(self._analysis_loop())
+        self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
         self._scout_task = asyncio.create_task(self._scout_loop())
 
         await self._emit_status("WORKFLOW ENGINE — all agents online")
