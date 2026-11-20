@@ -296,6 +296,88 @@ jobs:
           pgtool pg_dumpall -h localhost -U postgres --roles-only --no-role-passwords > "$ORACLE_DRILL_DIR/roles.sql"
           scripts/dr-drill.sh
 
+  # Cross-version contract (external audit 35-06): can the PREVIOUS release
+  # run on the schema THIS change leaves behind? The PRE_DEPLOY job migrates
+  # before traffic switches (infra/digitalocean/app.yaml), so the old release
+  # always serves on the new schema for a while, and an application-only
+  # rollback puts it back there. migration_safety.py answers that by reading
+  # SQL; this job runs it: the previous commit's own migrations build its
+  # schema as a superuser, ownership goes to a NOSUPERUSER BYPASSRLS stand-in
+  # for DigitalOcean's doadmin, this change's runner applies the gap with the
+  # PRE_DEPLOY command, and then the previous app boots (ORACLE_ENV=staging,
+  # fail-closed) and its own live suite runs on that schema. A second cluster
+  # holds the previous schema only, so a failure can be attributed.
+  #
+  # Skipped (one runner-minute) when nothing under backend/db/migrations/*.sql
+  # or backend/run_migrations.py changed. When this harness itself changes, a
+  # canary (CHECK (false) NOT VALID on leads) must be caught, or the job fails.
+  # Advisory: deliberately NOT in release.needs or promote.needs (an owner
+  # decision, F7). No secrets, so it is safe on fork PRs. The previous suite's
+  # pytest command lives in the script, so the guard in
+  # tests/test_ci_lists_every_live_test.py still sees one live line here.
+  # docs/cross-version-contract.md explains how to read the record.
+  cross_version:
+    name: cross-version contract (previous app vs new schema)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      # Candidate: the previous schema plus this change's migrations.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: xv-ci-superuser
+          POSTGRES_DB: oracle
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oracle"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      # Control: the previous schema only. A separate cluster because roles
+      # are cluster-wide, and a gap migration may grant to or alter one.
+      pgcontrol:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: xv-ci-superuser
+          POSTGRES_DB: oracle
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oracle"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      # The throwaway clusters' superuser password (masked, never printed).
+      # Every other password is generated per run by the script.
+      XV_PG_SUPERUSER_PASSWORD: xv-ci-superuser
+    steps:
+      # fetch-depth 2: HEAD^1 is the previous release (the main tip a PR
+      # lands on, or the main tip before a merge).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
+      - name: Identify the previous release and the migration gap
+        id: identify
+        run: bash scripts/cross-version-contract.sh identify
+      - name: Previous app and its live suite on the new schema
+        if: steps.identify.outputs.mode == 'gap' || steps.identify.outputs.mode == 'canary'
+        run: bash scripts/cross-version-contract.sh run
+      # The record, boot logs and suite output, kept like the staging-verified
+      # manifest. Passwords are scrubbed from every file before upload.
+      - name: Upload the cross-version record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: cross-version-${{ steps.identify.outputs.prev7 || 'none' }}-${{ steps.identify.outputs.sha7 || 'none' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/xv/out/
+          retention-days: 90
+
   release:
     name: build release → staging
     needs: [backend, frontend, security, rls]
