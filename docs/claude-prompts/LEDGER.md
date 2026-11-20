@@ -1664,6 +1664,29 @@ next_task: "35-xx (dependency lock, typing gates, launch-state doc)."
 updated: 2026-11-19
 ```
 
+#### L07-13 The semantic parser has a real-model score, and the gateway survives a dead or retired model: measured fast default, configured-then-default fallback, a breaker for definite failures, model health in the 'ai' component (external audit AI32-08)
+```yaml
+id: L07-13
+status: tests_pass
+env: local
+evidence_shas: [a7d4caf]   # base; fix in the commit that adds this row
+files: [backend/llm_gateway.py, backend/component_health.py, backend/tests/test_llm_gateway_resilience.py, .env.example, docs/claude-prompts/evidence/ai32-08/README.md, docs/claude-prompts/evidence/ai32-08/configured-2026-11-20.json, docs/claude-prompts/evidence/ai32-08/gpt-oss-120b-2026-11-20.json, docs/claude-prompts/evidence/ai32-08/deepseek-v4p1-flash-ultrafast-2026-11-20.json]
+tests_run:
+  - {cmd: "owner-approved real-model run (2026-11-20): backend/scripts/eval_semantic_frame.py --approve-spend --split all, 129 cases (dataset sha256 3769ec8d092ba3b0), main a7d4caf", result: "AS CONFIGURED: parsed 0.0% (all 129 abstained) — Foundry unreachable (Azure subscription disabled), Fireworks fast default glm-5p2-fast 'Model not found' (retired), and the local .env ORACLE_FIREWORKS_MODEL (kimi-k2p7-code) not served by the account; only the deterministic backstop protected restrictions (preservation 1.0, 0 unauthorized). WITH A WORKING FAST MODEL: deepseek-v4p1-flash-1017-ultrafast parsed 96.9%, intent 0.744, constraint exact 0.944 / recall 0.978, preservation 1.0, 0 unauthorized, p50 2.3 s / p95 4.5 s; gpt-oss-120b parsed 80.6% (p95 12.5 s over the 8 s budget). Per-language results in docs/claude-prompts/evidence/ai32-08/", date: 2026-11-20}
+  - {cmd: "test_llm_gateway_resilience (7) + gateway, component-health, semantic-language, persona tests; ruff", result: "1128 passed: a configured model is tried first, then the release default; a stale model name degrades to the default in one call; two definite failures (not found / auth / unreachable) skip a candidate for the cool-down while timeouts and rate limits never do; a success closes it; all-open still offers every candidate; the fast default is the measured model; the 'ai' component turns DEGRADED and names skipped models without softening a worse state", date: 2026-11-20}
+authz_checked: "No access change. Model selection and failure handling only; spend holds and settlement are unchanged (the breaker sits beside them). No provider is called by the health snapshot."
+blockers:
+  - "Owner config: the local root .env sets ORACLE_FIREWORKS_MODEL=…kimi-k2p7-code, which the account no longer serves; with this change it falls back to kimi-k3, but the setting should be corrected (and checked on staging/production, unreadable here)."
+  - "Over-clarification: no case expects a question, yet 0.936 (deepseek) of parsed frames asked one, partly because the cases list no records; prompt tuning and cases with known records are next. Cost per run is not recorded by the harness (provider billing has it)."
+  - "Understanding only: chat, tool, voice and billing journeys still need their own real-model acceptance runs; no go-live threshold is written for AC05.08."
+  - "Breaker state is per process and in memory; every replica learns on its own (two failed calls each)."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-08]
+decision_refs: []
+next_task: "Owner: correct ORACLE_FIREWORKS_MODEL; then semantic-frame prompt tuning against over-clarification and a real-model chat/tool journey run."
+updated: 2026-11-20
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 

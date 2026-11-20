@@ -359,6 +359,7 @@ async def _db_components() -> dict[str, dict]:
                     failed_15m=failed, total_15m=total)
                  if failed >= 3 and failed * 2 > total and latest_turn != "completed"
                  else _c(HEALTHY, "Neoh responding", total_15m=total))
+    out["ai"] = _with_model_health(out["ai"])
     unresolved, failed_side = int(side["unresolved"] or 0), int(side["failed_15m"] or 0)
     out["outbound_side_effects"] = (
         _c(DEGRADED, "some calls/texts/emails need reconciliation", unresolved=unresolved, failed_15m=failed_side)
@@ -376,6 +377,26 @@ async def _db_components() -> dict[str, dict]:
     out["valuation_providers"] = _valuation_providers(providers)
     out["platform_email_relay"] = _platform_email_relay(providers)
     return out
+
+
+def _with_model_health(ai: dict) -> dict:
+    """AI32-08: a configured model the provider no longer serves, or a key it
+    rejects, used to show only as slow or failing answers. The gateway's
+    breaker state (this process, no provider call) names it: a healthy 'ai'
+    becomes DEGRADED when a primary chat or fast model is being skipped."""
+    try:
+        import llm_gateway
+
+        health = llm_gateway.provider_health()
+    except Exception:  # noqa: BLE001 - no gateway, nothing to add
+        return ai
+    skipped = [f"{task}: {row['provider']}/{row['model']} ({row.get('kind')})"
+               for task, rows in health.items() for row in rows if row.get("state") == "skipped"]
+    detail = {**ai.get("detail", {}), "models": health}
+    if skipped and ai["state"] == HEALTHY:
+        return _c(DEGRADED, "some configured AI models are unavailable and are being skipped: " + "; ".join(skipped),
+                  **detail)
+    return {**ai, "detail": detail}
 
 
 def _inbound_calls(unfinalized: int) -> dict:
