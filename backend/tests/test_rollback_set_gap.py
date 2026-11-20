@@ -83,6 +83,7 @@ def test_a_migration_only_the_target_has_is_refused(tmp_path):
     result = _rollback(tmp_path, _manifest(tmp_path, "target", MIGRATIONS[:-1]), _manifest(tmp_path, "live", live))
     assert result.returncode == 3
     assert "in the target release but not the live one" in result.stdout
+    assert "applied since the target release" not in result.stdout
 
 
 def test_a_gap_file_missing_from_this_checkout_is_refused(tmp_path):

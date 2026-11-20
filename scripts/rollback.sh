@@ -164,8 +164,9 @@ def listed(manifest):
     return value
 
 
-def refuse(gap, reason, method):
-    print(json.dumps({"count": len(gap), "safe": False, "method": method, "files": gap, "blocking": [reason]}))
+def refuse(gap, reason, method, count=None):
+    print(json.dumps({"count": len(gap) if count is None else count, "safe": False, "method": method,
+                      "files": gap, "blocking": [reason]}))
     raise SystemExit(0)
 
 
@@ -178,7 +179,7 @@ if target is not None and current is not None:
     if only_target:
         refuse(only_target, "in the target release but not the live one: " + ", ".join(only_target)
                + " — the live schema is not a superset of the target's, so an application-only "
-               "rollback cannot be judged", method)
+               "rollback cannot be judged", method, count=0)   # nothing was "applied since" the target
     gap_names = sorted(set(current) - set(target) | set(in_range))
 else:
     gap_names = in_range
