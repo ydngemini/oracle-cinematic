@@ -607,6 +607,7 @@ def test_excluded_tables_are_built_with_the_dump_exclusions(backup):
 FAKE_BACKUP_PSQL = r"""#!/usr/bin/env bash
 L="$FAKE_LOG"
 printf '%s\n' "$*" >> "$L.argv"
+printf '%s\n' "${PGAPPNAME:-}" >> "$L.appnames"
 case " $* " in
   *" -c "*)
     SQL="${@: -1}"
@@ -661,6 +662,7 @@ esac
 """
 
 FAKE_PG_DUMP = r"""#!/usr/bin/env bash
+printf '%s\n' "${PGAPPNAME:-}" >> "$FAKE_LOG.appnames"
 exec >/dev/null 8>&- 9<&-
 printf '%s\n' "$*" >> "$FAKE_LOG.pg_dump"
 [ -e "$FAKE_LOG.open" ] && echo dump-start:session-open >> "$FAKE_LOG.events" || echo dump-start:session-closed >> "$FAKE_LOG.events"
@@ -834,7 +836,15 @@ def test_a_signal_during_a_running_count_terminates_the_server_backend(tmp_path)
     argv = read("argv")
     assert argv.count("pg_terminate_backend") == 1, argv
     terminate = argv[argv.index("pg_terminate_backend"):]
-    assert "WHERE pid = 4242" in terminate and "= '20261120140540123456'" in terminate, terminate
+    # Every backend of THIS run (counting session, extract, pg_dump), matched by
+    # the run's unique application_name, never the cleanup connection itself.
+    names = [n for n in read("appnames").split() if n]
+    run = {n for n in names if not n.endswith("-cleanup")}
+    assert len(run) == 1 and next(iter(run)).startswith("neoh-backup-"), names
+    assert re.fullmatch(r"neoh-backup-\d{8}T\d{6}Z-\d+-[0-9a-f]{8}", next(iter(run))), names
+    assert f"{next(iter(run))}-cleanup" in names, names
+    assert f"application_name = '{next(iter(run))}'" in terminate, terminate
+    assert "pid <> pg_backend_pid()" in terminate, terminate
     assert "terminated-by-backend-kill" in read("events").split()
     assert "dump-end" not in read("events"), "the running pg_dump is stopped too"
     assert list(out.iterdir()) == [], list(out.iterdir())

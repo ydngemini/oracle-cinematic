@@ -96,6 +96,15 @@ PSQL=(psql -h "$ORACLE_DB_HOST" -p "$DB_PORT" -U "$ORACLE_DB_USER" -d "$ORACLE_D
 # ── Identify what we are about to capture ───────────────────────────────────
 
 BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+# Every connection this backup opens — the counting session, the extract and
+# pg_dump — carries one application_name unique to this run, so on_exit can
+# end ALL of them on the server (review of REC-03, 2026-11-20: the extract's
+# COPY outlived the script and kept scanning leads, holding back VACUUM).
+# libpq reads PGAPPNAME; pg_dump's own name is only a fallback.
+# The random part: inside containers $$ is small and repeats, so two
+# containers backing up in the same second would otherwise share a name.
+BACKUP_APPNAME="neoh-backup-${BACKUP_ID}-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')"
+export PGAPPNAME="$BACKUP_APPNAME"
 CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ENVIRONMENT="${ORACLE_ENV:-unknown}"
 
@@ -183,7 +192,7 @@ MANIFEST_PATH="$OUT_DIR/neoh-${ENVIRONMENT}-${BACKUP_ID}.manifest.json"
 # before the first artifact is written, so every failure from now on leaves
 # nothing behind that looks like a backup.
 SNAP_DIR=""; SNAP_PID=""; DUMP_PID=""; EXTRACT_PID=""; SNAPSHOT_ID=""; BACKUP_DONE=0
-SNAP_BACKEND_PID=""; SNAP_BACKEND_START=""; SNAP_REPLY=""
+SNAP_REPLY=""
 SNAP_EOR="__neoh_snapshot_end_of_reply__"
 # Per-line read timeout on the session: a guard against a hung connection, not
 # a budget. One line arrives per counted table, so it bounds the slowest
@@ -197,16 +206,24 @@ TAB="$(printf '\t')"
 # manifest is a file that looks like a backup and cannot be verified.
 #
 # Killing the psql client is not enough. PostgreSQL notices a vanished client
-# only when it next writes to it, and count(*) writes nothing until it is done,
-# so a count killed client-side kept running on the server, holding back VACUUM
-# for as long as it took (found in review, 2026-11-20). So the session's
-# BACKEND is terminated from a short separate connection — a role may
-# terminate its own backends — matched by pid AND start time, so a pid the
-# server has since reused for someone else's session is never touched.
+# only when it next writes to it, and count(*) or COPY writes nothing it can
+# fail on until it is done, so a query killed client-side kept running on the
+# server, holding back VACUUM for as long as it took (found in review,
+# 2026-11-20). So this run's BACKENDS are terminated from a short separate
+# connection — a role may terminate its own backends — matched by the
+# application_name unique to this run, so no other session is ever touched.
 on_exit() {
   local rc=$? f
   trap - EXIT
   set +e   # cleanup must run to the end; a failed kill of an exited pid is fine
+  # End this run's server backends FIRST (the counting session, the extract's
+  # COPY, pg_dump), then the clients. The cleanup connection names itself
+  # differently and excludes its own backend.
+  if [ -n "$SNAP_PID$DUMP_PID$EXTRACT_PID" ]; then
+    PGAPPNAME="${BACKUP_APPNAME}-cleanup" PGCONNECT_TIMEOUT=5 "${PSQL[@]}" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+      WHERE application_name = '$BACKUP_APPNAME' AND pid <> pg_backend_pid();" \
+      >/dev/null 2>&1 8>&- 9<&-
+  fi
   for f in "$DUMP_PID" "$EXTRACT_PID"; do
     if [ -n "$f" ] && kill -0 "$f" 2>/dev/null; then
       kill "$f" 2>/dev/null
@@ -214,12 +231,6 @@ on_exit() {
     fi
   done
   if [ -n "$SNAP_PID" ]; then
-    if [ -n "$SNAP_BACKEND_PID" ]; then
-      PGCONNECT_TIMEOUT=5 "${PSQL[@]}" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-        WHERE pid = $SNAP_BACKEND_PID
-          AND to_char(backend_start AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') = '$SNAP_BACKEND_START';" \
-        >/dev/null 2>&1 8>&- 9<&-
-    fi
     trap '' PIPE
     printf 'ROLLBACK;\n\\q\n' 2>/dev/null >&8
     exec 8>&-
@@ -395,20 +406,11 @@ SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
 SET row_security = off;
 BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;
-SELECT 'snapshot=' || pg_export_snapshot();
-SELECT 'backend=' || pg_backend_pid() || ':' || to_char(backend_start AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') FROM pg_stat_activity WHERE pid = pg_backend_pid();" \
+SELECT 'snapshot=' || pg_export_snapshot();" \
   || snap_fail "could not open a REPEATABLE READ transaction and export its snapshot."
 SNAPSHOT_ID="$(reply_value "$SNAP_REPLY" snapshot)"
 case "$SNAPSHOT_ID" in
   ''|*[!0-9A-Fa-f-]*) snap_fail "pg_export_snapshot() returned '$SNAPSHOT_ID', which is not a snapshot id." ;;
-esac
-# Which server backend to terminate if this script dies mid-count (on_exit).
-SNAP_BACKEND="$(reply_value "$SNAP_REPLY" backend)"
-case "$SNAP_BACKEND" in
-  [0-9]*:[0-9]*) SNAP_BACKEND_PID="${SNAP_BACKEND%%:*}"; SNAP_BACKEND_START="${SNAP_BACKEND#*:}" ;;
-esac
-case "$SNAP_BACKEND_PID$SNAP_BACKEND_START" in
-  *[!0-9]*) SNAP_BACKEND_PID=""; SNAP_BACKEND_START="" ;;
 esac
 echo "  snapshot  $SNAPSHOT_ID (the dump and every count below read this one state)"
 
