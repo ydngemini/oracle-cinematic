@@ -133,7 +133,13 @@ def test_the_zip_tier_is_a_fallback_not_a_substitute():
 
     # The subject has coordinates and the radius query returned nothing; the
     # ZIP tier then also returns nothing here, but the radius was tried first.
-    assert any("distance_miles" in query for query in conn.queries)
+    # This used to check only that some query mentioned distance_miles, which
+    # the ZIP tier's own SQL does too (as NULL), and left `result` unread
+    # (ruff F841, audit 35-03 phase 2). Pin the order instead.
+    radius = next(i for i, q in enumerate(conn.queries) if "WHERE distance_miles <=" in q)
+    same_zip = next(i for i, q in enumerate(conn.queries) if "NULL::float8 AS distance_miles" in q)
+    assert radius < same_zip, "the ZIP tier ran before the radius search"
+    assert result["scope"]["tiers_attempted"] == ["radius", "same_zip"]
 
 
 def test_no_comps_reports_the_scope_searched_and_the_dataset_coverage():

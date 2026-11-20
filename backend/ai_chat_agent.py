@@ -1028,7 +1028,10 @@ def _request_parse_hold() -> int:
     import llm_gateway
     import semantic_frame
 
-    if not any(p.supports_response_format and p.name != "local" for p in llm_gateway.providers_for("fast")):
+    # include_skipped: complete() still tries a skipped structured model rather
+    # than refusing (AI32-08), so the hold must cover that call too.
+    if not any(p.supports_response_format and p.name != "local"
+               for p in llm_gateway.providers_for("fast", include_skipped=True)):
         return 0
     zone = semantic_turn.default_timezone()
     # Any instant with microseconds: its ISO form is as long as the parse's own.

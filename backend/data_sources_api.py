@@ -166,7 +166,11 @@ async def _regrid_health() -> dict:
 
 @router.get("/health")
 async def health(ctx: TenantContext = Depends(require_context)) -> dict:
-    cache = await _cache_layer()
+    # Called for its check, not its value: the cache is mandatory, so a health
+    # read with no cache answers 503 here instead of reporting
+    # "cache_enabled": True. The return value was bound to a name nothing read
+    # (ruff F841, audit 35-03 phase 2).
+    await _cache_layer()
     return {
         "ok": True,
         "cache_enabled": True,

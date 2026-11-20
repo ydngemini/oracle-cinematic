@@ -186,9 +186,11 @@ class MississippiMDEQHarvester(BaseHarvester):
 
         zip_code = str(row.get("SZIP") or "").strip()[:10]
 
-        # Mailing address for absentee detection.
+        # Mailing address for absentee detection. MCITY1 is not read: the
+        # comparison below already includes the ZIP, which places the address
+        # more exactly than a city name (it was read and never used: ruff
+        # F841, audit 35-03 phase 2).
         mail_street = str(row.get("MAILADD1") or "").strip()
-        mail_city = str(row.get("MCITY1") or "").strip()
         mail_state = str(row.get("MSTATE1") or "").strip()
         mail_zip = str(row.get("MZIP1") or "").strip()
 

@@ -437,9 +437,13 @@ def _run_rollback(tmp_path, target_head: str, current_head: str, *,
         "backend_digest": "sha256:" + "a" * 64,
         "frontend_digest": "sha256:" + "b" * 64,
         "migration_head": target_head,
+        # Real manifests always carry the count; rollback.sh uses it to prove
+        # an older (list-less) manifest's filename range is the whole set (35-06 F1).
+        "migration_count": _count_through(target_head),
     }))
     current = tmp_path / "current.json"
-    current.write_text(json.dumps({"migration_head": current_head}))
+    current.write_text(json.dumps({"migration_head": current_head,
+                                   "migration_count": _count_through(current_head)}))
 
     smoke = tmp_path / "smoke.sh"   # stands in for infra/digitalocean/smoke-test.sh (DEP-06)
     smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; exit {smoke_exit}\n')
@@ -456,6 +460,11 @@ def _run_rollback(tmp_path, target_head: str, current_head: str, *,
         capture_output=True, text=True, env=env, timeout=60,
     )
     return proc, (calls.read_text() if calls.exists() else ""), tmp_path
+
+
+def _count_through(head: str) -> int:
+    names = sorted(p.name for p in (REPO / "backend" / "db" / "migrations").glob("*.sql"))
+    return sum(1 for n in names if n <= head)
 
 
 def test_do_rollback_applies_the_previous_digests(tmp_path):
@@ -681,9 +690,11 @@ def _rollback(tmp_path, *args, app_name="neoh", live_domains=(), domain=None):
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "doctl").write_text(FAKE_DOCTL)
     (bin_dir / "doctl").chmod(0o755)
-    head = sorted(p.name for p in (REPO / "backend" / "db" / "migrations").glob("*.sql"))[-1]
+    names = sorted(p.name for p in (REPO / "backend" / "db" / "migrations").glob("*.sql"))
+    head = names[-1]
     manifest = {"release_id": "abc1234", "backend_digest": "sha256:" + "a" * 64,
-                "frontend_digest": "sha256:" + "b" * 64, "migration_head": head}
+                "frontend_digest": "sha256:" + "b" * 64, "migration_head": head,
+                "migration_count": len(names), "migrations": names}
     (tmp_path / "to.json").write_text(json.dumps(manifest))
     (tmp_path / "from.json").write_text(json.dumps({**manifest, "release_id": "def5678"}))
     app = [{"spec": {"name": app_name, "domains": [{"domain": d} for d in live_domains]}}]

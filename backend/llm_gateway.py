@@ -46,6 +46,14 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 
 logger = logging.getLogger("oracle.llm_gateway")
 
+# litellm calls dotenv.load_dotenv() on import unless LITELLM_MODE is not "DEV"
+# (its default): importing it pulled the working directory's .env into the
+# process — real provider keys included — even with ORACLE_SKIP_DOTENV=1 set
+# (the test suite, the eval scripts) and on servers that are configured only
+# by their platform environment. Configuration comes from the process
+# environment, and server.py alone decides whether a .env is read.
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
+
 # How far back the call counter keeps timestamps. An hour comfortably covers the
 # 60-second window the runtime-load endpoint asks for while leaving room for a
 # wider question later.
@@ -404,12 +412,36 @@ def _local(model: str) -> Optional[Provider]:
     )
 
 
+def _configured_then_default(provider: str, env_name: str, default: str) -> tuple[tuple[str, str], ...]:
+    """The operator's model first, then the release's default on the same
+    provider (AI32-08). A deployment whose env names a model the account no
+    longer serves (a retired router, a renamed model) used to lose that whole
+    tier — every call "Model not found" — with a working default one line
+    away. Now the default is the next candidate, so a stale setting degrades
+    to the release's choice instead of to no model at all."""
+    configured = _env(env_name)
+    models = [configured] if configured else []
+    if default not in models:
+        models.append(default)
+    return tuple((provider, model) for model in models)
+
+
+# The fast tier's default, chosen on measurement (AI32-08, 2026-11-20, the
+# semantic-frame suite: 129 en/es/mixed cases). Under the parser's 8 s budget
+# deepseek-v4p1-flash ultrafast parsed 96.9% (p50 2.3 s, p95 4.5 s, constraint
+# recall 0.978); gpt-oss-120b parsed 80.6% (p95 12.5 s); glm-5p2-fast, the
+# previous default, is retired ("Model not found"); glm-5p3-fast and kimi-k3
+# timed out at 8 s. Re-measure before changing it: docs/claude-prompts/
+# evidence/ai32-08/.
+FIREWORKS_FAST_DEFAULT = "accounts/fireworks/routers/deepseek-v4p1-flash-1017-ultrafast"
+FIREWORKS_ANALYSIS_DEFAULT = "accounts/fireworks/models/kimi-k3"
+
 # Ordered candidates per task. The first configured one answers; the rest are
 # fallbacks, and only `complete()` is allowed to use them.
 _TASK_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     "analysis": (
-        ("fireworks", _env("ORACLE_FIREWORKS_MODEL") or "accounts/fireworks/models/kimi-k3"),
-        ("foundry", _env("ORACLE_FOUNDRY_MODEL") or "Kimi-K2.6"),
+        *_configured_then_default("fireworks", "ORACLE_FIREWORKS_MODEL", FIREWORKS_ANALYSIS_DEFAULT),
+        *_configured_then_default("foundry", "ORACLE_FOUNDRY_MODEL", "Kimi-K2.6"),
         ("bedrock", "us.meta.llama3-3-70b-instruct-v1:0"),
         ("local", _env("ORACLE_LOCAL_LLM_MODEL") or "local-llama"),
     ),
@@ -421,8 +453,8 @@ _TASK_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     # budget. The analysis ladder below is ordered the other way for the same
     # reason: there fireworks is faster (695ms vs 1,124ms median).
     "fast": (
-        ("foundry", _env("ORACLE_FOUNDRY_MODEL") or "Kimi-K2.6"),
-        ("fireworks", _env("ORACLE_FIREWORKS_FAST_MODEL") or "accounts/fireworks/routers/glm-5p2-fast"),
+        *_configured_then_default("foundry", "ORACLE_FOUNDRY_MODEL", "Kimi-K2.6"),
+        *_configured_then_default("fireworks", "ORACLE_FIREWORKS_FAST_MODEL", FIREWORKS_FAST_DEFAULT),
         ("bedrock", "us.meta.llama3-1-8b-instruct-v1:0"),
         ("local", _env("ORACLE_LOCAL_LLM_MODEL") or "local-llama"),
     ),
@@ -438,15 +470,121 @@ _BUILDERS = {"fireworks": _fireworks, "bedrock": _bedrock, "foundry": _foundry, 
 MIN_TOKENS = int(_env("ORACLE_FIREWORKS_MIN_TOKENS") or 2048)
 
 
-def providers_for(task: str) -> list[Provider]:
-    """Configured providers for a task, best first. May be empty."""
+def providers_for(task: str, *, include_skipped: bool = False) -> list[Provider]:
+    """Configured providers for a task, best first. May be empty.
+
+    A (provider, model) whose breaker is open (repeated definite failures, see
+    below) is left out, unless every candidate is open — then all are offered,
+    so a recovery is noticed rather than the task failing without a try.
+    `include_skipped` returns the whole configured ladder (operator views)."""
     resolved: list[Provider] = []
     for provider_name, model in _TASK_MODELS.get(task, _TASK_MODELS["analysis"]):
         builder = _BUILDERS.get(provider_name)
         provider = builder(model) if builder else None
         if provider is not None:
             resolved.append(provider)
-    return resolved
+    if include_skipped:
+        return resolved
+    return _usable(resolved)
+
+
+def _usable(candidates: list[Provider]) -> list[Provider]:
+    """The candidates whose breaker is closed, or all of them when none is: a
+    call is never refused only because every option failed recently."""
+    available = [p for p in candidates if not _breaker_open(p)]
+    return available or candidates
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker for failures that will repeat (AI32-08)
+# ---------------------------------------------------------------------------
+# A retired model name or a rejected key fails the same way on every call;
+# retrying it first on every request only spends the caller's deadline (the
+# voice path has 8 s). Two in a row skip that (provider, model) for
+# BREAKER_COOLDOWN_S. An unreachable host is different: litellm reports every
+# status-less error — a connection reset, a DNS blip, its own parsing
+# failures — as APIConnectionError, so it counts only when it is sustained:
+# UNREACHABLE_THRESHOLD failures spread over at least UNREACHABLE_MIN_SPAN_S
+# (two calls in flight during a one-second blip must not switch a model off).
+# After the cool-down the candidate is offered again (a half-open trial): a
+# failure reopens it at once, a success clears it. Failures older than the
+# cool-down are forgotten. Timeouts and rate limits never count. Per process,
+# in memory.
+BREAKER_THRESHOLD = 2
+UNREACHABLE_THRESHOLD = 3
+UNREACHABLE_MIN_SPAN_S = 60.0
+BREAKER_COOLDOWN_S = float(_env("ORACLE_LLM_BREAKER_COOLDOWN_SECONDS") or 300)
+_DEFINITE = {
+    "NotFoundError": "model_not_found",
+    "AuthenticationError": "auth_rejected",
+    "PermissionDeniedError": "auth_rejected",
+}
+_SUSTAINED = {"APIConnectionError": "unreachable"}
+_breaker: dict[tuple[str, str], dict[str, Any]] = {}
+_breaker_lock = threading.Lock()
+
+
+def _failure_kind(exc: BaseException) -> Optional[str]:
+    name = type(exc).__name__
+    return _DEFINITE.get(name) or _SUSTAINED.get(name)
+
+
+def _breaker_open(provider: Provider) -> bool:
+    with _breaker_lock:
+        state = _breaker.get((provider.name, provider.model))
+        return bool(state and state.get("open_until", 0.0) > time.monotonic())
+
+
+def _breaker_record(provider: Provider, *, ok: bool, exc: Optional[BaseException] = None) -> None:
+    key = (provider.name, provider.model)
+    kind = None if ok or exc is None else _failure_kind(exc)
+    now = time.monotonic()
+    with _breaker_lock:
+        if ok:
+            _breaker.pop(key, None)
+            return
+        if kind is None:
+            return  # a timeout or rate limit says nothing about the next call
+        state = _breaker.get(key)
+        if state is None or now - state["last_at"] > BREAKER_COOLDOWN_S + state.get("open_for", 0.0):
+            state = {"failures": 0, "first_at": now}
+            _breaker[key] = state
+        state["failures"] += 1
+        state["kind"] = kind
+        state["last_at"] = now
+        sustained = kind in _SUSTAINED.values()
+        trips = (state["failures"] >= UNREACHABLE_THRESHOLD and now - state["first_at"] >= UNREACHABLE_MIN_SPAN_S
+                 if sustained else state["failures"] >= BREAKER_THRESHOLD)
+        if trips:
+            state["open_until"] = now + BREAKER_COOLDOWN_S
+            state["open_for"] = BREAKER_COOLDOWN_S
+            logger.error("llm_gateway: %s %s skipped for %.0f s after %d %s failures",
+                         provider.name, provider.model.split("/")[-1], BREAKER_COOLDOWN_S,
+                         state["failures"], kind)
+
+
+def provider_health() -> dict[str, list[dict[str, Any]]]:
+    """Each task's configured candidates and what this process last saw of
+    them: ok, failing (count, kind) or skipped (breaker open). For the health
+    snapshot; never calls a provider."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    now = time.monotonic()
+    for task in _TASK_MODELS:
+        rows = []
+        for provider_name, model in _TASK_MODELS[task]:
+            builder = _BUILDERS.get(provider_name)
+            provider = builder(model) if builder else None
+            if provider is None or provider_name == "local":
+                continue
+            with _breaker_lock:
+                state = dict(_breaker.get((provider.name, provider.model)) or {})
+            row: dict[str, Any] = {"provider": provider.name, "model": provider.model.split("/")[-1], "state": "ok"}
+            if state:
+                row.update(failures=state["failures"], kind=state["kind"],
+                           state="skipped" if state.get("open_until", 0.0) > now else "failing")
+            rows.append(row)
+        out[task] = rows
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +783,8 @@ async def complete(
     fail; it mis-parses, and a silent format downgrade inside something that
     plans actions is worse than no answer at all.
     """
-    providers = providers_for(task)
+    configured = providers_for(task, include_skipped=True)
+    providers = _usable(configured)
     if not providers:
         raise LLMUnavailable(
             f"No provider is configured for {task!r}. Set ORACLE_FIREWORKS_API_KEY, "
@@ -653,7 +792,10 @@ async def complete(
             f"local server."
         )
     if response_format is not None:
-        capable = [p for p in providers if p.supports_response_format]
+        # The breaker filter is applied after the capability filter: a skipped
+        # structured-output model is still a better trial than refusing
+        # because only the non-structured local tier is "available".
+        capable = _usable([p for p in configured if p.supports_response_format])
         if not capable:
             raise LLMUnavailable(
                 f"{task!r} requires structured output, and none of the configured "
@@ -716,6 +858,7 @@ async def complete(
         except Exception as exc:  # noqa: BLE001 - any provider error is a fallback trigger
             await _unhold(scope, hold)
             counter.record(task, provider.name, ok=False, exc=exc)
+            _breaker_record(provider, ok=False, exc=exc)
             last_error = exc
             logger.warning("llm_gateway: %s/%s failed: %s", task, provider.name, exc)
             continue
@@ -731,6 +874,7 @@ async def complete(
             logger.warning("llm_gateway: %s/%s returned empty content", task, provider.name)
             continue
         counter.record(task, provider.name, ok=True)
+        _breaker_record(provider, ok=True)
         return text
 
     raise LLMUnavailable(
@@ -806,6 +950,7 @@ async def stream(
         except Exception as exc:  # noqa: BLE001
             await _unhold(scope, hold)
             counter.record(task, provider.name, ok=False, exc=exc)
+            _breaker_record(provider, ok=False, exc=exc)
             last_error = exc
             if emitted:
                 # Mid-stream failure. The caller already has a partial answer;
@@ -821,6 +966,7 @@ async def stream(
         await _unhold(scope, hold)
         if emitted:
             counter.record(task, provider.name, ok=True)
+            _breaker_record(provider, ok=True)
             return
         counter.record(task, provider.name, ok=False)
         last_error = LLMUnavailable(f"{provider.name} streamed no content")
@@ -885,9 +1031,11 @@ async def tool_call(
     except Exception as exc:  # noqa: BLE001
         await _unhold(scope, hold)
         counter.record(task, provider.name, ok=False, exc=exc)
+        _breaker_record(provider, ok=False, exc=exc)
         raise LLMUnavailable(f"{provider.name} failed during a tool round: {exc}") from exc
     await _settle(scope, hold, response)
     counter.record(task, provider.name, ok=True)
+    _breaker_record(provider, ok=True)
     return response
 
 

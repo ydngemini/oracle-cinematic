@@ -1664,6 +1664,32 @@ next_task: "35-xx (dependency lock, typing gates, launch-state doc)."
 updated: 2026-11-19
 ```
 
+#### L07-13 The semantic parser has a real-model score, and the gateway survives a dead or retired model: measured fast default, configured-then-default fallback, a breaker for definite failures, operator-only model health (external audit AI32-08)
+```yaml
+id: L07-13
+status: tests_pass
+env: local
+evidence_shas: [a7d4caf]   # base; fix in the commit that adds this row
+files: [backend/llm_gateway.py, backend/component_health.py, backend/operator_api.py, backend/ml_forge/bedrock_client.py, backend/tests/test_llm_gateway_resilience.py, backend/tests/test_ai_budget_hosted_calls.py, backend/tests/conftest.py, .env.example, docs/claude-prompts/evidence/ai32-08/README.md, docs/claude-prompts/evidence/ai32-08/configured-2026-11-20.json, docs/claude-prompts/evidence/ai32-08/gpt-oss-120b-2026-11-20.json, docs/claude-prompts/evidence/ai32-08/deepseek-v4p1-flash-ultrafast-2026-11-20.json]
+tests_run:
+  - {cmd: "owner-approved real-model run (2026-11-20): backend/scripts/eval_semantic_frame.py --approve-spend --split all, 129 cases (dataset sha256 3769ec8d092ba3b0), main a7d4caf", result: "AS CONFIGURED: parsed 0.0% (all 129 abstained) — Foundry unreachable (Azure subscription disabled), Fireworks fast default glm-5p2-fast 'Model not found' (retired), and the local .env ORACLE_FIREWORKS_MODEL (kimi-k2p7-code) not served by the account; only the deterministic backstop protected restrictions (preservation 1.0, 0 unauthorized). WITH A WORKING FAST MODEL: deepseek-v4p1-flash-1017-ultrafast parsed 96.9%, intent 0.744, constraint exact 0.944 / recall 0.978, preservation 1.0, 0 unauthorized, p50 2.3 s / p95 4.5 s; gpt-oss-120b parsed 80.6% (p95 12.5 s over the 8 s budget). Per-language results in docs/claude-prompts/evidence/ai32-08/", date: 2026-11-20}
+  - {cmd: "test_llm_gateway_resilience (7) + gateway, component-health, semantic-language, persona tests; ruff", result: "1128 passed: a configured model is tried first, then the release default; a stale model name degrades to the default in one call; (superseded by the review r1 line below) a configured-then-default ladder, a breaker that skips a candidate after definite failures, and model health", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed; test_llm_gateway_resilience (14) + gateway, health, operator, semantic, persona, hosted-call tests; ruff", result: "pass: a connection blip (litellm reports every status-less error as APIConnectionError) no longer opens the breaker — an unreachable host counts only as 3 failures over at least 60 s; model-not-found / key-rejected still skip after 2; failures a cool-down apart are forgotten; after the cool-down a half-open trial reopens on failure; a structured call whose only structured model is skipped still tries it instead of refusing; the 'ai' component (and its user banner) is untouched — a new operator-only 'ai_models' component lists skipped models and goes DEGRADED only when a task has no hosted model left; /api/admin/ai shows the whole configured ladder with skipped models marked and 'current' = first not skipped; bedrock_client's retired fast default replaced; importing the gateway sets LITELLM_MODE=PRODUCTION (and conftest does) so litellm no longer loads the working directory's .env behind ORACLE_SKIP_DOTENV", date: 2026-11-20}
+  - {cmd: "review r2: APPROVE (probe re-run offline); follow-ups applied: the request-parse hold counts a skipped structured model (include_skipped), tests that stub providers_for accept the new keyword; full unit suite 7046 passed before (the 3 failures were those stubs)", result: "pass", date: 2026-11-20}
+authz_checked: "No access change. Model selection and failure handling only; spend holds and settlement are unchanged (the breaker sits beside them). No provider is called by the health snapshot. Behaviour change: litellm no longer reads a .env on import (LITELLM_MODE=PRODUCTION default) — configuration comes from the process environment, and server.py alone decides whether a .env is loaded."
+blockers:
+  - "Owner config: the local root .env sets ORACLE_FIREWORKS_MODEL=…kimi-k2p7-code, which the account no longer serves; with this change it falls back to kimi-k3, but the setting should be corrected (and checked on staging/production, unreadable here)."
+  - "Over-clarification: no case expects a question, yet 0.936 (deepseek) of parsed frames asked one, partly because the cases list no records; prompt tuning and cases with known records are next. Cost per run is not recorded by the harness (provider billing has it)."
+  - "Understanding only: chat, tool, voice and billing journeys still need their own real-model acceptance runs; no go-live threshold is written for AC05.08."
+  - "Breaker state is per process and in memory; every replica learns on its own (2 not-found / key-rejected failures, or 3 unreachable failures over 60 s, each)."
+  - "Re-running backend/scripts/eval_semantic_frame.py now needs the provider keys in the process environment (litellm no longer reads .env on import)."
+  - "Not deployed (C4.4)."
+audit_refs: [AI32-08]
+decision_refs: []
+next_task: "Owner: correct ORACLE_FIREWORKS_MODEL; then semantic-frame prompt tuning against over-clarification and a real-model chat/tool journey run."
+updated: 2026-11-20
+```
+
 ### L08
 Durable missions and workflows. Open work exists: PR #11 (`feat/mission-internal-tasks-executable`, commits `55ac99c`, `0b52fbf`), not merged.
 
@@ -5590,23 +5616,24 @@ next_task: "35-03 (typing gates) or 35-06 (migration cross-version contract test
 updated: 2026-11-19
 ```
 
-#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS is still open (external audit 35-08)
+#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS names owners for the high-risk paths (external audit 35-08)
 ```yaml
 id: L19-24
 status: tests_pass
 env: local
 evidence_shas: [97e337d]
-files: [docs/claude-prompts/LEDGER.md]
+files: [.github/CODEOWNERS, docs/claude-prompts/LEDGER.md]
 tests_run:
   - {cmd: "gh api (read-only) repos/ydngemini/oracle-cinematic: vulnerability-alerts, automated-security-fixes, branches/main/protection, rulesets; tree", result: "before: vulnerability alerts off (404), automated security fixes off, no classic branch protection, rulesets main-protection and noah-branch-namespace active, no CODEOWNERS file", date: 2026-11-19}
   - {cmd: "with the owner's approval: gh api -X PUT .../vulnerability-alerts and .../automated-security-fixes; read back", result: "vulnerability alerts on (204), automated security fixes enabled:true", date: 2026-11-19}
+  - {cmd: "2026-11-20: gh api codeowners/errors on the branch; rulesets/27349721 read back; collaborators", result: "CODEOWNERS: 0 errors; main-protection: PR + 4 required checks, 0 approvals, require_code_owner_review false, no bypass actors; collaborators: ydngemini (admin) and Murtazadarya (write) — so the repository is NOT single-maintainer: a write collaborator could merge to main (which deploys staging) with no owner review", date: 2026-11-20}
 authz_checked: "Repository settings only, changed by the owner's explicit choice; security-fix PRs still go through CI and review before any merge."
 blockers:
-  - "Not done: a CODEOWNERS file naming reviewers for auth, billing, telephony, privacy, migrations and deployment, and whether rulesets should require that review. Owner decision (single-maintainer repository today)."
+  - "CODEOWNERS added 2026-11-20 (owner approved changing review requirements): auth, billing, telephony/outbound, privacy, migrations and build/deploy paths name the owner. Code-owner approval is to be required by a SEPARATE ruleset (main-code-owner-review) with a repository-admin bypass in pull-request mode, created after this file is on main: the owner's own PRs merge via the admin bypass (GitHub never counts an author's approval), a write collaborator needs the owner's review, and main-protection (required checks, no bypass) still binds everyone."
 audit_refs: [35-08]
 decision_refs: []
-next_task: "Owner: CODEOWNERS / required review."
-updated: 2026-11-19
+next_task: "After this merges: create ruleset main-code-owner-review (pull_request: require_code_owner_review true, 1 approval; bypass: repository admin, pull_request mode), then verify an owner PR shows REVIEW_REQUIRED and merges only with --admin while CI stays required."
+updated: 2026-11-20
 ```
 
 #### L19-25 A phase-1 static gate (ruff: syntax errors, undefined and unbound names) runs in CI, and the UnboundLocalError it found in the approved-email path is fixed (external audit 35-03; regression from L09-14)
@@ -5624,13 +5651,60 @@ tests_run:
 authz_checked: "No access change. The email fix restores the code path L09-14 broke; the gate is CI-only."
 blockers:
   - "Phase 1 only (E9, F63, F7, F82). Not done from 35-03: wider ruff families, mypy/pyright on service boundaries, typed command/event contracts, checkJs for sensitive frontend flows, a changed-code coverage gate."
-  - "No test exercises the approved-email branch of _execute_command_job end to end; the regression was found by the static gate, not a test. A behavioural test for that branch is still owed."
+  - "Owed behavioural test added 2026-11-20: backend/tests/test_command_email_branch_live.py runs the approved-email branch of _execute_command_job on real PostgreSQL with only the SMTP sender stubbed — sent with the commercial footer and the drafter's identity (load_agent_identity unpatched: re-inserting the #146 shadowing import fails it), a credential that cannot be loaded ends 'failed' and is retryable, a provider rejection ends 'failed', an uncertain provider error ends reconciliation_required. Independent skeptic review: APPROVE (low notes: the stub accepts any keyword arguments; the job payload is built by the test, mirroring _queue_execution_in_tx)."
   - "Pre-existing, fixed in L09-16: submission_started=True was set before the email branch loads its credentials and identity, so any error in that window (this UnboundLocalError included) was filed as reconciliation_required ('submission began…') instead of a plain failure."
   - "Not deployed (C4.4)."
 audit_refs: [35-03]
 decision_refs: []
 next_task: "A behavioural test for the email command branch; then widen the gate (F401/F811 or B-family) one family at a time."
 updated: 2026-11-19
+```
+
+#### L19-26 rollback.sh judges the set of migrations between two releases (union the old filename range), so a late lower-numbered migration can no longer slip past the safety verdict (external audit 35-06, follow-up F1)
+```yaml
+id: L19-26
+status: tests_pass
+env: local
+evidence_shas: [2eeb8b4]   # base; fix in the commit that adds this row
+files: [scripts/rollback.sh, scripts/build-release-manifest.sh, docs/deploy-digitalocean.md, backend/tests/test_rollback_set_gap.py, backend/tests/test_release_immutability.py]
+tests_run:
+  - {cmd: "read scripts/rollback.sh and build-release-manifest.sh at 2eeb8b4", result: "confirmed: the gap was `target_head < name <= current_head`; 0144_drop_duplicate_tenant_policies landed while the head was 0145, so a rollback from a release with 0144 to one without it (same head) classified an EMPTY gap and was allowed, although the classifier calls 0144 non-additive. Manifests recorded only migration_head, migration_count and a hash", date: 2026-11-20}
+  - {cmd: "test_rollback_set_gap against 2eeb8b4's rollback.sh", result: "red: 2 failed (the late-file rollback was allowed; the count mismatch was not refused)", date: 2026-11-20}
+  - {cmd: "after: test_rollback_set_gap (4, runs the real script's dry run) + test_release_immutability (fixtures given realistic counts/lists)", result: "73 passed: a target missing only 0144 is a 1-migration gap and UNSAFE (exit 3); an older list-less manifest whose counts disagree with the range is refused as unprovable; identical sets have nothing to check; manifests now record the sorted migration list", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed; test_rollback_set_gap (9) + test_release_immutability; red against 2eeb8b4", result: "78 passed; 5 of the new tests red on 2eeb8b4. Review r1 showed the set alone was LOOSER than the range when the live manifest omits a file applied independently of the image (TO..0172, FROM..0179 without 0173 was allowed): the gap is now the union of the set difference and the range, and that case passes on 2eeb8b4 too (never looser). A migration only the target has is refused (live schema not a superset); a gap file missing from the checkout is refused; a non-list or non-.sql 'migrations' value makes the script refuse; 'no migrations were applied' is printed only for a safe empty gap; the builder test runs the real script with a stub docker", date: 2026-11-20}
+  - {cmd: "independent review r2: APPROVE (crafted manifests re-run, dry runs only); cosmetic follow-up applied — a target-only refusal no longer prints 'N migration(s) applied since the target release'", result: "78 passed", date: 2026-11-20}
+authz_checked: "No access change. Release tooling only: the gap is the old range plus the set difference, so it is stricter, never looser; the classifier (migration_safety, DEP-05) is unchanged and still the only authority."
+blockers:
+  - "Manifests built before this change carry no list: their rollbacks use the range only when the migration counts are consistent with it (a necessary condition, not proof — a removed file plus a late one would balance; history has no removed or renamed migrations), and are refused otherwise."
+  - "The rest of 35-06 (a CI job that boots the previous release and runs its live suite on the new schema) is the next PR; the judged design is recorded in the session's workflow output and the ledger next_task."
+  - "Not deployed (C4.4)."
+audit_refs: [35-06]
+decision_refs: []
+next_task: "35-06 main: cross_version CI job (previous app boot + previous live suite on this branch's schema migrated as a NOSUPERUSER doadmin stand-in, with a canary self-test)."
+updated: 2026-11-20
+```
+
+#### L19-27 static gate phase 2: unused locals (F841) and redefinitions (F811), every finding read and classified (external audit 35-03 phase 2)
+```yaml
+id: L19-27
+status: tests_pass
+env: local
+evidence_shas: [a7d4caf]   # base; fix in the commit that adds this row
+files: [backend/ruff.toml, backend/tests/test_static_gate.py, backend/requirements-test.txt, .github/workflows/ci.yml, backend/migration_safety.py, backend/state_compliance/models.py, backend/telephony_api.py, backend/tests/test_ai_tools_read.py, backend/tests/test_business_number_connect.py, backend/tests/test_mls_backfill_resume.py, backend/tests/test_harvester_mailing_zip_absentee.py, "backend/harvesters/*.py", "and the dead-binding files listed in the PR"]
+tests_run:
+  - {cmd: "ruff with F841+F811 over a7d4caf's backend", result: "red: 54 findings (29 F841, 25 F811); phase-1 rules alone pass", date: 2026-11-20}
+  - {cmd: "after: ruff check . ; unit tests of the changed modules (33 .py files in the diff); test_static_gate; harvester tests", result: "All checks passed; 1150 + 1351 passed. Classified: 4 real (2 weak tests — the ai_tools radius-before-ZIP assertion matched SQL both tiers contain, and the caller-ID anti-spoofing test ran a copy of the rule instead of configure_route (plus its sibling); migration_safety's precomputed 'replaced' set now used; a fastapi import shadowed by a model field), 32 dead (bindings dropped, calls that do work kept), 18 intended with a reasoned noqa (pytest fixtures imported from another module). Also: _run_sync leaked ORACLE_INGEST_TENANT_ID into later tests", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed", result: "the implementer had 'fixed' two harvesters (al_jefferson, mo_jackson) to compare the mailing ZIP for absentee detection; the reviewer measured 8000 live rows per county (read-only public ArcGIS) and the rule flagged owner-occupants (AL 47 of 2595 same-street-line parcels, the AL ZIP field being a municipality code; MO 87 of 3164, 64 with the same city on both sides). Reverted: the ZIP and city reads are dead and dropped with the measurement cited; the test now asserts a ZIP alone never flips an owner to absentee. onboard_ai_agent keeps its original SQL. The gate test rejects prefix ignores (F8, F84). Comments say phases 1-2", date: 2026-11-20}
+  - {cmd: "independent review r2 + full backend suite", result: "APPROVE (mutation-checked the rewritten tests); 7066 passed, 0 failed. Low notes: the gate test does not catch ignore=ALL, extend-ignore or a file-level ruff noqa (none exist); OUT_FIELDS still fetches the unused mailing city/ZIP columns", date: 2026-11-20}
+authz_checked: "No access change. Two test files now exercise the real route (configure_route) instead of a copy of its rule; no production behaviour changes except removing dead reads."
+blockers:
+  - "A cross-municipality absentee rule (same street line, another town) needs a county-wide street-line index; not attempted."
+  - "Wider families (B, UP, SIM) are later phases; B008 (509) and F401 (324) dominate and need their own triage."
+  - "Not deployed (C4.4)."
+audit_refs: [35-03]
+decision_refs: []
+next_task: "35-03 phase 3: F401 unused imports (324) in bounded batches, then B023/B904."
+updated: 2026-11-20
 ```
 
 ### L20

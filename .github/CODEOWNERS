@@ -1,0 +1,85 @@
+# Code owners for the high-risk areas (external audit 35-08).
+#
+# GitHub requests a review from these owners on any PR that touches a listed
+# path. Code-owner approval is required for merges to main by a separate
+# ruleset (main-code-owner-review) with a repository-admin bypass for pull
+# requests only: the owner authors PRs with their own account and GitHub never
+# counts an author's own approval, while a non-admin collaborator with write
+# access cannot merge to main (which deploys staging) without the owner's
+# review. The CI checks stay required for everyone (ruleset main-protection,
+# no bypass).
+#
+# Later patterns win, so the catch-all comes first.
+
+*                                   @ydngemini
+
+# Authentication, sessions, tenancy and operator access
+/backend/auth.py                    @ydngemini
+/backend/tenancy.py                 @ydngemini
+/backend/mfa_api.py                 @ydngemini
+/backend/operator_api.py            @ydngemini
+/backend/webhook_auth.py            @ydngemini
+/backend/security_alerts.py         @ydngemini
+/backend/totp.py                    @ydngemini
+/backend/user_mfa.py                @ydngemini
+/backend/csrf_middleware.py         @ydngemini
+/backend/rate_limit*.py             @ydngemini
+/backend/record_access.py           @ydngemini
+/backend/audit_*.py                 @ydngemini
+/backend/admin_c2.py                @ydngemini
+/backend/admin_ops.py               @ydngemini
+
+# Billing and metering
+/backend/billing*.py                @ydngemini
+/backend/ai_budget.py               @ydngemini
+/backend/ai_budget_api.py           @ydngemini
+/backend/seats.py                   @ydngemini
+/backend/provider_purchases.py      @ydngemini
+
+# Telephony, messaging and outbound actions
+/backend/commands_api.py            @ydngemini
+/backend/telephony_api.py           @ydngemini
+/backend/inbound_voice.py           @ydngemini
+/backend/*_call_handler.py          @ydngemini
+/backend/voice_*.py                 @ydngemini
+/backend/telnyx_signing.py          @ydngemini
+/backend/outreach_*.py              @ydngemini
+/backend/contact_truth.py           @ydngemini
+/backend/messaging_*.py             @ydngemini
+/backend/command_providers.py       @ydngemini
+/backend/approval_service.py        @ydngemini
+/backend/smtp_mailer.py             @ydngemini
+/backend/email_outbox.py            @ydngemini
+/backend/ai_tools_gated.py          @ydngemini
+/backend/ws_hub.py                  @ydngemini
+
+# Privacy, encryption and customer data
+/backend/privacy_*.py               @ydngemini
+/backend/sealed_text.py             @ydngemini
+/backend/crypto.py                  @ydngemini
+/backend/client_note_crypto.py      @ydngemini
+/backend/*_redaction.py             @ydngemini
+/backend/retention_policy.py        @ydngemini
+/backend/contacts_api.py            @ydngemini
+/backend/crm.py                     @ydngemini
+/backend/object_storage.py          @ydngemini
+
+# Database migrations
+/backend/db/migrations/             @ydngemini
+/backend/run_migrations.py          @ydngemini
+/backend/migration_safety.py        @ydngemini
+
+# Build, deploy and supply chain
+/.github/                           @ydngemini
+/infra/                             @ydngemini
+/scripts/rollback.sh                @ydngemini
+/scripts/lock-python-deps.sh        @ydngemini
+/scripts/render-app-spec.py         @ydngemini
+/scripts/carry-secrets.py           @ydngemini
+/scripts/build-release-manifest.sh  @ydngemini
+/scripts/restore-postgres.sh        @ydngemini
+/backend/Dockerfile                 @ydngemini
+/backend/requirements.*             @ydngemini
+/oracle-app/Dockerfile*             @ydngemini
+/oracle-app/nginx.conf              @ydngemini
+/oracle-app/package*.json           @ydngemini

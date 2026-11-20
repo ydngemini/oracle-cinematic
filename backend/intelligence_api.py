@@ -518,7 +518,12 @@ async def highest_best_use(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     confidence = 0.82 if body.allowed_uses and body.land_comparables else 0.62
     source_ids = _source_ids(body.sources)
-    citations = await _verified_citations(ctx, source_ids)
+    # Called for its check, before the INSERT: a source record the tenant
+    # cannot see, or whose licence forbids property-level use, answers 422
+    # without leaving a zoning_analyses row behind. _respond() resolves the
+    # citations again for the envelope; the copy bound here was never read
+    # (ruff F841, audit 35-03 phase 2).
+    await _verified_citations(ctx, source_ids)
     async with tenant_tx(ctx) as conn:
         await conn.execute(
             """

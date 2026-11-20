@@ -67,8 +67,10 @@ class VermontVCGIHarvester(ArcGISHarvester):
         zip_code = str(row.get("ZIPGL") or "").strip()
 
         # --- Values ---
+        # LAND_LV is not read: the distress ratios below need only the total
+        # and the improvement value (it was read and never used: ruff F841,
+        # audit 35-03 phase 2).
         estimated_value = to_float(row.get("REAL_FLV"))
-        land_value = to_float(row.get("LAND_LV"))
         imprv_value = to_float(row.get("IMPRV_LV"))
 
         # Equity heuristic: improvement ratio (high land / low improvement = distressed).
