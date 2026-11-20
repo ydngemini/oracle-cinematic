@@ -673,3 +673,48 @@ def test_a_subject_with_a_line_break_is_refused_at_staging():
     with pytest.raises(ValueError, match="single line"):
         commands_api._validate_command_payload(
             commands_api.CommandType.EMAIL, {"email": "a@b.test"}, {"subject": "Hello\r\nBcc: x@y.test", "body": "hi"})
+
+
+def test_a_custom_call_url_without_a_scheme_is_a_configuration_error(monkeypatch):
+    monkeypatch.setenv("ORACLE_CUSTOM_CALL_API_URL", "calls.example.test/place")
+    net = Network(monkeypatch)
+
+    exc = _outcome(_custom_call())
+
+    assert isinstance(exc, ProviderConfigurationError), repr(exc)
+    assert not ca._provider_submission_is_uncertain(True, exc)
+    assert net.reached == []
+
+
+def test_a_plivo_auth_id_the_sdk_rejects_is_a_configuration_error(monkeypatch):
+    """plivo.RestClient checks the auth id in its constructor, before any
+    request; the real _client runs here, with the HTTP layer tripwired."""
+    import requests
+
+    import voice_provider
+
+    def no_request(*_a, **_k):
+        raise AssertionError("an HTTP request was made")
+
+    monkeypatch.setattr(requests.Session, "request", no_request)
+    exc = _outcome(voice_provider.PlivoVoiceProvider().place_call(
+        to_number=TO, from_number=CALLER_ID, answer_url="https://neoh.test/answer",
+        credentials={"auth_id": "not-an-auth-id", "auth_token": "b" * 40}))
+
+    assert isinstance(exc, ProviderConfigurationError), repr(exc)
+    assert not ca._provider_submission_is_uncertain(True, exc)
+
+
+@pytest.mark.parametrize("module, send", [("plivo.exceptions", _plivo), ("telnyx", _telnyx)],
+                         ids=["plivo", "telnyx"])
+def test_a_missing_sdk_is_a_configuration_error_not_an_uncertain_send(monkeypatch, module, send):
+    import sys
+
+    net = Network(monkeypatch)
+    monkeypatch.setitem(sys.modules, module, None)      # the import raises ImportError
+
+    exc = _outcome(send())
+
+    assert isinstance(exc, ProviderConfigurationError), repr(exc)
+    assert not ca._provider_submission_is_uncertain(True, exc)
+    assert net.reached == []

@@ -2141,21 +2141,23 @@ id: L09-16
 status: tests_pass
 env: local
 evidence_shas: [76b6c71]   # base; fix in the commit that adds this row
-files: [backend/commands_api.py, backend/tests/test_command_send_bookkeeping.py]
+files: [backend/commands_api.py, backend/tests/test_command_send_bookkeeping.py, backend/command_providers.py, backend/voice_provider.py, backend/messaging_provider.py, backend/recovery_mode.py, backend/email_outbox.py, backend/smtp_mailer.py, backend/tests/test_provider_refused_before_send.py, backend/tests/test_email_outbox.py]
 tests_run:
   - {cmd: "read commands_api._execute_command_job email branch at 76b6c71", result: "submission_started=True was set right after the 'submitting approved email' progress, before _resolve_email_provider(), the credential load/parse and load_agent_identity; _provider_submission_is_uncertain therefore filed any failure in those local steps (including the L19-25 UnboundLocalError) as reconciliation_required ('submission began…') although no provider was contacted", date: 2026-11-19}
   - {cmd: "test_an_email_is_submission_started_only_at_the_provider_call against 76b6c71", result: "red", date: 2026-11-19}
   - {cmd: "after: test_command_send_bookkeeping (8) + commercial-email + static-gate tests; ruff check", result: "pass: the flag is set once, after the sender, credentials and identity are loaded, immediately before `await sender(`", date: 2026-11-19}
   - {cmd: "independent review r1: APPROVE; it found the same early flag on the Plivo call (before the credential load, the ORACLE_PUBLIC_BASE_URL check, ensure_plivo_call_state_available and the call-state write) and the Telnyx text (before the adapter lookup); both moved to immediately before the provider call; + 2 order tests; full unit suite 7034 passed before; live command-worker tests (billing degradation, destination, drafts access, release atomic) 11 passed", result: "pass", date: 2026-11-19}
+  - {cmd: "2026-11-20 follow-up: pre-network refusals inside the adapters. test_provider_refused_before_send (56) + test_email_outbox; red: 37 of the new tests fail on the base adapters", result: "pass: two error classes — ProviderRefusedBeforeSend (a ProviderRequestError, terminal, NOT_SENT_INVALID_REQUEST) and RecoveryModeRefusedBeforeSend (a RecoveryModeBlocked, so the worker dead-letters it and the outbox holds it) — raised by recovery_mode.guard(refusal=...) and the target/subject/body/E.164/calendar checks on every send rail; _provider_submission_is_uncertain treats both as certain and, once the provider call returned, keeps any later failure uncertain; a returned Twilio call never falls back to the custom-call rail; the outbox marks a refused email failed, not delivery_unknown; the job worker dead-letters a recovery-mode send instead of completing it", date: 2026-11-20}
+  - {cmd: "independent review r1 (REQUEST CHANGES) fixed; mutation-checked", result: "pass: a mail header with a line break (an approved subject with CR/LF reached smtp_mailer.build_message's ValueError) is now SmtpMessageInvalid → ProviderRefusedBeforeSend, and staging refuses a multi-line subject; plivo.RestClient's constructor auth-id check, a missing Plivo/Telnyx SDK, and a custom-call URL with no scheme are ProviderConfigurationError. Removing each guard fails its test", date: 2026-11-20}
 authz_checked: "No access change. Only the failure classification of local errors before the provider call changes (failed instead of reconciliation_required); provider-side errors are classified as before. Behaviour change: such a command now ends 'failed' and the job is retried (up to max_attempts) instead of being parked; safe because nothing was sent and the job claims the command row FOR UPDATE and runs only from queued or failed."
 blockers:
-  - "Source-order tests, not a behavioural run of the email branch (still owed, L19-25)."
-  - "Report only, pre-existing: recovery_mode.guard and the ProviderRequestError target/subject checks in command_providers, and Plivo's recovery_mode.guard and E.164 check in voice_provider.place_call, fail before any network call but are still recorded as reconciliation_required (recovery mode returns a success-shaped result)."
+  - "The behavioural run of the email branch landed in #149 (test_command_email_branch_live)."
+  - "Fixed 2026-11-20 (was report-only): adapter-top refusals (recovery_mode.guard, target/subject/body/E.164/calendar checks) are certain 'failed', and recovery-mode command refusals end 'failed' (dead-lettered, need re-staging). Behaviour change: an invalid target now dead-letters on the first attempt (NOT_SENT_INVALID_REQUEST). Hang-up guards (abort_call) keep plain RecoveryModeBlocked: a refused hang-up follows a placed call and proves nothing about it."
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
-next_task: "A live behavioural test of the approved-email branch (approve → send stub → succeeded; credential failure → failed)."
-updated: 2026-11-19
+next_task: "None for this row."
+updated: 2026-11-20
 ```
 
 ### L10
