@@ -101,7 +101,9 @@ BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 # end ALL of them on the server (review of REC-03, 2026-11-20: the extract's
 # COPY outlived the script and kept scanning leads, holding back VACUUM).
 # libpq reads PGAPPNAME; pg_dump's own name is only a fallback.
-BACKUP_APPNAME="neoh-backup-${BACKUP_ID}-$$"
+# The random part: inside containers $$ is small and repeats, so two
+# containers backing up in the same second would otherwise share a name.
+BACKUP_APPNAME="neoh-backup-${BACKUP_ID}-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')"
 export PGAPPNAME="$BACKUP_APPNAME"
 CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ENVIRONMENT="${ORACLE_ENV:-unknown}"
@@ -190,7 +192,7 @@ MANIFEST_PATH="$OUT_DIR/neoh-${ENVIRONMENT}-${BACKUP_ID}.manifest.json"
 # before the first artifact is written, so every failure from now on leaves
 # nothing behind that looks like a backup.
 SNAP_DIR=""; SNAP_PID=""; DUMP_PID=""; EXTRACT_PID=""; SNAPSHOT_ID=""; BACKUP_DONE=0
-SNAP_BACKEND_PID=""; SNAP_BACKEND_START=""; SNAP_REPLY=""
+SNAP_REPLY=""
 SNAP_EOR="__neoh_snapshot_end_of_reply__"
 # Per-line read timeout on the session: a guard against a hung connection, not
 # a budget. One line arrives per counted table, so it bounds the slowest
@@ -404,20 +406,11 @@ SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
 SET row_security = off;
 BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;
-SELECT 'snapshot=' || pg_export_snapshot();
-SELECT 'backend=' || pg_backend_pid() || ':' || to_char(backend_start AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') FROM pg_stat_activity WHERE pid = pg_backend_pid();" \
+SELECT 'snapshot=' || pg_export_snapshot();" \
   || snap_fail "could not open a REPEATABLE READ transaction and export its snapshot."
 SNAPSHOT_ID="$(reply_value "$SNAP_REPLY" snapshot)"
 case "$SNAPSHOT_ID" in
   ''|*[!0-9A-Fa-f-]*) snap_fail "pg_export_snapshot() returned '$SNAPSHOT_ID', which is not a snapshot id." ;;
-esac
-# Which server backend to terminate if this script dies mid-count (on_exit).
-SNAP_BACKEND="$(reply_value "$SNAP_REPLY" backend)"
-case "$SNAP_BACKEND" in
-  [0-9]*:[0-9]*) SNAP_BACKEND_PID="${SNAP_BACKEND%%:*}"; SNAP_BACKEND_START="${SNAP_BACKEND#*:}" ;;
-esac
-case "$SNAP_BACKEND_PID$SNAP_BACKEND_START" in
-  *[!0-9]*) SNAP_BACKEND_PID=""; SNAP_BACKEND_START="" ;;
 esac
 echo "  snapshot  $SNAPSHOT_ID (the dump and every count below read this one state)"
 

@@ -841,6 +841,7 @@ def test_a_signal_during_a_running_count_terminates_the_server_backend(tmp_path)
     names = [n for n in read("appnames").split() if n]
     run = {n for n in names if not n.endswith("-cleanup")}
     assert len(run) == 1 and next(iter(run)).startswith("neoh-backup-"), names
+    assert re.fullmatch(r"neoh-backup-\d{8}T\d{6}Z-\d+-[0-9a-f]{8}", next(iter(run))), names
     assert f"{next(iter(run))}-cleanup" in names, names
     assert f"application_name = '{next(iter(run))}'" in terminate, terminate
     assert "pid <> pg_backend_pid()" in terminate, terminate
