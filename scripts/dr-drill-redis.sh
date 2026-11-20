@@ -47,7 +47,8 @@ docker run -d --name "$CONTAINER" -p "127.0.0.1::6379" valkey/valkey:8-alpine >/
   || { echo "  could not start valkey or redis"; exit 2; }
 PORT="$(docker port "$CONTAINER" 6379/tcp 2>/dev/null | head -n1)"
 PORT="${PORT##*:}"
-[ -n "$PORT" ] || { bad "valkey started but Docker published no port for it"; exit 1; }
+[[ "$PORT" =~ ^[0-9]+$ ]] \
+  || { bad "the drill container is not running or Docker published no port for it"; exit 1; }
 for _ in $(seq 1 30); do
   docker exec "$CONTAINER" sh -c 'valkey-cli ping 2>/dev/null || redis-cli ping' 2>/dev/null | grep -q PONG && break
   sleep 1
