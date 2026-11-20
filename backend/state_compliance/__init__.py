@@ -28,13 +28,12 @@ class encapsulates the state-specific business rules; the routes are thin.
 # per-concern submodules below. Public contract is unchanged:
 #     from state_compliance import router
 from ._common import router
-from . import (  # noqa: F401  -- imported for side effect: register routes on `router`
-    routes_reference,
-    routes_coverage,
-    routes_agents,
-    routes_mls,
-    routes_market,
-    routes_compliance,
-)
+# Imported for their side effect: each module registers its routes on `router`.
+from . import routes_reference  # noqa: F401 - side effect: registers routes on router
+from . import routes_coverage  # noqa: F401 - side effect: registers routes on router
+from . import routes_agents  # noqa: F401 - side effect: registers routes on router
+from . import routes_mls  # noqa: F401 - side effect: registers routes on router
+from . import routes_market  # noqa: F401 - side effect: registers routes on router
+from . import routes_compliance  # noqa: F401 - side effect: registers routes on router
 
 __all__ = ["router"]

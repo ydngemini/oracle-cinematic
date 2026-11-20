@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 
-import pytest
-
 import ai_tools_gated as gated
 from tenancy import Role, TenantContext
 

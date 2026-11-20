@@ -465,7 +465,6 @@ def test_tenant_smtp_hosts_must_be_global(host):
 def test_image_decoders_have_a_pixel_ceiling():
     import io
     import os
-    import warnings
 
     import image_safety
     from PIL import Image

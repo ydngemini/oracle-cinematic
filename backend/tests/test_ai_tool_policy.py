@@ -463,7 +463,6 @@ def test_every_offered_internal_edit_records_an_undo_kind():
     matters is that no mutating branch can return ok=True without passing
     through _record_action, which is where undo_kind becomes mandatory.
     """
-    import ai_chat_agent as agent
 
     source = (BACKEND / "ai_chat_store.py").read_text()
     body = source.split("async def _execute_safe_tool", 1)[1]

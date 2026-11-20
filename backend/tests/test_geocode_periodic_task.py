@@ -13,7 +13,6 @@ periodic: otherwise "stopped partway" is something an operator has to notice.
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 

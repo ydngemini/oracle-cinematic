@@ -32,7 +32,6 @@ from reconstruction_providers import (
     _download_first_available,
     _validate_artifact,
 )
-import reconstruction_worker
 from reconstruction_worker import _convert_to_delivery
 
 #: Verified from `splat-transform --help` at the pinned version. The point of

@@ -27,7 +27,6 @@ Everything else here exists to make that safe:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional
 

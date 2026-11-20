@@ -51,7 +51,6 @@ from reconstruction_providers import (
     CONVERTIBLE_SUFFIXES,
     DELIVERY_SUFFIX,
     SPATIAL_AI_DISCLOSURE,
-    SPLAT_OUTPUT_DIR,
     SPLAT_TRANSFORM_VERSION,
     ProviderError,
     get_provider,

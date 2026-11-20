@@ -19,7 +19,7 @@ if not os.environ.get("ORACLE_SKIP_DOTENV"):
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 # Pixel ceilings for every image decoder, before any decoder is imported.
-import image_safety  # noqa: E402,F401
+import image_safety  # noqa: E402,F401 - side effect: pixel ceilings before any decoder loads
 
 import config
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -38,7 +38,7 @@ from billing_usage import router as billing_usage_router
 from ai_budget_api import router as ai_budget_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import (
-    AuditMiddleware, audit_action, audit_now, drain_pending, record_platform_websocket,
+    AuditMiddleware, audit_action, drain_pending, record_platform_websocket,
 )
 from tenancy import require_context, TenantContext, verify_session_current
 from admin_c2 import router as admin_c2_router
@@ -73,11 +73,10 @@ from messaging_api import router as messaging_router
 from ai_chat_api import router as ai_chat_router, handle_chat_websocket
 import tenant_engines
 import ws_hub
-from legal_agent import format_for_websocket
 from tour_generator import generate_tour
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
-from outreach_compliance import router as outreach_compliance_router, AI_VOICE_DISCLOSURE
+from outreach_compliance import router as outreach_compliance_router
 from agent_mind import MindService
 from db.connection import DatabaseUnavailable, init_pool, close_pool, get_pool, pool_stats
 from data_integrations.cache import IntegrationCacheUnavailable
@@ -551,13 +550,13 @@ from spatial_intelligence_api import router as spatial_intelligence_router  # no
 # router. lead_routing_api already pulls it in transitively, but relying on that
 # means an unrelated refactor of that import could silently unregister the
 # handler and leave every queued first-response job stuck as an unknown type.
-import speed_to_lead  # noqa: E402,F401
+import speed_to_lead  # noqa: E402,F401 - side effect: registers its job handler
 # Same reason: registers the `mission:tick` handler. Importing it does NOT
 # start anything — Feature.MISSIONS defaults off and the executor checks it.
-import missions.executor  # noqa: E402,F401
+import missions.executor  # noqa: E402,F401 - side effect: registers mission:tick
 # Registers `loadtest:noop` ONLY when ORACLE_ENV=loadtest (a no-op otherwise):
 # the side-effect-free job the queue capacity test needs (performance/).
-import loadtest_jobs  # noqa: E402,F401
+import loadtest_jobs  # noqa: E402,F401 - side effect: registers loadtest:noop (loadtest env only)
 # Registers `privacy:erase` / `privacy:export` (customer-data lifecycle).
 import privacy_lifecycle  # noqa: E402
 import privacy_export  # noqa: E402

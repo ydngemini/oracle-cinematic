@@ -18,7 +18,6 @@ import pytest
 from contextlib import asynccontextmanager
 
 import inbound_voice
-import plivo_call_handler
 import telephony_api
 
 TENANT_A = "11111111-1111-4111-8111-111111111111"

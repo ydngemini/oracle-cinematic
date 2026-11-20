@@ -15,7 +15,6 @@ state's market.
 
 from __future__ import annotations
 
-import pytest
 
 _TENANT = "11111111-1111-1111-1111-111111111111"
 

@@ -20,7 +20,7 @@ import os
 import urllib.parse
 from typing import Any, Optional
 
-from .base import PAGE_SIZE, SocrataHarvester, classify_owner, logger, to_float
+from .base import PAGE_SIZE, SocrataHarvester, classify_owner, to_float
 from .property_adapter import PropertyRecord
 
 _ADDR_URL = "https://datacatalog.cookcountyil.gov/resource/3723-97qp.json"

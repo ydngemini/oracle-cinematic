@@ -160,7 +160,6 @@ def test_an_unconfigured_feed_is_not_usable():
 # Entitlement and readiness
 # ---------------------------------------------------------------------------
 
-from contextlib import asynccontextmanager          # noqa: E402
 from tenancy import Role, TenantContext             # noqa: E402
 
 TENANT_A = "aaaaaaaa-0000-0000-0000-00000000000a"

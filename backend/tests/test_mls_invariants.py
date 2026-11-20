@@ -12,7 +12,6 @@ import ast
 import re
 from pathlib import Path
 
-import pytest
 
 BACKEND = Path(__file__).resolve().parent.parent
 MLS_SOURCES = [

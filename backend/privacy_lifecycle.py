@@ -771,7 +771,7 @@ async def erasure_preview(tenant_id: str) -> dict:
     """What erasing this brokerage would remove — counts by category and the
     number of stored objects. No names, no content. Shown to the owner before
     they close and to an operator before starting erasure early."""
-    from privacy_data_map import TABLES, Disposition
+    from privacy_data_map import TABLES
 
     ctx = _platform_ctx("erasure-preview")
     by_category: dict[str, int] = {}

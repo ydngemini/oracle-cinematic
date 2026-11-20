@@ -178,9 +178,7 @@ def test_a_valuation_key_alone_is_never_reported_healthy(monkeypatch):
     assert comp["state"] == ch.UNKNOWN and comp["detail"] == {"configured": 1}
     assert "rentcast" not in str(comp).lower(), "counts only, no provider names in detail"
 
-
 def test_an_unobserved_optional_component_does_not_degrade_the_system(monkeypatch):
-    from db import connection
 
     monkeypatch.setenv("RENTCAST_API_KEY", "k")
 

@@ -23,7 +23,6 @@ no number it prints should be quoted as if it did.
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 from collections import defaultdict

@@ -22,8 +22,8 @@ from typing import Optional
 
 from graph_engine import PropertyGraph
 from harvesters.county_assessor import CountyAssessorHarvester
-from agents.agent_analyst import AnalystAgent, CMAResult
-from legal_agent import format_for_websocket, generate_legal_package
+from agents.agent_analyst import AnalystAgent
+from legal_agent import format_for_websocket
 from agents.scout import ScoutAgent
 from harvesters.four_state_firehose import RegionalParcelAdapter
 from real_leads import fetch_real_records

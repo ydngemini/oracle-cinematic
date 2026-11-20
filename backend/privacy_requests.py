@@ -463,7 +463,7 @@ async def reapply_subject_erasures(*, apply: bool) -> list[dict]:
     import asyncio
 
     import object_storage
-    from privacy_lifecycle import LifecycleError, _create_operation, _finish_operation, _platform_ctx
+    from privacy_lifecycle import LifecycleError, _platform_ctx
 
     if not object_storage.is_configured():
         raise LifecycleError("object storage is not configured; erasure directives are unreadable", status_code=503)

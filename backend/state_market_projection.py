@@ -30,7 +30,7 @@ under one date is worse than a gap.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("oracle.state_market_projection")
 

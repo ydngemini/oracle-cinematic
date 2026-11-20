@@ -12,8 +12,6 @@ import asyncio
 import inspect
 import pathlib
 
-import pytest
-
 import process_heartbeat as hb
 
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent

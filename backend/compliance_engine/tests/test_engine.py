@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from compliance_engine import ComplianceEngine
 from compliance_engine.evaluator import ConditionEvaluator
 from compliance_engine.rules import Rule, RuleSet, SEVERITY_REQUIRED
-from compliance_engine.closing import ClosingEngine, ATTORNEY_CLOSE_STATES
+from compliance_engine.closing import ClosingEngine
 from compliance_engine.reciprocity import ReciprocityEngine
 
 

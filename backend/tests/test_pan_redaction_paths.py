@@ -509,7 +509,7 @@ def test_portal_and_perception_payloads_hold_no_card(monkeypatch):
 
 # ── AI call notes taken live (ElevenLabs save_note) ────────────────────────
 
-from tests.test_elevenlabs_realtime import _results, _run, _tool, notes_backend  # noqa: E402,F401
+from tests.test_elevenlabs_realtime import _results, _run, _tool, notes_backend  # noqa: E402,F401 - pytest fixtures, used by parameter name
 
 
 def test_save_note_never_keeps_a_card_and_tells_the_agent_why(monkeypatch, notes_backend, _no_audit_writes):  # noqa: F811 - the parameter is the pytest fixture imported above
