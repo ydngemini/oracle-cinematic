@@ -4818,6 +4818,28 @@ next_task: "30.9 single worker."
 updated: 2026-11-19
 ```
 
+#### L17-54 A database or sealing failure answers 503 with a fixed sentence: no configuration text reaches the browser, and the log names types only (follow-up to L19-31)
+```yaml
+id: L17-54
+status: tests_pass
+env: local
+evidence_shas: [3d7c468]   # base; fix in the commit that adds this row
+files: [backend/memory_core_errors.py, backend/crm.py, backend/client_enterprise.py, backend/mls_portal.py, backend/lead_dossier.py, backend/agent_profile.py, backend/admin_ops.py, backend/messaging_api.py, backend/tests/test_memory_core_errors.py]
+tests_run:
+  - {cmd: "grep at 3d7c468", result: "41 routes (crm 13, client_enterprise 19, mls_portal 5, lead_dossier 3, agent_profile 1) raised 503 'Memory Core offline (<exception text>)' from `except RuntimeError`. What reaches them: the pool's startup refusals (ORACLE_DB_AUTH / ORACLE_DB_TLS_MIN values, the platform DB user), CryptoError ('ORACLE_ENCRYPTION_MASTER_KEY is not set...'), SealError/NoteSealError (table names). admin_ops logged a database error's text; messaging_api answered a broker owner with the ORACLE_MESSAGING_PROVIDER value", date: 2026-11-20}
+  - {cmd: "fix", result: "memory_core_errors.memory_core_offline(exc, outcome) returns the 503 with 'Memory Core offline.' or 'Memory Core offline — <outcome>.' and logs the exception's type and its cause's type, never text (operator_api._db_unavailable's rule). All 41 sites use it; admin_ops logs the type; the texting misconfiguration answers 'Texting is not configured on this server.' and logs the setting server-side", date: 2026-11-20}
+  - {cmd: "tests/test_memory_core_errors.py, old handlers stashed", result: "3 of 3 route/gate tests red on 3d7c468 (crm touch history over a tenant_tx raising the crypto message; texting misconfiguration; no `Memory Core offline ...{` format left in any route); 4 pass after (plus the helper unit test: fixed detail, log has 'RuntimeError caused by OSError' and none of the message fragments)", date: 2026-11-20}
+  - {cmd: "full backend suite", result: "7298 passed, 0 failed", date: 2026-11-20}
+authz_checked: "No access change. Status codes unchanged (503); only the detail text and log lines change. No frontend reads the old text."
+blockers:
+  - "Other routes still send `detail=str(exc)` for the app's own validation errors (messaging, telephony, commands): those messages are written for the user and stay. Telnyx rejection details stay for the broker owner fixing a registration."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: ""
+updated: 2026-11-20
+```
+
 ### L18
 Billing, seats and analytics.
 

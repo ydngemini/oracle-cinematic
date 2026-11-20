@@ -37,6 +37,7 @@ from client_note_crypto import SEALED_COLUMNS as _NOTE_SEALED
 from llm_gateway import SpendRefused
 import sealed_text
 from db.connection import tenant_tx
+from memory_core_errors import memory_core_offline
 from record_access import client_access_level, require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
 from client_ai_automation import automation_state_json
@@ -295,7 +296,7 @@ async def list_segments(ctx: TenantContext = Depends(require_context)):
                 "SELECT id, name, definition FROM client_segments ORDER BY lower(name)"
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {
         "segments": [
@@ -324,10 +325,7 @@ async def create_segment(
                 json.dumps(body.definition or {}),
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — segment not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "segment not persisted") from exc
 
     return {"id": str(row["id"]), "name": row["name"], "definition": _loads(row["definition"], {})}
 
@@ -344,7 +342,7 @@ async def delete_segment(
                 "DELETE FROM client_segments WHERE id = $1 RETURNING id", segment_id
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     if deleted is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "segment not found")
@@ -468,10 +466,7 @@ async def bulk_clients(
                 updated += 1
                 updated_ids.append(cid)
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — bulk not applied ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "bulk not applied") from exc
 
     logger.info("Bulk %s applied to %d/%d clients (tenant=%s, agent=%s)",
                 action, updated, len(body.ids), ctx.tenant_id, actor_ref(ctx.agent_id))
@@ -535,7 +530,7 @@ async def list_tasks(
                 *args,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"tasks": [_task_json(r, r["client_name"]) for r in rows]}
 
@@ -582,10 +577,7 @@ async def create_task(
                                     f"Task created: {row['title']}",
                                     {"task_id": str(row["id"]), "priority": body.priority})
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — task not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "task not persisted") from exc
 
     return _task_json(row, client_name)
 
@@ -639,10 +631,7 @@ async def update_task(
                                     f"Task completed: {row['title']}",
                                     {"task_id": str(row["id"])})
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — task not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "task not persisted") from exc
 
     return _task_json(row, row["client_name"])
 
@@ -676,7 +665,7 @@ async def comms_thread(
             # 0154 (A01): subject and message text are sealed; open both shapes.
             rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"messages": [_message_json(r) for r in rows]}
 
@@ -799,7 +788,7 @@ async def comms_draft(
                 ctx.agent_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     # The model draft is spent from the brokerage's AI budget (T18.07). A
     # refusal is answered as one (402/503 with its code), not as the template.
@@ -879,7 +868,7 @@ async def get_client_detail(
                 "SELECT * FROM client_ai_state WHERE client_id = $1", client_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     last_touch = None
     if last_touch_row is not None:
@@ -927,7 +916,7 @@ async def client_timeline(
                 client_id, limit,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"timeline": [_activity_json(r) for r in rows]}
 
@@ -958,10 +947,7 @@ async def add_tag(
                 "SELECT tag FROM client_tags WHERE client_id = $1 ORDER BY lower(tag)", client_id
             )]
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — tag not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "tag not persisted") from exc
     return {"tags": tags}
 
 
@@ -986,7 +972,7 @@ async def remove_tag(
                 "SELECT tag FROM client_tags WHERE client_id = $1 ORDER BY lower(tag)", client_id
             )]
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     return {"tags": tags}
 
 
@@ -1010,7 +996,7 @@ async def list_notes(
                 client_id,
             ))
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     return {"notes": [_note_json(r) for r in rows]}
 
 
@@ -1038,10 +1024,7 @@ async def create_note(
             await _log_activity(conn, ctx, client_id, "note", "Note added",
                                 {"note_id": str(row["id"]), "pinned": body.pinned})
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — note not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "note not persisted") from exc
     await _queue_client_ai(ctx, client_id, "note_created")
     return _note_json(row)
 
@@ -1088,10 +1071,7 @@ async def update_note(
                 *args,
             ))
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — note not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "note not persisted") from exc
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
     await _queue_client_ai(ctx, client_id, "note_updated")
@@ -1132,7 +1112,7 @@ async def approve_note(
             await _log_activity(conn, ctx, client_id, "note", "Call notes approved",
                                 {"note_id": str(row["id"]), "source": "ai_call_notes_review"})
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     await _queue_client_ai(ctx, client_id, "note_approved")
     return _note_json(row)
 
@@ -1179,7 +1159,7 @@ async def delete_note(
                 note_id, client_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     if deleted is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
     await _queue_client_ai(ctx, client_id, "note_deleted")
@@ -1218,8 +1198,5 @@ async def create_client_task(
                                 f"Task created: {row['title']}",
                                 {"task_id": str(row["id"]), "priority": body.priority})
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — task not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "task not persisted") from exc
     return _task_json(row, crow["full_name"])

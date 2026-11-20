@@ -405,7 +405,10 @@ async def refresh_registration(ctx: TenantContext = Depends(require_context)) ->
     try:
         provider = messaging_provider_name()
     except MessagingProviderError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The message names the server's environment variable and its value;
+        # the broker owner reading this cannot set either.
+        logger.error("Messaging provider misconfigured: %s", exc)
+        raise HTTPException(status_code=503, detail="Texting is not configured on this server.") from exc
     credentials = await _telnyx_credentials(ctx)
     # Throttled: repeated clicks within 30 s answer from what was just read.
     result = await refresh_registration_status(ctx, provider=provider, credentials=credentials,

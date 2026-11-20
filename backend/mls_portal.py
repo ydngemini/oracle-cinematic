@@ -27,6 +27,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
+from memory_core_errors import memory_core_offline
 from mls_switch import require_mls_enabled
 from property_match_api import (
     can_decide as can_decide_record_match,
@@ -310,7 +311,7 @@ async def mls_portal_search(
                 *data_args,
             )]
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS portal search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
@@ -387,7 +388,7 @@ async def mls_portal_listing(
                     for m in await buyers_for_listing(conn, dict(row), ctx=ctx)
                 ]
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS portal detail failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
@@ -461,7 +462,7 @@ async def mls_portal_health(
                     "records": row.get("listings_synced"),
                 })
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("MLS health failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
@@ -1201,7 +1202,7 @@ async def mls_pipeline_search(
         async with tenant_tx(ctx) as conn:
             lead_ids = await _lead_ids_for_records(conn, rows)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("Public property record search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc
@@ -1266,7 +1267,7 @@ async def mls_pipeline_listing(
                 record_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("Public property record detail failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.") from exc

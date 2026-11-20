@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import pan_redaction
 import sealed_text
 from db.connection import tenant_tx
+from memory_core_errors import memory_core_offline
 from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
 from outreach_compliance import Channel, enforce_outreach
@@ -537,7 +538,7 @@ async def list_listings(ctx: TenantContext = Depends(require_context)):
                 """
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"listings": [_listing_json(r) for r in rows]}
 
@@ -629,10 +630,7 @@ async def create_listing(
                 seller_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — listing not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "listing not persisted") from exc
 
     logger.info(
         "Listing created: id=%s seller=%s lead=%s (tenant=%s, agent=%s)",
@@ -814,7 +812,7 @@ async def list_clients(
                 *args,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     clients = []
     for r in rows:
@@ -892,10 +890,7 @@ async def create_client(
                 {"client_type": body.client_type, "stage": stage},
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — client not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "client not persisted") from exc
 
     logger.info(
         "Client created: id=%s type=%s stage=%s (tenant=%s, agent=%s)",
@@ -1051,10 +1046,7 @@ async def update_client(
             )
             tags = [tr["tag"] for tr in tag_rows]
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — update not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "update not persisted") from exc
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
@@ -1362,10 +1354,7 @@ async def link_client_house(
                     },
                 )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — house link not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "house link not persisted") from exc
 
     logger.info(
         "House linked: client=%s house=%s source=%s created=%s (tenant=%s, agent=%s)",
@@ -1410,7 +1399,7 @@ async def client_interactions(
             # 0154 (A01): subject and message text are sealed; open both shapes.
             rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"interactions": [_interaction_json(r) for r in rows]}
 
@@ -1649,10 +1638,7 @@ async def send_message(
                 },
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — message not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "message not persisted") from exc
 
     logger.info(
         "Message logged: client=%s channel=%s direction=%s delivery=%s queued_email=%s (tenant=%s, agent=%s)",
@@ -1723,10 +1709,7 @@ async def create_showing(
                 body.outcome,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — showing not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "showing not persisted") from exc
 
     logger.info(
         "Showing logged: client=%s listing=%s lead=%s outcome=%s (tenant=%s, agent=%s)",
@@ -1842,10 +1825,7 @@ async def update_showing(
                 showing_id, body.outcome, body.feedback, shown_at,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — showing not updated ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "showing not updated") from exc
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "showing not found")
 
@@ -1913,7 +1893,7 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
             # The opened content lands in `payload`; its body is the snippet.
             rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     threads = []
     for row in rows:
@@ -1966,7 +1946,7 @@ async def get_profile(ctx: TenantContext = Depends(require_context)):
                 ctx.agent_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})") from exc
+        raise memory_core_offline(exc) from exc
 
     return {"profile": _profile_json(row)}
 
@@ -2006,10 +1986,7 @@ async def put_profile(
                 *args,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — profile not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "profile not persisted") from exc
 
     if row is None:
         # ON CONFLICT fired but the WHERE tenant guard rejected the update.

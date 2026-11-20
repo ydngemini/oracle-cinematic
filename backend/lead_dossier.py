@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 
 import sealed_text
 from db.connection import tenant_tx
+from memory_core_errors import memory_core_offline
 from record_access import require_lead_edit
 from tenancy import TenantContext, require_context
 import ws_hub
@@ -134,10 +135,7 @@ async def get_dossier(
             except Exception:  # noqa: BLE001 — the file still opens without it
                 logger.warning("listing/buyer section unavailable for %s", lead_id, exc_info=True)
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline ({exc})",
-        ) from exc
+        raise memory_core_offline(exc) from exc
 
     return {
         "listing": listing,
@@ -235,10 +233,7 @@ async def set_acquisition_entity(
                 lead_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — entity not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "entity not persisted") from exc
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
@@ -280,10 +275,7 @@ async def move_dossier(
                 lead_id,
             )
     except RuntimeError as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"Memory Core offline — move not persisted ({exc})",
-        ) from exc
+        raise memory_core_offline(exc, "move not persisted") from exc
 
     if row is None:
         # Unknown id OR another tenant's lead — RLS makes them indistinguishable,
