@@ -61,6 +61,7 @@ async def enqueue_delivery(ctx: TenantContext, outbox_id: str) -> None:
 async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
     from command_providers import (
         ProviderConfigurationError,
+        ProviderRefusedBeforeSend,
         ProviderRejectedError,
         ProviderRequestError,
     )
@@ -147,7 +148,13 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
         # sweep re-enqueues it once recovery mode is lifted.
         await _finish(tenant_id, outbox_id, "queued", error=f"held: {str(exc)[:200]}")
         raise
-    # ProviderRejectedError subclasses ProviderRequestError: test it first.
+    # Both subclass ProviderRequestError: test them before it.
+    except ProviderRefusedBeforeSend as exc:
+        # Refused before any connection to the mail server (no usable address,
+        # an empty body): definitely not sent, and this same row is refused on
+        # every attempt. Final — not "delivery unknown" (PR #147 review).
+        await _finish(tenant_id, outbox_id, "failed", error=str(exc)[:500])
+        return {"status": "failed"}
     except ProviderRejectedError as exc:
         # Nothing was sent. A connection refusal / outage is worth retrying;
         # the job's backoff decides. Put it back in the queue and raise.

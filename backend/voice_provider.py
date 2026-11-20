@@ -30,8 +30,10 @@ from typing import Any, Mapping, Optional
 
 from command_providers import (
     ProviderConfigurationError,
+    ProviderRefusedBeforeSend,
     ProviderRequestError,
     ProviderResult,
+    RecoveryModeRefusedBeforeSend,
 )
 
 logger = logging.getLogger("oracle.voice_provider")
@@ -240,10 +242,12 @@ class TwilioVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        # Refused before any request: a definite "not placed" (PR #147 review).
         recovery_mode.guard(
             "place_call via TwilioVoiceProvider",
             kind="place_call",
             destination=to_number,
+            refusal=RecoveryModeRefusedBeforeSend,
         )
         from command_providers import place_twilio_call
 
@@ -540,24 +544,39 @@ class PlivoVoiceProvider(VoiceProvider):
         credentials: Optional[Mapping[str, Any]] = None,
         correlation_ref: Optional[str] = None,
     ) -> ProviderResult:
+        # Each refusal from here to calls.create precedes the carrier request,
+        # so it is a definite "not placed" — never the "may have been placed"
+        # a plain ProviderRequestError means to the command worker, which sets
+        # submission_started just before this call (PR #147 review, L09-16).
+        # The checks come before the SDK import, so a missing SDK cannot mask
+        # a definite refusal.
         recovery_mode.guard(
             "place_call via PlivoVoiceProvider",
             kind="place_call",
             destination=to_number,
+            refusal=RecoveryModeRefusedBeforeSend,
         )
-        import asyncio
-
-        from plivo.exceptions import PlivoRestError
-
         if not to_number.startswith("+"):
-            raise ProviderRequestError("approved call target must be E.164")
+            raise ProviderRefusedBeforeSend(
+                "Not placed: the approved call's phone number is not in international (E.164) format")
         if not from_number.startswith("+"):
             raise ProviderConfigurationError("Plivo caller ID must be E.164")
         if not answer_url:
             raise ProviderConfigurationError("Plivo answer_url is required")
+        import asyncio
+
+        try:
+            from plivo.exceptions import PlivoRestError
+        except ImportError as exc:      # before any request: a deploy problem
+            raise ProviderConfigurationError("the Plivo SDK is not installed") from exc
 
         def _call() -> str:
-            client = _single_attempt(self._client(credentials))
+            try:
+                client = _single_attempt(self._client(credentials))
+            except (PlivoRestError, ImportError) as exc:
+                # The SDK checks the auth id in its constructor, before any
+                # request: nothing was placed (L09-16 review).
+                raise ProviderConfigurationError(f"Plivo client could not be created: {exc}"[:500]) from exc
             try:
                 response = client.calls.create(
                     from_=from_number,
