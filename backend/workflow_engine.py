@@ -71,8 +71,18 @@ COUNTY_HARVEST_ENABLED = os.environ.get("COUNTY_HARVEST_ENABLED", "").lower() in
 
 
 class WorkflowEngine:
-    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id="", publish=None):
+    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id="", publish=None,
+                 record_frames: bool = False):
         self.websocket = websocket
+        # Whether this engine's transport delivers RECORD frames (DATA_PULLED
+        # offers, LEGAL_PACKAGE prices, PREDICTIVE_CACHE property lists) to
+        # anyone. A direct socket does (its one user asked); the shared tenant
+        # engine's publisher drops them (server.make_engine_publisher, owner
+        # decision 2026-11-16), so its analysis would buy a paid AVM valuation
+        # and build a contract package every cycle for no audience (L03-16).
+        # None of the engine's work (lead seed, analysis, predictive cache,
+        # harvest, scout) starts unless someone can receive what it produces.
+        self.record_frames = record_frames or websocket is not None
         # Optional async `publish(payload: dict)`. When the engine is shared
         # across a tenant's sockets it has no socket of its own, and frames go
         # to the hub instead. Without this, a socketless engine would run every
@@ -119,6 +129,20 @@ class WorkflowEngine:
         self._stats["start_time"] = time.time()
 
         await self._emit_status("WORKFLOW ENGINE — initializing pipeline")
+
+        if not self.record_frames:
+            # Every product of this engine — offers, contract packages, property
+            # lists, scout parcels — is a record frame, and this engine's
+            # transport delivers none of them (server.make_engine_publisher). So
+            # nothing is seeded (no lead rows, owner names included, held in a
+            # graph nobody reads), no paid AVM valuation is bought and no portal
+            # is polled (L03-16). It says so rather than claiming agents online.
+            logger.info(
+                "Workflow engine idle: its record frames reach no one, so no lead "
+                "seed, analysis, predictive cache, harvest or scout runs (L03-16)."
+            )
+            await self._emit_status("WORKFLOW ENGINE — ambient analysis off (no audience)")
+            return
 
         # Seed the graph from REAL leads before the analysis loop runs, so the
         # novelty → CMA → contact pipeline operates on real parcels even when the

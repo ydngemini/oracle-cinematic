@@ -121,7 +121,9 @@ def test_a_socketless_engine_with_no_publish_reports_no_transport():
 
 
 def test_the_engine_still_seeds_the_graph_from_real_leads():
-    """Unchanged by P2 — but now paid once per tenant rather than per socket."""
+    """Unchanged by P2 — paid once per tenant rather than per socket, and since
+    L03-16 only by an engine whose record frames reach someone (the shared
+    tenant engine does not seed at all)."""
     from workflow_engine import WorkflowEngine
 
     assert hasattr(WorkflowEngine, "_seed_real_leads")

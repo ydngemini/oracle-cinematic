@@ -1309,6 +1309,7 @@ ENGINE_TENANT_WIDE_FRAMES = frozenset({"STATUS_UPDATE", "STAGE_PROPERTY"})
 #: motivation score), so only the engine's fixed, content-free messages pass.
 _ENGINE_STATUS_ALLOWED = re.compile(
     r"^(WORKFLOW ENGINE — (initializing pipeline|all agents online|pipeline shutdown complete"
+    r"|ambient analysis off \(no audience\)"
     r"|no real leads to seed \(graph empty\)|seeded \d+ real parcels into graph)"
     r"|AGENT ANALYST — scoring novelty across graph)$")
 
@@ -1618,6 +1619,9 @@ async def websocket_endpoint(websocket: WebSocket):
             mind_service=mind_service,
             tenant_id=tenant_id,
             user_id=user_id,
+            # make_engine_publisher drops record frames, so the engine has no
+            # audience for anything it produces and stays idle (L03-16).
+            record_frames=False,
         ),
     )
 
