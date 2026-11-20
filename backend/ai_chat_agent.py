@@ -1077,13 +1077,14 @@ def smallest_request_hold(*, words: Optional[bool] = None, files: Optional[bool]
 #: Phrases that tell the agent something is waiting for their approval.
 _STAGING_CLAIM = re.compile(
     r"\b(staged|approval queue|command queue|queued for (?:your )?approval|"
-    r"waiting for your approval|sitting in (?:the|your) (?:approval|command) queue)\b",
+    r"waiting (?:for|on) your approval|awaiting (?:your )?approval|waiting in (?:your )?approvals|"
+    r"sitting in (?:the|your) (?:approval|command) queue)\b",
     re.IGNORECASE,
 )
 
 UNBACKED_CLAIM_NOTE = (
-    "Note from Neoh: nothing was actually staged in this reply, so there is "
-    "nothing waiting for your approval. Ask again and I will draft it."
+    "Note from Neoh: nothing was staged in this reply, so this reply added nothing "
+    "to Approvals. Anything staged earlier is listed there; ask again and I will draft it."
 )
 
 #: Said to the model ONCE per turn when its reply claims a staged action that no
@@ -1113,14 +1114,16 @@ def _guard_unbacked_claims(text: str, staged_commands: list[str]) -> str:
 
 #: A reply saying something was sent, called or booked. A chat turn never
 #: sends anything itself: outreach is prepared for approval first.
+# First person only: a reply describing history ("the offer was sent on
+# Tuesday", "nothing was sent yet") is not a claim (AI32-05 review).
 _SENT_CLAIM = re.compile(
-    r"\b(?:I(?:'ve| have)? (?:just )?(?:sent|texted|emailed|called|phoned|booked)\b"
-    r"|(?:has|have|was|were) (?:been )?(?:sent|texted|emailed|delivered|booked)\b(?! (?:once|after|when|if)))",
+    r"\b(?:I(?:['’]ve| have)? (?:just |already )?(?:sent|texted|emailed|called(?! out)|phoned|booked)\b"
+    r"|(?:has|have) just been (?:sent|texted|emailed|delivered|booked)\b)",
     re.IGNORECASE,
 )
 #: A reply saying a CRM record changed.
 _CHANGE_CLAIM = re.compile(
-    r"\b(?:I(?:'ve| have)? (?:updated|changed|moved|added|created|deleted|removed|logged|marked|saved|assigned)"
+    r"\b(?:I(?:['’]ve| have)? (?:updated|changed|moved|added|created|deleted|removed|logged|marked|saved|assigned)"
     r"|(?:has|have) been (?:updated|changed|moved|added|created|deleted|removed|logged|marked|saved|assigned))\b"
     r"[^.!?\n]{0,60}\b(?:record|client|lead|contact|deal|stage|status|note|task|pipeline|profile|tag|follow-up)s?\b",
     re.IGNORECASE,
