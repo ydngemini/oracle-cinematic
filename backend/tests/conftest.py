@@ -20,6 +20,9 @@ import pytest
 # SMTP, Stripe and carrier credentials; with it loaded, a test that created an
 # invitation really emailed it (bounce from x@y.test, 2026-10-01).
 os.environ["ORACLE_SKIP_DOTENV"] = "1"
+# litellm loads the working directory's .env on import unless told otherwise
+# (LITELLM_MODE defaults to "DEV"): real keys must never reach a test.
+os.environ["LITELLM_MODE"] = "PRODUCTION"
 os.environ.setdefault("ORACLE_ENV", "dev")
 os.environ.setdefault("ORACLE_SECRET_KEY", "test-only-secret-key-with-at-least-32-bytes")
 
