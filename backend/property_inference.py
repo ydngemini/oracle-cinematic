@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 import statistics
-from itertools import pairwise
 from collections import Counter
+from itertools import pairwise
 from typing import Any, Mapping, Sequence
 
 

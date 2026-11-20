@@ -35,8 +35,9 @@ def _mint(claims: dict, key: str | None = None, algorithm: str | None = None) ->
 
 def _assert_rejected(token: str, accepted_means: str) -> None:
     """decode_token must refuse with a 401. pytest.fail, not `assert False`:
-    python -O strips assert statements, which would turn every acceptance
-    of a bad token into a silent pass."""
+    `python -O` removes assert statements wherever pytest does not rewrite
+    them (--assert=plain, a helper module it does not rewrite), and an
+    accepted bad token would then pass silently. pytest.fail always fires."""
     try:
         auth.decode_token(token)
     except HTTPException as exc:

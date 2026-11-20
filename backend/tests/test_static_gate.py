@@ -88,15 +88,34 @@ def test_no_file_silences_the_gate_wholesale_and_import_noqa_names_its_reason():
 
 
 def _zip_strict_false_lines(text: str) -> list[int]:
+    """Lines where zip() (or builtins.zip) is called with a falsy constant
+    strict= (False, 0, None), however it is spaced."""
     import ast
 
     lines = []
     for node in ast.walk(ast.parse(text)):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "zip":
-            for kw in node.keywords:
-                if kw.arg == "strict" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
-                    lines.append(kw.value.lineno)
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_zip = (isinstance(func, ast.Name) and func.id == "zip") or (
+            isinstance(func, ast.Attribute) and func.attr == "zip"
+            and isinstance(func.value, ast.Name) and func.value.id == "builtins")
+        if not is_zip:
+            continue
+        for kw in node.keywords:
+            if kw.arg == "strict" and isinstance(kw.value, ast.Constant) and not kw.value.value:
+                lines.append(kw.value.lineno)
     return lines
+
+
+def _comments_by_line(text: str) -> dict[int, str]:
+    """Real comments only: a `#` inside a string is not one."""
+    import io
+    import tokenize
+
+    return {tok.start[0]: tok.string.lstrip("#").strip()
+            for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+            if tok.type == tokenize.COMMENT}
 
 
 def test_a_deliberately_uneven_zip_says_why():
@@ -104,17 +123,18 @@ def test_a_deliberately_uneven_zip_says_why():
     the sides differ ON PURPOSE, and the reader needs the purpose: the line
     carries a comment. Sliding pairs are itertools.pairwise and a cut is
     itertools.islice, so neither needs strict=False at all."""
-    assert _zip_strict_false_lines("zip(a, b, strict=False)\nzip(a, b, strict=True)\n") == [1]
+    probe = ("zip(a, b, strict=False)\nzip(a, b, strict = False)\nzip(a, b, strict=0)\n"
+             "builtins.zip(a, b, strict=False)\nzip(a, b, strict=True)\n")
+    assert _zip_strict_false_lines(probe) == [1, 2, 3, 4]
+    assert _comments_by_line('x = "# not a comment"\ny = 1  # a reason\n') == {2: "a reason"}
     unexplained = []
     for path in BACKEND.rglob("*.py"):
         if any(part in ("venv", "node_modules", "pascal-editor") for part in path.parts):
             continue
         text = path.read_text(errors="ignore")
-        if "strict=False" not in text:
+        if "strict" not in text:
             continue
-        source = text.splitlines()
-        for n in _zip_strict_false_lines(text):
-            comment = source[n - 1].partition("#")[2].strip()
-            if len(comment) < 8:
-                unexplained.append(f"{path.relative_to(BACKEND)}:{n}")
+        lines = _zip_strict_false_lines(text)
+        comments = _comments_by_line(text) if lines else {}
+        unexplained += [f"{path.relative_to(BACKEND)}:{n}" for n in lines if len(comments.get(n, "")) < 8]
     assert not unexplained, unexplained

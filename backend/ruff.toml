@@ -27,8 +27,10 @@
 # Phase 5 adds four test-and-data integrity rules:
 # - B017: a blind `pytest.raises(Exception)` passes on any error. Two Plivo
 #   tests passed on a TypeError from their own fake response.
-# - B011: `assert False` is removed by `python -O`, so a token check that should
-#   fail would pass instead.
+# - B011: `assert False` is a statement `python -O` removes. pytest's assertion
+#   rewriting keeps it in test modules today; under --assert=plain, or in a
+#   helper module pytest does not rewrite, a check that should fail would
+#   pass. pytest.fail does not depend on either.
 # - B007: a loop variable that is never read.
 # - B905: zip() without strict=. A short side silently drops the rest:
 #   - a sealed-text decrypt answer one short read the leftover rows as empty;

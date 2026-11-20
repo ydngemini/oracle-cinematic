@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-from itertools import pairwise
 import requests
 from contextlib import asynccontextmanager
+from itertools import pairwise
 
 import pytest
 from fastapi import HTTPException

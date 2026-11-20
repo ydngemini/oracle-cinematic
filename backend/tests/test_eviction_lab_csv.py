@@ -41,3 +41,12 @@ def test_a_ragged_row_is_a_bad_response_not_missing_data(monkeypatch, bad):
     with pytest.raises(SourceFailure) as failure:
         asyncio.run(source.fetch(geography="counties", postal="DE"))
     assert (failure.value.status, failure.value.reason) == (UNAVAILABLE, BAD_RESPONSE)
+
+
+def test_the_reported_line_is_the_physical_line_and_reaches_the_log(monkeypatch, caplog):
+    """A quoted field may hold a newline, so the record count is not the line;
+    the operator finds the bad row by the line the log names."""
+    source = _source(monkeypatch, HEADER + '10003,2016,"New\nCastle County",3.1\n10001,2016,Kent County\n')
+    with caplog.at_level("WARNING"), pytest.raises(SourceFailure):
+        asyncio.run(source.fetch(geography="counties", postal="DE"))
+    assert "CSV line 4 has 3 fields; the header has 4" in caplog.text

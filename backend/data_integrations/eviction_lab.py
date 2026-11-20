@@ -151,18 +151,20 @@ class EvictionLabSource(DataSource):
         except StopIteration:
             return []
         rows = []
-        for line, raw in enumerate(reader, start=2):
+        for raw in reader:
             if not raw:
                 continue
             if len(raw) != len(header):
-                # Every row of the published files carries exactly the header's
-                # fields (7,234 rows over six state/county/tract/block-group
-                # files, 2026-11-20). A short or long row is a damaged download:
-                # zip() would drop columns or pair values with the wrong names
-                # and report real data as missing. classify() reads the
-                # ValueError as a bad response, never as "no data here".
+                # In the six published files sampled on 2026-11-20 (states, and
+                # DE/CA/RI county, tract and block-group files: 7,234 rows),
+                # every row carries exactly the header's fields. A short or long
+                # row is a damaged download: zip() would drop columns or pair
+                # values with the wrong names and report real data as missing.
+                # classify() reads the ValueError as a bad response, never as
+                # "no data here". line_num is the physical line, so a quoted
+                # newline does not shift it.
                 raise ValueError(
-                    f"{self.source_name} CSV line {line} has {len(raw)} fields; "
+                    f"{self.source_name} CSV line {reader.line_num} has {len(raw)} fields; "
                     f"the header has {len(header)}"
                 )
             rows.append(dict(zip(header, raw, strict=True)))
@@ -177,8 +179,11 @@ class EvictionLabSource(DataSource):
             # empty slice, which replayed an S3 outage as "no Eviction Lab data
             # for this area" (audit A02, L11-03).
             status, reason = classify(e)
+            # A parse failure carries its own line and field counts (public
+            # data, no PII); anything else logs its type only.
             self._log.warning(
-                "Eviction Lab fetch %s (%s, %s): %s", status, reason, geography, type(e).__name__,
+                "Eviction Lab fetch %s (%s, %s): %s", status, reason, geography,
+                str(e) if isinstance(e, ValueError) else type(e).__name__,
             )
             raise SourceFailure(status, reason) from e
         return {"rows": rows, "geography": geography, "postal": postal}
