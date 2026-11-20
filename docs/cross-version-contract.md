@@ -89,6 +89,25 @@ counts too, such as 0144, which landed while the head was 0145 (531c41d).
    database's migration head, and 401, 403 or 422 from an unauthenticated
    `GET /api/commands`. The worker phase must stay up for 30 s. Both login
    roles must have neither `rolsuper` nor `rolbypassrls`.
+
+   Each boot's log is scanned for schema errors. Application warnings reach
+   it because `server.py` configures the root logger at import (INFO by
+   default), and the probe sends stderr into the log. The scan matches:
+   - asyncpg exception names whose SQLSTATE class means the schema does not
+     fit;
+   - PostgreSQL's own message texts, because an app that swallows a
+     database error usually logs only `str(exc)`, the message. These are
+     `violates check constraint` (23514), `violates not-null constraint`
+     (23502), `violates foreign key constraint` (23503), `violates unique
+     constraint` (23505), `permission denied for …` and row-level-security
+     refusals (42501), `column … does not exist` (42703), `relation "…" does
+     not exist` (42P01), `function …(…) does not exist` (42883) and `value too
+     long for type` (22001);
+   - the two startup-failure messages.
+
+   Log errors are attributed the way tests are. An error the previous app
+   also logs on its own schema (P@B) is a warning (`not_proven`). An error
+   that appears only on C fails the boot. A failed *check* on B is HARNESS.
 6. **The previous live suite on C.** This is the previous tree's own
    `tests/test_*_live.py`, from the previous tree, with
    `scripts/cross_version/xv_pytest_plugin.py` recording why each test failed.
@@ -108,7 +127,7 @@ Per previous test:
 | `PASSED` | passed on C on the first run |
 | `UNREPRODUCED` | failed on C, passed on a fresh C′: flaky or order-dependent (warning) |
 | `PRE-EXISTING` | fails on B too: not this change (warning) |
-| `INCOMPATIBLE` | fails on C and C′, passes on B, and one of these holds: a schema SQLSTATE (class 42, 23, 22, 21, 0A, 2B or P0) raised through a previous-**app** frame or logged by the app; any non-assertion exception in an app frame (for example a `KeyError` after a result shape changed); or a statement timeout (57014) |
+| `INCOMPATIBLE` | fails on C and C′, passes on B, and one of these holds: a schema SQLSTATE (class 42, 23, 22, 21, 0A, 2B or P0) raised through a previous-**app** frame or logged by the app; any non-assertion exception in an app frame (for example a `KeyError` after a result shape changed); a statement timeout (57014); or an infrastructure-class failure (connection, authentication, resources: SQLSTATE 08, 28, 53, 57, 58, or a connection/timeout error). The last is stricter than the plan: if it appears only on the new schema, the schema is the suspect. An app frame is an **absolute** path to an existing file under the previous `backend/`, outside `tests/` and any virtualenv. A compiled extension's relative frame (asyncpg reports `asyncpg/protocol/protocol.pyx`) never counts, so a test's own SQL refused by PostgreSQL is DRIFT. |
 | `DRIFT` | fails on C and C′, passes on B, but only as an assertion, `pytest.fail` or DID NOT RAISE, or an error raised only from test frames: the previous *test* pins behaviour that changed (warning) |
 | `UNATTRIBUTED` | the run had a harness problem, so nothing is attributed |
 
@@ -117,11 +136,11 @@ Job exit codes and `contract_result`:
 | Exit | `contract_result` | Cause |
 |---|---|---|
 | 3 | `deploy_would_fail` | the PRE_DEPLOY rehearsal exited non-zero |
-| 2 | `harness` | an install or build failed, P@B failed, zero tests collected, every test skipped, pytest and the plugin disagree, a rerun gave no answer, or `evaluate.py` crashed |
-| 1 | `incompatible` | an INCOMPATIBLE test, or P@C failed while P@B passed |
-| 1 | `new_boot_failed` | N@C failed |
-| 0 | `not_proven` | any DRIFT, UNREPRODUCED, PRE-EXISTING or skip; each gets a `::warning::` |
-| 0 | `pass` | every previous live test passed on C on the first run, nothing skipped, every boot passed |
+| 2 | `harness` | an install or build failed, a P@B check failed, zero tests collected, every test skipped, pytest and the plugin disagree, a rerun gave no answer, or `evaluate.py` crashed |
+| 1 | `incompatible` | an INCOMPATIBLE test; or, while every P@B check passes, a P@C check fails or P@C logs a schema error that P@B does not |
+| 1 | `new_boot_failed` | an N@C check fails, or N@C logs a schema error that P@B does not |
+| 0 | `not_proven` | any DRIFT, UNREPRODUCED, PRE-EXISTING or skip, or a boot-log schema error P@B logs too; each gets a `::warning::` |
+| 0 | `pass` | every previous live test passed on C on the first run, nothing skipped, every boot passed with a clean log |
 
 The deploy window is why INCOMPATIBLE is red even when the classifier calls
 the gap safe: the old release serves on this schema during the deploy, whatever
@@ -138,16 +157,34 @@ When `scripts/cross-version-contract.sh` or `scripts/cross_version/` changes,
 the job also runs on a copy of the migrations that has one extra file:
 
 ```sql
+ALTER TABLE process_heartbeats ADD CONSTRAINT xv_canary_hb CHECK (false) NOT VALID;
 ALTER TABLE leads ADD CONSTRAINT xv_canary CHECK (false) NOT VALID;
 ```
 
-The classifier calls this ADDITIVE, yet every insert into or update of `leads`
-by the previous app fails with 23514. The canary passes only if the gate
-**fails** on it: `contract_result` is `incompatible`, and an INCOMPATIBLE test
-(or the P@C boot) carries 23514. A 23514 that shows up only as DRIFT is not
+The classifier calls both ADDITIVE.
+
+**What each constraint breaks:**
+- **`process_heartbeats`** is written by the previous app's own code. Every
+  worker upserts its row as the last startup step (`server.py` lifespan →
+  `process_heartbeat.beat_once`). Recovery mode does not stop this, and only
+  the worker role runs it.
+- `beat_once` swallows the error and logs `heartbeat not written (new row for
+  relation "process_heartbeats" violates check constraint "xv_canary_hb")`.
+  The P@C worker phase logs it and P@B does not, so the gate must fail with an
+  attributable 23514 on the P@C boot.
+- **`leads`** is written only by the previous live tests' own SQL (no previous
+  live test inserts leads through app code). Those failures are DRIFT. They
+  show the suite side of the run, but cannot prove the gate fails.
+
+**When the canary passes:** only if the gate **fails** on it. That means
+`contract_result` is `incompatible`, and the P@C boot (or an INCOMPATIBLE test)
+carries a 23514 that P@B does not. A 23514 that shows up only as DRIFT is not
 enough, because DRIFT is a warning and the gate would not have failed.
-Otherwise the job fails with "the gate cannot fail". This is the only proof
-that the gate can fail, and it runs in the harness PR's own CI.
+Otherwise the job fails with "the gate cannot fail".
+
+This is the only proof that the gate can fail, and it runs in the harness
+PR's own CI. CI run 44741248526 went green for the wrong reason: asyncpg's
+relative frame was taken for app code. That has since been fixed.
 
 ## Reading the record
 

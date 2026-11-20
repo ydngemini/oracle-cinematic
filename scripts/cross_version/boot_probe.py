@@ -23,9 +23,14 @@ Two phases, each a fresh process:
   worker  ORACLE_PROCESS_ROLE=worker: /health answers 200, then the process
           stays up for the hold with background work running, then SIGTERM.
 
-The log of each phase is scanned for asyncpg exceptions whose SQLSTATE class
-means the schema does not fit (contract hits) and for the two startup
-failure messages. A boot that never came up with an ImportError or a
+The log of each phase is scanned for schema errors (contract hits): asyncpg
+exception names whose SQLSTATE class means the schema does not fit,
+PostgreSQL's own message texts for the same errors (an app that swallows a
+database error usually logs only str(exc), the message, as
+process_heartbeat.beat_once does), and the two startup failure messages.
+Each hit carries a signature (SQLSTATE plus the matched message, else the
+exception name), so evaluate.py can tell an error the schema change caused
+from one the previous app also logs on its own schema. A boot that never came up with an ImportError or a
 missing/weak-secret refusal in its log is a HARNESS problem (the probe's
 environment, not the schema).
 
@@ -57,6 +62,21 @@ HARNESS_MARKERS = re.compile(
     r"|missing required production secret"
     r"|placeholder or weak production secret")
 _ASYNCPG_NAME = re.compile(r"asyncpg\.exceptions\.([A-Z][A-Za-z0-9]+)")
+# PostgreSQL's standard error messages (backend/utils/errcodes; the texts
+# libpq and asyncpg pass through unchanged), mapped to their SQLSTATE.
+PG_MESSAGES: tuple[tuple[re.Pattern, str], ...] = tuple((re.compile(p), state) for p, state in (
+    (r'(?:new row for relation "[^"]+" )?violates check constraint(?: "[^"]+")?', "23514"),
+    (r'(?:null value in column "[^"]+"(?: of relation "[^"]+")? )?violates not-null constraint', "23502"),
+    (r'(?:on table "[^"]+" )?violates foreign key constraint(?: "[^"]+")?', "23503"),
+    (r'violates unique constraint(?: "[^"]+")?', "23505"),
+    (r'new row violates row-level security policy(?: for table "[^"]+")?', "42501"),
+    (r'permission denied for (?:materialized view|large object|[a-z]+) [\w."]+', "42501"),
+    (r'column (?:"[^"]+"|\w+\.\w+)(?: of relation "[^"]+")? does not exist', "42703"),
+    (r'relation "[^"]+" does not exist', "42P01"),
+    (r'function [\w."]+\([^)]*\) does not exist', "42883"),
+    (r'value too long for type [\w ]+\(\d+\)', "22001"),
+))
+MAX_HITS = 50
 AUTH_GATE_CODES = (401, 403, 422)
 APP_LOGIN = "oracle_app_login"
 PLATFORM_LOGIN = "oracle_platform_login"
@@ -109,24 +129,35 @@ def _get(url: str, timeout: float = 5.0) -> tuple[int, bytes]:
 
 
 def scan_log(text: str, booted: bool) -> tuple[list[dict], list[str]]:
-    """(contract hits, harness hits). Harness markers count only when the
-    process never came up: a warning that mentions ImportError on a healthy
-    server is not a broken environment."""
+    """(contract hits, harness hits). One hit per distinct signature, with the
+    first line that showed it. Harness markers count only when the process
+    never came up: a warning that mentions ImportError on a healthy server is
+    not a broken environment."""
     try:
         import asyncpg.exceptions as pgexc
     except Exception:  # noqa: BLE001
         pgexc = None
-    hits: list[dict] = []
+    hits: dict[str, dict] = {}
+
+    def add(signature: str, exception: str | None, state: str | None, line: str) -> None:
+        if signature not in hits and len(hits) < MAX_HITS:
+            hits[signature] = {"exception": exception, "sqlstate": state, "signature": signature,
+                               "line": line.strip()[:240]}
+
     for line in text.splitlines():
+        messages = [(m.group(0), state) for pattern, state in PG_MESSAGES for m in pattern.finditer(line)]
+        for message, state in messages:
+            add(f"{state} {message}", None, state, line)
         for name in _ASYNCPG_NAME.findall(line):
             state = getattr(getattr(pgexc, name, None), "sqlstate", None) if pgexc else None
-            if isinstance(state, str) and state[:2] in CONTRACT_CLASSES:
-                hits.append({"exception": name, "sqlstate": state, "line": line.strip()[:240]})
+            # The same error's message on this line already names it.
+            if isinstance(state, str) and state[:2] in CONTRACT_CLASSES and state not in {s for _, s in messages}:
+                add(f"{state} {name}", name, state, line)
         for marker in CONTRACT_MARKERS:
             if marker in line:
-                hits.append({"exception": None, "sqlstate": None, "line": line.strip()[:240]})
+                add(marker, None, None, line)
     harness = [] if booted else sorted({m.group(0) for m in HARNESS_MARKERS.finditer(text)})
-    return hits, harness
+    return list(hits.values()), harness
 
 
 def _wait_healthy(proc: subprocess.Popen, base: str, timeout: float) -> tuple[bool, int, float]:
@@ -193,7 +224,7 @@ def run_phase(args, role: str, app_password: str, platform_password: str) -> dic
     text = log_path.read_text(encoding="utf-8", errors="replace")
     hits, harness = scan_log(text, booted=checks["health_200"]["ok"])
     return {"role": role, "checks": checks, "exit_code": exit_code,
-            "contract_hits": hits[:20], "harness_hits": harness, "log": log_path.name}
+            "contract_hits": hits, "harness_hits": harness, "log": log_path.name}
 
 
 async def _login_roles(port: int, db: str, app_password: str, platform_password: str) -> dict:
@@ -234,7 +265,8 @@ def probe(args) -> dict:
         result["phases"][role] = phase
         for name, check in phase["checks"].items():
             result["checks"][f"{role}.{name}"] = check
-        result["contract_hits"].extend(phase["contract_hits"])
+        seen = {h["signature"] for h in result["contract_hits"]}
+        result["contract_hits"].extend(h for h in phase["contract_hits"] if h["signature"] not in seen)
         result["harness_hits"].extend(phase["harness_hits"])
     result["harness"] = bool(result["harness_hits"])
     result["ok"] = (not result["harness"] and not result["contract_hits"]

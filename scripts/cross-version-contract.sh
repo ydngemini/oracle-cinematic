@@ -21,8 +21,10 @@
 #
 # Modes: no_previous | no_gap (record written, exit 0) | gap | canary.
 # Canary is forced whenever this script or scripts/cross_version/ changed:
-# a CHECK (false) NOT VALID constraint on leads, which the classifier calls
-# ADDITIVE, must come out as an attributable 23514, or the job fails with
+# CHECK (false) NOT VALID constraints, which the classifier calls ADDITIVE,
+# on process_heartbeats (the previous worker's own startup write,
+# process_heartbeat.beat_once) and on leads (written by previous tests). The
+# gate must FAIL on them with an attributable 23514, or the job fails with
 # "the gate cannot fail".
 #
 # Exit codes of `run`: 3 DEPLOY_WOULD_FAIL, 2 HARNESS, 1 INCOMPATIBLE (or the
@@ -32,7 +34,12 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 HARNESS_DIR="$(dirname "$SELF")/cross_version"
 CANARY_FILE="9999_xv_canary.sql"
-CANARY_SQL="ALTER TABLE leads ADD CONSTRAINT xv_canary CHECK (false) NOT VALID;"
+# process_heartbeats: every worker upserts its row as the last startup step
+# (server.py lifespan, process_heartbeat.beat_once) and logs the refusal, so
+# the P@C boot must catch it. leads: the previous tests insert leads with their
+# own SQL, which is DRIFT, not a failure; it shows the suite side of the run.
+CANARY_SQL="ALTER TABLE process_heartbeats ADD CONSTRAINT xv_canary_hb CHECK (false) NOT VALID;
+ALTER TABLE leads ADD CONSTRAINT xv_canary CHECK (false) NOT VALID;"
 CANDIDATE_PORT="${XV_CANDIDATE_PORT:-5432}"
 CONTROL_PORT="${XV_CONTROL_PORT:-5433}"
 ZERO_SHA="0000000000000000000000000000000000000000"
@@ -325,7 +332,7 @@ contract() { # label canary(0|1) — one complete run; prints nothing secret; re
   if [ "$canary" = 1 ]; then
     sfx="_k"; newmig="$XV_WORK/canary-migrations"; report="$XV_OUT/cross-version-canary-report.json"
     rm -rf "$newmig" && cp -a "$XV_CUR_ROOT/backend/db/migrations" "$newmig" || return 2
-    printf -- '-- cross-version canary (audit 35-06): ADDITIVE to the classifier, breaks every old insert into leads\n%s\n' \
+    printf -- '-- cross-version canary (audit 35-06): ADDITIVE to the classifier, breaks every write to both tables\n%s\n' \
       "$CANARY_SQL" > "$newmig/$CANARY_FILE" || return 2
   fi
   db_c="xv_candidate$sfx"; db_r="xv_candidate${sfx}_r"; db_b="xv_control$sfx"

@@ -21,13 +21,19 @@ PostgreSQL services, two virtualenvs); this file proves the parts that decide:
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.util
+import io
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
+
+import asyncpg.exceptions as pgexc
 
 import pytest
 
@@ -53,6 +59,12 @@ def _load(name: str):
 
 evaluate = _load("evaluate")
 boot_probe = _load("boot_probe")
+plugin = _load("xv_pytest_plugin")
+
+# asyncpg's compiled protocol reports RELATIVE filenames for its frames, so a
+# query refused by PostgreSQL ends in a frame like this one (CI run
+# 44741248526: `asyncpg/protocol/protocol.pyx:205 in bind_execute`).
+PROTOCOL_FRAME = "asyncpg/protocol/protocol.pyx"
 
 
 # ── the plugin, inside a real pytest run (pytester) ──────────────────────────
@@ -94,6 +106,22 @@ def swallowed():
     except Exception:
         logging.getLogger("app").exception("lead insert failed")
     return None
+
+
+# A stand-in for asyncpg's compiled protocol: its frames carry a RELATIVE
+# filename, exactly as the real extension's do.
+_PROTOCOL_SRC = (
+    "import asyncpg.exceptions as pgexc",
+    "def bind_execute():",
+    "    raise pgexc.CheckViolationError('new row for relation leads violates check constraint xv_canary')",
+)
+_ns = {}
+exec(compile(chr(10).join(_PROTOCOL_SRC), "asyncpg/protocol/protocol.pyx", "exec"), _ns)
+bind_execute = _ns["bind_execute"]
+
+
+def insert_lead():
+    return bind_execute()
 '''
 
 HELPERS = '''
@@ -194,6 +222,23 @@ def test_setup_failure(broken_setup):
 def test_secret_in_message():
     pw = os.environ["ORACLE_DB_PASSWORD"]
     raise RuntimeError(f"connect to postgresql://oracle_app_login:{pw}@db/x failed ({pw})")
+
+
+def test_protocol_frame_from_test():
+    app_mod.bind_execute()          # the test's own SQL: test frame, then asyncpg
+
+
+def test_protocol_frame_inside_asyncio():
+    import asyncio
+
+    async def scenario():
+        app_mod.bind_execute()
+
+    asyncio.run(scenario())
+
+
+def test_protocol_frame_through_app():
+    app_mod.insert_lead()           # the app's SQL: an absolute app frame, then asyncpg
 '''
 
 
@@ -215,6 +260,9 @@ def plugin_rows(pytester, monkeypatch):
     monkeypatch.setenv("XV_PREVIOUS_BACKEND", str(prev))
     monkeypatch.setenv("ORACLE_DB_PASSWORD", _FAKE_PASSWORD)
     monkeypatch.syspath_prepend(str(HARNESS))
+    # As in CI: the previous suite runs from the previous backend, which is
+    # where a relative frame name would wrongly resolve.
+    monkeypatch.chdir(prev)
     outcome = pytester.runpytest("-p", "xv_pytest_plugin", "--rootdir", str(prev),
                                  "-p", "no:cacheprovider", str(prev / "tests"))
     rows = [json.loads(line) for line in results.read_text().splitlines() if line.strip()]
@@ -234,6 +282,7 @@ def _failed(rows: list[dict], name: str) -> dict:
     ("test_cause_chain", "42703", "in undefined_column"),      # __cause__ followed
     ("test_context_chain", "42501", "in no_privilege"),        # __context__ followed
     ("test_timeout", "57014", "in statement_timeout"),
+    ("test_protocol_frame_through_app", "23514", "in insert_lead"),   # not the asyncpg frame
 ])
 def test_a_schema_error_raised_through_a_previous_app_frame_is_incompatible(plugin_rows, name, sqlstate, frame):
     row = _failed(plugin_rows[1], name)
@@ -246,6 +295,9 @@ def test_a_schema_error_raised_through_a_previous_app_frame_is_incompatible(plug
     ("test_test_undefined_column", "42703"),
     ("test_test_no_privilege", "42501"),       # raised in a tests/ helper: still the test's own SQL
     ("test_test_check_violation", "23514"),
+    # The shape of all 23 false INCOMPATIBLEs in CI run 44741248526.
+    ("test_protocol_frame_from_test", "23514"),
+    ("test_protocol_frame_inside_asyncio", "23514"),
 ])
 def test_the_same_error_raised_only_from_previous_test_frames_is_drift(plugin_rows, name, sqlstate):
     row = _failed(plugin_rows[1], name)
@@ -294,14 +346,14 @@ def test_totals_count_every_outcome_and_a_module_skipped_at_import(plugin_rows):
     totals = [r for r in rows if r.get("type") == "totals"]
     assert len(totals) == 1
     totals = totals[0]
-    assert totals["collected"] == 18
-    assert (totals["passed"], totals["skipped"], totals["failed"]) == (1, 1, 16)
+    assert totals["collected"] == 21
+    assert (totals["passed"], totals["skipped"], totals["failed"]) == (1, 1, 19)
     assert totals["collect_errors"] == 0 and totals["collect_skipped"] == 1
     assert totals["exitstatus"] == 1
     skips = [r for r in rows if r.get("type") == "collect_skip"]
     assert [r["nodeid"].endswith("test_module_skipped.py") for r in skips] == [True]
     # The plugin records; it never changes an outcome.
-    outcome.assert_outcomes(passed=1, skipped=2, failed=15, errors=1)
+    outcome.assert_outcomes(passed=1, skipped=2, failed=18, errors=1)
 
 
 def test_the_plugin_refuses_to_run_without_a_results_file(pytester, monkeypatch):
@@ -312,14 +364,186 @@ def test_the_plugin_refuses_to_run_without_a_results_file(pytester, monkeypatch)
     assert result.ret != 0
 
 
+def _fake_backend(tmp_path: Path) -> Path:
+    backend = tmp_path / "prevbackend"
+    (backend / "tests").mkdir(parents=True)
+    (backend / "tests" / "test_x_live.py").write_text("")
+    # Even a file that DOES exist at the relative name must not count.
+    (backend / "asyncpg" / "protocol").mkdir(parents=True)
+    (backend / PROTOCOL_FRAME).write_text("")
+    return backend
+
+
+def _protocol_bind_execute():
+    namespace: dict = {}
+    source = ("import asyncpg.exceptions as pgexc\n"
+              "def bind_execute():\n"
+              "    raise pgexc.CheckViolationError('new row for relation \"leads\" violates check constraint')\n")
+    exec(compile(source, PROTOCOL_FRAME, "exec"), namespace)  # noqa: S102 — a frame with asyncpg's relative name
+    return namespace["bind_execute"]
+
+
+def _raised(call) -> BaseException:
+    try:
+        call()
+    except Exception as exc:  # noqa: BLE001
+        return exc
+    raise AssertionError("did not raise")
+
+
+def test_a_relative_frame_name_is_never_previous_app_code(tmp_path, monkeypatch):
+    backend = _fake_backend(tmp_path)
+    (backend / "crm.py").write_text("x = 1\n")
+    monkeypatch.chdir(backend)              # the previous suite's working directory
+    assert not plugin._is_app_path(PROTOCOL_FRAME, str(backend))
+    assert not plugin._is_app_path("crm.py", str(backend))                       # relative, though it exists
+    assert not plugin._is_app_path(str(backend / "gone.py"), str(backend))       # absolute, does not exist
+    assert not plugin._is_app_path(str(backend / "tests" / "test_x_live.py"), str(backend))
+    assert not plugin._is_app_path(__file__, str(backend))                       # outside the previous backend
+    assert plugin._is_app_path(str(backend / "crm.py"), str(backend))
+
+
+def test_an_asyncpg_error_from_test_sql_is_drift_despite_the_relative_protocol_frame(tmp_path, monkeypatch):
+    backend = _fake_backend(tmp_path)
+    monkeypatch.chdir(backend)
+    exc = _raised(_protocol_bind_execute())
+    assert traceback.extract_tb(exc.__traceback__)[-1].filename == PROTOCOL_FRAME   # the real shape
+    assert plugin.app_frame([exc], str(backend)) is None
+    row = plugin.classify(exc, [], str(backend))
+    assert (row["kind"], row["sqlstate"], row["app_frame"]) == ("drift", "23514", None)
+
+    async def scenario():                   # the live tests' shape: asyncio.run around the SQL
+        _protocol_bind_execute()()
+
+    row = plugin.classify(_raised(lambda: asyncio.run(scenario())), [], str(backend))
+    assert (row["kind"], row["app_frame"]) == ("drift", None)
+
+
+def test_an_absolute_app_frame_in_the_chain_is_incompatible(tmp_path, monkeypatch):
+    backend = _fake_backend(tmp_path)
+    monkeypatch.chdir(backend)
+    source = "def insert_lead(execute):\n    return execute()\n"
+    (backend / "crm.py").write_text(source)
+    namespace: dict = {}
+    exec(compile(source, str(backend / "crm.py"), "exec"), namespace)  # noqa: S102
+    bind_execute = _protocol_bind_execute()
+    exc = _raised(lambda: namespace["insert_lead"](bind_execute))
+    row = plugin.classify(exc, [], str(backend))
+    assert (row["kind"], row["sqlstate"], row["app_frame"]) == ("incompatible", "23514", "crm.py:2 in insert_lead")
+
+    def wrapped():                           # through __cause__, raised again by the test
+        try:
+            namespace["insert_lead"](bind_execute)
+        except Exception as inner:
+            raise RuntimeError("wrapped") from inner
+
+    row = plugin.classify(_raised(wrapped), [], str(backend))
+    assert (row["kind"], row["app_frame"]) == ("incompatible", "crm.py:2 in insert_lead")
+
+
+# ── the boot probe's log scan ────────────────────────────────────────────────
+
+HEARTBEAT_LINE = ('WARNING oracle.process_heartbeat: heartbeat not written (new row for relation '
+                  '"process_heartbeats" violates check constraint "xv_canary_hb"); will retry in 30s')
+
+
+@pytest.mark.parametrize(("line", "sqlstate"), [
+    (HEARTBEAT_LINE, "23514"),
+    ('WARNING x: null value in column "tenant_id" of relation "leads" violates not-null constraint', "23502"),
+    ('WARNING x: insert or update on table "leads" violates foreign key constraint "leads_tenant_fk"', "23503"),
+    ('WARNING x: duplicate key value violates unique constraint "leads_pkey"', "23505"),
+    ("WARNING x: permission denied for table leads", "42501"),
+    ('WARNING x: new row violates row-level security policy for table "leads"', "42501"),
+    ('WARNING x: column "stage" does not exist', "42703"),
+    ("WARNING x: column l.stage does not exist", "42703"),
+    ('WARNING x: relation "lead_stages" does not exist', "42P01"),
+    ("WARNING x: function app_current_tenant(uuid) does not exist", "42883"),
+    ("WARNING x: value too long for type character varying(64)", "22001"),
+    ("ERROR x: asyncpg.exceptions.UndefinedTableError", "42P01"),
+])
+def test_postgres_message_texts_map_to_their_sqlstate(line, sqlstate):
+    hits, harness = boot_probe.scan_log(f"INFO oracle.server: Memory Core DB pool online\n{line}\n", booted=True)
+    assert [h["sqlstate"] for h in hits] == [sqlstate]
+    assert harness == []
+
+
+def test_one_error_on_one_line_is_one_hit_and_repeats_collapse():
+    traceback_line = ('asyncpg.exceptions.CheckViolationError: new row for relation "process_heartbeats" '
+                      'violates check constraint "xv_canary_hb"')
+    hits, _ = boot_probe.scan_log("\n".join([traceback_line, HEARTBEAT_LINE, HEARTBEAT_LINE]), booted=True)
+    assert [h["signature"] for h in hits] == [
+        '23514 new row for relation "process_heartbeats" violates check constraint "xv_canary_hb"']
+
+
+def test_ordinary_boot_lines_are_not_schema_errors():
+    text = "\n".join([
+        "INFO oracle.server: Memory Core DB pool online — operators will hydrate from PostgreSQL.",
+        "INFO oracle.process_heartbeat: process heartbeat started: h-1-ab (role=worker, sha=unknown)",
+        "WARNING oracle.config: ACS phone calls are NOT operational — missing: ACS_CONNECTION_STRING",
+        'INFO:     127.0.0.1:5555 - "GET /health HTTP/1.1" 200 OK',
+    ])
+    assert boot_probe.scan_log(text, booted=True) == ([], [])
+
+
+def test_the_heartbeat_refusal_reaches_the_boot_log_as_a_23514(monkeypatch):
+    """process_heartbeat.beat_once swallows the error and logs str(exc), the
+    PostgreSQL message, through the same format and PII scrub as server.py."""
+    import db.connection
+    import log_redaction
+    import process_heartbeat
+
+    class _Conn:
+        async def execute(self, *_args):
+            raise pgexc.CheckViolationError(
+                'new row for relation "process_heartbeats" violates check constraint "xv_canary_hb"')
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    monkeypatch.setattr(db.connection, "get_pool", lambda: _Pool())
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))   # server.py's format
+    handler.addFilter(log_redaction.PIIScrubFilter())
+    logger = logging.getLogger("oracle.process_heartbeat")
+    logger.addHandler(handler)
+    try:
+        assert asyncio.run(process_heartbeat.beat_once()) is False
+    finally:
+        logger.removeHandler(handler)
+    hits, _ = boot_probe.scan_log(stream.getvalue(), booted=True)
+    assert [(h["sqlstate"], h["exception"]) for h in hits] == [("23514", None)]
+    assert "xv_canary_hb" in hits[0]["signature"]
+
+
 # ── the decision table ───────────────────────────────────────────────────────
 
 STEPS_OK = {"venv": 0, "build_control": 0, "build_candidate": 0, "deploy_rehearsal": 0}
 
 
-def _boot(ok: bool = True, *, harness: bool = False, hits: tuple = ()) -> dict:
-    return {"ok": ok, "harness": harness, "checks": {"web.health_200": {"ok": ok and not harness}},
+def _boot(ok: bool = True, *, harness: bool = False, hits: tuple = (), checks_ok: bool | None = None) -> dict:
+    """A boot result. `ok=False` alone means a failed check; `checks_ok=True`
+    with hits is a boot that served but logged schema errors."""
+    checks_ok = (ok and not harness) if checks_ok is None else checks_ok
+    return {"ok": checks_ok and not harness and not hits, "harness": harness,
+            "checks": {"web.health_200": {"ok": checks_ok}},
             "contract_hits": list(hits), "harness_hits": ["ImportError"] if harness else []}
+
+
+def _hit(sqlstate: str, message: str) -> dict:
+    return {"exception": None, "sqlstate": sqlstate, "signature": f"{sqlstate} {message}", "line": message}
+
+
+HB_HIT = _hit("23514", 'new row for relation "process_heartbeats" violates check constraint "xv_canary_hb"')
+NOISE_HIT = _hit("42P01", 'relation "optional_cache" does not exist')
 
 
 def _row(node: str, outcome: str, **failure) -> dict:
@@ -480,6 +704,55 @@ def test_canary_caught_by_the_p_at_c_boot_counts():
     inputs = _inputs(_suite(_row("test_a", "passed")), boots={"P@C": _boot(False, hits=hits)}, canary=True)
     record, code = evaluate.decide(inputs)
     assert (code, record["canary_result"]["evidence"]) == (0, ["boot P@C"])
+
+
+def test_canary_detected_by_a_logged_heartbeat_refusal_while_the_tests_only_drift():
+    """The shape CI should produce: the previous worker serves, logs the
+    refused heartbeat on C and not on B, and the leads tests fail on their own
+    SQL (DRIFT)."""
+    bad = _row("test_a", "failed", sqlstate="23514", exc_type="asyncpg.exceptions.CheckViolationError")
+    inputs = _inputs(_suite(bad, _row("test_b", "passed")), rerun_c=_suite(bad),
+                     rerun_b=_suite(_row("test_a", "passed")), canary=True,
+                     boots={"P@C": _boot(checks_ok=True, hits=(HB_HIT,)),
+                            "N@C": _boot(checks_ok=True, hits=(HB_HIT,))})
+    record, code = evaluate.decide(inputs)
+    assert record["contract_result"] == "incompatible"
+    assert record["boots"]["P@C"]["new_hits"] == [HB_HIT]
+    assert record["tests"]["tests/test_x_live.py::test_a"]["verdict"] == "DRIFT"
+    assert (code, record["canary_result"]["evidence"], record["canary_result"]["drift_only"]) == \
+        (0, ["boot P@C"], ["tests/test_x_live.py::test_a"])
+
+
+def test_a_schema_error_the_previous_app_logs_only_on_the_new_schema_is_incompatible():
+    inputs = _inputs(_suite(_row("test_a", "passed")), boots={"P@C": _boot(checks_ok=True, hits=(HB_HIT,))})
+    record, code = evaluate.decide(inputs)
+    assert (record["contract_result"], code) == ("incompatible", 1)
+
+
+def test_a_schema_error_the_previous_app_also_logs_on_its_own_schema_is_not_proven():
+    noisy = _boot(checks_ok=True, hits=(NOISE_HIT,))
+    inputs = _inputs(_suite(_row("test_a", "passed")), boots={"P@B": noisy, "P@C": noisy, "N@C": noisy})
+    record, code = evaluate.decide(inputs)
+    assert (record["contract_result"], code) == ("not_proven", 0)
+    assert record["harness_reasons"] == []
+    assert record["boots"]["P@C"]["new_hits"] == [] and record["boots"]["N@C"]["new_hits"] == []
+
+    inputs = _inputs(_suite(_row("test_a", "passed")),
+                     boots={"P@B": noisy, "P@C": _boot(checks_ok=True, hits=(NOISE_HIT, HB_HIT))})
+    record, code = evaluate.decide(inputs)
+    assert (record["contract_result"], code, record["boots"]["P@C"]["new_hits"]) == ("incompatible", 1, [HB_HIT])
+
+    inputs = _inputs(_suite(_row("test_a", "passed")), canary=True,
+                     boots={"P@B": _boot(checks_ok=True, hits=(HB_HIT,)),
+                            "P@C": _boot(checks_ok=True, hits=(HB_HIT,))})
+    record, code = evaluate.decide(inputs)
+    assert (code, record["canary_result"]["detected"]) == (1, False)   # B logs it too: not attributable
+
+
+def test_a_schema_error_only_the_new_app_logs_fails_the_new_boot():
+    inputs = _inputs(_suite(_row("test_a", "passed")), boots={"N@C": _boot(checks_ok=True, hits=(HB_HIT,))})
+    record, code = evaluate.decide(inputs)
+    assert (record["contract_result"], code) == ("new_boot_failed", 1)
 
 
 @pytest.mark.parametrize(("label", "inputs"), [

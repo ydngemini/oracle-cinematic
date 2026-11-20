@@ -5715,7 +5715,7 @@ updated: 2026-11-20
 id: L19-28
 status: tests_pass
 env: local
-evidence_shas: [2eeb8b4]   # base; fix in the commit that adds this row
+evidence_shas: [837691b]   # base of the squashed v2 commit
 files: [.github/workflows/ci.yml, scripts/cross-version-contract.sh, scripts/cross_version/evaluate.py, scripts/cross_version/xv_pytest_plugin.py, scripts/cross_version/boot_probe.py, backend/tests/test_cross_version_contract.py, backend/tests/test_cross_version_wiring.py, docs/cross-version-contract.md, docs/release-checklist.md, docs/deploy-digitalocean.md]
 tests_run:
   - {cmd: "design: 3 independent designs + judge (workflow wf_6e8e5ace-122)", result: "per-PR job chosen; follow-up F1 (rollback.sh set gap) landed first as L19-26/#151", date: 2026-11-20}
@@ -5723,7 +5723,7 @@ tests_run:
 authz_checked: "No access change. CI only: no secrets, permissions contents: read (fork-safe); not in release.needs or promote.needs; no declaration file, flag or env var relaxes an outcome; migration_safety.py and rollback.sh unchanged (DEP-05)."
 blockers:
   - "Only a real CI run proves the database setup on postgres:16-alpine, the PRE_DEPLOY rehearsal as the doadmin stand-in, the previous app booting in staging mode, the noise level of the previous suite, and that the canary yields an INCOMPATIBLE 23514 — this PR's own CI runs canary mode."
-  - "Not a required check yet (owner action F6 in docs/cross-version-contract.md); rollback.sh does not read the record until follow-up F2."
+  - "Not a required check yet (owner decision F7 in docs/cross-version-contract.md, after the false-red rate is measured); rollback.sh does not read the record until follow-up F2."
   - "Not deployed (C4.4)."
 audit_refs: [35-06]
 decision_refs: []
@@ -5838,7 +5838,7 @@ From an outside reviewer's partial audit (six chunks, pinned at `54740ef` and PR
 | DEP-03 | Rollback doesn't verify the target app | P1 | fixed on main (#53 | 19 | L19-08, AC19.04 |
 | DEP-03b | Rollback spec has no domains block (would detach the hostname) | P1 once prod has a domain | fixed on main (#53 (rendered with NEOH_DOMAIN; live domains checked) | 19 | L19-08 |
 | DEP-04 | Prod/staging drift guard fails open when the spec can't be fetched | P1 | fixed on main (#72); exercised only on the next real deploy (staging token expired) | 19 | L19-10 |
-| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback | 19 | T19.06 |
+| DEP-05 | Rollback compatibility classifier is syntactic | P2 | open: owner policy — any non-ADDITIVE verdict blocks a rollback and there is no hand override, so stricter classes (constraints, policies, triggers) would block nearly every rollback. Behavioural complement: L19-28 (cross-version contract job, previous app on the new schema); rollback.sh consumption pending F2 | 19 | T19.06 |
 | DEP-06 | Post-rollback smoke is advisory | P2 | fixed on main (#68) | 19 | L19-13, T19.11 |
 | DEP-07 | One worker; concurrency unproven at target | P2 | open | 19 / 16 | A10 |
 | DEP-08 | Storage smoke can pass with storage broken | P2 | fixed in code, PR #70 (/health/storage with the app's credentials; smoke asserts it) | 19 | L19-14 |

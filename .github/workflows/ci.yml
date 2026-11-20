@@ -311,7 +311,8 @@ jobs:
   #
   # Skipped (one runner-minute) when nothing under backend/db/migrations/*.sql
   # or backend/run_migrations.py changed. When this harness itself changes, a
-  # canary (CHECK (false) NOT VALID on leads) must be caught, or the job fails.
+  # canary (CHECK (false) NOT VALID on process_heartbeats and leads) must make
+  # the gate fail, or the job fails.
   # Advisory: deliberately NOT in release.needs or promote.needs (an owner
   # decision, F7). No secrets, so it is safe on fork PRs. The previous suite's
   # pytest command lives in the script, so the guard in

@@ -187,3 +187,50 @@ def test_the_ci_file_still_has_exactly_one_live_pytest_line():
     assert "_live.py" not in yaml.safe_dump(JOB)
     # The previous tree's suite runs from the script, over its own glob.
     assert "targets=(tests/test_*_live.py)" in SCRIPT_TEXT
+
+
+def _canary_sql() -> str:
+    found = re.search(r'^CANARY_SQL="([^"]*)"', SCRIPT_TEXT, re.M)
+    assert found, "CANARY_SQL is gone from cross-version-contract.sh"
+    return found.group(1)
+
+
+def test_the_canary_breaks_a_write_the_previous_worker_makes_at_startup():
+    """The canary must reach the previous APP, not only the previous tests'
+    own SQL (which is DRIFT). Every worker upserts process_heartbeats as its
+    last startup step and logs the refusal; the probe's worker phase catches
+    it. leads stays: the previous tests write it, which shows the suite side."""
+    sql = _canary_sql()
+    assert "ALTER TABLE process_heartbeats ADD CONSTRAINT xv_canary_hb CHECK (false) NOT VALID;" in sql
+    assert "ALTER TABLE leads ADD CONSTRAINT xv_canary CHECK (false) NOT VALID;" in sql
+    migrations = REPO / "backend" / "db" / "migrations"
+    assert any("CREATE TABLE IF NOT EXISTS process_heartbeats" in p.read_text() for p in migrations.glob("*.sql"))
+    # The classifier calls it ADDITIVE, which is the point (CLASSIFIER MISS).
+    import migration_safety
+
+    assert migration_safety.classify_sql("9999_xv_canary.sql", sql).classification == "additive"
+
+    heartbeat = (REPO / "backend" / "process_heartbeat.py").read_text(encoding="utf-8")
+    assert "INSERT INTO process_heartbeats" in heartbeat
+    assert 'log.warning("heartbeat not written (%s); will retry in %ss", exc, INTERVAL)' in heartbeat
+    assert "recovery" not in heartbeat.lower()              # ORACLE_RECOVERY_MODE does not stop it
+    lifespan = SERVER_TEXT[SERVER_TEXT.index("async def lifespan"):SERVER_TEXT.index("yield", SERVER_TEXT.index("async def lifespan"))]
+    block = lifespan[lifespan.rindex("if config.RUNS_BACKGROUND_WORK:"):]
+    assert "await start_heartbeat()" in block
+    config_text = (REPO / "backend" / "config.py").read_text(encoding="utf-8")
+    assert 'RUNS_BACKGROUND_WORK: bool = PROCESS_ROLE != "web"' in config_text
+    env = _boot_probe().child_env(role="worker", port=5432, db="x", app_password="a" * 32, platform_password="p" * 32)
+    assert env["ORACLE_PROCESS_ROLE"] == "worker"
+
+
+def test_application_warnings_reach_the_boot_log():
+    """uvicorn configures only its own loggers; server.py configures the root
+    at import (INFO by default), and the probe sends stderr into the log."""
+    assert "\n_configure_logging()\n" in SERVER_TEXT
+    assert 'level = os.getenv("ORACLE_LOG_LEVEL", "INFO").upper()' in SERVER_TEXT
+    assert "logging.basicConfig(level=level," in SERVER_TEXT
+    probe = _boot_probe()
+    env = probe.child_env(role="worker", port=5432, db="x", app_password="a" * 32, platform_password="p" * 32)
+    assert "ORACLE_LOG_LEVEL" not in env
+    source = (REPO / "scripts" / "cross_version" / "boot_probe.py").read_text(encoding="utf-8")
+    assert "stdout=log, stderr=subprocess.STDOUT" in source

@@ -25,14 +25,19 @@ built candidate C' and on the control B, which has the previous schema only):
 Exit codes (normal run):
   3 DEPLOY_WOULD_FAIL  run_migrations.py --precheck-then-migrate, run as the
                        NOSUPERUSER BYPASSRLS owner, exited non-zero
-  2 HARNESS            a dependency install or build failed, the previous app
-                       does not boot on its own schema (B), zero tests were
-                       collected, every test skipped, pytest and the plugin
-                       disagree, a rerun gave no answer, or this script crashed
-  1 INCOMPATIBLE       an attributable INCOMPATIBLE test, the previous app
-                       failing to boot on C while it boots on B, or the new
-                       app failing to boot on the upgraded schema
-  0 otherwise; contract_result is "pass" only with no failure and no skip.
+  2 HARNESS            a dependency install or build failed, a boot check of
+                       the previous app fails on its own schema (B), zero
+                       tests were collected, every test skipped, pytest and
+                       the plugin disagree, a rerun gave no answer, or this
+                       script crashed
+  1 INCOMPATIBLE       an attributable INCOMPATIBLE test (an attributable
+                       infrastructure-class failure counts too: stricter), a
+                       boot check of the previous app failing on C while it
+                       passes on B, or a schema error the previous app logs on
+                       C but not on B; likewise for the new app on C
+  0 otherwise; contract_result is "pass" only with no failure, no skip and no
+    schema error in any boot log (one the previous app also logs on B is a
+    warning: not_proven).
 
 Canary run: exits 0 only when the gate itself fails on the canary, that is,
 contract_result is "incompatible" and at least one INCOMPATIBLE verdict (an
@@ -172,6 +177,10 @@ def _status_map(rows: list[dict] | None) -> dict[str, str]:
     return status
 
 
+def _signature(hit: dict) -> str:
+    return hit.get("signature") or f"{hit.get('sqlstate')} {hit.get('exception') or hit.get('line', '')}"
+
+
 def _failed_rows(rows: list[dict] | None, node: str) -> list[dict]:
     return [r for r in rows or [] if r.get("nodeid") == node and r.get("outcome") == "failed"]
 
@@ -196,6 +205,7 @@ def decide(inputs: dict) -> tuple[dict, int]:
               "applied_as": "nosuperuser-bypassrls-owner", "exit": steps.get("deploy_rehearsal")}
     boot_result: dict[str, dict] = {}
     incompatible_boot = new_boot_failed = False
+    pc_new_states: set = set()
     totals = _totals(run1)
 
     for step in SETUP_STEPS:
@@ -224,7 +234,7 @@ def decide(inputs: dict) -> tuple[dict, int]:
                 harness.append(f"boot {name} produced no result")
                 continue
             boot_result[name] = {"ok": bool(boot.get("ok")), "harness": bool(boot.get("harness")),
-                                 "contract_hits": boot.get("contract_hits", [])[:5],
+                                 "contract_hits": list(boot.get("contract_hits") or []),
                                  "harness_hits": boot.get("harness_hits", []),
                                  "failed_checks": sorted(k for k, v in (boot.get("checks") or {}).items()
                                                          if not v.get("ok"))}
@@ -232,18 +242,41 @@ def decide(inputs: dict) -> tuple[dict, int]:
                 harness.append(f"boot {name}: probe environment problem "
                                f"({', '.join(boot.get('harness_hits') or ['unknown'])})")
         pb, pc, nc = (boot_result.get(n) for n in BOOTS)
-        if pb and not pb["harness"] and not pb["ok"]:
+        # Log hits are attributed like tests: what the previous app also logs
+        # on its OWN schema (B) is not this change. A failed check on B is.
+        baseline = {_signature(h) for h in pb["contract_hits"]} if pb else set()
+        for boot in (pc, nc):
+            if boot:
+                boot["new_hits"] = [h for h in boot["contract_hits"] if _signature(h) not in baseline]
+        pb_usable = bool(pb) and not pb["harness"] and not pb["failed_checks"]
+        if pb and not pb["harness"] and pb["failed_checks"]:
             harness.append("the previous app does not boot on its OWN schema (control B): "
-                           + ", ".join(pb["failed_checks"] or ["contract hits in its log"]))
-        if pb and pb["ok"] and pc and not pc["harness"] and not pc["ok"]:
-            incompatible_boot = True
-            errors.append("INCOMPATIBLE: the previous app boots on its own schema but not on "
-                          "the schema this change leaves behind (P@C): "
-                          + ", ".join(pc["failed_checks"] or ["contract hits in its log"]))
-        if nc and not nc["harness"] and not nc["ok"]:
-            new_boot_failed = True
-            errors.append("the new app does not boot on the incrementally upgraded schema (N@C): "
-                          + ", ".join(nc["failed_checks"] or ["contract hits in its log"]))
+                           + ", ".join(pb["failed_checks"]))
+        elif pb_usable and baseline:
+            warnings.append("not proven: the previous app logs schema errors on its own schema (B) too: "
+                            + "; ".join(sorted(baseline))[:400])
+        if pb_usable and pc and not pc["harness"]:
+            if pc["failed_checks"] or pc["new_hits"]:
+                incompatible_boot = True
+                errors.append("INCOMPATIBLE: the previous app boots on its own schema but not on "
+                              "the schema this change leaves behind (P@C): "
+                              + ", ".join(pc["failed_checks"] + [_signature(h) for h in pc["new_hits"]]))
+            elif not pc["ok"]:
+                warnings.append("not proven: the previous app on the new schema (P@C) logs only what "
+                                "it logs on its own schema (B)")
+        if nc and not nc["harness"]:
+            if nc["failed_checks"] or nc["new_hits"]:
+                new_boot_failed = True
+                errors.append("the new app does not boot cleanly on the incrementally upgraded schema "
+                              "(N@C): " + ", ".join(nc["failed_checks"] + [_signature(h) for h in nc["new_hits"]]))
+            elif not nc["ok"]:
+                warnings.append("not proven: the new app on the upgraded schema (N@C) logs only what "
+                                "the previous app logs on its own schema (B)")
+        pc_new_states = {h.get("sqlstate") for h in (pc or {}).get("new_hits", [])}
+        for boot in boot_result.values():          # the record keeps a sample, not the log
+            boot["contract_hits"] = boot["contract_hits"][:10]
+            if "new_hits" in boot:
+                boot["new_hits"] = boot["new_hits"][:10]
 
         suite_rc = steps.get("suite")
         status = _status_map(run1)
@@ -346,8 +379,7 @@ def decide(inputs: dict) -> tuple[dict, int]:
         # DRIFT verdict is a warning (exit 0), so it proves nothing here.
         evidence = [n for n, t in tests.items() if t["verdict"] == "INCOMPATIBLE" and _canary_hit(t)]
         drift_only = [n for n, t in tests.items() if t["verdict"] == "DRIFT" and _canary_hit(t)]
-        if incompatible_boot and any(h.get("sqlstate") == CANARY_SQLSTATE
-                                     for h in boot_result.get("P@C", {}).get("contract_hits", [])):
+        if incompatible_boot and CANARY_SQLSTATE in pc_new_states:
             evidence.append("boot P@C")
         if result in ("harness", "deploy_would_fail"):
             canary_code, verdict = 2, "the canary could not run, so the gate is unproven"
@@ -356,8 +388,8 @@ def decide(inputs: dict) -> tuple[dict, int]:
                                        f"incompatibility(ies); the gate fails on it")
         else:
             canary_code, verdict = 1, (
-                "the gate cannot fail: a CHECK (false) NOT VALID on leads produced no attributable "
-                "23514 INCOMPATIBLE verdict"
+                "the gate cannot fail: the canary's CHECK (false) NOT VALID constraints produced no "
+                "attributable 23514 INCOMPATIBLE verdict (no P@C boot hit, no incompatible test)"
                 + (f" ({len(drift_only)} DRIFT-only 23514 failure(s) in previous tests: a warning, "
                    f"not a failure)" if drift_only else ""))
         record["canary_result"] = {"detected": canary_code == 0, "evidence": evidence[:20],
@@ -436,7 +468,8 @@ def summary_markdown(record: dict) -> str:
                  f"| {deploy.get('result')} (exit {deploy.get('exit')}) |")
     for name, boot in (record.get("boots") or {}).items():
         state = "ok" if boot["ok"] else ("harness" if boot["harness"] else "FAILED")
-        detail = ", ".join(boot.get("failed_checks") or [])
+        logged = boot["new_hits"] if "new_hits" in boot else boot.get("contract_hits") or []
+        detail = ", ".join((boot.get("failed_checks") or []) + [_signature(h) for h in logged])[:300]
         lines.append(f"| boot {name} | {state}{(': ' + detail) if detail else ''} |")
     totals = record.get("totals") or {}
     if totals:

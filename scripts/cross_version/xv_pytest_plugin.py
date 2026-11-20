@@ -88,7 +88,15 @@ def sqlstate_of(chain: list[BaseException]) -> str | None:
 
 
 def _is_app_path(path: str, backend: str) -> bool:
-    if not backend:
+    """True only for a source file of the previous APP: an absolute path that
+    exists, under backend/, outside tests/ and any virtualenv.
+
+    Absolute, because compiled extensions report RELATIVE names: asyncpg's
+    frames say `asyncpg/protocol/protocol.pyx`. Resolved against the working
+    directory, which is the previous backend, such a name looked like app
+    code, so every asyncpg error raised by a test's own SQL counted as an
+    app frame (the canary of CI run 44741248526 passed for that reason)."""
+    if not backend or not path or not os.path.isabs(path) or not os.path.isfile(path):
         return False
     real = os.path.realpath(path)
     root = os.path.realpath(backend) + os.sep
