@@ -5541,6 +5541,48 @@ next_task: "Owner: the lease work above before any second worker; 30.10 (staging
 updated: 2026-11-19
 ```
 
+#### L19-23 The backend's Python dependencies are hash-locked: every transitive version and artifact is pinned, installed with --require-hashes and scanned (external audit 35-01)
+```yaml
+id: L19-23
+status: tests_pass
+env: local
+evidence_shas: [97e337d]   # base; fix in the commit that adds this row
+files: [backend/requirements.in, backend/requirements.txt, backend/Dockerfile, .github/workflows/ci.yml, scripts/lock-python-deps.sh, backend/tests/test_python_lock.py, docs/supply-chain-policy.md]
+tests_run:
+  - {cmd: "read backend/requirements.txt, backend/Dockerfile and ci.yml at 97e337d", result: "confirmed 35-01: only direct dependencies were listed (numpy and eth-account as ranges), transitive ones resolved fresh by every pip install in the Dockerfile and CI, so two builds of one commit could get different artifacts and the scan saw only the direct pins", date: 2026-11-19}
+  - {cmd: "pip-compile 7.5.2 --generate-hashes in python:3.12-slim@sha256:2f17fc04… (the Dockerfile base); then a fresh container: pip install --require-hashes -r requirements.txt; pip check; import fastapi, asyncpg, numpy, cv2, onnxruntime, stripe, boto3, playwright, litellm", result: "134 packages locked with hashes; installs, no broken requirements, imports ok (numpy 2.5.5)", date: 2026-11-19}
+  - {cmd: "pip-audit 2.10.1 --strict --skip-editable --require-hashes --disable-pip -r requirements.txt (the new CI step) in the same base image", result: "No known vulnerabilities found (now across all 134 locked packages)", date: 2026-11-19}
+  - {cmd: "test_python_lock (3) + test_ci_security_gates + test_ci_build_contexts", result: "15 passed: the lock is a pip-compile output; every locked package is exact and hashed; every direct dependency is locked at a version requirements.in allows", date: 2026-11-19}
+authz_checked: "No access change. Build and CI only: the Dockerfile and CI install the lock with --require-hashes (test tools install separately, unhashed); the dependency scan reads the lock without resolving."
+blockers:
+  - "Dependabot's pip updater must handle requirements.in + its pip-compile output; if a Dependabot PR edits only one file, test_python_lock fails it and scripts/lock-python-deps.sh fixes it."
+  - "Test tools (requirements-test.txt) are not hash-locked; they never ship in the production image."
+  - "The image itself was not rebuilt here (CI builds it). Not deployed (C4.4)."
+audit_refs: [35-01]
+decision_refs: []
+next_task: "35-03 (typing gates) or 35-06 (migration cross-version contract tests)."
+updated: 2026-11-19
+```
+
+#### L19-24 GitHub dependency alerts and automatic security-fix PRs are on (owner-approved 2026-11-19); CODEOWNERS is still open (external audit 35-08)
+```yaml
+id: L19-24
+status: tests_pass
+env: local
+evidence_shas: [97e337d]
+files: [docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "gh api (read-only) repos/ydngemini/oracle-cinematic: vulnerability-alerts, automated-security-fixes, branches/main/protection, rulesets; tree", result: "before: vulnerability alerts off (404), automated security fixes off, no classic branch protection, rulesets main-protection and noah-branch-namespace active, no CODEOWNERS file", date: 2026-11-19}
+  - {cmd: "with the owner's approval: gh api -X PUT .../vulnerability-alerts and .../automated-security-fixes; read back", result: "vulnerability alerts on (204), automated security fixes enabled:true", date: 2026-11-19}
+authz_checked: "Repository settings only, changed by the owner's explicit choice; security-fix PRs still go through CI and review before any merge."
+blockers:
+  - "Not done: a CODEOWNERS file naming reviewers for auth, billing, telephony, privacy, migrations and deployment, and whether rulesets should require that review. Owner decision (single-maintainer repository today)."
+audit_refs: [35-08]
+decision_refs: []
+next_task: "Owner: CODEOWNERS / required review."
+updated: 2026-11-19
+```
+
 ### L20
 20-agent launch certification. Its gates read this ledger.
 

@@ -36,7 +36,7 @@ WORKDIR /app
 # Install dependencies in a separate layer so rebuilds skip this step when
 # only source code changes (requirements.txt changes less often than .py files).
 COPY requirements.txt requirements-test.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
     && if [ "$INSTALL_TEST_DEPS" = "true" ]; then pip install --no-cache-dir -r requirements-test.txt; fi
 
 # Playwright + Chromium — required by the browser-based state harvesters (e.g.
