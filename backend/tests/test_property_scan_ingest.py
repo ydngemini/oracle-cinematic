@@ -374,12 +374,53 @@ def test_npx_unable_to_fetch_the_converter_is_the_servers_fault(monkeypatch, tmp
         asyncio.run(worker._convert_to_delivery(src, work, "m1"))
 
 
-def test_a_stuck_converter_is_killed_and_reported_as_the_servers_fault(monkeypatch, tmp_path):
-    """wait_for cancels the read, not the process: the converter used to
-    outlive the request (and escape both handlers as a bare TimeoutError)."""
+def test_npx_reporting_its_childs_signal_death_is_the_servers_fault(monkeypatch, tmp_path):
+    """Under npx the converter is a grandchild: an out-of-memory kill reaches
+    us as npx exiting 137 ("Killed"), not as a negative return code."""
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "npx", 'echo "Killed" >&2; exit 137\n')
+    with pytest.raises(worker.ConverterUnavailable, match="killed by signal 9"):
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+
+
+def _gone(pid: int, wait: float = 1.0) -> bool:
     import os
     import time
 
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_stuck_converter_under_npx_is_killed_with_its_children(monkeypatch, tmp_path):
+    """npx runs the converter as a grandchild that holds the output pipe.
+    Killing npx alone left it running, and the request then waited for it
+    (review r2: 8 s instead of 1 s with an 8 s child; forever with a stuck one)."""
+    import time
+
+    pid_file = tmp_path / "child.pid"
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "npx",
+        f"sh -c 'sleep 30 & echo $! > \"{pid_file}\"; wait'\n")
+    monkeypatch.setattr(worker, "CONVERT_TIMEOUT_S", 1)
+
+    started = time.monotonic()
+    with pytest.raises(worker.ConverterUnavailable, match="within 1 s"):
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, f"the request waited {elapsed:.1f} s for an orphaned converter"
+    assert _gone(int(pid_file.read_text())), "the converter's child is still running"
+
+
+def test_a_stuck_converter_is_killed_and_reported_as_the_servers_fault(monkeypatch, tmp_path):
+    """wait_for cancels the read, not the process: the converter used to
+    outlive the request (and escape both handlers as a bare TimeoutError)."""
     pid_file = tmp_path / "pid"
     worker, src, work = _converter_on_path(
         monkeypatch, tmp_path, "splat-transform", f'echo $$ > "{pid_file}"; exec sleep 30\n')
@@ -388,15 +429,7 @@ def test_a_stuck_converter_is_killed_and_reported_as_the_servers_fault(monkeypat
     with pytest.raises(worker.ConverterUnavailable, match="within 1 s"):
         asyncio.run(worker._convert_to_delivery(src, work, "m1"))
 
-    pid = int(pid_file.read_text())
-    for _ in range(20):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.05)
-    else:
-        pytest.fail(f"converter process {pid} is still running")
+    assert _gone(int(pid_file.read_text())), "the converter process is still running"
 
 
 def test_no_storage_backend_refuses_before_converting(monkeypatch):

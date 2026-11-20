@@ -29,12 +29,14 @@ kind of media, not the container — and stored `.splat` assets still load.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import logging
 import re
 import os
 import shutil
+import signal
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -648,24 +650,34 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
             f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}; needs Node >= 22)"
         )
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        # Its own process group, so a timeout can stop all of it: npx runs the
+        # converter as a grandchild, and killing npx alone left the converter
+        # running with this pipe open (proc.wait() then waited for it).
+        start_new_session=True,
     )
     try:
         o, _ = await asyncio.wait_for(proc.communicate(), timeout=CONVERT_TIMEOUT_S)
     except TimeoutError:
-        # wait_for cancels the read, not the process: without the kill a
-        # stuck converter outlived the request that started it.
-        proc.kill()
-        await proc.wait()
+        # wait_for cancels the read, not the process.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=10)
+        except TimeoutError:
+            logger.error("splat-transform group %s still holds its pipe after SIGKILL", proc.pid)
         raise ConverterUnavailable(
             f"splat-transform did not convert {src.name} within {CONVERT_TIMEOUT_S} s"
         ) from None
     if proc.returncode != 0 or not out.is_file():
         tail = (o or b"")[-400:].decode("utf-8", "replace")
-        if proc.returncode is not None and proc.returncode < 0:
+        # A signal shows as a negative code when node is the process itself,
+        # and as 128+N when a wrapper (npx, a shell) reports its child's death.
+        rc = proc.returncode
+        if rc is not None and (rc < 0 or rc >= 128):
             raise ConverterUnavailable(
-                f"splat-transform was killed by signal {-proc.returncode} converting "
-                f"{src.name}: {tail}"
+                f"splat-transform was killed by signal {-rc if rc < 0 else rc - 128} "
+                f"converting {src.name}: {tail}"
             )
         if cmd[0] == "npx" and _NPX_FAILURE.search(tail):
             raise ConverterUnavailable(

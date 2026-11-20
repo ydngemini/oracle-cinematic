@@ -89,6 +89,7 @@ def test_a_header_with_no_row_is_no_data_cached_briefly(monkeypatch):
     b'{"error": "x", "detail": "y"}',
     b'"just a string"',
     json.dumps([_HEADER, _row()[:-3]]).encode(),            # a ragged row
+    json.dumps([[["NAME"], "B25077_001E"], ["x", "1"]]).encode(),   # a header that is not names
 ])
 def test_an_unreadable_answer_is_an_outage_and_is_not_cached(monkeypatch, body):
     """Checked inside the fetch: a malformed answer must not sit in the cache
@@ -132,6 +133,17 @@ def test_a_real_row_is_read(monkeypatch):
     assert result["median_home_value"] == 312500 and isinstance(result["median_home_value"], int)
     assert result["median_rent"] is None and result["median_household_income"] is None
     assert result["owner_occupied_pct"] == 75.0 and result["vacancy_rate_pct"] == 5.0
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+def test_a_non_finite_value_is_none(monkeypatch, raw):
+    """float() reads these; int() and a JSON response would not."""
+    code = census._VARIABLES
+    _upstream(monkeypatch, body=json.dumps(
+        [_HEADER, _row(**{code["median_rooms"]: raw, code["median_rent"]: raw})]).encode())
+    result = asyncio.run(census.get_demographics_by_zip("19901"))
+    assert result["median_rooms"] is None and result["median_rent"] is None
+    json.dumps(result, allow_nan=False)
 
 
 def test_one_unreadable_value_is_none_not_an_outage(monkeypatch, caplog):

@@ -21,6 +21,7 @@ Used by:
 import asyncio
 import json
 import logging
+import math
 import os
 import urllib.parse
 import urllib.request
@@ -82,6 +83,7 @@ def _census_table(raw: str) -> dict:
 def _check_table(rows) -> None:
     if (not isinstance(rows, list)
             or not all(isinstance(row, list) for row in rows)
+            or (rows and not all(isinstance(name, str) for name in rows[0]))
             or any(len(row) != len(rows[0]) for row in rows[1:])):
         raise ValueError("the Census answer is not a table of equal-length rows")
 
@@ -98,7 +100,7 @@ def _number(name: str, code: str, raw, zip_code: str):
         # One unreadable value is not an outage; the rest of the row stands.
         logger.warning("Census %s (%s) for zip %s is not a number: %r", name, code, zip_code, raw)
         return None
-    if value < 0:
+    if not math.isfinite(value) or value < 0:
         return None
     return value if name in _DECIMAL_VARIABLES else int(value)
 
