@@ -108,3 +108,30 @@ def test_an_email_is_submission_started_only_at_the_provider_call():
     for local_step in ("_resolve_email_provider()", "load_agent_identity(drafting_ctx)", "json.loads(raw)"):
         assert branch.index(local_step) < flag, local_step
     assert branch.count("submission_started = True") == 1
+
+
+def _flag_sits_at_the_provider_call(progress_label: str, provider_call: str, local_steps: tuple[str, ...]):
+    import inspect
+
+    worker = inspect.getsource(ca._execute_command_job)
+    start = worker.index(progress_label)
+    branch = worker[start:worker.index(provider_call, start)]
+    assert branch.count("submission_started = True") == 1
+    flag = branch.rindex("submission_started = True")
+    for step in local_steps:
+        assert branch.index(step) < flag, step
+
+
+def test_a_telnyx_text_is_submission_started_only_at_the_provider_call():
+    _flag_sits_at_the_provider_call('"submitting approved text message"', "provider_result = await adapter.send_message(",
+                                    ('get_messaging_provider("telnyx")',))
+
+
+def test_a_plivo_call_is_submission_started_only_at_the_carrier_call():
+    """L09-16 review: the flag preceded the credential load, the answer-URL
+    check and the call-state write, so their failures read as 'may have been
+    placed' (reconciliation_required) and were never retried."""
+    _flag_sits_at_the_provider_call('"placing approved call"', "provider_result = await adapter.place_call(",
+                                    ('_load_provider_credential(ctx, "plivo")', "ORACLE_PUBLIC_BASE_URL",
+                                     "await ensure_plivo_call_state_available()",
+                                     "await initialize_outbound_plivo_call_state("))

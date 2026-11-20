@@ -4032,11 +4032,11 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         "Text message blocked: " + describe_blockers(readiness["blockers"]) + "."
                     )
                 await reporter.progress(45, "submitting approved text message")
-                submission_started = True
                 from messaging_provider import get_messaging_provider
 
                 sender_number = str(readiness["sender"])
                 adapter = get_messaging_provider("telnyx")
+                submission_started = True  # only the provider call can have sent it
                 provider_result = await adapter.send_message(
                     to=str(target["phone"]),
                     from_=sender_number,
@@ -4120,7 +4120,6 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # route's own recorded provider decides the rail; there is no
                 # try-Plivo-then-Twilio chain here.
                 await reporter.progress(45, "placing approved call")
-                submission_started = True
                 plivo_raw = await _load_provider_credential(ctx, "plivo")
                 plivo_credentials = None
                 if plivo_raw:
@@ -4179,6 +4178,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     briefing=briefing_from_draft(draft, on_behalf_of=on_behalf_of),
                 )
                 ref_query = f"?{PLIVO_CORRELATION_PARAM}={correlation}"
+                # Only the carrier call can have placed it: a failure loading
+                # credentials or writing the call state above is "not placed".
+                submission_started = True
                 provider_result = await adapter.place_call(
                     to_number=str(target.get("phone") or ""),
                     from_number=verified_caller_id,
