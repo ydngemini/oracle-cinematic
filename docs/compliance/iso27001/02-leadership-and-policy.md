@@ -56,7 +56,7 @@ One person is top management. Each 5.1 duty is listed below with the record that
 | Secure development and change | `docs/claude-prompts/CONTRACT.md` (C8–C10), `.github/workflows/ci.yml` | `partial`: not written as a policy, and has no approval record |
 | Incident management | `docs/security-incident-response.md` | `partial`: no incident log exists yet; roles assume an on-call team |
 | Credential and secret management | `docs/credential-rotation.md` | `partial`: no last-rotated register |
-| Supply chain and vulnerability management | `docs/supply-chain-policy.md` | `partial`: SUP-1 open (no hash-locked Python) |
+| Supply chain and vulnerability management | `docs/supply-chain-policy.md` | `implemented in the repository, not yet deployed`: hash-locked Python dependencies (SUP-1, L19-23); Dependabot alerts and security-fix PRs on (L19-24) |
 | Data retention and deletion | `docs/data-retention-policy.md` | `partial`: retention periods await counsel (`docs/privacy-counsel-checklist.md`) |
 | Privacy and PII | `docs/privacy-data-map.md`, `docs/privacy-request-runbook.md` | `partial`: A01 open |
 | Backup and recovery | `docs/dr-drill-report.md`, `docs/disaster-recovery-state-map.md` | `partial`: backups not scheduled (`dr-drill-report.md:88`) |

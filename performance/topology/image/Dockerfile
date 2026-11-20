@@ -1,4 +1,5 @@
-# The perf image = the local backend image + the CURRENT backend/requirements.txt.
+# The perf image = the local backend image + the CURRENT backend/requirements.txt
+# (the hash-locked compile, copied here; test_python_lock fails when it drifts).
 # The local oracle-backend:latest can lag requirements (Mission 8 found plivo,
 # telnyx and pynacl missing — the webhook verifiers' own dependencies), and a
 # load test must run what production builds. pip only adds what is missing.

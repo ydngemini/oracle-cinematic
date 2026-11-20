@@ -44,11 +44,15 @@ Scanning it would block every release on code that never ships.
 - **Trivy itself is pinned by digest.** An unpinned scanner is a supply-chain
   hole of its own.
 - **npm:** `package-lock.json` + `npm ci`. Exact.
-- **Python:** 35 of 37 requirements are exact pins. `numpy>=1.26,<3`
-  (deliberately major-open for opencv) and `eth-account>=0.13` are ranges, and
-  a scanner cannot match a range to a version, so **those two are invisible to
-  the scan.** Recommended next step: a compiled lock (`pip-compile`) so every
-  transitive version is pinned and scanned.
+- **Python:** `backend/requirements.in` lists the direct dependencies (two are
+  ranges: `numpy>=1.26,<3` for opencv and `eth-account>=0.13`).
+  `backend/requirements.txt` is its hash-locked compile: every transitive
+  version pinned with its artifact hashes (audit 35-01). The Dockerfile, CI
+  and the dependency scan install or read that file with `--require-hashes`,
+  so two builds of the same commit get the same artifacts, and the scan sees
+  every version. Regenerate with `scripts/lock-python-deps.sh` after editing
+  `requirements.in` (Dependabot updates both, as a pip-compile project);
+  `tests/test_python_lock.py` fails when they disagree.
 - **Promotion never builds**, so nothing unpredictable is pulled at
   production-promotion time. Production deploys the digests staging verified.
 
