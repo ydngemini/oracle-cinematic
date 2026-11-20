@@ -51,8 +51,7 @@ IMAGERY_NOT_SET_UP = (
     "Street-level imagery isn't set up on this server. Photos you upload still work."
 )
 IMAGERY_REFUSED = (
-    "Street-level imagery is unavailable on this server right now. Photos you "
-    "upload still work."
+    "Street-level imagery is unavailable on this server. Photos you upload still work."
 )
 SCAN_CONVERSION_UNAVAILABLE = (
     "Scan conversion isn't available on this server. Photos and 360° scenes still work."
@@ -770,7 +769,11 @@ async def import_licensed_imagery(
                 response.raise_for_status()
                 data = response.content
         except Exception as exc:  # noqa: BLE001 - one bad frame must not fail the rest
-            log.warning("Could not fetch %s imagery: %s", image.get("source"), exc)
+            # Not the exception text: httpx puts the request URL in it, and a
+            # Street View image URL carries the API key.
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            log.warning("Could not fetch %s imagery: %s%s", image.get("source"),
+                        type(exc).__name__, f" (HTTP {status_code})" if status_code else "")
             continue
 
         content_type = _sniff_image(data)
@@ -921,7 +924,7 @@ async def upload_property_scan(
     from pathlib import Path as _Path
 
     from reconstruction_providers import ProviderError
-    from reconstruction_worker import ConverterMissing, _convert_to_delivery, _store_splat
+    from reconstruction_worker import ConverterUnavailable, _convert_to_delivery, _store_splat
 
     with tempfile.TemporaryDirectory(prefix="scan_") as tmp:
         work = _Path(tmp)
@@ -931,8 +934,9 @@ async def upload_property_scan(
             # The same converter the GPU pipeline ends in, so there stays exactly
             # one thing that decides what a delivered splat looks like.
             delivered = await _convert_to_delivery(raw, work, media_id)
-        except ConverterMissing as exc:
-            # The install hint is for whoever runs this server, not the uploader.
+        except ConverterUnavailable as exc:
+            # Not installed, not fetchable, killed or timed out: the server's
+            # fault, and the install hint or output is for whoever runs it.
             log.error("property-view scan: %s", exc)
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, SCAN_CONVERSION_UNAVAILABLE) from exc
         except ProviderError as exc:

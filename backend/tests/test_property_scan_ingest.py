@@ -73,7 +73,7 @@ _CONVERTER_TEXT = (
 )
 _MISSING_TEXT = (
     "splat-transform not installed — cannot convert .spz to .sog (npm i -g "
-    "@playcanvas/splat-transform@1.9.0; needs Node >= 22)"
+    "@playcanvas/splat-transform@3.3.0; needs Node >= 22)"
 )
 
 class _Conn:
@@ -114,7 +114,7 @@ def _patch(monkeypatch, *, conn=None, storage=True, convert_fails=False, convert
 
     async def _convert(src, work_dir, media_id):
         if converter_missing:
-            raise worker.ConverterMissing(_MISSING_TEXT)
+            raise worker.ConverterUnavailable(_MISSING_TEXT)
         if convert_fails:
             raise ProviderError(_CONVERTER_TEXT)
         out = Path(work_dir) / f"{media_id}.sog"
@@ -311,7 +311,6 @@ def test_a_server_without_the_converter_is_a_503_not_the_uploaders_fault(monkeyp
 def test_the_real_converter_reports_a_missing_install_as_its_own_type(monkeypatch, tmp_path):
     """The route can only tell the two apart if the converter does. It stays a
     ProviderError, so the pipeline keeps the GPU output for a retry as before."""
-    import asyncio as _asyncio
     import shutil
 
     import reconstruction_worker as worker
@@ -321,9 +320,83 @@ def test_the_real_converter_reports_a_missing_install_as_its_own_type(monkeypatc
     src = tmp_path / "upload.spz"
     src.write_bytes(b"NGSP\x04\x00\x00\x00")
 
-    with pytest.raises(worker.ConverterMissing) as exc:
-        _asyncio.run(worker._convert_to_delivery(src, tmp_path, "m1"))
+    with pytest.raises(worker.ConverterUnavailable) as exc:
+        asyncio.run(worker._convert_to_delivery(src, tmp_path, "m1"))
     assert isinstance(exc.value, ProviderError)
+
+
+def _converter_on_path(monkeypatch, tmp_path, name, body):
+    """Put a stand-in `splat-transform` or `npx` first on PATH (and only that
+    one), then run the real converter on an SPZ."""
+    import reconstruction_worker as worker
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / name
+    exe.write_text("#!/bin/sh\n" + body)
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    import shutil
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda n: real_which(n) if n == name else None)
+    src = tmp_path / "upload.spz"
+    src.write_bytes(b"NGSP\x04\x00\x00\x00")
+    work = tmp_path / "work"
+    work.mkdir()
+    return worker, src, work
+
+
+def test_a_converter_that_ran_and_refused_the_file_is_the_files_fault(monkeypatch, tmp_path):
+    from reconstruction_providers import ProviderError
+
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "splat-transform",
+        'echo "Error: unsupported SPZ version 4" >&2; exit 1\n')
+    with pytest.raises(ProviderError) as exc:
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+    assert not isinstance(exc.value, worker.ConverterUnavailable)
+    assert "unsupported SPZ version 4" in str(exc.value)
+
+
+def test_a_converter_killed_by_a_signal_is_the_servers_fault(monkeypatch, tmp_path):
+    """An out-of-memory kill says nothing about the file."""
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "splat-transform", "kill -9 $$\n")
+    with pytest.raises(worker.ConverterUnavailable, match="killed by signal 9"):
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+
+
+def test_npx_unable_to_fetch_the_converter_is_the_servers_fault(monkeypatch, tmp_path):
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "npx",
+        'echo "npm ERR! code ENOTFOUND" >&2; echo "npm ERR! network request failed" >&2; exit 1\n')
+    with pytest.raises(worker.ConverterUnavailable, match="npx could not run"):
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+
+
+def test_a_stuck_converter_is_killed_and_reported_as_the_servers_fault(monkeypatch, tmp_path):
+    """wait_for cancels the read, not the process: the converter used to
+    outlive the request (and escape both handlers as a bare TimeoutError)."""
+    import os
+    import time
+
+    pid_file = tmp_path / "pid"
+    worker, src, work = _converter_on_path(
+        monkeypatch, tmp_path, "splat-transform", f'echo $$ > "{pid_file}"; exec sleep 30\n')
+    monkeypatch.setattr(worker, "CONVERT_TIMEOUT_S", 1)
+
+    with pytest.raises(worker.ConverterUnavailable, match="within 1 s"):
+        asyncio.run(worker._convert_to_delivery(src, work, "m1"))
+
+    pid = int(pid_file.read_text())
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"converter process {pid} is still running")
 
 
 def test_no_storage_backend_refuses_before_converting(monkeypatch):

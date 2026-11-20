@@ -191,6 +191,42 @@ def test_the_api_key_bearing_url_is_never_stored(monkeypatch):
     assert "/api/media/" in stored
 
 
+def test_a_failed_image_download_never_logs_the_key(monkeypatch, caplog):
+    """httpx puts the request URL in its error text, and a Street View image URL
+    carries the API key as a query parameter."""
+    import httpx
+
+    api, conn = _patch_imagery(monkeypatch, images=[{
+        "url": _STREETVIEW_URL, "source": "google_streetview",
+        "attribution": "Imagery © Google", "interior": False,
+    }])
+
+    class _Refusing:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError(
+                f"Client error '403 Forbidden' for url '{url}'",
+                request=request, response=httpx.Response(403, request=request))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Refusing)
+
+    with caplog.at_level("WARNING", logger="oracle.property_view"):
+        result = _import(api)
+
+    assert result["imported"] == 0
+    assert "SUPER-SECRET-KEY" not in caplog.text
+    assert "HTTPStatusError (HTTP 403)" in caplog.text
+
+
 def test_the_attribution_is_stored_because_the_licence_requires_it(monkeypatch):
     """Mapillary is CC-BY-SA. Rendering the image without the attribution puts
     the display out of licence, so it travels with the row."""

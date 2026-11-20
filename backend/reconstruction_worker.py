@@ -32,6 +32,7 @@ import asyncio
 import json
 import time
 import logging
+import re
 import os
 import shutil
 import tempfile
@@ -567,13 +568,25 @@ def _carry_companions(src: Path, out: Path) -> None:
             logger.info("Could not carry %s to %s (%s)", source.name, out.name, exc)
 
 
-class ConverterMissing(ProviderError):
-    """This server has no splat converter — a deployment fault, not the file's.
+class ConverterUnavailable(ProviderError):
+    """The splat converter could not run here — a server fault, not the file's.
 
-    A ProviderError still, so the pipeline's existing handling (keep the raw
-    output, retry later) is unchanged. The scan-upload route tells the two
-    apart: a missing converter is a 503 for the operator, a file the converter
-    refused is a 422 the uploader can act on."""
+    Not installed; npx present but unable to fetch the pinned package; killed
+    by a signal (out of memory); or past CONVERT_TIMEOUT_S. A ProviderError
+    still, so the pipeline keeps the raw output for a reconversion. The
+    scan-upload route tells the two apart: this is a 503 for the operator, a
+    converter that ran and refused the file is a 422 the uploader can act on.
+    (A converter that runs and fails for a reason of its own, such as a Node
+    too old for it, still reads as the file's fault.)"""
+
+
+CONVERT_TIMEOUT_S = 600
+# npx's own failure to obtain or start the package, as opposed to the
+# converter's verdict on the file.
+_NPX_FAILURE = re.compile(
+    r"npm (?:ERR!|error)|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|"
+    r"could not determine executable to run"
+)
 
 
 async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path:
@@ -629,7 +642,7 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
         cmd = ["npx", "-y", f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}",
                str(src), str(out)]
     else:
-        raise ConverterMissing(
+        raise ConverterUnavailable(
             f"splat-transform not installed — cannot convert {src.suffix} to "
             f"{DELIVERY_SUFFIX} (npm i -g "
             f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}; needs Node >= 22)"
@@ -637,9 +650,27 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
-    o, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+    try:
+        o, _ = await asyncio.wait_for(proc.communicate(), timeout=CONVERT_TIMEOUT_S)
+    except TimeoutError:
+        # wait_for cancels the read, not the process: without the kill a
+        # stuck converter outlived the request that started it.
+        proc.kill()
+        await proc.wait()
+        raise ConverterUnavailable(
+            f"splat-transform did not convert {src.name} within {CONVERT_TIMEOUT_S} s"
+        ) from None
     if proc.returncode != 0 or not out.is_file():
         tail = (o or b"")[-400:].decode("utf-8", "replace")
+        if proc.returncode is not None and proc.returncode < 0:
+            raise ConverterUnavailable(
+                f"splat-transform was killed by signal {-proc.returncode} converting "
+                f"{src.name}: {tail}"
+            )
+        if cmd[0] == "npx" and _NPX_FAILURE.search(tail):
+            raise ConverterUnavailable(
+                f"npx could not run @playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}: {tail}"
+            )
         # Name the input format. An SPZ v4 file hitting a splat-transform too
         # old to read it fails right here, and "conversion failed" alone sends
         # the reader looking at the GPU job instead of the pin.

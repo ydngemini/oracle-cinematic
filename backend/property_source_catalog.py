@@ -107,7 +107,7 @@ STATIC: tuple[Source, ...] = (
     Source("nominatim_geocode", "geocoder", "apis/geocoding.py:40 -> nominatim.openstreetmap.org", (),
            "yes", "cache 90 d", Identifiers(address_match=True), "none",
            "~1 req/s, ODbL share-alike", "docs/data-access-tiers.md:52", "stated_in_repo"),
-    Source("census_acs", "neighbourhood", "apis/census.py:53 -> api.census.gov", ("CENSUS_API_KEY",),
+    Source("census_acs", "neighbourhood", "apis/census.py:106 -> api.census.gov", ("CENSUS_API_KEY",),
            "yes", "cache 365 d", _ID_NONE, "none", "public domain (US Census)",
            "docs/data-access-tiers.md:41", "stated_in_repo"),
     Source("enrich_property_overpass", "neighbourhood", "apis/property_data.py:36 -> Overpass API (OSM)", (),

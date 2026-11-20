@@ -58,12 +58,61 @@ class CensusUnavailable(RuntimeError):
     404 "no data for this zip" — a false statement about the ZIP code."""
 
 
+# Published to one decimal place ("5.6"); every other variable is a whole
+# count or dollar amount, still sent as a string.
+_DECIMAL_VARIABLES = {"median_rooms"}
+
+
+def _census_table(raw: str) -> dict:
+    """Census's answer as cacheable rows. Raises on anything that is not a table
+    of equal-length rows, inside the fetch, so a malformed answer is never
+    cached: the next request asks Census again."""
+    if not raw.strip():
+        # 204 No Content: Census has no data for this geography. Empty results
+        # are cached only briefly (data_integrations.cache EMPTY_RESULT_TTL),
+        # as "no result" can also be a transient fault upstream.
+        return {"rows": [], "_cacheable_empty": True}
+    rows = json.loads(raw)
+    _check_table(rows)
+    if len(rows) < 2:
+        return {"rows": rows, "_cacheable_empty": True}
+    return {"rows": rows}
+
+
+def _check_table(rows) -> None:
+    if (not isinstance(rows, list)
+            or not all(isinstance(row, list) for row in rows)
+            or any(len(row) != len(rows[0]) for row in rows[1:])):
+        raise ValueError("the Census answer is not a table of equal-length rows")
+
+
+def _number(name: str, code: str, raw, zip_code: str):
+    """One ACS value. Negative values are the ACS annotation codes
+    (-666666666 "cannot be computed", -999999999, -888888888, ...), which mean
+    "not available", never a quantity."""
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        # One unreadable value is not an outage; the rest of the row stands.
+        logger.warning("Census %s (%s) for zip %s is not a number: %r", name, code, zip_code, raw)
+        return None
+    if value < 0:
+        return None
+    return value if name in _DECIMAL_VARIABLES else int(value)
+
+
 async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
     """Fetch key housing and demographic stats for a ZIP code.
 
     Returns None when Census has no row for the ZCTA. Raises CensusUnavailable
-    when the request failed or the answer could not be read.
+    when the request failed or the answer was not a table; a failure of the
+    integration cache itself propagates as IntegrationCacheUnavailable (the
+    app's 503), since Census was never asked.
     """
+    from data_integrations.cache import IntegrationCacheUnavailable, cached_external
+
     var_list = ",".join(_VARIABLES.values())
     params = {
         "get": f"NAME,{var_list}",
@@ -74,46 +123,40 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
 
     url = f"{_BASE_URL}/{_ACS_DATASET}?{urllib.parse.urlencode(params)}"
 
+    async def fetch_upstream() -> dict:
+        req = urllib.request.Request(url)
+        raw = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+        )
+        return _census_table(raw)
+
     try:
-        from data_integrations.cache import cached_external
-
-        async def fetch_upstream() -> dict:
-            req = urllib.request.Request(url)
-            raw = await asyncio.to_thread(
-                lambda: urllib.request.urlopen(req, timeout=15).read().decode()
-            )
-            # The Census API answers a geography it has no data for with
-            # 204 No Content: an answer, not a fault.
-            if not raw.strip():
-                return {"rows": []}
-            return {"rows": json.loads(raw)}
-
         payload = await cached_external(
             "census_acs",
             {"dataset": _ACS_DATASET, "geography": "zip", "zip": zip_code},
             fetch_upstream,
             ttl=365 * 86_400,
         )
+    except IntegrationCacheUnavailable:
+        raise
     except Exception as e:
         logger.warning("Census API failed for zip %s: %s", zip_code, e)
         raise CensusUnavailable("the Census API did not answer") from e
 
     data = payload.get("rows") or []
+    try:
+        _check_table(data)
+    except ValueError as e:
+        # Only an entry cached before the table check existed can get here.
+        logger.warning("Cached Census answer for zip %s is not a table", zip_code)
+        raise CensusUnavailable("the cached Census answer could not be read") from e
     if len(data) < 2:
         return None
 
-    try:
-        headers = data[0]
-        values = data[1]
-        row = dict(zip(headers, values, strict=True))
-
-        result = {"zip": zip_code, "name": row.get("NAME", "")}
-        for name, code in _VARIABLES.items():
-            val = row.get(code)
-            result[name] = int(val) if val and val != "-666666666" else None
-    except (TypeError, ValueError) as e:
-        logger.warning("Census API answered an unreadable row for zip %s: %s", zip_code, e)
-        raise CensusUnavailable("the Census API answer could not be read") from e
+    row = dict(zip(data[0], data[1], strict=True))
+    result = {"zip": zip_code, "name": row.get("NAME", "")}
+    for name, code in _VARIABLES.items():
+        result[name] = _number(name, code, row.get(code), zip_code)
 
     # Compute derived metrics
     total_housing = result.get("total_housing_units") or 0
