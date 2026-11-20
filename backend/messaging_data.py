@@ -1754,8 +1754,9 @@ async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, lim
     the worker's late write cannot double it.
 
     Never rebuilt: a text to someone erased by a deletion request (their
-    tombstone matches the number, or the client/contact it named is gone) —
-    the erasure deleted that row on purpose. Rows that cannot be rebuilt are
+    tombstone matches the number, the client/contact it named is gone, or the
+    command was redacted by the request, 0182; such a command is not even
+    selected) — the erasure deleted that row on purpose. Rows that cannot be rebuilt are
     marked (reconcile_checked_at) and looked at again only after
     REPAIR_RECHECK_HOURS, so they cannot crowd out newer ones.
     """
@@ -1781,6 +1782,9 @@ async def repair_missing_outbound_rows(only_tenant: Optional[str] = None, *, lim
               LEFT JOIN automation_jobs j ON j.id = ce.job_id AND j.tenant_id = ce.tenant_id
              WHERE ce.command_type = 'SMS' AND ce.state = 'succeeded' AND ce.provider = 'telnyx'
                AND ce.provider_reference IS NOT NULL
+               -- redacted by a deletion request (0182): its person is erased,
+               -- and nothing is left to rebuild a row from
+               AND (ce.draft ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure'
                -- the SEND time: updated_at moves with every write (set_updated_at
                -- trigger), including this repair's own set-aside mark
                AND COALESCE(ce.provider_submitted_at, ce.created_at) < now() - interval '2 minutes'

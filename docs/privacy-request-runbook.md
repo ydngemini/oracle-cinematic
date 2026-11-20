@@ -46,6 +46,13 @@ Neoh's to answer as controller.
    - their messages, calls, emails and consent rows;
    - their dependent tasks, intake sessions and nurture jobs.
 
+   Their outbound drafts, the approvals of those drafts and the jobs that
+   would send them are **redacted, not deleted** (0182): the message, the
+   recipient and every free-text detail go; the record that an action
+   happened stays (type, channel, status, times, who asked and who approved,
+   the provider's message id). A draft not yet sent is cancelled and a
+   pending approval revoked. The receipt lists them under `redacted`.
+
    Their opt-out is kept as a keyed hash, so a re-import of the same number
    or address stays blocked. The receipt lists counts per table.
 4. A legal hold on the tenant, or on that person, answers 423 and deletes

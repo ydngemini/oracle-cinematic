@@ -6,7 +6,8 @@ of the client were neither discovered nor returned by an access request,
 though a deletion erased them (ON DELETE CASCADE). Drafts and approvals that
 named the person were neither returned nor mentioned, and a deletion left
 them in place unlinked. Now access returns all of them, and the deletion
-receipt says what went with the client and what was kept unlinked.
+receipt says what went with the client and which drafts and approvals were
+redacted (0182; test_dsar_redacts_drafts_live covers the redaction itself).
 
 Skipped unless ORACLE_LIVE_DB_ADMIN_DSN is set (see test_privacy_lifecycle_live).
 """
@@ -142,13 +143,16 @@ async def _scenario():
 
         done = await ask("dsr_delete")
         assert done["removed_with_client"]["client_notes"] == 1 and done["removed_with_client"]["showings"] == 1
-        assert done["kept_unlinked"] == {"command_executions": 2, "action_approvals": 1}
+        assert done["redacted"] == {"command_executions": 2, "action_approvals": 1}
+        assert "kept_unlinked" not in done
         assert done["contract_files"] == {"deleted": 1, "not_deleted": 0} and FakeVault.deleted == [vault_key]
         for table in ("client_notes", "client_tasks", "client_activities", "client_tags", "showings", "client_ai_state",
                       "interaction_logs", "buyer_profiles", "contract_synthesis_artifacts"):
             assert await admin.fetchval(f"SELECT count(*) FROM {table} WHERE tenant_id=$1", T) == 0, table
-        # Kept as the brokerage's action record, no longer linked to the person.
-        assert await admin.fetchval("SELECT client_id FROM command_executions WHERE id=$1", cmd) is None
+        # Kept as the brokerage's action record: unlinked, content redacted, never sent.
+        row = await admin.fetchrow("SELECT client_id, state, draft FROM command_executions WHERE id=$1", cmd)
+        assert row["client_id"] is None and row["state"] == "cancelled"
+        assert json.loads(row["draft"])["redacted"] == "data_subject_erasure" and f"draft {s}" not in row["draft"]
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

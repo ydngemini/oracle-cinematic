@@ -136,7 +136,9 @@ TABLES: dict[str, TableEntry] = {
                                      "transcript_excerpt sealed in transcript_ciphertext since 0152; "
                                      "pre-0152 rows plaintext until backfill_sealed_text.py"),
     "command_executions": TableEntry(C.COMMUNICATION_CONTENT, E,
-                                     "outbound drafts; client_id/contact_id (0142) = link to the record, no PII"),
+                                     "outbound drafts; client_id/contact_id (0142) = link to the record, no PII; "
+                                     "a data-subject deletion redacts target/draft/free text to the action "
+                                     "skeleton (0182, L17-38)"),
     "telephony_routes": TableEntry(C.COMMUNICATION_METADATA, E, "numbers released first"),
     "provider_purchases": TableEntry(C.FINANCIAL_BILLING, E, "number purchase, hosted-SMS order, 10DLC brand/campaign and number-to-campaign assignment intents (the brokerage's own business number); numbers released first"),
     "messaging_routes": TableEntry(C.COMMUNICATION_METADATA, E, "hosted SMS disconnected first"),
@@ -159,7 +161,8 @@ TABLES: dict[str, TableEntry] = {
     "outreach_attempt_log": TableEntry(C.CONSENT_SUPPRESSION, E),
     "suppression_tombstones": TableEntry(C.CONSENT_SUPPRESSION, R, "keyed hash only, 5 years"),
     "action_approvals": TableEntry(C.AUDIT_SECURITY, E,
-                                   "draft_payload carries the draft; client_id/contact_id (0142) = link, no PII"),
+                                   "draft_payload carries the draft; client_id/contact_id (0142) = link, no PII; "
+                                   "a data-subject deletion redacts draft_payload/reason (0182, L17-38)"),
     "protected_override_events": TableEntry(C.AUDIT_SECURITY, E),
     "source_licenses": TableEntry(C.BUSINESS_CRM, E),
     # ── billing (Neoh is the controller of its own billing records) ──────
@@ -241,7 +244,8 @@ TABLES: dict[str, TableEntry] = {
     "user_mfa_recovery_codes": TableEntry(C.SECRET, E, "SHA-256 of one-time recovery codes (0150); never exported"),
     "client_portals": TableEntry(C.CAPABILITY_TOKEN, E),
     # ── operational ──────────────────────────────────────────────────────
-    "automation_jobs": TableEntry(C.OPERATIONAL, E),
+    "automation_jobs": TableEntry(C.OPERATIONAL, E, "a command:execute payload copies the approved draft; "
+                                  "a data-subject deletion redacts it (0182, L17-38)"),
     "automation_job_attempts": TableEntry(C.OPERATIONAL, E),
     "harvest_sources": TableEntry(C.PUBLIC_DATA, E),
     "harvest_runs": TableEntry(C.PUBLIC_DATA, E),
