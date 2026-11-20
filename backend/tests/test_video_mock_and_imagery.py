@@ -191,6 +191,42 @@ def test_the_api_key_bearing_url_is_never_stored(monkeypatch):
     assert "/api/media/" in stored
 
 
+def test_a_failed_image_download_never_logs_the_key(monkeypatch, caplog):
+    """httpx puts the request URL in its error text, and a Street View image URL
+    carries the API key as a query parameter."""
+    import httpx
+
+    api, conn = _patch_imagery(monkeypatch, images=[{
+        "url": _STREETVIEW_URL, "source": "google_streetview",
+        "attribution": "Imagery © Google", "interior": False,
+    }])
+
+    class _Refusing:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError(
+                f"Client error '403 Forbidden' for url '{url}'",
+                request=request, response=httpx.Response(403, request=request))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Refusing)
+
+    with caplog.at_level("WARNING", logger="oracle.property_view"):
+        result = _import(api)
+
+    assert result["imported"] == 0
+    assert "SUPER-SECRET-KEY" not in caplog.text
+    assert "HTTPStatusError (HTTP 403)" in caplog.text
+
+
 def test_the_attribution_is_stored_because_the_licence_requires_it(monkeypatch):
     """Mapillary is CC-BY-SA. Rendering the image without the attribution puts
     the display out of licence, so it travels with the row."""
@@ -244,21 +280,63 @@ def test_everything_it_returns_is_marked_exterior_only(monkeypatch):
     assert all(image["interior"] is False for image in result["images"])
 
 
-def test_an_unconfigured_provider_says_what_to_fix(monkeypatch):
+def test_an_unconfigured_provider_tells_the_operator_not_the_browser(monkeypatch, caplog):
+    """What to fix is a server setting. The operator who can set it reads the
+    log; the browser is never told which credentials this server holds (L17-54)."""
     import property_view_api as api
     from data_integrations import property_imagery
 
+    why = "set GOOGLE_STREETVIEW_API_KEY (server-side key, no HTTP-referrer restriction)"
+
     class _Source:
         def available(self):
-            return (False, "set GOOGLE_STREETVIEW_API_KEY (server-side key, no HTTP-referrer restriction)")
+            return (False, why)
 
     monkeypatch.setattr(property_imagery, "PropertyImagerySource", _Source)
 
-    with pytest.raises(HTTPException) as exc:
-        _import(api)
+    with caplog.at_level("WARNING", logger="oracle.property_view"):
+        with pytest.raises(HTTPException) as exc:
+            _import(api)
 
     assert exc.value.status_code == 503
-    assert "GOOGLE_STREETVIEW_API_KEY" in exc.value.detail
+    assert exc.value.detail == api.IMAGERY_NOT_SET_UP
+    assert "GOOGLE_STREETVIEW_API_KEY" not in exc.value.detail
+    assert why in caplog.text
+
+
+@pytest.mark.parametrize("raised, sentence", [
+    ("ImageryAuthError", "IMAGERY_REFUSED"),
+    ("ImageryConfigurationError", "IMAGERY_NOT_SET_UP"),
+])
+def test_a_provider_fault_during_the_fetch_keeps_its_reason_in_the_log(
+        monkeypatch, caplog, raised, sentence):
+    """A refused key (or an exhausted quota) is set up but not working; a
+    missing one is not set up. Either way the caller gets a fixed sentence, and
+    the reason — which names the server's key variable — stays server-side."""
+    import property_view_api as api
+    from data_integrations import property_imagery
+
+    reason = ("Google Street View rejected the key (REQUEST_DENIED). "
+              "GOOGLE_STREETVIEW_API_KEY needs an unrestricted or IP-restricted key.")
+    error = getattr(property_imagery, raised)
+
+    class _Source:
+        def available(self):
+            return (True, "")
+
+        async def fetch(self, **_kw):
+            raise error(reason)
+
+    monkeypatch.setattr(property_imagery, "PropertyImagerySource", _Source)
+
+    with caplog.at_level("WARNING", logger="oracle.property_view"):
+        with pytest.raises(HTTPException) as exc:
+            _import(api)
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail == getattr(api, sentence)
+    assert "GOOGLE_STREETVIEW_API_KEY" not in exc.value.detail
+    assert reason in caplog.text
 
 
 def test_a_property_outside_this_workspace_imports_nothing(monkeypatch):
