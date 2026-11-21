@@ -3,6 +3,10 @@ import { crmGet, crmPost, crmPatch, crmDelete } from '../state/useCrmApi';
 import { GLYPHS, relTime, fmtDate, errMessage } from './ClientShared';
 import styles from './ClientPanes.module.css';
 
+// The server's answer (409) when the note changed after it was read: an AI call
+// note grows while the call goes on (audit 34.4 / RUN-03).
+const NOTE_CHANGED = 'This note changed while you were editing; reload to see the latest.';
+
 // pinned first, then newest first — mirrors the contract's ordering so the
 // optimistic list matches what a reload would return.
 function order(notes) {
@@ -25,6 +29,11 @@ export default function ClientNotes({ clientId, onChange }) {
   const [composeError, setComposeError] = useState('');
   const [editId, setEditId] = useState(null);
   const [editBody, setEditBody] = useState('');
+  // The version the editor started from; after a 409 the editor saves against
+  // the latest version, which it then shows above the draft.
+  const [editBase, setEditBase] = useState(null);
+  const [editStale, setEditStale] = useState(false);
+  const [noteError, setNoteError] = useState(null); // { id, text }
   const [busyId, setBusyId] = useState(null);
 
   const load = useCallback(() => {
@@ -42,8 +51,9 @@ export default function ClientNotes({ clientId, onChange }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // A note can arrive from outside this pane — the AI's call notes land when
-  // the call ends (CALL_NOTES → crm:client-changed).
+  // A note can arrive from outside this pane — the AI's call note is saved
+  // and updated as each note is taken on the call (CALL_NOTES →
+  // crm:client-changed).
   useEffect(() => {
     const onChanged = (e) => { if (e.detail?.clientId === clientId) load(); };
     window.addEventListener('crm:client-changed', onChanged);
@@ -66,17 +76,30 @@ export default function ClientNotes({ clientId, onChange }) {
     );
   };
 
-  const patch = (note, patchBody) => {
+  // A changed note is never overwritten or approved unseen: the server
+  // answers 409, the list reloads, and an open draft stays as typed.
+  const conflict = (note, err) => {
+    if (err?.status !== 409) return false;
+    setNoteError({ id: note.id, text: NOTE_CHANGED });
+    if (editId === note.id) setEditStale(true);
+    load();
+    return true;
+  };
+
+  const patch = (note, patchBody, expected) => {
     setBusyId(note.id);
-    crmPatch(`/api/crm/clients/${clientId}/notes/${note.id}`, patchBody).then(
+    setNoteError(null);
+    const sent = expected ? { ...patchBody, expected_updated_at: expected } : patchBody;
+    crmPatch(`/api/crm/clients/${clientId}/notes/${note.id}`, sent).then(
       (updated) => {
         const merged = updated?.id ? updated : { ...note, ...patchBody, updated_at: new Date().toISOString() };
         setNotes((prev) => order((Array.isArray(prev) ? prev : []).map((n) => (n.id === note.id ? { ...n, ...merged } : n))));
         setBusyId(null);
         setEditId(null);
+        setEditStale(false);
         onChange?.();
       },
-      () => setBusyId(null)
+      (err) => { setBusyId(null); conflict(note, err); }
     );
   };
 
@@ -97,18 +120,24 @@ export default function ClientNotes({ clientId, onChange }) {
   // is the ordinary delete; editing keeps it proposed until approved.
   const approve = (note) => {
     setBusyId(note.id);
-    crmPost(`/api/crm/clients/${clientId}/notes/${note.id}/approve`, {}).then(
+    setNoteError(null);
+    // Approve exactly the version on screen.
+    const sent = note.updated_at ? { expected_updated_at: note.updated_at } : {};
+    crmPost(`/api/crm/clients/${clientId}/notes/${note.id}/approve`, sent).then(
       (updated) => {
         const merged = updated?.id ? updated : { ...note, review_state: 'approved' };
         setNotes((prev) => order((Array.isArray(prev) ? prev : []).map((n) => (n.id === note.id ? { ...n, ...merged } : n))));
         setBusyId(null);
         onChange?.();
       },
-      () => setBusyId(null)
+      (err) => { setBusyId(null); conflict(note, err); }
     );
   };
 
-  const startEdit = (note) => { setEditId(note.id); setEditBody(note.body || ''); };
+  const startEdit = (note) => {
+    setEditId(note.id); setEditBody(note.body || ''); setEditBase(note.updated_at || null);
+    setEditStale(false); setNoteError(null);
+  };
 
   return (
     <div className={styles.pane}>
@@ -155,6 +184,9 @@ export default function ClientNotes({ clientId, onChange }) {
             <li key={n.id} className={styles.row} data-pinned={!!n.pinned} data-proposed={n.review_state === 'proposed'}>
               {editId === n.id ? (
                 <>
+                  {editStale && (
+                    <p className={styles.noteBody} aria-label="Latest saved version">{n.body}</p>
+                  )}
                   <textarea
                     className={styles.textarea}
                     value={editBody}
@@ -162,11 +194,12 @@ export default function ClientNotes({ clientId, onChange }) {
                     aria-label="Edit note"
                   />
                   <div className={styles.composerMeta}>
-                    <button type="button" className={styles.retrySm} onClick={() => setEditId(null)} style={{ background: 'transparent', color: 'var(--oracle-text-dim)', borderColor: 'var(--oracle-border-bright)' }}>Cancel</button>
-                    <button type="button" className={styles.addBtn} onClick={() => patch(n, { body: editBody.trim() })} disabled={busyId === n.id || !editBody.trim()}>
+                    <button type="button" className={styles.retrySm} onClick={() => { setEditId(null); setEditStale(false); setNoteError(null); }} style={{ background: 'transparent', color: 'var(--oracle-text-dim)', borderColor: 'var(--oracle-border-bright)' }}>Cancel</button>
+                    <button type="button" className={styles.addBtn} onClick={() => patch(n, { body: editBody.trim() }, editStale ? n.updated_at : editBase)} disabled={busyId === n.id || !editBody.trim()}>
                       {GLYPHS.check}Save
                     </button>
                   </div>
+                  {noteError?.id === n.id && <span className={styles.err} role="alert">{noteError.text}</span>}
                 </>
               ) : (
                 <>
@@ -179,6 +212,7 @@ export default function ClientNotes({ clientId, onChange }) {
                         <span>{relTime(n.created_at) || fmtDate(n.created_at)}</span>
                         {n.updated_at && n.updated_at !== n.created_at && <span>· edited</span>}
                       </span>
+                      {noteError?.id === n.id && <span className={styles.err} role="alert">{noteError.text}</span>}
                       {n.review_state === 'proposed' && (
                         <div className={styles.reviewBar} role="group" aria-label="Review the AI's call notes">
                           <button type="button" className={styles.addBtn} disabled={busyId === n.id} onClick={() => approve(n)}>{GLYPHS.check}Approve</button>
