@@ -177,7 +177,7 @@ def test_voice_telemetry_stores_and_streams_no_card_and_never_reads_it_as_an_off
             if "FROM live_call_sessions AS session" in query:
                 return {"id": args[0], "client_id": None, "contact_id": None, "lead_id": None,
                         "consent_recorded": True, "transcript_status": "active",
-                        "underwriting": None, "payload": None}
+                        "created_by": CTX.agent_id, "underwriting": None, "payload": None}
             assert "INSERT INTO negotiation_events" in query
             inserts.append(args)
             return {"id": 9, "created_at": NOW}

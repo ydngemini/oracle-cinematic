@@ -248,19 +248,24 @@ def voice_session_group(tenant_id: str, session_id: str) -> str:
 
 async def _broadcast_voice(
     ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any,
-    lead_id: Any,
+    lead_id: Any, creator: Optional[str],
 ) -> None:
     """A call's live frames carry what the customer said and the offer math:
     the dashboards of members who may read the call's client/contact (C3.6,
     0145) — or, for a call opened on a lead with neither, of members who may
     read that lead's seller client (0143/0151); never the whole brokerage
     just because the call names no client (audit 27.1) — and the session's
-    own stream, whose sockets were admitted under RLS for this session
-    (server.voice_telemetry_websocket)."""
+    own stream (server.voice_telemetry_websocket), on the sockets of exactly
+    the members who may read the call at push time, from the same audience
+    (owner decision 2026-11-20): a member whose share was revoked a moment
+    ago gets nothing more, without waiting for the socket's 60 s re-check.
+    `creator` is the session's created_by (the pool rule of
+    record_access.may_read_call_content). The platform firehose gets
+    operational metadata only (audit 27.5)."""
     await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=client_id,
                                   contact_id=contact_id, lead_id=lead_id, actor=ctx.agent_id,
-                                  sensitive=True)
-    await ws_hub.broadcast_group(voice_session_group(ctx.tenant_id, session_id), frame)
+                                  sensitive=True, stream=voice_session_group(ctx.tenant_id, session_id),
+                                  creator=creator)
 
 
 @dataclass(frozen=True)
@@ -491,7 +496,7 @@ async def create_voice_session(
         "event_id": consent_event["id"],
     }
     await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None,
-                           lead_id=lead_id)
+                           lead_id=lead_id, creator=ctx.agent_id)  # the created_by just written
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action="voice_session_created",
@@ -525,7 +530,7 @@ async def ingest_voice_telemetry(
         call = await conn.fetchrow(
             """
             SELECT session.id,session.client_id,session.contact_id,session.lead_id,
-                   session.consent_recorded,session.transcript_status,
+                   session.consent_recorded,session.transcript_status,session.created_by,
                    lead.underwriting,lead.payload
               FROM live_call_sessions AS session
               LEFT JOIN leads AS lead ON lead.id=session.lead_id
@@ -634,7 +639,7 @@ async def ingest_voice_telemetry(
     }
     await _broadcast_voice(ctx, str(body.session_id), frame,
                            client_id=call["client_id"], contact_id=call["contact_id"],
-                           lead_id=call["lead_id"])
+                           lead_id=call["lead_id"], creator=call["created_by"])
     return frame
 
 
