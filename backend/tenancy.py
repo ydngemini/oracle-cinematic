@@ -101,12 +101,37 @@ SPEED_TO_LEAD_REQUESTER = "system:speed-to-lead"
 OUTREACH_PIPELINE_REQUESTERS = frozenset({SPEED_TO_LEAD_REQUESTER})
 
 
+#: The created_by namespace of commands a mission stages ("mission:<uuid>",
+#: missions/executor._stage). The command worker does not look a mission up
+#: as a member (commands_api._human_sender), so no account may carry the
+#: prefix either: such an account could pass for a mission and keep sending
+#: after it was offboarded.
+#: Not a pipeline REQUESTER (a mission stages and requests as its person), so
+#: it is not in is_reserved_pipeline_identity, which the worker uses to judge
+#: a requester as a pipeline.
+MISSION_IDENTITY_PREFIX = "mission:"
+
+
 def is_reserved_pipeline_identity(agent_id: Optional[str]) -> bool:
-    """True for an agent_id no account may take: the "system:" namespace
+    """True for a server-built pipeline identity: the "system:" namespace
     (any case, surrounding space ignored, as login's lower() match would) or
-    a pipeline's pre-prefix name."""
+    a pipeline's pre-prefix name. No account may take one (see
+    is_reserved_account_name, which account creation checks)."""
     wanted = (agent_id or "").strip().lower()
     return wanted.startswith(SYSTEM_IDENTITY_PREFIX) or wanted == LEGACY_SPEED_TO_LEAD_REQUESTER
+
+
+def is_reserved_account_name(agent_id: Optional[str]) -> bool:
+    """True for an agent_id no account may take (/auth/register, invitation
+    create and accept, scripts/onboard_ai_agent.py): a pipeline identity
+    (is_reserved_pipeline_identity) or the mission namespace ("mission:…",
+    any case, surrounding space ignored). The command worker does not
+    membership-check a pipeline identity, nor a mission's exact
+    "mission:<uuid>" creator (commands_api._human_sender); reserving both
+    whole namespaces means no account can ever look like one and escape the
+    send-time membership check (L09-12)."""
+    wanted = (agent_id or "").strip().lower()
+    return is_reserved_pipeline_identity(wanted) or wanted.startswith(MISSION_IDENTITY_PREFIX)
 
 
 @dataclass(frozen=True)

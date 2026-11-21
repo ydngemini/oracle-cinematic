@@ -190,24 +190,49 @@ _OPERATOR_PREFIXES = ("ORACLE_ADMIN_", "ORACLE_DEMO_USER", "ORACLE_DEMO_PASS", "
                       "ORACLE_DEMO_TENANT")
 
 
+def _operator_settings_outside_the_api(spec: dict) -> list[tuple[str, str]]:
+    """(where, key) for each operator or demo identity setting that reaches a
+    process other than the api: the app-level `envs` (App Platform applies
+    the spec's top-level envs to EVERY component, the worker and the migrate
+    job included), and any worker's or job's own envs."""
+    scopes = [("app-level envs", spec)] + [
+        (comp.get("name"), comp) for comp in list(spec.get("workers") or []) + list(spec.get("jobs") or [])]
+    return [(where, str(e.get("key"))) for where, scope in scopes for e in scope.get("envs") or []
+            if str(e.get("key", "")).startswith(_OPERATOR_PREFIXES)]
+
+
 def test_only_the_api_carries_operator_settings():
     """Every process that runs the lifespan revokes, at boot, the operator
     sessions another credential issued (operator_sessions.boot, 0181). A
     worker given an operator ID with a different passphrase, second factor or
     code address would revoke every live operator session at each restart.
     So the operator settings live in the api service only; the worker (and
-    the migrate job) carry none of them (review of PR #168)."""
+    the migrate job) carry none of them, and nor does the app level, which
+    every component inherits (review of PR #168; of PR #175)."""
     for env in ("production", "staging"):
         spec = r.render(env, B, F)
-        for comp in list(spec.get("workers") or []) + list(spec.get("jobs") or []):
-            carried = [e.get("key") for e in comp.get("envs") or []
-                       if str(e.get("key", "")).startswith(_OPERATOR_PREFIXES)]
-            assert carried == [], (env, comp["name"], carried)
+        carried = _operator_settings_outside_the_api(spec)
+        assert carried == [], (env, carried)
         (api,) = [c for c in spec["services"] if c["name"] == "api"]
         keys = {e.get("key") for e in api.get("envs") or []}
         assert {"ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE"} <= keys, env
         # Every backend service besides the api is a frontend; none runs the lifespan.
         assert [c["name"] for c in r._backend_components(spec) if c in spec["services"]] == ["api"]
+
+
+@pytest.mark.parametrize("key", ["ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE", "ORACLE_DEMO_USER",
+                                 "ORACLE_DEMO_ROLE"])
+def test_an_operator_setting_at_app_level_is_caught(tmp_path, monkeypatch, key):
+    """App-level envs reach the worker too, so one there is as bad as one on
+    the worker. Proven on a copy of the spec with the setting added at app
+    level (the real spec files are not edited)."""
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw.setdefault("envs", []).append({"key": key, "scope": "RUN_TIME", "type": "SECRET"})
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    for env in ("production", "staging"):
+        assert _operator_settings_outside_the_api(r.render(env, B, F)) == [("app-level envs", key)], env
 
 
 def test_a_shared_jwt_issuer_is_caught(monkeypatch):

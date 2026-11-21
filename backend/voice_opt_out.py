@@ -461,9 +461,28 @@ async def replay_spool() -> dict[str, int]:
 
 
 #: replay_shared gives up on a sweep after this many store operations in a
-#: row failed (the store itself is down, not one entry): each is bounded at
-#: SHARED_TIMEOUT_SECONDS, so a dead store cannot hold the sweep for minutes.
+#: row failed because the store did not answer (the store itself is down, not
+#: one entry): each is bounded at SHARED_TIMEOUT_SECONDS, so a dead store
+#: cannot hold the sweep for minutes.
 SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _store_unreachable(exc: BaseException) -> bool:
+    """Whether a failed shared-store operation says the STORE is not
+    answering, as opposed to one entry being refused or unreadable: no client
+    (SharedStoreUnavailable), the operation's bound ran out (_bounded raises
+    TimeoutError), a socket error, or the client's own connection or timeout
+    error (redis.exceptions.ConnectionError / TimeoutError, which are not the
+    builtins). Anything else (a WRONGTYPE ResponseError, a value that will
+    not decode) is that entry's problem."""
+    if isinstance(exc, (SharedStoreUnavailable, TimeoutError, OSError)):
+        return True
+    try:
+        from redis.exceptions import ConnectionError as RedisConnectionError
+        from redis.exceptions import TimeoutError as RedisTimeoutError
+    except ImportError:  # pragma: no cover - redis is pinned in requirements.txt
+        return False
+    return isinstance(exc, (RedisConnectionError, RedisTimeoutError))
 
 
 async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
@@ -479,8 +498,12 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
     clean-up of a stale index member (the conditional EVAL, e.g. where the
     server refuses scripting) is counted in 'cleanup_failed' and never
     counts toward giving up — the member only costs a GET on the next sweep.
-    Only SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES failed store operations in a
-    row (the store itself is gone) end it, raising SharedStoreUnavailable."""
+    Only SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES store operations in a row that
+    failed because the store did not answer (_store_unreachable: connection
+    or timeout errors) end it, raising SharedStoreUnavailable. A read that
+    succeeds resets that streak; a failure that is one entry's own (a
+    WRONGTYPE value, one that will not decode) is counted in 'errors' and
+    neither adds to the streak nor resets it."""
     if not shared_store_configured():
         return {"configured": False}
     client = await _bounded(_shared_client())
@@ -491,9 +514,11 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
     def failed(step: str, exc: BaseException) -> None:
         nonlocal errors, in_a_row
         errors += 1
-        in_a_row += 1
         logger.error("Shared pending spoken opt-out sweep: one entry skipped at %s (%s); the next sweep "
                      "retries it", step, type(exc).__name__)
+        if not _store_unreachable(exc):
+            return          # that entry's own problem: the store answered, the streak stands
+        in_a_row += 1
         if in_a_row >= SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES:
             raise SharedStoreUnavailable(
                 f"{in_a_row} shared store operations failed in a row; sweep stopped "

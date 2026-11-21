@@ -41,7 +41,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 from db.connection import tenant_tx  # noqa: E402
-from tenancy import Role, TenantContext, is_reserved_pipeline_identity  # noqa: E402
+from tenancy import Role, TenantContext, is_reserved_account_name  # noqa: E402
 
 
 async def _owner_tenant_id(owner_agent_id: str) -> str:
@@ -68,11 +68,12 @@ async def _owner_tenant_id(owner_agent_id: str) -> str:
 
 
 async def onboard(*, agent_id: str, name: str, public_email: str, brokerage: str, tenant_id: str) -> None:
-    if is_reserved_pipeline_identity(agent_id):
-        # The command worker reads a "system:" requester as a pipeline, not a
-        # member (L09-12): an account with that name would keep its sends
-        # after it was deactivated.
-        raise SystemExit(f"agent_id={agent_id!r} is reserved for system pipelines; choose another.")
+    if is_reserved_account_name(agent_id):
+        # The command worker reads a "system:" requester as a pipeline and a
+        # "mission:" creator as a mission, not a member (L09-12): an account
+        # with such a name would keep its sends after it was deactivated.
+        raise SystemExit(f"agent_id={agent_id!r} is reserved for system pipelines and missions; "
+                         "choose another.")
     ctx = TenantContext(agent_id="onboard-ai-agent", tenant_id=tenant_id, role=Role.BROKER_OWNER)
     async with tenant_tx(ctx) as conn:
         # The returned row was bound to a name nothing read (ruff F841, audit

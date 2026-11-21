@@ -43,7 +43,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from automation_jobs import ActionRisk, enqueue_job, register_handler
+from automation_jobs import ActionRisk, enqueue_job, is_final_attempt, register_handler
 from db.connection import tenant_tx
 from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach, raise_if_deferred
 from platform_policy import Feature, feature_enabled
@@ -324,10 +324,13 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
         purpose=Purpose.MARKETING,
     )
     # The gate could not decide yet (a Valkey outage hides pending spoken
-    # STOPs): NOT a compliance outcome. Raise a retryable error so the job runs
-    # again later; recording "blocked" here would withhold this lead's first
-    # reply for good.
-    raise_if_deferred(decision)
+    # STOPs): NOT a compliance outcome, so nothing is recorded as "blocked"
+    # (that would withhold this lead's first reply for good). With attempts
+    # left the job fails retryably (OutreachDeferred). On its last attempt —
+    # every attempt while JOB_MAX_ATTEMPTS is 1 — the job is dead-lettered, so
+    # it raises OutreachUndecided, which says not sent and not retried, never
+    # "retrying" (L09-11).
+    raise_if_deferred(decision, final_attempt=is_final_attempt(reporter.job))
     if not decision.allowed:
         reason = decision.blockers[0] if decision.blockers else "blocked_by_compliance"
         await _record_response_event(
