@@ -391,6 +391,27 @@
   color: var(--oracle-text-ghost);
 }
 
+/* A call frame mirrored as metadata only: type, brokerage, time, flags. */
+.feedRowMeta {
+  min-height: 40px;
+}
+
+.metaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+}
+
+.metaFlag {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: 999px;
+}
+
 /* ── 4 · TENANTS ────────────────────────────────────────────────────────── */
 .cardList {
   list-style: none;

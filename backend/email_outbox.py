@@ -113,7 +113,10 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
         if refusal is None:
             decision = await outreach_compliance.guard_outreach(
                 worker_ctx, channel=outreach_compliance.Channel.EMAIL, contact=str(row["to_email"]),
-                state_code=None)
+                state_code=None,
+                # Purpose: an agent's free-text email cannot be classified, so strict (26.5);
+                # the email gate does not read it (opt-out model, footer on every send).
+                purpose=outreach_compliance.Purpose.MARKETING)
             if decision.allowed:
                 commercial = await commercial_email.prepare(tenant_id, recipient=str(row["to_email"]),
                                                             body=str(row["body_text"] or ""))

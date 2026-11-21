@@ -39,7 +39,7 @@ from inbound_voice import (
 from commands_api import _load_provider_credential
 from contacts_api import _CONTACT_SELECT, _contact_json
 from db.connection import tenant_tx
-from outreach_compliance import Channel, VoiceMode, guard_outreach
+from outreach_compliance import TRANSIENT_RETRY_SECONDS, Channel, Purpose, VoiceMode, guard_outreach
 from platform_policy import Feature, require_feature
 from tenancy import Role, TenantContext, brokerage_scope, require_context, require_role
 import record_access
@@ -879,7 +879,19 @@ async def prepare_agent_call(
         log=False,
         voice_mode=VoiceMode.AGENT,
         recording_enabled=False,
+        # Purpose: what the agent will say is unknown, so strict (26.5); a live agent
+        # call keeps consent or a prior business relationship as its basis.
+        purpose=Purpose.MARKETING,
     )
+    if not decision.allowed and getattr(decision, "transient", None):
+        # Not a legal refusal: the gate could not decide yet. The agent is told
+        # to try again rather than that the contact may not be called.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "Calling is temporarily unavailable; try again in a few minutes.",
+                    "code": decision.transient},
+            headers={"Retry-After": str(TRANSIENT_RETRY_SECONDS)},
+        )
     if not decision.allowed:
         raise HTTPException(
             status_code=status.HTTP_451_UNAVAILABLE_FOR_LEGAL_REASONS,
@@ -1020,6 +1032,9 @@ async def twilio_agent_outbound(request: Request) -> Response:
         log=True,
         voice_mode=VoiceMode.AGENT,
         recording_enabled=False,
+        # Purpose: what the agent will say is unknown, so strict (26.5); a live agent
+        # call keeps consent or a prior business relationship as its basis.
+        purpose=Purpose.MARKETING,
     )
     if not decision.allowed:
         async with tenant_tx(tenant_ctx) as conn:
@@ -1028,6 +1043,8 @@ async def twilio_agent_outbound(request: Request) -> Response:
                 intent_id,
                 "; ".join(decision.blockers)[:2_000],
             )
+        if getattr(decision, "transient", None):
+            return _safe_hangup("This call cannot be connected right now. Please try again in a few minutes.")
         return _safe_hangup("This call cannot be connected because contact permission or calling-hour requirements are not met.")
     async with tenant_tx(tenant_ctx) as conn:
         updated = await conn.fetchrow(

@@ -14,7 +14,9 @@ in a transaction, offer, contract or call session: those are the brokerage's
 own legally required records (TREC 22 TAC §535.2 four years, Maryland five,
 DE/PA three) and the decision to destroy them is counsel's, not ours. Their
 opt-out survives deletion as a keyed hash, so a re-import of the same number
-or address is still blocked.
+or address is still blocked. Their outbound drafts, the approvals of those
+drafts and the jobs that would send them are redacted to the record that an
+action happened, not deleted (migration 0182).
 """
 
 from __future__ import annotations
@@ -41,10 +43,12 @@ _DEPENDENTS: tuple[tuple[str, str], ...] = (
     ("contact_property_relationships", "client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[])"),
 )
 
-# Every table a directive may name (privacy_erase_subject_rows' allow-list).
+# Every table a directive may name (privacy_erase_subject_rows' allow-list;
+# the _REDACTED ones are redacted, the rest deleted).
 _SUBJECT_TABLES = frozenset({t for t, _ in _DEPENDENTS} | {
     "sms_messages", "inbound_voice_calls", "email_outbox", "outreach_attempt_log",
-    "outreach_consent", "outreach_suppression", "clients", "agent_contacts"})
+    "outreach_consent", "outreach_suppression", "clients", "agent_contacts",
+    "command_executions", "action_approvals", "automation_jobs"})
 
 # Records attached to a client that go with it (ON DELETE CASCADE): returned
 # by an access request, removed with the client by a deletion (external audit
@@ -53,9 +57,100 @@ _CLIENT_CHILDREN = ("client_notes", "client_tasks", "client_activities", "client
                     "buyer_profiles", "showings", "interaction_logs",
                     "contract_synthesis_artifacts", "property_match_decisions")
 
-# Records that name the person but are only unlinked by a deletion (ON DELETE
-# SET NULL): returned by access, and reported as kept by a deletion.
-_KEPT_UNLINKED = ("command_executions", "action_approvals")
+# Outbound drafts that name the person, their approvals and the execute jobs
+# carrying a copy of the approved draft: returned by access; a deletion
+# REDACTS them (0182, owner decision 2026-11-20 on L17-38) instead of leaving
+# them unlinked. The action skeleton stays as the brokerage's record that an
+# action happened (type, channel, state, times, who asked and who decided,
+# the provider's message id); the message, recipient and any free text are
+# replaced by _REDACTION_MARKER. Value: the column that carries the marker.
+_REDACTED = {"command_executions": "draft", "action_approvals": "draft_payload",
+             "automation_jobs": "payload"}
+_REDACTION_MARKER = "data_subject_erasure"   # {"redacted": <this>, "at": <time>}
+# Commands first: their rows are locked before their jobs (a release locks the
+# command, then queues its job), so a job queued after discovery is caught.
+_REDACT_ORDER = ("command_executions", "automation_jobs", "action_approvals")
+
+
+def _n(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def redaction_note(redacted: dict[str, int], counts: dict[str, int]) -> str:
+    """What a deletion redacted and what it did not reach, from the counts
+    privacy_erase_subject_rows recorded (0182). Never a fixed claim: each
+    sentence is said only when its count is not zero."""
+    drafts, approvals = redacted.get("command_executions", 0), redacted.get("action_approvals", 0)
+    jobs, traces = redacted.get("automation_jobs", 0), counts.get("decision_traces", 0)
+    if not (drafts or approvals or jobs or traces):
+        return ""
+    where = [_n(drafts, "draft", "drafts"), _n(approvals, "approval", "approvals"),
+             _n(jobs, "send job", "send jobs")]
+    if counts.get("job_attempt_errors"):
+        where.append("the error text of " + _n(counts["job_attempt_errors"], "send attempt", "send attempts"))
+    if traces:
+        where.append(_n(traces, "AI decision record", "AI decision records")
+                     + " (also withdrawn from AI training data)")
+    out = [("Redacted, not deleted: the message, the recipient's address or number, names and free-text "
+            "notes and errors were removed from " + ", ".join(where) + ". Kept as the brokerage's record "
+            "that an action happened: its type and channel, status, times, who asked for it and who "
+            "decided, and the provider's message id.")]
+    for key, one, many in (
+            ("sent", "had already been sent: the message stays with its recipient.",
+             "had already been sent: those messages stay with their recipients."),
+            ("unsent_cancelled", "had not been sent and was cancelled; it will not be sent.",
+             "had not been sent and were cancelled; they will not be sent."),
+            ("in_flight", "was being sent at the moment of deletion: its content is redacted here, but that "
+                          "send may still go out and its delivery record may be written afterwards.",
+             "were being sent at the moment of deletion: their content is redacted here, but those sends "
+             "may still go out and their delivery records may be written afterwards."),
+            ("uncertain", "has an unconfirmed delivery (being checked with the provider) and may have "
+                          "reached the recipient.",
+             "have an unconfirmed delivery (being checked with the provider) and may have reached the "
+             "recipient."),
+            ("not_sent", "had failed or been cancelled earlier and was not sent.",
+             "had failed or been cancelled earlier and were not sent.")):
+        if counts.get(key):
+            out.append(f"{_n(counts[key], 'draft', 'drafts')} {one if counts[key] == 1 else many}")
+    if counts.get("approvals_revoked"):
+        out.append(f"{_n(counts['approvals_revoked'], 'approval', 'approvals')} still waiting "
+                   f"{'was' if counts['approvals_revoked'] == 1 else 'were'} revoked.")
+    if counts.get("jobs_cancelled"):
+        out.append(f"{_n(counts['jobs_cancelled'], 'waiting send job', 'waiting send jobs')} "
+                   f"{'was' if counts['jobs_cancelled'] == 1 else 'were'} cancelled.")
+    out.append("Not reached by this deletion: the providers' own records (email relay, text and call "
+               "providers), messages already delivered, the approver's reason in the brokerage's audit "
+               "log (append-only and hash-chained), and anything typed into notes or chats (see the caveat).")
+    return " ".join(out)
+
+
+async def _redaction_counts(conn, op_id: str) -> tuple[dict[str, int], dict[str, int]]:
+    """(rows redacted per table, counts by state) for one operation, read back
+    from the erasure_ledger rows privacy_erase_subject_rows wrote (0182)."""
+    redacted: dict[str, int] = {}
+    counts: dict[str, int] = {}
+
+    def add(target: dict, key: str, value) -> None:
+        if int(value or 0):
+            target[key] = target.get(key, 0) + int(value or 0)
+
+    for row in await conn.fetch(
+            "SELECT target, rows_affected, detail FROM erasure_ledger WHERE operation_id=$1::uuid "
+            "AND phase='subject' AND action='anonymized' ORDER BY id", op_id):
+        detail = row["detail"]
+        detail = json.loads(detail) if isinstance(detail, str) else dict(detail or {})
+        jobs = detail.get("jobs") if isinstance(detail.get("jobs"), dict) else {}
+        add(redacted, row["target"], row["rows_affected"])
+        add(redacted, "automation_jobs", jobs.get("jobs"))
+        for key in ("sent", "unsent_cancelled", "in_flight", "uncertain", "not_sent", "decision_traces"):
+            add(counts, key, detail.get(key))
+        add(counts, "approvals_revoked", detail.get("pending_revoked"))
+        add(counts, "jobs_cancelled", detail.get("jobs_cancelled"))
+        add(counts, "jobs_cancelled", jobs.get("jobs_cancelled"))
+        add(counts, "job_attempt_errors", detail.get("attempt_errors"))
+        add(counts, "job_attempt_errors", jobs.get("attempt_errors"))
+    return redacted, counts
+
 
 # Broker records that name the person and are never deleted by a request.
 _RETAINED = (
@@ -149,10 +244,25 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
     for table in _CLIENT_CHILDREN:
         found[table] = [r[0] for r in await conn.fetch(
             f"SELECT id FROM {table} WHERE tenant_id=$1 AND client_id = ANY($2::uuid[])", tenant_id, clients)]
-    for table in _KEPT_UNLINKED:
+    # Drafts and approvals: by their link to the person's records (0142/0179);
+    # one linked to nobody (EMAIL to an address alone, or a record deleted
+    # earlier) only when its recipient is one of the person's own addresses.
+    # A draft linked to someone else is never matched by address.
+    emails = [i for i in identifiers if "@" in i]
+    phones = [i for i in identifiers if i.startswith("+")]
+    for table, target in (("command_executions", "target"), ("action_approvals", "(draft_payload -> 'target')")):
         found[table] = [r[0] for r in await conn.fetch(
             f"SELECT id FROM {table} WHERE tenant_id=$1 "
-            "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]))", tenant_id, clients, contacts)]
+            "AND (client_id = ANY($2::uuid[]) OR contact_id = ANY($3::uuid[]) "
+            "     OR (client_id IS NULL AND contact_id IS NULL "
+            f"        AND (lower(btrim({target} ->> 'email')) = ANY($4::text[]) "
+            f"             OR btrim({target} ->> 'phone') = ANY($5::text[]))))",
+            tenant_id, clients, contacts, emails, phones)]
+    # The execute jobs of those commands: each carries a copy of the approved draft.
+    found["automation_jobs"] = [r[0] for r in await conn.fetch(
+        "SELECT id FROM automation_jobs WHERE tenant_id=$1 AND job_type='command:execute' "
+        "AND payload->>'command_id' = ANY($2::text[])",
+        tenant_id, [str(i) for i in found["command_executions"]])] if found["command_executions"] else []
     retained = {}
     for table, where in _RETAINED:
         n = await conn.fetchval(*_bind_used(f"SELECT count(*) FROM {table} WHERE tenant_id=$1 AND ({where})",
@@ -318,7 +428,7 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
             "Nothing was deleted: the record that re-applies this deletion after a backup restore "
             "could not be saved. Try again shortly.", status_code=503)
     try:
-        deleted = await _delete_subject(ctx, op_id, found)
+        deleted, redacted, redaction_counts = await _delete_subject(ctx, op_id, found)
     except Exception:
         # Nothing was deleted (one transaction): drop the directive so a later
         # restore does not delete what the brokerage still holds.
@@ -331,13 +441,14 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     # may belong to a deletion that never happened.
     committed = await asyncio.to_thread(_write_subject_directive, op_id, {**directive, "state": "committed"})
     files_deleted, files_left = (await asyncio.to_thread(_delete_vault_objects, vault_keys)) if vault_keys else (0, 0)
-    kept_unlinked = {t: len(found["ids"].get(t) or []) for t in _KEPT_UNLINKED if found["ids"].get(t)}
     removed_with_client = {t: len(found["ids"].get(t) or []) for t in _CLIENT_CHILDREN if found["ids"].get(t)}
     receipt = {"operation_id": op_id, "deleted": deleted, "opt_out_kept_as_keyed_hash": True,
                "removed_with_client": removed_with_client,
-               # Said, not hidden: drafts and approvals that named the person
-               # stay as the brokerage's action records, no longer linked.
-               "kept_unlinked": kept_unlinked,
+               # Said, not hidden: drafts, approvals and execute jobs that
+               # named the person are redacted, not deleted (0182).
+               "redacted": redacted,
+               **({"redaction_counts": redaction_counts,
+                   "redaction": redaction_note(redacted, redaction_counts)} if redacted else {}),
                **({"contract_files": {"deleted": files_deleted, "not_deleted": files_left,
                                       **({"note": "These encrypted contract files could not be removed from "
                                                   "the contract vault; Neoh support must delete them."}
@@ -349,14 +460,15 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
                            "(scripts/reapply-erasures.py).")}
     async with tenant_tx(ctx) as conn:
         await _finish_operation(conn, op_id, state="succeeded",
-                                result={"deleted": deleted,
+                                result={"deleted": deleted, "redacted": redacted,
                                         "restore_directive_state": receipt["restore_directive_state"]},
                                 receipt=receipt)
-    await _audit(ctx, "privacy.subject.deleted", target=op_id, metadata={"deleted": deleted})
+    await _audit(ctx, "privacy.subject.deleted", target=op_id, metadata={"deleted": deleted, "redacted": redacted})
     return {"operation_id": op_id, "kind": kind, **receipt}
 
 
-async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> dict[str, int]:
+async def _delete_subject(ctx: TenantContext, op_id: str,
+                          found: dict) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     from privacy_lifecycle import contact_hmac
 
     async with tenant_tx(ctx) as conn:
@@ -366,10 +478,12 @@ async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> dict[s
 
 
 async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, list],
-                              tombstones: list[str]) -> dict[str, int]:
-    """Delete one person's rows (privacy_erase_subject_rows, under a running
-    dsr_delete operation) and keep their opt-out as keyed hashes. Shared by
-    the request and by reapply_subject_erasures after a restore."""
+                              tombstones: list[str]) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Delete one person's rows and redact their drafts, approvals and execute
+    jobs (privacy_erase_subject_rows, under a running dsr_delete operation),
+    and keep their opt-out as keyed hashes. Shared by the request and by
+    reapply_subject_erasures after a restore. Returns (deleted, redacted,
+    redaction counts by state)."""
     deleted: dict[str, int] = {}
     # The opt-out outlives the person, as a keyed hash.
     for hmac_value in tombstones:
@@ -377,6 +491,13 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
             "INSERT INTO suppression_tombstones (tenant_id, contact_hmac, channel, reason) "
             "VALUES ($1,$2,'*','erased_by_request') ON CONFLICT DO NOTHING",
             tenant_id, hmac_value)
+    # Redacted, not deleted (0182): content and free text replaced by the
+    # marker, an unsent draft cancelled, a pending approval revoked. The
+    # counts come back from the erasure ledger rows the function wrote.
+    for table in _REDACT_ORDER:
+        if ids.get(table):
+            await conn.fetchval("SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table])
+    redacted, redaction_counts = await _redaction_counts(conn, op_id)
     order = [t for t, _ in _DEPENDENTS] + [
         "sms_messages", "inbound_voice_calls", "email_outbox",
         "outreach_attempt_log", "outreach_consent", "outreach_suppression"]
@@ -393,7 +514,7 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
         if ids.get(table):
             deleted[table] = int(await conn.fetchval(
                 "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
-    return deleted
+    return deleted, redacted, redaction_counts
 
 
 def _delete_vault_objects(keys: list[str]) -> tuple[int, int]:
@@ -517,8 +638,12 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
             ids[table] = sorted(set(ids.get(table, [])) | set(rows))
         back = {}
         for table, table_ids in ids.items():
+            # A redacted row is still there by design: back only if the
+            # restore brought its content back.
+            unredacted = (f" AND ({_REDACTED[table]} ->> 'redacted') IS DISTINCT FROM '{_REDACTION_MARKER}'"
+                          if table in _REDACTED else "")
             n = int(await conn.fetchval(
-                f"SELECT count(*) FROM public.{table} WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                f"SELECT count(*) FROM public.{table} WHERE tenant_id=$1 AND id = ANY($2::uuid[]){unredacted}",
                 tenant, table_ids) or 0)
             if n:
                 back[table] = n
@@ -561,10 +686,11 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
                 params={"reapply_of": d.get("operation_id")})
         op_id = str(op["id"])
         async with tenant_tx(ctx) as conn:
-            deleted = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
+            deleted, redacted, _counts = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
             await _finish_operation(conn, op_id, state="succeeded",
-                                    result={"deleted": deleted, "reapply_of": d.get("operation_id")})
-        entry.update(status="reapplied", reapply_operation_id=op_id, deleted=deleted)
+                                    result={"deleted": deleted, "redacted": redacted,
+                                            "reapply_of": d.get("operation_id")})
+        entry.update(status="reapplied", reapply_operation_id=op_id, deleted=deleted, redacted=redacted)
     except Exception as exc:  # noqa: BLE001 - legal hold or a DB error: needs a person
         held = getattr(exc, "hint", None) == "legal_hold"
         entry.update(status="skipped_legal_hold" if held else "reapply_failed", detail=type(exc).__name__)
@@ -657,7 +783,10 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
         "email_outbox": "SELECT id, to_email, subject, body_text, status, sent_at, created_at, "
                         "subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id, "
                         "body_text_ciphertext, tenant_id AS body_text_ciphertext_tenant_id FROM email_outbox",
-        "outreach_consent": "SELECT id, contact, channel, consent_type, proof_source, created_at, revoked_at FROM outreach_consent",
+        # 0183: the evidence status and reference are about this person's consent;
+        # recorded_by (the staff member who recorded it) is not exported.
+        "outreach_consent": "SELECT id, contact, channel, consent_type, proof_source, evidence_status, "
+                            "evidence_ref, captured_at, created_at, revoked_at FROM outreach_consent",
         "outreach_suppression": "SELECT id, contact, channel, reason, created_at, lifted_at FROM outreach_suppression",
     }
     for table, sql in queries.items():

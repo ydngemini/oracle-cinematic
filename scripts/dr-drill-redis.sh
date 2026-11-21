@@ -3,17 +3,26 @@
 # Neoh — Valkey/Redis loss drill.
 #
 # The recovery brief says not to assume Redis can simply be discarded, and to
-# audit its actual usage first. The audit found three distinct behaviours, and
+# audit its actual usage first. The audit found four distinct behaviours, and
 # an audit is a claim until someone kills the server:
 #
 #   plivo_call_handler   FAILS CLOSED   calls are refused, not mishandled
+#   voice_opt_out        FAILS CLOSED   pending spoken STOPs (audit 34.5) are
+#                                       mirrored here from each container's
+#                                       spool; unreadable -> the outreach gate
+#                                       holds texts and calls (email is not
+#                                       held); the owner's spool still blocks,
+#                                       and its retries re-write the entry when
+#                                       Valkey returns
 #   rate_limit_middleware DEGRADES      per-process in-memory fallback, so with
 #                                       instance_count: 2 the effective limit
 #                                       DOUBLES — weaker, but not fail-open
 #   data_integrations/cache REBUILDABLE PostgreSQL is the fallback
 #
-# This drill starts a real Valkey, proves the distributed path is live, kills
-# it, and proves each of those three behaviours actually holds.
+# This drill starts a real Valkey, proves the distributed path is live (for
+# pending STOPs: two processes, a cut, the entry re-written and removed only
+# after the row lands — tests/test_voice_opt_out_valkey_live.py), kills it,
+# and proves each of those behaviours actually holds.
 #
 # Usage:  scripts/dr-drill-redis.sh
 
@@ -79,6 +88,11 @@ asyncio.run(main())
 EOF
 [ $? -eq 0 ] && PASS=$((PASS+2)) || { bad "the connected path did not work"; }
 
+ORACLE_LIVE_VALKEY_URL="$REDIS_URL" "$PY" -m pytest -p no:cacheprovider -q \
+  tests/test_voice_opt_out_valkey_live.py </dev/null >/dev/null 2>&1 \
+  && ok "pending spoken STOPs: shared across processes, fail closed on a cut, re-written, removed after the row" \
+  || bad "pending spoken STOP live test failed (tests/test_voice_opt_out_valkey_live.py)"
+
 phase "3. Kill Valkey"
 docker rm -fv "$CONTAINER" >/dev/null 2>&1
 sleep 1
@@ -109,6 +123,41 @@ async def main():
         # Any refusal is better than proceeding, but the type matters: callers
         # branch on it.
         print(f"  \033[32mPASS\033[0m  Plivo refused ({type(exc).__name__})")
+
+    # ── Pending spoken STOPs: fail CLOSED ─────────────────────────────────
+    # A STOP heard on another replica could be waiting in Valkey: a number
+    # this process cannot check must not be texted or called.
+    import voice_opt_out
+    status = await voice_opt_out.opt_out_status("11111111-1111-1111-1111-111111111111", "+13025550142")
+    if status != voice_opt_out.UNKNOWN:
+        failures.append(f"pending-STOP status with no Valkey is {status!r}, not 'unknown' (must fail closed)")
+    else:
+        print("  \033[32mPASS\033[0m  pending spoken STOPs fail CLOSED (status unknown)")
+    import outreach_compliance
+    from contextlib import asynccontextmanager
+    from tenancy import Role, TenantContext
+
+    @asynccontextmanager
+    async def no_db(ctx, conn):
+        yield None
+
+    async def clean_row(*_a, **_kw):
+        return {"suppressed": False, "has_consent": True, "has_prior_business": False, "has_written_consent": True,
+                "vp_consent": True, "recent_voice": 0}
+
+    outreach_compliance._conn_or_tx = no_db
+    outreach_compliance.ConsentLedger.gather_state = clean_row
+    ctx = TenantContext(agent_id="drill@x.test", tenant_id="11111111-1111-1111-1111-111111111111",
+                        role=Role.AGENT)
+    sms = await outreach_compliance.guard_outreach(
+        ctx, channel=outreach_compliance.Channel.SMS, contact="+13025550142", state_code="DE", log=False)
+    email = await outreach_compliance.guard_outreach(
+        ctx, channel=outreach_compliance.Channel.EMAIL, contact="owner@example.test", state_code="DE", log=False)
+    held = outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE
+    if sms.allowed or held not in sms.blockers or held in email.blockers:
+        failures.append("the outreach gate did not hold SMS (or held email) with no Valkey")
+    else:
+        print("  \033[32mPASS\033[0m  the outreach gate holds texts and calls; email is not held")
 
     # ── Rate limiting: degrades, does not disappear ────────────────────────
     client = await rl.get_redis_client()
@@ -145,13 +194,15 @@ if __name__ == "__main__":
     sys.exit(1 if failures else 0)
 EOF
 RC=$?
-[ "$RC" -eq 0 ] && PASS=$((PASS+4)) || FAIL=$((FAIL+1))
+[ "$RC" -eq 0 ] && PASS=$((PASS+6)) || FAIL=$((FAIL+1))
 
 phase "Valkey loss drill result"
 if [ "$FAIL" -eq 0 ]; then
   printf '  \033[32m%s checks passed. Valkey loss behaves as documented.\033[0m\n' "$PASS"
-  echo "  No authoritative state lives in Valkey: losing it drops in-flight calls"
-  echo "  and loosens rate limits. It loses no business data."
+  echo "  Losing Valkey drops in-flight calls, loosens rate limits and holds texts and"
+  echo "  calls until it returns (pending spoken STOPs cannot be read). It loses no"
+  echo "  business data on its own: a pending STOP is lost only if Valkey AND the"
+  echo "  container that heard it both lose their data before the row is written."
   echo
   exit 0
 fi

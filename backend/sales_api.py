@@ -35,7 +35,7 @@ from commands_api import (
 )
 from contacts_api import _CONTACT_SELECT, _contact_json, search_contact_rows
 from db.connection import tenant_tx
-from outreach_compliance import Channel, VoiceMode, guard_outreach
+from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach
 from platform_policy import ActionRisk, Feature, feature_enabled, require_feature
 import record_access
 from tenancy import Role, TenantContext, require_context, require_role
@@ -1021,6 +1021,15 @@ async def publish_plan(plan_id: str, ctx: TenantContext = Depends(require_contex
     return {"revision": {"id": str(revision["id"]), "revision_number": revision_number, "definition_hash": revision["definition_hash"], "published_at": _iso(revision["published_at"])}}
 
 
+def _gate_blockers(contact_id: Any, step_key: str, decision: Any) -> list[dict[str, Any]]:
+    """The preview's rows for one gate decision. A temporary inability to
+    decide (decision.transient, e.g. pending spoken STOPs unreadable) keeps its
+    own code, so the preview says "try again", not "not allowed"."""
+    code = getattr(decision, "transient", None) or "compliance_block"
+    return [{"contact_id": contact_id, "step_key": step_key, "code": code, "message": message}
+            for message in decision.blockers]
+
+
 async def _preview(ctx: TenantContext, plan_id: str, body: PreviewRequest) -> dict[str, Any]:
     provider = await _provider_snapshot(ctx)
     async with tenant_tx(ctx) as conn:
@@ -1110,11 +1119,10 @@ async def _preview(ctx: TenantContext, plan_id: str, body: PreviewRequest) -> di
                 log=False,
                 voice_mode=VoiceMode.AI,
                 recording_enabled=True,
+                # Purpose: a sales-sequence step is promotional outreach by design (26.5).
+                purpose=Purpose.MARKETING,
             )
-            blockers.extend(
-                {"contact_id": contact["id"], "step_key": step.key, "code": "compliance_block", "message": message}
-                for message in decision.blockers
-            )
+            blockers.extend(_gate_blockers(contact["id"], step.key, decision))
             warnings.extend(
                 {"contact_id": contact["id"], "step_key": step.key, "message": message}
                 for message in decision.warnings

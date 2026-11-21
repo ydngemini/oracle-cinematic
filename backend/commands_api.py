@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
+from typing import Any, Mapping, NamedTuple, Optional, Sequence, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -68,7 +68,7 @@ from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
 from llm_gateway import SpendRefused, SpendUnavailable
-from outreach_compliance import Channel, guard_outreach
+from outreach_compliance import Channel, Purpose, guard_outreach, raise_if_deferred
 from platform_policy import (
     ActionRisk,
     Feature,
@@ -357,6 +357,10 @@ class CommandEdit(BaseModel):
 class ApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     reason: str = Field(min_length=8, max_length=500)
+    # External audit 26.5: what an approved TEXT is for, declared by the person
+    # approving it. Omitted = marketing (strict). Only a one-to-one text may be
+    # declared informational; see _purpose_declaration.
+    purpose: Optional[Purpose] = None
 
 
 class CallTelemetry(BaseModel):
@@ -808,6 +812,109 @@ def _decode(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+# ── 26.5: the purpose of an approved text ────────────────────────────────────
+# Texts a pipeline wrote for a campaign: their purpose is not the approver's to
+# declare. Missions, sales sequences (smart plans), the AI sales agent and
+# speed-to-lead stay marketing.
+_CAMPAIGN_SOURCES = {"speed-to-lead": "speed-to-lead", "smart-plan": "a sales sequence",
+                     "our-ai-sales-agent": "the AI sales agent"}
+# The idempotency-key prefixes those pipelines stage with (speed_to_lead,
+# sales_api's AI sales agent and smart plans, missions/executor). The key is
+# set at staging and no edit can change it, so it marks the origin even when
+# the editable context does not (review of PR #170). The pipelines themselves
+# are pinned in tests/test_command_staging_origins.py.
+_CAMPAIGN_KEY_PREFIXES = (("speed-to-lead:", "speed-to-lead"), ("smart-plan:", "a sales sequence"),
+                          ("sales-agent:", "the AI sales agent"), ("mission:", "a mission"))
+# Context keys only the staging pipeline sets: where the draft came from and
+# what it owes (a mission's disclosures). An edit keeps the stored values and
+# cannot add, change or drop them, so it cannot launder a campaign text into a
+# one-to-one one (_edited_context).
+_SERVER_CONTEXT_KEYS = ("source", "origin", "mission_id", "objective", "required_disclosures",
+                        "step_run_id", "intake_event_id", "message_id")
+_DECLARED_PURPOSE_KEY = "declared_purpose"
+
+
+def _field(row: Mapping[str, Any], key: str) -> Any:
+    """A column of a command row, None when the row does not carry it."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _stored_draft(command: Mapping[str, Any]) -> dict[str, Any]:
+    draft = _decode(_field(command, "draft"))
+    return draft if isinstance(draft, dict) else {}
+
+
+def _campaign_origin(command: Mapping[str, Any]) -> Optional[str]:
+    """Which campaign pipeline staged this command, in words, or None for a
+    one-to-one draft (typed by an agent, or asked of Neoh in chat). ANY one
+    signal marks a campaign: created_by, the idempotency key (neither can be
+    edited) or the context's origin keys."""
+    context = dict(_stored_draft(command).get("context") or {})
+    created_by = str(_field(command, "created_by") or "")
+    key = str(_field(command, "idempotency_key") or "")
+    if created_by.startswith("mission:") or context.get("mission_id"):
+        return "a mission"
+    for prefix, origin in _CAMPAIGN_KEY_PREFIXES:
+        if key.startswith(prefix):
+            return origin
+    return _CAMPAIGN_SOURCES.get(str(context.get("source") or ""))
+
+
+def _edited_context(stored_command: Mapping[str, Any], sent: Mapping[str, Any]) -> dict[str, Any]:
+    """The context an edit stores: what the client sent, except the
+    server-owned keys, which keep their stored values (and are not added)."""
+    stored = dict(_stored_draft(stored_command).get("context") or {})
+    context = {k: v for k, v in dict(sent or {}).items() if k not in _SERVER_CONTEXT_KEYS}
+    context.update({k: stored[k] for k in _SERVER_CONTEXT_KEYS if k in stored})
+    return context
+
+
+def _purpose_declaration(command: Mapping[str, Any], purpose: Optional[Purpose],
+                         ctx: TenantContext) -> Optional[dict[str, Any]]:
+    """What the approver declares a TEXT is for, checked before the decision.
+
+    Returns the record stored with the command (draft.declared_purpose) for an
+    SMS command, None for any other type. 422 when the declaration is not the
+    approver's to make: an email or call declared informational (they stay
+    marketing), or a campaign text declared informational."""
+    command_type = CommandType(command["command_type"])
+    if command_type is not CommandType.SMS:
+        if purpose is Purpose.INFORMATIONAL:
+            raise HTTPException(status_code=422,
+                                detail="Only a text message can be declared informational; emails and "
+                                       "calls are treated as marketing.")
+        return None
+    origin = _campaign_origin(command)
+    if purpose is Purpose.INFORMATIONAL and origin:
+        raise HTTPException(status_code=422,
+                            detail=f"This text comes from {origin}, so it is treated as marketing and "
+                                   "needs documented written consent.")
+    return {
+        "purpose": (purpose or Purpose.MARKETING).value,
+        "declared": purpose is not None,     # False = the strict default applied
+        "declared_by": ctx.agent_id,
+        "approval_id": str(command["approval_id"]),
+    }
+
+
+def declared_sms_purpose(command: Mapping[str, Any]) -> Purpose:
+    """At send time: INFORMATIONAL only when the person who approved THIS
+    approval declared it (the record names the command's current approval) and
+    no campaign staged the text; anything else (a row without the record or
+    the columns) is MARKETING."""
+    record = _stored_draft(command).get(_DECLARED_PURPOSE_KEY) or {}
+    approval_id = _field(command, "approval_id")
+    if (isinstance(record, dict) and record.get("purpose") == Purpose.INFORMATIONAL.value
+            and approval_id is not None
+            and record.get("approval_id") == str(approval_id)
+            and _campaign_origin(command) is None):
+        return Purpose.INFORMATIONAL
+    return Purpose.MARKETING
 
 
 def _command_dict(row: Any) -> dict[str, Any]:
@@ -2331,6 +2438,8 @@ async def edit_command(
             raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
         if row["state"] not in {"draft", "awaiting_approval"}:
             raise HTTPException(status_code=409, detail="Command can no longer be edited.")
+        # Where the draft came from is not the editor's to change (26.5).
+        body.context = _edited_context(row, body.context)
         # An edit replaces the approval with one requested by the editor, so
         # only someone who may decide the current one may edit (0142): before,
         # any agent who could see a colleague's draft could edit it into their
@@ -2462,7 +2571,7 @@ async def _queue_execution_in_tx(conn: Any, ctx: TenantContext, command: Mapping
 
 
 async def release_command(
-    ctx: TenantContext, row: Any, *, reason: str = "",
+    ctx: TenantContext, row: Any, *, reason: str = "", purpose: Optional[Purpose] = None,
 ) -> dict[str, Any]:
     """Approve a staged command and put it on the queue.
 
@@ -2479,6 +2588,11 @@ async def release_command(
     self-release calls this directly, and must not queue a send for a lapsed
     or closing brokerage either (F18.07). Refused, the command stays awaiting
     approval and nothing is queued.
+
+    ``purpose`` (26.5): for a text, what the approving person declares it is
+    for; stored with the command in the same transaction as the decision and
+    named in the decision's audit entry. A mission's self-release passes none:
+    marketing.
     """
     refusal = await billing.entitlement_refusal(ctx)
     if refusal is not None:
@@ -2501,6 +2615,8 @@ async def release_command(
             raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
         if current["approval_id"] is None:
             raise HTTPException(status_code=409, detail="This command has no approval to release.")
+        # Checked before the decision: a refused declaration decides nothing.
+        declaration = _purpose_declaration(current, purpose, ctx)
         try:
             decided, before = await decide_approval_in_tx(
                 conn, ctx, str(current["approval_id"]), decision="approved", reason=reason)
@@ -2514,12 +2630,23 @@ async def release_command(
             # an edit can request a fresh approval, as for one nobody clicked.
             expired = (decided, before)
         else:
+            if declaration is not None:
+                # Outside the hashed execution payload (content/context), so the
+                # approved message is unchanged; written only by an approver, in
+                # the decision's own transaction. After this the command is
+                # queued and nothing can edit or re-approve it.
+                await conn.execute(
+                    "UPDATE command_executions SET draft = jsonb_set(draft, '{declared_purpose}', $2::jsonb, true) "
+                    "WHERE id=$1::uuid", command_id, json.dumps(declaration))
             job = await _queue_execution_in_tx(conn, ctx, current, created_by=ctx.agent_id)
             updated = await conn.fetchrow("SELECT * FROM command_executions WHERE id=$1::uuid", command_id)
     if expired is not None:
         await record_approval_decision(ctx, str(current["approval_id"]), *expired)
         raise HTTPException(status_code=409, detail="This approval expired before it was approved. Edit the message to request a new approval.")
-    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
+    approval = await record_approval_decision(
+        ctx, str(current["approval_id"]), decided, before,
+        extra_metadata=({"purpose": declaration["purpose"], "purpose_declared": declaration["declared"]}
+                        if declaration is not None else None))
     return {"command": _command_dict(updated), "approval": approval, "job": job}
 
 
@@ -2645,7 +2772,7 @@ async def approve_command(
     async with tenant_tx(ctx) as conn:
         await _require_destination_on_record(conn, ctx.tenant_id, CommandType(row["command_type"]),
                                              _decode(row["target"]) or {})
-    return await release_command(ctx, row, reason=body.reason)
+    return await release_command(ctx, row, reason=body.reason, purpose=body.purpose)
 
 
 @router.post("/{command_id}/reject")
@@ -3563,10 +3690,21 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
     the call, after the recorded-line disclosure, is that explicit consent;
     a no is recorded too, so nobody later mistakes silence for agreement.
     Returns whether the call's session row was found — no row, no notes.
+
+    Bounded like save_call_note (2 s lock wait, 5 s per statement).
+
+    A no after notes were saved during the call withdraws them, in the same
+    transaction: the call's AI note is deleted and its timeline row keeps
+    only that consent was withdrawn (no content) — what delivery at hang-up
+    did before notes were written as they were taken (34.4 / RUN-03).
     """
     if not provider_call_id:
         return False
     async with tenant_tx(_call_platform_ctx("ai-call-consent")) as conn:
+        # The caller is waiting on this answer too (and a no may delete the
+        # call's note): a timeout rolls everything back and raises, which the
+        # bridge treats as an unrecorded answer (a no is retried at hang-up).
+        await conn.execute(_CALL_NOTE_WRITE_LIMITS)
         row = await conn.fetchrow(
             """
             UPDATE live_call_sessions
@@ -3574,11 +3712,37 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
                    consent_basis=CASE WHEN $2 THEN $3 ELSE 'declined_on_ai_call' END,
                    transcript_status=CASE WHEN $2 THEN 'active' ELSE 'complete' END
              WHERE provider_call_id=$1
-            RETURNING id
+            RETURNING id, tenant_id, client_id, lead_id
             """,
             provider_call_id, bool(granted), AI_CALL_NOTE_CONSENT_BASIS,
         )
+        if row is not None and not granted:
+            await _withdraw_call_note(conn, row, provider_call_id)
     return row is not None
+
+
+#: The call's timeline row once the caller withdrew consent: no content.
+CALL_NOTES_WITHDRAWN = "Call notes withdrawn: the caller withdrew consent, nothing from this call is kept"
+
+
+async def _withdraw_call_note(conn: Any, session: Any, provider_call_id: str) -> None:
+    client_id = await _call_note_client(conn, session)
+    if client_id is None:
+        return
+    activity = await _call_notes_activity(conn, client_id, provider_call_id)
+    if activity is None:
+        return
+    meta = _jsonb_dict(activity["meta"])
+    if meta.get("note_id"):
+        await conn.execute(
+            "DELETE FROM client_notes WHERE id=$1 AND client_id=$2 AND author_id=$3",
+            uuid.UUID(str(meta["note_id"])), client_id, AI_CALL_NOTE_AUTHOR)
+    meta.update({"note_id": None, "note_count": 0, "tool_call_keys": [], "review_state": None,
+                 "unsaved": 0, "withdrawn": True})
+    await conn.execute(
+        "UPDATE client_activities SET summary=$2, meta=$3::jsonb WHERE id=$1",
+        activity["id"], CALL_NOTES_WITHDRAWN, json.dumps(meta))
+    logger.info("call notes withdrawn with consent: %s", provider_call_id)
 
 
 def format_call_notes(notes: list[str]) -> str:
@@ -3586,13 +3750,253 @@ def format_call_notes(notes: list[str]) -> str:
     return f"Notes from Neoh's call (the caller agreed to notes):\n{lines}"
 
 
+def _call_note_lines(body: str) -> list[str]:
+    """The items of a call note body (its "- " lines), for the live frame."""
+    return [line[2:].strip() for line in str(body or "").splitlines()
+            if line.startswith("- ") and line[2:].strip()]
+
+
+def _call_notes_summary(count: int, review_state: Optional[str], unsaved: int = 0) -> str:
+    summary = f"Call notes from Neoh ({count})"
+    if review_state == "proposed":
+        summary += " — waiting for your review"
+    if unsaved:
+        summary += f" — {unsaved} could not be saved"
+    return summary
+
+
+def _jsonb_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        parsed = json.loads(value) if isinstance(value, (str, bytes)) else None
+    except ValueError:
+        parsed = None
+    return parsed if isinstance(parsed, dict) else {}
+
+
+#: The call's session row, locked: every write of a call's notes (each item as
+#: it is taken, and delivery at call end) runs one at a time per call.
+_CALL_NOTE_SESSION_SQL = """
+    SELECT s.id, s.tenant_id, s.client_id, s.contact_id, s.lead_id, s.command_id, s.consent_recorded,
+           s.created_by, c.created_by AS command_created_by
+      FROM live_call_sessions s
+      LEFT JOIN command_executions c ON c.id = s.command_id
+     WHERE s.provider_call_id=$1 FOR UPDATE OF s"""
+
+
+#: save_call_note answers a caller who is waiting on the line.
+_CALL_NOTE_WRITE_LIMITS = "SET LOCAL lock_timeout = '2s'; SET LOCAL statement_timeout = '5s'"
+
+
+def _call_note_requester(session: Any) -> str:
+    return str(session["command_created_by"] or session["created_by"] or "").strip()
+
+
+async def _call_note_client(conn: Any, session: Any) -> Any:
+    """The client a call's notes belong to. A lead-only call (chk_call_anchor
+    allows it; leads have no notes table) on a lead that is a client's own
+    house follows that client (0143), so its notes do too (L09-06, T09.17)."""
+    client_id = session["client_id"]
+    if client_id is None and session["lead_id"] is not None:
+        client_id = await conn.fetchval(
+            "SELECT seller_client_id FROM leads WHERE id=$1", session["lead_id"])
+    return client_id
+
+
+async def _call_notes_activity(conn: Any, client_id: Any, provider_call_id: str) -> Any:
+    """The call's 'ai_call_notes' timeline row: the idempotency key of the
+    call's one AI note (its meta names the note, the count and the tool calls
+    already saved)."""
+    return await conn.fetchrow(
+        """SELECT id, meta FROM client_activities
+            WHERE client_id=$1 AND meta->>'provider_call_id'=$2 AND meta->>'source'='ai_call_notes'
+            ORDER BY created_at LIMIT 1""",
+        client_id, provider_call_id,
+    )
+
+
+def _call_notes_frame(client_id: Any, session: Any, note_id: str, notes: list[str],
+                      review_state: str) -> dict[str, Any]:
+    return {
+        "type": "CALL_NOTES", "version": 1,
+        "client_id": str(client_id),
+        "command_id": str(session["command_id"]) if session["command_id"] else None,
+        "note_id": note_id, "notes": notes, "review_state": review_state,
+    }
+
+
+class CallNoteWrite(NamedTuple):
+    """What save_call_note did. `saved` is true only for a committed write
+    (or a retried tool call whose write had committed)."""
+
+    status: str  # saved | duplicate | refused | no_client | full | empty
+    note_id: Optional[str] = None
+    count: int = 0
+
+    @property
+    def saved(self) -> bool:
+        return self.status in ("saved", "duplicate")
+
+
+async def save_call_note(provider_call_id: str, note: str, *, tool_call_id: str = "",
+                         conversation_id: str = "") -> CallNoteWrite:
+    """Write one note the AI took on a call into the call's one AI note, now,
+    while the call goes on (external audit 34.4 / RUN-03; owner decision
+    2026-11-20: one AI note per call, written and updated incrementally).
+
+    The first item creates the note the way deliver_call_notes does: sealed
+    under the brokerage's key, author neoh-ai-call, in the requesting agent's
+    review mode, on the same client (lead-only calls included), with the same
+    'ai_call_notes' timeline row — so delivery at call end finds it and writes
+    no second note. Each later item appends a line to that same note.
+
+    This returns only after the transaction committed: the AI may say "saved"
+    exactly when the result is `saved` (or `duplicate`); an exception means
+    nothing may be claimed. `tool_call_id` (the provider's id for this tool
+    call) is recorded on the timeline row with a keyed tag of the text
+    (client_note_crypto.content_tag), so a retried tool call — same id, same
+    text — is answered `duplicate` and never appends twice, while the same id
+    with other text is written. The transaction is bounded (2 s lock wait,
+    5 s statement): a timeout rolls it back and raises, i.e. "not saved".
+
+    In 'review' mode an append puts the note back to proposed: words the agent
+    has not read never ride on an earlier approval; 'direct' mode never
+    approves a note that is waiting for review. An append keeps the agent's
+    own edits. A note the agent discarded mid-call stays discarded: the next
+    item starts a new note, which the timeline row then names.
+    """
+    import call_note_settings
+    import client_note_crypto
+
+    # A card number the callee read out never becomes a note, a timeline
+    # entry or a CALL_NOTES frame (PCI DSS SAQ A). seal_body checks again.
+    redaction = pan_redaction.redact(str(note or "").strip()[:_MAX_CALL_NOTE_CHARS])
+    text = str(redaction.text or "").strip()
+    tool_call_id = str(tool_call_id or "").strip()[:200]
+    if not provider_call_id or not text:
+        return CallNoteWrite("empty")
+    async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
+        # Bounded: the caller is waiting on this answer. A lock or statement
+        # that runs long rolls the write back, and the AI says "not saved".
+        await conn.execute(_CALL_NOTE_WRITE_LIMITS)
+        session = await conn.fetchrow(_CALL_NOTE_SESSION_SQL, provider_call_id)
+        pan_redaction.report(
+            "ai_call_note", redaction.cards, redaction.codes,
+            tenant_id=session["tenant_id"] if session else None,
+            target_id=session["client_id"] if session else None)
+        if session is None or not session["consent_recorded"]:
+            logger.warning("call note refused — no consented session: %s", provider_call_id)
+            return CallNoteWrite("refused")
+        requester = _call_note_requester(session)
+        client_id = await _call_note_client(conn, session)
+        if client_id is None:
+            # A prospect with no client record: nowhere to keep it for review.
+            # The requester is told once per call; the caller is told now.
+            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id, 1)
+            return CallNoteWrite("no_client")
+        activity = await _call_notes_activity(conn, client_id, provider_call_id)
+        meta = _jsonb_dict(activity["meta"]) if activity is not None else {}
+        seen = [str(t) for t in (meta.get("tool_call_keys") or []) if t]
+        count = int(meta.get("note_count") or 0)
+        # A retry is the same tool call id with the same text; the same id
+        # with other text is a new note and is written.
+        call_key = (f"{tool_call_id}:{client_note_crypto.content_tag(session['tenant_id'], text)}"
+                    if tool_call_id else "")
+        if call_key and call_key in seen:
+            return CallNoteWrite("duplicate", meta.get("note_id"), count)
+        if count >= _MAX_CALL_NOTES:
+            return CallNoteWrite("full", meta.get("note_id"), count)
+        assignee = await conn.fetchval("SELECT assignee_id FROM clients WHERE id=$1", client_id)
+        mode = await call_note_settings.read_mode(conn, session["tenant_id"], requester)
+        current = None
+        if meta.get("note_id"):
+            # Locked: an agent editing the note now is not overwritten.
+            current = await client_note_crypto.open_row(conn, await conn.fetchrow(
+                f"""SELECT id, body, review_state, {client_note_crypto.SEALED_COLUMNS}
+                      FROM client_notes WHERE id=$1 AND client_id=$2 FOR UPDATE""",
+                uuid.UUID(str(meta["note_id"])), client_id))
+        if current is not None:
+            kept = str(current.get("body") or "").rstrip()
+            body = f"{kept}\n- {text}" if kept else format_call_notes([text])
+            review_state = "proposed" if mode == "review" else str(current["review_state"])
+            sealed = await client_note_crypto.seal_body(conn, session["tenant_id"], body,
+                                                        surface="ai_call_note")
+            await conn.execute(
+                """UPDATE client_notes
+                      SET body='', body_ciphertext=$2, review_state=$3, updated_at=now(),
+                          reviewed_by=CASE WHEN $3='approved' THEN reviewed_by END,
+                          reviewed_at=CASE WHEN $3='approved' THEN reviewed_at END
+                    WHERE id=$1""",
+                current["id"], sealed, review_state,
+            )
+            note_id = str(current["id"])
+        else:
+            body = format_call_notes([text])
+            review_state = "proposed" if mode == "review" else "approved"
+            # Sealed at rest under the brokerage's key, never a plaintext body
+            # (0132, audit A01; the database refuses one).
+            sealed = await client_note_crypto.seal_body(conn, session["tenant_id"], body,
+                                                        surface="ai_call_note")
+            note_id = str(await conn.fetchval(
+                """INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id,
+                                             pinned, review_state)
+                   VALUES ($1, $2, '', $3, $4, false, $5) RETURNING id""",
+                session["tenant_id"], client_id, sealed, AI_CALL_NOTE_AUTHOR, review_state,
+            ))
+        count += 1
+        if call_key:
+            seen.append(call_key)
+        meta.update({
+            "source": "ai_call_notes", "note_id": note_id,
+            "provider_call_id": provider_call_id,
+            "command_id": str(session["command_id"]) if session["command_id"] else None,
+            "consent_basis": AI_CALL_NOTE_CONSENT_BASIS,
+            "conversation_id": meta.get("conversation_id") or conversation_id or None,
+            "review_state": review_state, "note_count": count, "tool_call_keys": seen,
+            "withdrawn": False,
+        })
+        summary = _call_notes_summary(count, review_state, int(meta.get("unsaved") or 0))
+        if activity is None:
+            await conn.execute(
+                """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
+                   VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
+                session["tenant_id"], client_id, summary, json.dumps(meta), AI_CALL_NOTE_AUTHOR,
+            )
+        else:
+            await conn.execute(
+                "UPDATE client_activities SET summary=$2, meta=$3::jsonb WHERE id=$1",
+                activity["id"], summary, json.dumps(meta),
+            )
+    # Committed. The frame names the whole note as it now stands, to the same
+    # recipients as delivery's frame, re-checked against the record (C3.6).
+    frame = _call_notes_frame(client_id, session, note_id, _call_note_lines(body), review_state)
+    try:
+        await ws_hub.broadcast_record(
+            str(session["tenant_id"]), frame, client_id=client_id,
+            contact_id=session["contact_id"], only=call_note_recipients(requester, assignee),
+            mirror=False)  # private to its recipients, as broadcast_user was
+    except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
+        logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
+    return CallNoteWrite("saved", note_id, count)
+
+
 async def deliver_call_notes(provider_call_id: str, notes: list[str],
-                             conversation_id: str = "") -> Optional[str]:
+                             conversation_id: str = "", *, unsaved: int = 0) -> Optional[str]:
     """Put the notes the AI took on a call where the agent works: a note on
     the client plus a timeline entry, and a live CALL_NOTES frame.
 
     Only for a call whose callee said yes (consent_recorded); idempotent per
     call. Returns the note id, or None when nothing was written.
+
+    Since 34.4 / RUN-03 the bridge writes each note as it is taken
+    (save_call_note), so at call end the call's note normally exists already:
+    delivery finds it by the same key (the call's 'ai_call_notes' timeline
+    row), writes no second note and returns None. It still closes the
+    session's transcript status (hang-up calls it for every consented call,
+    notes or not), and `unsaved` (notes the caller was told
+    could not be saved) is shown on that timeline row — or, when nothing was
+    saved at all, in a task for the requesting agent that carries no content.
 
     The note lands at once in the mode the calling agent chose
     (call_note_settings, owner decision D-2026-10-12-03): 'review' saves it
@@ -3606,7 +4010,8 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     import client_note_crypto
 
     clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
-    if not provider_call_id or not clean:
+    unsaved = max(0, int(unsaved or 0))
+    if not provider_call_id:
         return None
     # A card number the callee read out never becomes a note, a timeline
     # entry or a CALL_NOTES frame (PCI DSS SAQ A). seal_body checks again.
@@ -3614,14 +4019,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     clean = [r.text for r in redactions]
     body = format_call_notes(clean)
     async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
-        session = await conn.fetchrow(
-            """SELECT s.id, s.tenant_id, s.client_id, s.contact_id, s.lead_id, s.command_id, s.consent_recorded,
-                      s.created_by, c.created_by AS command_created_by
-                 FROM live_call_sessions s
-                 LEFT JOIN command_executions c ON c.id = s.command_id
-                WHERE s.provider_call_id=$1 FOR UPDATE OF s""",
-            provider_call_id,
-        )
+        session = await conn.fetchrow(_CALL_NOTE_SESSION_SQL, provider_call_id)
         pan_redaction.report(
             "ai_call_note", sum(r.cards for r in redactions), sum(r.codes for r in redactions),
             tenant_id=session["tenant_id"] if session else None,
@@ -3629,27 +4027,42 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         if session is None or not session["consent_recorded"]:
             logger.warning("call notes dropped — no consented session: %s", provider_call_id)
             return None
+        # Hang-up closes the consented call's transcript status, whether or not
+        # any note was taken (it used to stay 'active' when none was).
         await conn.execute(
             "UPDATE live_call_sessions SET transcript_status='complete' WHERE id=$1", session["id"])
-        client_id = session["client_id"]
-        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
-        if client_id is None and session["lead_id"] is not None:
-            # A lead-only call (chk_call_anchor allows it; leads have no notes
-            # table). A lead that is a client's own house follows that client
-            # (0143), so its notes do too (L09-06, T09.17).
-            client_id = await conn.fetchval(
-                "SELECT seller_client_id FROM leads WHERE id=$1", session["lead_id"])
+        if not (clean or unsaved):
+            return None
+        requester = _call_note_requester(session)
+        client_id = await _call_note_client(conn, session)
         if client_id is None:
             # A prospect with no client record: there is nowhere the agent can
             # review a note, so nothing the callee said is kept — and the agent
             # is told so, once, instead of the notes vanishing into a log line.
-            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id, len(clean))
+            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id,
+                                                 len(clean) or unsaved)
             return None
-        if await conn.fetchval(
-            """SELECT 1 FROM client_activities
-                WHERE client_id=$1 AND meta->>'provider_call_id'=$2 AND meta->>'source'='ai_call_notes'""",
-            client_id, provider_call_id,
-        ):
+        activity = await _call_notes_activity(conn, client_id, provider_call_id)
+        if activity is not None:
+            # The call's note exists (written as the call went): no second one.
+            if unsaved:
+                meta = _jsonb_dict(activity["meta"])
+                meta["unsaved"] = max(int(meta.get("unsaved") or 0), unsaved)
+                state = None
+                if meta.get("note_id"):
+                    state = await conn.fetchval(
+                        "SELECT review_state FROM client_notes WHERE id=$1 AND client_id=$2",
+                        uuid.UUID(str(meta["note_id"])), client_id)
+                await conn.execute(
+                    "UPDATE client_activities SET summary=$2, meta=$3::jsonb WHERE id=$1",
+                    activity["id"],
+                    _call_notes_summary(int(meta.get("note_count") or len(clean)), state, meta["unsaved"]),
+                    json.dumps(meta))
+            return None
+        if not clean:
+            # Nothing was saved during the call; the caller heard so each time.
+            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id, unsaved,
+                                                 client_id=client_id, reason="not_saved")
             return None
         assignee = await conn.fetchval(
             "SELECT assignee_id FROM clients WHERE id=$1", client_id)
@@ -3665,13 +4078,10 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
                VALUES ($1, $2, '', $3, $4, false, $5) RETURNING id""",
             session["tenant_id"], client_id, sealed, AI_CALL_NOTE_AUTHOR, review_state,
         )
-        summary = f"Call notes from Neoh ({len(clean)})"
-        if review_state == "proposed":
-            summary += " — waiting for your review"
         await conn.execute(
             """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
                VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
-            session["tenant_id"], client_id, summary,
+            session["tenant_id"], client_id, _call_notes_summary(len(clean), review_state, unsaved),
             json.dumps({
                 "source": "ai_call_notes", "note_id": str(note["id"]),
                 "provider_call_id": provider_call_id,
@@ -3679,15 +4089,11 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
                 "consent_basis": AI_CALL_NOTE_CONSENT_BASIS,
                 "conversation_id": conversation_id or None,
                 "review_state": review_state,
+                "note_count": len(clean), "unsaved": unsaved,
             }),
             AI_CALL_NOTE_AUTHOR,
         )
-    frame = {
-        "type": "CALL_NOTES", "version": 1,
-        "client_id": str(client_id),
-        "command_id": str(session["command_id"]) if session["command_id"] else None,
-        "note_id": str(note["id"]), "notes": clean, "review_state": review_state,
-    }
+    frame = _call_notes_frame(client_id, session, str(note["id"]), clean, review_state)
     # Among the requester and the assignee, only those who may still read the
     # client (a revoked share, a reassignment) — C3.4/C3.6, 0145.
     try:
@@ -3701,10 +4107,13 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
 
 
 async def _tell_requester_notes_not_kept(conn: Any, session: Any, requester: str,
-                                         provider_call_id: str, count: int) -> None:
-    """A task for the agent who asked for the call: notes were taken but not
-    kept, because the call was about a lead with no client record. Carries no
-    note content. Idempotent per call."""
+                                         provider_call_id: str, count: int, *,
+                                         client_id: Any = None, reason: str = "no_client") -> None:
+    """A task for the agent who asked for the call: notes the callee agreed
+    to were not kept — because the call was about a lead with no client
+    record ('no_client'), or because every write failed during the call
+    ('not_saved'; the caller was told each time). Carries no note content.
+    Idempotent per call."""
     marker = f"Call {provider_call_id}"
     if not requester or await conn.fetchval(
         """SELECT 1 FROM client_tasks
@@ -3712,19 +4121,24 @@ async def _tell_requester_notes_not_kept(conn: Any, session: Any, requester: str
         session["tenant_id"], AI_CALL_NOTE_AUTHOR, f"%{marker}%",
     ):
         return
+    if reason == "not_saved":
+        title = "Call notes could not be saved"
+        details = (f"The callee agreed to notes on a call, but Neoh could not save {count} "
+                   f"note(s) they shared; it told them each time that the note was not saved, "
+                   f"and nothing they said is in this task. Ask them directly. {marker}.")
+    else:
+        title = "Call notes were not kept: this lead has no client record"
+        details = (f"Neoh took {count} note(s) with the callee's consent on a call about a lead "
+                   f"(lead {session['lead_id']}), but the lead is not linked to a client, so there "
+                   f"is nowhere to keep them for your review and nothing was saved. Add the person "
+                   f"as a client before the next call to keep its notes. {marker}.")
     await conn.execute(
         """INSERT INTO client_tasks (tenant_id, client_id, title, details, status, priority,
                                      assignee_id, created_by)
-           VALUES ($1, NULL, $2, $3, 'open', 'normal', $4, $5)""",
-        session["tenant_id"],
-        "Call notes were not kept: this lead has no client record",
-        (f"Neoh took {count} note(s) with the callee's consent on a call about a lead "
-         f"(lead {session['lead_id']}), but the lead is not linked to a client, so there "
-         f"is nowhere to keep them for your review and nothing was saved. Add the person "
-         f"as a client before the next call to keep its notes. {marker}."),
-        requester, AI_CALL_NOTE_AUTHOR,
+           VALUES ($1, $2, $3, $4, 'open', 'normal', $5, $6)""",
+        session["tenant_id"], client_id, title, details, requester, AI_CALL_NOTE_AUTHOR,
     )
-    logger.info("call notes not kept — lead with no client; requester told: %s", provider_call_id)
+    logger.info("call notes not kept (%s); requester told: %s", reason, provider_call_id)
 
 
 def call_note_recipients(requester: Optional[str], assignee: Optional[str]) -> list[str]:
@@ -3994,6 +4408,14 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             superseded.job_terminal = True
             superseded.job_error_code = "APPROVAL_SUPERSEDED"
             raise superseded
+        if command["state"] == "cancelled":
+            # Cancelled (withdrawn, offboarded, or its person erased by a
+            # deletion request, 0182): retrying cannot make it sendable, and a
+            # retried job would sit in the dead-letter queue holding its payload.
+            cancelled = RuntimeError("command is not executable from state cancelled; not sent")
+            cancelled.job_terminal = True
+            cancelled.job_error_code = "COMMAND_CANCELLED"
+            raise cancelled
         if command["state"] not in {"queued", "failed"}:
             raise RuntimeError(f"command is not executable from state {command['state']}")
         await conn.execute(
@@ -4060,7 +4482,11 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 channel=Channel.EMAIL,
                 contact=str(target["email"]),
                 state_code=target.get("state_code"),
+                # Purpose: an approved free-text email is not classified, so strict (26.5);
+                # the email gate does not read it (opt-out model, footer on every send).
+                purpose=Purpose.MARKETING,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
             # Commercial email basics (CAN-SPAM, RFC 8058): the approved body
@@ -4117,13 +4543,18 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 list_unsubscribe_url=commercial.unsubscribe_url,
             )
         elif command_type is CommandType.SMS:
+            sms_purpose = declared_sms_purpose(command)
             decision = await guard_outreach(
                 ctx,
                 channel=Channel.SMS,
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: what the approving person declared for THIS approval; undeclared,
+                # or a mission / sequence / speed-to-lead text, is marketing (26.5).
+                purpose=sms_purpose,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
             from messaging_provider import messaging_provider_name
@@ -4210,7 +4641,11 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: an approved AI call is not classified, so strict (26.5); AI voice
+                # needs documented written consent whatever it says.
+                purpose=Purpose.MARKETING,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))
             # Neoh places the call, but the client must see the agent's own

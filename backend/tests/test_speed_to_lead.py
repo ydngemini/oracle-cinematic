@@ -221,6 +221,34 @@ async def test_a_compliance_block_succeeds_and_is_recorded_not_retried(monkeypat
 
 
 @sync
+async def test_an_undecidable_gate_retries_the_job_instead_of_withholding_for_good(monkeypatch):
+    """PR #173 review: pending spoken STOPs unreadable (a Valkey failover) is
+    not a compliance outcome. Recording "blocked" would withhold this lead's
+    first reply forever; the job must fail RETRYABLY and record nothing."""
+    import pytest
+
+    import outreach_compliance as oc
+
+    monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+    recorded: list[dict] = []
+    _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
+    monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
+
+    async def _undecidable(ctx, **kwargs):
+        return OutreachDecision(
+            allowed=False, channel="sms", contact="+13025550100", state_code="DE",
+            blockers=(oc.OPT_OUT_STATUS_UNAVAILABLE,), transient=oc.OPT_OUT_STATUS_UNAVAILABLE_CODE,
+        )
+
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _undecidable)
+    _forbid_metering(monkeypatch)
+    with pytest.raises(oc.OutreachDeferred) as err:
+        await speed_to_lead._speed_to_lead_job(_payload(), _reporter())
+    assert getattr(err.value, "job_terminal", False) is False
+    assert recorded == []                                   # nothing final written
+
+
+@sync
 async def test_a_staged_draft_is_never_metered(monkeypatch):
     """Audit A05. This test used to assert the defect: one lead_engaged row
     the moment a draft was staged, before any human approved it or any

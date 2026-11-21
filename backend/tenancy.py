@@ -140,6 +140,12 @@ class TenantContext:
     # The session was signed in without the second factor its account must
     # use (L17-19): only the policy and two-step-setup routes accept it.
     mfa_enrolment_pending: bool = field(default=False, compare=False)
+    # The token's `jti` when the identity is an environment operator (no users
+    # row; operator_sessions.is_registry_identity). Every tenant transaction
+    # then proves its operator_sessions row (0181, audit 28.3) instead of
+    # 0117's account row. verify_session stays False for it: the code that asks
+    # "is there a users row?" (policy renewal, step-up) is unchanged.
+    operator_session: Optional[str] = field(default=None, compare=False)
 
     @property
     def is_platform_admin(self) -> bool:
@@ -311,7 +317,24 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
     are costed as one lookup per row, so a scan of a few thousand rows crosses
     jit_above_cost and compiled for 1.5-3 s to return a handful of rows
     (L03-06, L16-03). Request transactions are short OLTP reads."""
-    if ctx.verify_session:
+    if ctx.operator_session:
+        # An environment operator has no users row; its session row in
+        # operator_sessions must be live and issued by the credential
+        # configured now (0181, audit 28.3). Refused with 0117's 28000 → 401.
+        from operator_sessions import credential_fingerprint, jti_hash  # lazy: imports auth
+
+        scope = ctx.record_scope if ctx.record_scope in RECORD_SCOPES else "actor"
+        await conn.execute(
+            "SELECT app_begin_operator_session($1, $2, $3, $4, $5, $6),"
+            "       set_config('jit', 'off', true)",
+            ctx.tenant_id,
+            ctx.role.value,
+            ctx.agent_id,
+            jti_hash(ctx.operator_session),
+            await credential_fingerprint(ctx.agent_id),
+            scope,
+        )
+    elif ctx.verify_session:
         # Same three GUCs, plus the account check that makes revocation real:
         # a token issued before a password change, reset, demotion or removal
         # fails here (SQLSTATE 28000 → 401) on its next tenant transaction.
@@ -460,11 +483,28 @@ def _context_from_authorization(
             detail="Your session has ended. Sign in again.",
         )
 
+    environment_identity = _is_environment_identity(agent_id, tenant_id, role)
+    operator_session = None
+    from operator_sessions import is_registry_identity, valid_jti
+
+    if environment_identity and is_registry_identity(agent_id, tenant_id, role):
+        # An environment operator's token is a session only with a registry
+        # row (0181, audit 28.3); one without a jti was issued before the
+        # registry existed and cannot be revoked, so it is not accepted.
+        jti = payload.get("jti")
+        if not valid_jti(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your session has ended. Sign in again.",
+            )
+        operator_session = jti
+
     ctx = TenantContext(
         agent_id=agent_id,
         tenant_id=tenant_id,
         role=role,
-        verify_session=not _is_environment_identity(agent_id, tenant_id, role),
+        verify_session=not environment_identity,
+        operator_session=operator_session,
         user_id=user_id,
         session_epoch=epoch,
         auth_time=int(auth_time),
@@ -484,7 +524,8 @@ def _is_environment_identity(agent_id: str, tenant_id: str, role: Role) -> bool:
     """The operator/demo identities configured by environment (auth.DEMO_TENANCY)
     have no users row to check; every other subject must have one. Exact match
     on all three — an account that merely shares the operator's address in some
-    other tenant or role is an ordinary account and is checked."""
+    other tenant or role is an ordinary account and is checked. Those with the
+    platform_admin role are checked against operator_sessions instead (0181)."""
     from auth import DEMO_TENANCY  # lazy: auth imports nothing from tenancy
 
     return DEMO_TENANCY.get(agent_id) == (tenant_id, role.value)
@@ -522,11 +563,20 @@ async def verify_session_current(ctx: TenantContext) -> None:
     need nothing extra. Privileged gates call it because some of their routes
     answer from process memory and never open a transaction — a demoted or
     deactivated admin's token would otherwise still read them for its last day.
+    An environment operator's session is proved against operator_sessions by
+    the same transaction (0181, audit 28.3).
     """
-    if not ctx.verify_session:
+    if not ctx.verify_session and not ctx.operator_session:
         return
     import asyncpg
     from db.connection import tenant_tx  # lazy: db.connection imports tenancy
+
+    if ctx.operator_session:
+        # Stretch the credential (once per process) before taking a
+        # platform-pool connection, not inside the transaction.
+        from operator_sessions import credential_fingerprint
+
+        await credential_fingerprint(ctx.agent_id)
 
     try:
         async with tenant_tx(ctx):

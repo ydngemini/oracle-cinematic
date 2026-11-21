@@ -223,10 +223,16 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
     import voice_opt_out  # spoken STOPs whose write failed at call time (23.5 / 34.5)
 
     try:
-        # Only reaches STOPs spooled in THIS container (per-container spool).
+        # STOPs spooled in THIS container (per-container spool).
         out["outbound_opt_outs"] = await voice_opt_out.replay_spool()
     except OSError as exc:
         out["outbound_opt_outs"] = f"spool unavailable: {type(exc).__name__}"
+    try:
+        # Every replica's pending STOPs, from the shared store (34.5) — also
+        # those whose api container was redeployed since.
+        out["outbound_opt_outs_shared"] = await voice_opt_out.replay_shared(only_tenant)
+    except Exception as exc:  # noqa: BLE001 — Valkey down: the owners keep retrying; health reports it
+        out["outbound_opt_outs_shared"] = f"shared store unavailable: {type(exc).__name__}"
     return out
 
 

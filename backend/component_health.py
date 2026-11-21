@@ -195,7 +195,8 @@ async def _valkey() -> dict:
             _valkey_client = redis.from_url(url, socket_timeout=1.0, socket_connect_timeout=1.0)
         await asyncio.wait_for(_valkey_client.ping(), timeout=1.5)
     except Exception as exc:  # noqa: BLE001
-        return _c(DEGRADED, "Valkey unreachable: rate limits on the database fallback, calling unavailable",
+        return _c(DEGRADED, "Valkey unreachable: rate limits on the database fallback, calling unavailable, "
+                  "texts held (pending spoken opt-outs cannot be read)",
                   reason=type(exc).__name__)
     return _c(HEALTHY, "Valkey answering")
 
@@ -449,21 +450,46 @@ def _export_cleanup(overdue: int) -> dict:
     return _c(HEALTHY, "expired data exports deleted")
 
 
-def _outbound_opt_outs() -> dict:
+async def _outbound_opt_outs() -> dict:
     """23.5 / 34.5: a callee said "stop" and the suppression write failed. The
-    number is spooled in THIS container and retried by the process that owns
-    it; until it is written, the other replicas and the worker do not see it
-    and a redeploy could lose it: a person must look now."""
+    number is spooled in the container that heard it AND written to the
+    shared store, so this reports every replica's pending STOPs, not only this
+    one's; retried until written; the outreach gate holds the number
+    meanwhile. A shared store that cannot be read holds every text and call
+    (fail closed); a pending STOP missing from it is seen by this container
+    only: a person must look now."""
     import voice_opt_out
 
     try:
         pending = voice_opt_out.pending_count()
     except (OSError, ValueError) as exc:
         return _c(UNKNOWN, "spoken opt-out spool unreadable", reason=type(exc).__name__)
-    if pending:
-        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled in this container; retrying)",
-                  pending=pending)
-    return _c(HEALTHY, "spoken opt-outs recorded")
+    shared = await voice_opt_out.shared_summary()
+    if not shared["configured"]:
+        import config
+
+        if pending:
+            return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled in this container only: "
+                      "no shared store is configured; retrying)", pending=pending, shared_store="not_configured")
+        if not config.IS_DEV:
+            # A deployment with replicas and no Valkey is back to the per-
+            # container spool: a STOP pending on one replica would not block
+            # the others (34.5). Development runs one process.
+            return _c(DEGRADED, "no shared store (REDIS_URL) is configured: a spoken opt-out still waiting "
+                      "to be recorded would block sends only from the container that heard it",
+                      shared_store="not_configured")
+        return _c(HEALTHY, "spoken opt-outs recorded", shared_store="not_configured")
+    if not shared["reachable"]:
+        return _c(DEGRADED, "the shared spoken opt-out store is unreachable: texts and calls are held by the "
+                  "outreach gate until it answers", pending=pending, reason=shared.get("reason"))
+    if shared["unmirrored"]:
+        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded and are not yet in the shared store "
+                  "(only this container blocks them; retrying)", pending=pending,
+                  pending_shared=shared["pending"], unmirrored=shared["unmirrored"])
+    if pending or shared["pending"]:
+        return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (in the shared store; every replica "
+                  "blocks them; retrying)", pending=pending, pending_shared=shared["pending"])
+    return _c(HEALTHY, "spoken opt-outs recorded", shared_store="reachable")
 
 
 def _billing_meter(unmetered: int) -> dict:
@@ -648,7 +674,7 @@ async def _snapshot() -> dict:
     else:
         rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
     components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
-                  "outbound_opt_outs": _outbound_opt_outs(), "ai_models": _ai_models()}
+                  "outbound_opt_outs": await _bounded(_outbound_opt_outs, 2.0), "ai_models": _ai_models()}
     for name, comp in components.items():
         comp["role"] = role_of(name)
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]
@@ -667,7 +693,7 @@ USER_MESSAGES = {
     "mls": "Listing data may be out of date.",
     "outbound_side_effects": "Some calls or messages are still being confirmed.",
     "email_outbox": "Some emails are waiting to send.",
-    "valkey": "Calling is temporarily unavailable.",
+    "valkey": "Calling and texting are temporarily unavailable.",
     "realtime_fanout": "Live updates may be delayed — refresh to see the latest.",
     "platform_email_relay": "Some emails may not be sending right now.",
 }

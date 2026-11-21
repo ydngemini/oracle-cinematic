@@ -31,6 +31,22 @@ Legal basis (audit observation IDs in parens):
 - IL BIPA (2775): voiceprint = biometric identifier → written release before
   recording an IL recipient.
 - A2P 10DLC (2790): SMS requires a registered brand+campaign before delivery.
+
+Consent evidence and message purpose (external audit 26.5 / 26.6). The rules
+were chosen conservatively by the Claude session under the owner's instruction
+of 2026-11-20 ("continue all" on the open decisions); the owner may revise them
+and counsel has not reviewed them:
+- A consent row is 'documented' only when the server saw a recognised capture
+  method, the disclosure text agreed to, an evidence reference and a capture
+  time not in the future (``consent_evidence_status``); anything else is stored
+  'attested_unverified' (migration 0183). Only documented written consent
+  authorises an AI call or a marketing text, and only a documented voice-channel
+  release counts as a BIPA voiceprint release.
+- Every send path says why it sends (``Purpose``). A marketing text needs
+  documented written consent; an informational text needs prior express consent
+  (written or oral). A prior business relationship never counts for a text; it
+  remains a basis only for a live AGENT call. A call site that cannot tell
+  passes MARKETING.
 """
 
 from __future__ import annotations
@@ -40,7 +56,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timezone
 from enum import Enum
 from typing import Optional
@@ -62,6 +78,21 @@ class Channel(str, Enum):
     EMAIL = "email"
 
 
+class Purpose(str, Enum):
+    """Why a message is sent (external audit 26.5).
+
+    Only SMS reads it: a MARKETING text needs documented prior express WRITTEN
+    consent; an INFORMATIONAL text needs prior express consent (written in any
+    evidence state, or oral). Voice and email ignore it: an AI call already
+    needs documented written consent whatever it says, a live agent call keeps
+    its consent-or-prior-business basis, and email is opt-out (CAN-SPAM; the
+    commercial footer goes on every send). A call site that cannot tell what
+    the message is passes MARKETING (strict)."""
+
+    INFORMATIONAL = "informational"
+    MARKETING = "marketing"
+
+
 class VoiceMode(str, Enum):
     """Who is speaking on an outbound voice call.
 
@@ -72,6 +103,56 @@ class VoiceMode(str, Enum):
 
     AI = "ai"
     AGENT = "agent"
+
+
+# ── Consent evidence (external audit 26.6, migration 0183) ───────────────────
+EVIDENCE_DOCUMENTED = "documented"
+EVIDENCE_ATTESTED = "attested_unverified"
+
+# Capture methods whose evidence can be retrieved later by its reference: the
+# signed web form event, the e-signature envelope, the signed document, the
+# call recording, the inbound keyword reply, the IVR keypress log. Mirrored by
+# 0183's chk_consent_documented_evidence.
+DOCUMENTED_PROOF_SOURCES: frozenset[str] = frozenset({
+    "web_form", "e_signature", "signed_document", "recorded_call",
+    "sms_keyword_reply", "ivr_keypress",
+})
+
+# Consent types the gate reads as written consent or a BIPA release, so an
+# undocumented one is worth telling the person about when it is recorded.
+EVIDENCE_GATED_TYPES: frozenset[str] = frozenset({"express_written", "biometric_voiceprint"})
+
+UNVERIFIED_CONSENT_NOTICE = (
+    "Recorded as attested, not documented. It will not authorise AI calls, voiceprint "
+    "recording or marketing texts until it is documented: record it again with the capture "
+    "method, the disclosure text the person agreed to and an evidence reference."
+)
+
+
+def _blank(value: Optional[str]) -> bool:
+    return not (value or "").strip()
+
+
+def consent_evidence_status(
+    *, proof_source: Optional[str], proof_text: Optional[str], evidence_ref: Optional[str],
+    captured_at: Optional[datetime], now_utc: datetime,
+) -> str:
+    """The evidence status the SERVER assigns a consent row (26.6; rule chosen
+    conservatively under the owner's 2026-11-20 instruction, revisable by the
+    owner). 'documented' needs all four: a recognised capture
+    method, the disclosure text the person agreed to, a reference the evidence
+    can be retrieved by, and a capture time that is not in the future (None =
+    recorded now). Anything less is 'attested_unverified'."""
+    if (proof_source or "").strip().lower() not in DOCUMENTED_PROOF_SOURCES:
+        return EVIDENCE_ATTESTED
+    if _blank(proof_text) or _blank(evidence_ref):
+        return EVIDENCE_ATTESTED
+    if captured_at is not None:
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        if captured_at > now_utc:
+            return EVIDENCE_ATTESTED
+    return EVIDENCE_DOCUMENTED
 
 
 # ── Audit-derived rule data ──────────────────────────────────────────────────
@@ -208,7 +289,11 @@ _STATE_TZ: dict[str, str] = {
 class OutreachDecision:
     """Result of evaluating one outbound attempt. ``allowed`` is the only thing
     a caller must check; ``blockers`` explains a denial, ``warnings`` and
-    ``required_disclosures`` carry obligations the caller must still satisfy."""
+    ``required_disclosures`` carry obligations the caller must still satisfy.
+    ``transient`` is a code (OPT_OUT_STATUS_UNAVAILABLE_CODE) set only when
+    the ONLY thing denying the attempt is a temporary inability to decide:
+    an unattended caller retries later (raise_if_deferred, or a deferral)
+    instead of recording a refusal; a person is told to try again."""
     allowed: bool
     channel: str
     contact: str
@@ -216,6 +301,7 @@ class OutreachDecision:
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     required_disclosures: tuple[str, ...] = ()
+    transient: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
@@ -226,6 +312,7 @@ class OutreachDecision:
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
             "required_disclosures": list(self.required_disclosures),
+            "transient": self.transient,
         }
 
 
@@ -331,14 +418,23 @@ def evaluate(
     tz_name: Optional[str] = None,
     voice_mode: VoiceMode | str = VoiceMode.AI,
     recording_enabled: bool = True,
+    has_prior_business: bool = False,
+    purpose: Purpose | str = Purpose.MARKETING,
 ) -> OutreachDecision:
     """Core gate. Combines persisted facts (suppression / consent / frequency,
     supplied by the caller via ConsentLedger) with the pure rule data above into
     a single allow/deny decision. Keeping the DB lookups out of here makes every
     branch unit-testable.
+
+    Consent facts (ConsentLedger.gather_state): ``has_consent`` = prior express
+    consent, written (any evidence status) or oral; ``has_prior_business`` = an
+    established business relationship; ``has_written_consent`` = DOCUMENTED
+    written consent; ``has_voiceprint_consent`` = a DOCUMENTED voice-channel
+    BIPA release.
     """
     channel = Channel(channel)
     voice_mode = VoiceMode(voice_mode)
+    purpose = Purpose(purpose)
     contact = normalize_contact(contact, channel)
     sc = (state_code or "").upper() or None
     blockers: list[str] = []
@@ -349,19 +445,34 @@ def evaluate(
         blockers.append("contact is on the do-not-contact / opt-out list")
 
     # 2. Consent. AI artificial-voice calls require prior express WRITTEN consent
-    #    (FCC 24-17): oral consent and an established business relationship do NOT
-    #    qualify, so the VOICE gate keys off has_written_consent specifically.
-    #    Marketing SMS requires prior express consent (has_consent).
+    #    (FCC 24-17): oral consent, an established business relationship and a
+    #    written claim recorded without evidence do NOT qualify, so the VOICE
+    #    gate keys off has_written_consent (documented) specifically. A live
+    #    agent call keeps consent or a prior business relationship as its basis.
+    #    SMS (26.5): a marketing text needs documented written consent; an
+    #    informational text prior express consent. A prior business
+    #    relationship is never consent for a text.
     if channel is Channel.VOICE:
         if voice_mode is VoiceMode.AI and not has_written_consent:
             blockers.append(
-                "no prior express WRITTEN consent on file for voice "
-                "(FCC 24-17 — oral / prior-business relationship does not qualify for AI voice)"
+                "no documented prior express WRITTEN consent on file for voice "
+                "(FCC 24-17 — oral / prior-business relationship / consent recorded without "
+                "evidence does not qualify for AI voice)"
             )
-        elif voice_mode is VoiceMode.AGENT and not has_consent:
+        elif voice_mode is VoiceMode.AGENT and not (has_consent or has_prior_business):
             blockers.append("no consent or prior-business basis on file for agent voice")
-    elif channel is Channel.SMS and not has_consent:
-        blockers.append("no prior express consent on file for sms")
+    elif channel is Channel.SMS:
+        if purpose is Purpose.MARKETING and not has_written_consent:
+            blockers.append(
+                "no documented prior express WRITTEN consent on file for a marketing text (sms) "
+                "— oral consent, a prior business relationship and consent recorded without "
+                "evidence do not qualify"
+            )
+        elif purpose is Purpose.INFORMATIONAL and not has_consent:
+            blockers.append(
+                "no prior express consent on file for sms "
+                "(a prior business relationship does not count for texts)"
+            )
 
     # 3. Calling-hours window (voice + SMS).
     if channel in (Channel.VOICE, Channel.SMS):
@@ -379,7 +490,7 @@ def evaluate(
     # 5. BIPA voiceprint — hard gate in IL, warning elsewhere.
     if channel is Channel.VOICE and recording_enabled:
         if sc in VOICEPRINT_CONSENT_STATES and not has_voiceprint_consent:
-            blockers.append(f"no BIPA voiceprint consent on file for {sc} recipient")
+            blockers.append(f"no documented BIPA voiceprint consent on file for {sc} recipient")
         elif sc in VOICEPRINT_WARN_STATES:
             warnings.append(f"{sc} has a biometric-privacy statute; capture recording consent")
 
@@ -401,6 +512,38 @@ def evaluate(
             recording_enabled=recording_enabled,
         ),
     )
+
+
+#: The blocker when the shared store of pending spoken STOPs cannot be read
+#: (voice_opt_out.UNKNOWN): a STOP heard on another replica could be waiting.
+OPT_OUT_STATUS_UNAVAILABLE = ("spoken opt-out status unavailable (the shared store is unreachable): "
+                              "texts and calls are held until it answers")
+#: OutreachDecision.transient when that blocker is the only one. Callers
+#: branch on this code, never on the blocker's wording.
+OPT_OUT_STATUS_UNAVAILABLE_CODE = "opt_out_status_unavailable"
+#: How long an unattended send waits before asking again (a Valkey failover
+#: takes tens of seconds; five job attempts spaced this far cover ~8 minutes).
+TRANSIENT_RETRY_SECONDS = 120
+
+
+class OutreachDeferred(RuntimeError):
+    """An unattended send whose gate could not decide yet (decision.transient):
+    not sent, not refused — the durable job worker retries it, spaced by
+    job_retry_after_seconds (automation_jobs.fail_job)."""
+
+    job_terminal = False
+    job_retry_after_seconds = TRANSIENT_RETRY_SECONDS
+
+    def __init__(self, decision: "OutreachDecision"):
+        super().__init__("Not sent yet, retrying: " + "; ".join(decision.blockers))
+        self.code = decision.transient
+
+
+def raise_if_deferred(decision: "OutreachDecision") -> None:
+    """For unattended senders: a temporary denial raises OutreachDeferred (a
+    retry), so it is never recorded as a final refusal."""
+    if not decision.allowed and getattr(decision, "transient", None):
+        raise OutreachDeferred(decision)
 
 
 def _tombstone_hash(tenant_id: str, normalized: str) -> Optional[str]:
@@ -471,16 +614,26 @@ async def record_crm_suppression(conn, tenant_id: str, *, phone: Optional[str], 
 async def ledger_suppressed(conn, tenant_id: str, contact: Optional[str], channel: Channel | str) -> bool:
     """Is this destination suppressed for this channel in the outreach ledger
     (an opt-out, a CRM do-not-contact, an erased person's tombstone)? The same
-    rule the send gate applies (ConsentLedger.gather_state)."""
+    rule the send gate applies (ConsentLedger.gather_state).
+
+    The pending-STOP read may wait up to voice_opt_out.SHARED_TIMEOUT_SECONDS
+    on Valkey while the caller holds `conn`: its one caller (contacts_api
+    nurture-job reservation) learns the destination inside its transaction,
+    from rows it has locked, so the read cannot move before it without
+    splitting that transaction. Bounded, user-initiated, low volume."""
     if not contact:
         return False
     channel = Channel(channel)
     norm = normalize_contact(contact, channel)
     if channel is not Channel.EMAIL:
-        # A spoken STOP still spooled (not yet written) blocks, as at the gate.
+        # A spoken STOP not yet written blocks, as at the gate — in this
+        # container's spool or the shared store. A shared store that cannot be
+        # read counts as pending (fail closed): this answers "may we plan a
+        # send?", and "yes" would be a guess.
         import voice_opt_out
 
-        if voice_opt_out.pending_opt_out(tenant_id, normalize_contact(contact, Channel.VOICE)):
+        status = await voice_opt_out.opt_out_status(tenant_id, normalize_contact(contact, Channel.VOICE))
+        if status != voice_opt_out.CLEAR:
             return True
     return bool(await conn.fetchval(_LEDGER_SUPPRESSED, norm, channel.value, _tombstone_hash(tenant_id, norm)))
 
@@ -502,7 +655,12 @@ class ConsentLedger:
         a PLATFORM_ADMIN context (the command worker that places AI calls) reads
         EVERY brokerage's rows under RLS, so another brokerage's release must not
         authorise this one's call (review of the 26.7/26.8 fix). Suppression is
-        deliberately not narrowed: there a wider read only blocks more."""
+        deliberately not narrowed: there a wider read only blocks more.
+
+        26.5 / 26.6 (0183): ``has_consent`` is prior express consent (written in
+        any evidence status, or oral); a prior business relationship is its own
+        fact (a basis for a live agent call only); written consent and the
+        voiceprint release count only when ``evidence_status = 'documented'``."""
         return await conn.fetchrow(
             """
             SELECT
@@ -513,21 +671,30 @@ class ConsentLedger:
                  -- (0122 suppression_tombstones); it still blocks.
                  OR ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM suppression_tombstones
                         WHERE contact_hmac = $3 AND channel IN ($2, '*')))) AS suppressed,
+                -- expires_at is consent validity (0183 column comment).
                 EXISTS(SELECT 1 FROM outreach_consent
                         WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
-                          AND consent_type IN ('express_written', 'express_oral', 'prior_business')
+                          AND consent_type IN ('express_written', 'express_oral')
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_consent,
                 EXISTS(SELECT 1 FROM outreach_consent
                         WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
+                          AND consent_type = 'prior_business'
+                          AND revoked_at IS NULL
+                          AND (expires_at IS NULL OR expires_at > now()))  AS has_prior_business,
+                EXISTS(SELECT 1 FROM outreach_consent
+                        WHERE tenant_id = $4::uuid AND contact = $1 AND channel = $2
                           AND consent_type = 'express_written'
+                          AND evidence_status = 'documented'
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now()))  AS has_written_consent,
-                -- A BIPA release counts only on the voice channel and only
-                -- until it expires (external audit 26.8).
+                -- A BIPA release counts only on the voice channel, only until
+                -- it expires (external audit 26.8) and only when documented
+                -- (26.6). One recorded under 'sms' never counts (L09-13).
                 EXISTS(SELECT 1 FROM outreach_consent
                         WHERE tenant_id = $4::uuid AND contact = $1 AND channel = 'voice'
                           AND consent_type = 'biometric_voiceprint'
+                          AND evidence_status = 'documented'
                           AND revoked_at IS NULL
                           AND (expires_at IS NULL OR expires_at > now())) AS vp_consent,
                 (SELECT count(*) FROM outreach_attempt_log
@@ -543,19 +710,33 @@ class ConsentLedger:
         ctx: TenantContext, *, contact: str, channel: Channel, consent_type: str,
         state_code: Optional[str], proof_source: Optional[str], proof_text: Optional[str],
         lead_id: Optional[str] = None, client_id: Optional[str] = None,
-        expires_at: Optional[datetime] = None,
-    ) -> str:
+        expires_at: Optional[datetime] = None, evidence_ref: Optional[str] = None,
+        captured_at: Optional[datetime] = None,
+    ) -> tuple[str, str]:
+        """Insert one consent row; returns (id, evidence_status). The evidence
+        status is computed HERE from what was supplied (never taken from the
+        caller), and recorded_by is the signed-in user (26.6, 0183)."""
+        proof_source = (proof_source or "").strip().lower() or None
+        proof_text = (proof_text or "").strip() or None
+        evidence_ref = (evidence_ref or "").strip() or None
+        if captured_at is not None and captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        evidence_status = consent_evidence_status(
+            proof_source=proof_source, proof_text=proof_text, evidence_ref=evidence_ref,
+            captured_at=captured_at, now_utc=datetime.now(timezone.utc))
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
                 """INSERT INTO outreach_consent
                        (tenant_id, lead_id, client_id, contact, channel, consent_type,
-                        state_code, proof_source, proof_text, expires_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-                   RETURNING id""",
+                        state_code, proof_source, proof_text, expires_at,
+                        evidence_status, evidence_ref, recorded_by, captured_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,COALESCE($14, now()))
+                   RETURNING id, evidence_status""",
                 ctx.tenant_id, lead_id, client_id, contact, channel.value, consent_type,
                 state_code, proof_source, proof_text, expires_at,
+                evidence_status, evidence_ref, ctx.agent_id, captured_at,
             )
-        return str(row["id"])
+        return str(row["id"]), str(row["evidence_status"])
 
     @staticmethod
     async def suppress(
@@ -633,11 +814,16 @@ async def guard_outreach(
     tz_name: Optional[str] = None, log: bool = True, conn=None,
     voice_mode: VoiceMode | str = VoiceMode.AI,
     recording_enabled: bool = True,
+    purpose: Purpose | str = Purpose.MARKETING,
 ) -> OutreachDecision:
     """Resolve persisted consent/suppression/frequency, evaluate, optionally log
     the attempt, and return the decision. Callers MUST check `.allowed` and, when
     permitted, deliver `.required_disclosures`. Raises nothing — see
     ``enforce_outreach`` for the raising variant.
+
+    ``purpose`` (26.5): every production call site passes it explicitly with a
+    one-line reason (tests/test_outreach_purpose.py checks); the default is the
+    strict MARKETING so a forgotten one fails closed.
 
     The state read uses ``conn`` when supplied (reusing an already-open
     ``tenant_tx`` — the email send path in crm.py does this) to avoid a nested
@@ -657,21 +843,40 @@ async def guard_outreach(
     is_voice = channel is Channel.VOICE
     tombstone = _tombstone_hash(ctx.tenant_id, norm)
 
-    import voice_opt_out  # a spoken STOP still being written counts as suppressed (23.5)
+    # A spoken STOP still being written counts as suppressed (23.5), wherever
+    # it was heard: this container's spool or the shared store (34.5). Read
+    # BEFORE any transaction, so no lock waits on Valkey. A shared store that
+    # cannot be read holds SMS and voice (fail closed); email never consulted
+    # pending STOPs.
+    import voice_opt_out
+
+    stop_status = voice_opt_out.CLEAR
+    if channel in (Channel.SMS, Channel.VOICE):
+        stop_status = await voice_opt_out.opt_out_status(ctx.tenant_id, normalize_contact(contact, Channel.VOICE))
 
     def decide(row) -> OutreachDecision:
-        suppressed = bool(row["suppressed"]) or (
-            channel in (Channel.SMS, Channel.VOICE)
-            and voice_opt_out.pending_opt_out(ctx.tenant_id, normalize_contact(contact, Channel.VOICE)))
+        decision = _evaluate_row(row)
+        if stop_status == voice_opt_out.UNKNOWN:
+            # Transient only when nothing else blocks: a retry cannot help a
+            # contact who is denied for another reason as well.
+            decision = replace(decision, allowed=False,
+                               blockers=decision.blockers + (OPT_OUT_STATUS_UNAVAILABLE,),
+                               transient=None if decision.blockers else OPT_OUT_STATUS_UNAVAILABLE_CODE)
+        return decision
+
+    def _evaluate_row(row) -> OutreachDecision:
+        suppressed = bool(row["suppressed"]) or stop_status == voice_opt_out.PENDING
         return evaluate(
             channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
             suppressed=suppressed, has_consent=bool(row["has_consent"]),
+            has_prior_business=bool(row["has_prior_business"]),
             has_written_consent=bool(row["has_written_consent"]),
             has_voiceprint_consent=bool(row["vp_consent"]) if is_voice else False,
             recent_voice_attempts=int(row["recent_voice"]) if is_voice else 0,
             tz_name=tz_name,
             voice_mode=voice_mode,
             recording_enabled=recording_enabled,
+            purpose=purpose,
         )
 
     if is_voice and log:
@@ -702,8 +907,18 @@ async def guard_outreach(
 async def enforce_outreach(ctx: TenantContext, **kwargs) -> OutreachDecision:
     """guard_outreach + raise HTTP 451 (Unavailable For Legal Reasons) when the
     attempt is blocked. Use at the top of any send handler. Accepts the same
-    kwargs as ``guard_outreach`` (including ``conn`` to reuse an open tx)."""
+    kwargs as ``guard_outreach`` (including ``conn`` to reuse an open tx).
+    Purpose: forwarded as given — each caller classifies its own send (26.5);
+    absent, guard_outreach's strict MARKETING default applies."""
     decision = await guard_outreach(ctx, **kwargs)
+    if not decision.allowed and decision.transient:
+        # Not a legal refusal: the gate could not decide yet. Try again.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "outreach could not be checked right now; try again shortly",
+                    "code": decision.transient},
+            headers={"Retry-After": str(TRANSIENT_RETRY_SECONDS)},
+        )
     if not decision.allowed:
         # Do NOT echo the normalized contact back in the error body — it's a
         # preprocessing artifact the client never submitted in that form, and
@@ -723,12 +938,21 @@ router = APIRouter(prefix="/api/compliance/outreach", tags=["Outreach Compliance
 
 
 class ConsentRecord(BaseModel):
+    """What a person says they obtained. There is no evidence_status or
+    recorded_by field: the server sets both (26.6); extra keys are ignored."""
     contact: str = Field(..., min_length=3, max_length=320)
     channel: Channel
     consent_type: str = Field("express_written")
     state_code: Optional[str] = Field(None, max_length=2)
-    proof_source: Optional[str] = None
-    proof_text: Optional[str] = None
+    # Capture method: one of DOCUMENTED_PROOF_SOURCES makes documented evidence
+    # possible; any other value is kept but stays attested_unverified.
+    proof_source: Optional[str] = Field(None, max_length=64)
+    # The disclosure text the person agreed to.
+    proof_text: Optional[str] = Field(None, max_length=20_000)
+    # Signed-event / envelope / document / message / recording id.
+    evidence_ref: Optional[str] = Field(None, max_length=500)
+    # When the person gave consent; omitted = now. A future time is not evidence.
+    captured_at: Optional[datetime] = None
     lead_id: Optional[str] = None
     client_id: Optional[str] = None
 
@@ -754,6 +978,8 @@ class CheckRequest(BaseModel):
     state_code: Optional[str] = None
     voice_mode: VoiceMode = VoiceMode.AI
     recording_enabled: bool = True
+    # The dry run answers for the message the caller intends; unsaid = strict.
+    purpose: Purpose = Purpose.MARKETING
 
 
 class InboundMessage(BaseModel):
@@ -777,15 +1003,23 @@ async def record_consent(body: ConsentRecord, ctx: TenantContext = Depends(requi
                             "a biometric voiceprint release is recorded on the voice channel "
                             "for a phone number")
     norm = normalize_contact(body.contact, body.channel)
-    consent_id = await ConsentLedger.record_consent(
+    # A claim without documented evidence is still kept (it is what the agent
+    # says happened) but stored attested_unverified, and the answer says what
+    # that means (26.6).
+    consent_id, evidence_status = await ConsentLedger.record_consent(
         ctx, contact=norm, channel=body.channel, consent_type=body.consent_type,
         state_code=(body.state_code or None), proof_source=body.proof_source,
         proof_text=body.proof_text, lead_id=body.lead_id, client_id=body.client_id,
+        evidence_ref=body.evidence_ref, captured_at=body.captured_at,
     )
     # The id, never the number or address (CONTRACT C5.4, audit A06).
-    logger.info("Consent recorded: id=%s %s (%s) tenant=%s", consent_id, body.channel.value,
-                body.consent_type, ctx.tenant_id)
-    return {"consent_id": consent_id, "contact": norm}
+    logger.info("Consent recorded: id=%s %s (%s, %s) tenant=%s", consent_id, body.channel.value,
+                body.consent_type, evidence_status, ctx.tenant_id)
+    notice = (UNVERIFIED_CONSENT_NOTICE
+              if evidence_status != EVIDENCE_DOCUMENTED and body.consent_type in EVIDENCE_GATED_TYPES
+              else None)
+    return {"consent_id": consent_id, "contact": norm, "evidence_status": evidence_status,
+            "evidence_notice": notice}
 
 
 @router.post("/opt-out", status_code=status.HTTP_201_CREATED)
@@ -835,5 +1069,7 @@ async def check_outreach(body: CheckRequest, ctx: TenantContext = Depends(requir
         state_code=(body.state_code or None), log=False,
         voice_mode=body.voice_mode,
         recording_enabled=body.recording_enabled,
+        # Purpose: what the caller says it intends to send; absent = MARKETING (strict).
+        purpose=body.purpose,
     )
     return decision.as_dict()

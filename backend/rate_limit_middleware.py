@@ -99,6 +99,7 @@ _memory_lock = asyncio.Lock()
 
 # Redis client (optional, for distributed rate limiting)
 _redis_client = None
+_last_unreachable_log = float("-inf")
 
 
 _DEV_VALUES = {"dev", "development", "local"}
@@ -158,7 +159,15 @@ async def _init_redis():
         logger.info("Rate limiter connected to Redis")
         return _redis_client
     except Exception as e:
-        logger.warning("Rate limiter using in-memory fallback: %s", e)
+        # Every caller of get_redis_client lands here, not only the rate
+        # limiter: say what Valkey being unreachable means for each, at most
+        # once a minute (the gate asks on every text and call).
+        global _last_unreachable_log
+        now = time.monotonic()
+        if now - _last_unreachable_log >= 60.0:
+            _last_unreachable_log = now
+            logger.warning("Valkey unreachable (%s): the rate limiter uses its in-memory fallback; "
+                           "Plivo call state and pending spoken opt-out reads fail closed", e)
         _redis_client = None
         return None
 
