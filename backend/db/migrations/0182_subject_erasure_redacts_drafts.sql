@@ -69,11 +69,19 @@
 -- UPDATE of its proposal was impossible. Deleting and re-inserting a trace
 -- would null the links that point at it (mission_actions.decision_trace_id,
 -- 0100; the outcome attribution in 0098: ON DELETE SET NULL). Instead the
--- trigger now permits exactly one rewrite: proposal (and a non-NULL final) to
--- the erasure marker, every other immutable column unchanged, and only when
--- the writer is the table's owner — i.e. owner-privileged code such as this
--- SECURITY DEFINER function, never oracle_app. Everything else is refused as
--- before.
+-- trigger now permits exactly one rewrite, when ALL of these hold:
+--   * proposal becomes exactly {"redacted": "data_subject_erasure", "at": <a
+--     timestamp string>} — no other key — and final likewise when it was not
+--     NULL (a NULL final stays NULL); every other immutable column unchanged;
+--   * the writer (current_user) owns the table, read from pg_catalog.pg_class
+--     — i.e. owner-privileged code such as this SECURITY DEFINER function,
+--     never oracle_app;
+--   * the transaction carries a privacy operation (app.privacy_operation,
+--     which privacy_erase_subject_rows sets before it writes).
+-- The trigger function pins search_path = pg_catalog, pg_temp and qualifies
+-- every catalog object, so a session that may create temp objects cannot
+-- shadow pg_class (or a function) to pass the owner check. Everything else is
+-- refused as before.
 --
 -- updated_at moves (set_updated_at trigger): it is the row's last-change
 -- time, and the redaction is a change. A row already carrying the marker is
@@ -102,18 +110,37 @@
 
 -- ── the one rewrite an AI decision trace accepts ───────────────────────────
 CREATE OR REPLACE FUNCTION ai_decision_traces_immutable()
-RETURNS trigger AS $$
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
-    v_erasure boolean;
+    v_erasure boolean := false;
+    v_marker  CONSTANT jsonb := '{"redacted": "data_subject_erasure"}'::jsonb;
 BEGIN
-    -- 0182: a data-subject erasure replaces the content with the marker. Only
-    -- the table owner (owner-privileged code, never the app role) may.
-    v_erasure := COALESCE(
-        (NEW.proposal ->> 'redacted') = 'data_subject_erasure'
-        AND (NEW.final IS NULL) = (OLD.final IS NULL)
-        AND (NEW.final IS NULL OR (NEW.final ->> 'redacted') = 'data_subject_erasure')
-        AND current_user = (SELECT pg_get_userbyid(c.relowner) FROM pg_class c WHERE c.oid = TG_RELID),
-        false);
+    -- 0182: a data-subject erasure replaces the content with the exact marker.
+    -- Only the table owner (owner-privileged code, never the app role), only
+    -- inside a privacy operation. Nested IFs: the operators below are applied
+    -- only to JSON objects. Operators and functions never resolve from
+    -- pg_temp, and pg_catalog comes first, so nothing here can be shadowed.
+    IF current_user = (SELECT pg_catalog.pg_get_userbyid(c.relowner)
+                         FROM pg_catalog.pg_class c WHERE c.oid = TG_RELID)
+       AND COALESCE(pg_catalog.current_setting('app.privacy_operation', true), '') <> ''
+       AND pg_catalog.jsonb_typeof(NEW.proposal) = 'object'
+       AND (NEW.final IS NULL) = (OLD.final IS NULL)
+    THEN
+        IF NEW.final IS NULL OR pg_catalog.jsonb_typeof(NEW.final) = 'object' THEN
+            v_erasure := COALESCE(
+                (NEW.proposal - 'at'::text) = v_marker
+                AND pg_catalog.jsonb_typeof(NEW.proposal -> 'at') = 'string'
+                AND (NEW.proposal ->> 'at') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                AND (NEW.final IS NULL OR (
+                    (NEW.final - 'at'::text) = v_marker
+                    AND pg_catalog.jsonb_typeof(NEW.final -> 'at') = 'string'
+                    AND (NEW.final ->> 'at') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T')),
+                false);
+        END IF;
+    END IF;
     IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
        OR NEW.agent_id IS DISTINCT FROM OLD.agent_id
        OR NEW.surface IS DISTINCT FROM OLD.surface
@@ -132,7 +159,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- ── execute jobs (a copy of the approved draft) and their attempts ─────────
 -- By job id and/or by the command id inside the payload. Returns

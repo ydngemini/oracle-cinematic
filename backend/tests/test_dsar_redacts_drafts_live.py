@@ -358,14 +358,45 @@ async def _scenario(monkeypatch):
             "repaired": 0, "erased": 0, "no_sender": 0, "failed": 0}
         assert (await rows("command_executions", [cmd5]))[cmd5]["reconcile_checked_at"] is None
 
-        # The app role still cannot rewrite a trace, not even to the marker, nor call the job helper.
+        # The app role still cannot rewrite a trace, not even to the exact marker inside a
+        # privacy operation, nor call the job helper.
         async with tenant_tx(octx) as conn:
+            await conn.execute("SELECT set_config('app.privacy_operation', $1, true)", str(uuid.uuid4()))
             with pytest.raises(asyncpg.PostgresError, match="append-only"):
                 await conn.execute("UPDATE ai_decision_traces SET proposal=$2::jsonb WHERE id=$1",
                                    t_y, json.dumps(marker))
         assert await admin.fetchval(
             "SELECT has_function_privilege('oracle_app_login', "
             "'privacy_redact_execute_jobs(uuid,uuid[],uuid[],jsonb)', 'EXECUTE')") is False
+        # The owner check cannot be shadowed by a temp pg_class: the trigger's search_path is pinned.
+        assert await admin.fetchval(
+            "SELECT proconfig FROM pg_catalog.pg_proc WHERE oid = 'public.ai_decision_traces_immutable()'::regprocedure"
+        ) == ["search_path=pg_catalog, pg_temp"]
+        # Even the table owner may write only the exact marker, and only inside a privacy operation.
+        table_owner = await admin.fetchval(
+            "SELECT pg_get_userbyid(relowner) FROM pg_catalog.pg_class WHERE oid = 'public.ai_decision_traces'::regclass")
+
+        async def as_owner(value, operation):
+            await admin.execute(f'SET LOCAL ROLE "{table_owner}"')
+            await admin.execute("SELECT set_config('app.privacy_operation', $1, true)", operation)
+            await admin.execute("UPDATE ai_decision_traces SET proposal=$2::jsonb WHERE id=$1", t_y, json.dumps(value))
+
+        for value, operation in (({**marker, "body": "FABRICATED"}, "op"),      # marker plus another key
+                                 ({"body": "FABRICATED"}, "op"),                 # other content
+                                 ({"redacted": "data_subject_erasure", "at": 1}, "op"),  # 'at' not a time
+                                 (marker, "")):                                  # outside a privacy operation
+            async with admin.transaction():
+                with pytest.raises(asyncpg.PostgresError, match="append-only"):
+                    await as_owner(value, operation)
+
+        class RolledBack(Exception):
+            pass
+
+        with pytest.raises(RolledBack):   # the one accepted rewrite, then undone
+            async with admin.transaction():
+                await as_owner(marker, "op")
+                assert _j(await admin.fetchval("SELECT proposal FROM ai_decision_traces WHERE id=$1", t_y)) == marker
+                raise RolledBack
 
         # SQL guards: another brokerage's ids under this brokerage's deletion touch nothing;
         # only execute jobs; another tenant's context is refused; a legal hold refuses.
