@@ -350,3 +350,50 @@ def test_a_consented_call_with_no_notes_is_closed_at_hang_up(monkeypatch, notes_
     _run(monkeypatch, [], [_tool(el.TOOL_NOTE_CONSENT, "t1", granted=True)], state=STATE)
     assert notes_backend["delivered"] == [(REF, [])] and notes_backend["unsaved"] == [0]
 
+
+def test_a_failed_no_then_a_recorded_yes_keeps_what_was_saved_after_it(monkeypatch, notes_backend):
+    # Review r2: the failed no used to be replayed at hang-up over the later
+    # yes, deleting a note the caller had heard was saved.
+    real_consent = el_commands().record_call_note_consent
+
+    async def consent(ref, granted):
+        if not granted and not any(g is False for _, g in notes_backend["consent"]):
+            notes_backend["consent"].append((ref, granted))
+            raise RuntimeError("database unavailable")
+        return await real_consent(ref, granted)
+
+    monkeypatch.setattr(el_commands(), "record_call_note_consent", consent)
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_NOTE_CONSENT, "t2", granted=False),
+        _tool(el.TOOL_NOTE_CONSENT, "t3", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t4", note="Has a dog"),
+    ], state=STATE)
+    results = _results(agent)
+    assert results["t2"]["is_error"] is True and results["t3"]["is_error"] is False
+    assert results["t4"]["result"] == "Saved for their agent."
+    assert notes_backend["consent"] == [(REF, True), (REF, False), (REF, True)], "the failed no was replayed"
+    assert notes_backend["saved"] == [(REF, "Has a dog")]
+    assert notes_backend["delivered"] == [(REF, ["Has a dog"])]
+
+
+def test_the_retry_tag_is_keyed_by_a_key_derived_for_it(monkeypatch):
+    import hashlib
+    import hmac
+
+    import client_note_crypto
+    from crypto import derive_tenant_key
+
+    master, tenant = "unit-test-tag-master-key-0123456789", "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", master)
+    tenant_key = derive_tenant_key(tenant, master).encode()
+    tag_key = hmac.new(tenant_key, b"call-note-tag", hashlib.sha256).digest()
+    text = "Prefers afternoon showings"
+    tag = client_note_crypto.content_tag(tenant, text)
+    assert tag == hmac.new(tag_key, text.encode(), hashlib.sha256).hexdigest()[:24]
+    assert tag != hmac.new(tenant_key, text.encode(), hashlib.sha256).hexdigest()[:24], \
+        "the tenant's encryption key is used directly as the HMAC key"
+    assert tag == client_note_crypto.content_tag(tenant, text)
+    assert tag != client_note_crypto.content_tag(tenant, "Has a dog")
+    assert tag != client_note_crypto.content_tag("22222222-2222-2222-2222-222222222222", text)
+

@@ -18,7 +18,8 @@ client) — and delivery at call end writes no second note. Proves:
   with no note (or no client) is closed too;
 - a stale approve or edit (expected_updated_at) is refused with 409;
 - the same tool call id with other text is written; a no after notes were
-  saved deletes them; a held lock rolls the write back within 2 s.
+  saved deletes them; a held lock (2 s) or a long statement (5 s) rolls a
+  note write, or a no, back; the timeline meta holds no note text.
 """
 
 from __future__ import annotations
@@ -60,8 +61,8 @@ async def _scenario():
     await connection.init_pool(min_size=1, max_size=3)
     tenant, client = str(uuid.uuid4()), uuid.uuid4()
     key = derive_tenant_key(tenant, MASTER)
-    ref, direct_ref, fail_ref, lost_ref, gone_ref, lock_ref, quiet_ref = (
-        f"{p}-{uuid.uuid4()}" for p in ("inc", "direct", "fail", "lost", "gone", "lock", "quiet"))
+    ref, direct_ref, fail_ref, lost_ref, gone_ref, lock_ref, quiet_ref, slow_ref = (
+        f"{p}-{uuid.uuid4()}" for p in ("inc", "direct", "fail", "lost", "gone", "lock", "quiet", "slow"))
     agent_c = f"agent-c-{uuid.uuid4().hex[:8]}@live.test"
     pushes, tenant_wide = [], []
 
@@ -113,7 +114,7 @@ async def _scenario():
             "VALUES ($1,$2,$3,'agent',$3,'scrypt$x$y')", uuid.uuid4(), tenant, agent_c)
         for provider_ref, creator in ((ref, "agent-a"), (direct_ref, agent_c), (fail_ref, "agent-a"),
                                       (lost_ref, "agent-a"), (gone_ref, "agent-a"), (lock_ref, "agent-a"),
-                                      (quiet_ref, "agent-a")):
+                                      (quiet_ref, "agent-a"), (slow_ref, "agent-a")):
             await admin.execute(
                 """INSERT INTO live_call_sessions (tenant_id, client_id, consent_recorded, consent_basis,
                                                    transcript_status, provider_call_id, created_by)
@@ -196,6 +197,12 @@ async def _scenario():
         await save(ref, "Wants a garage", tool_call_id="t6")
         row = await opened(note_id)
         assert row["text"] == "Sarah: afternoons, waterfront, call Friday, deposit by link.\n- Wants a garage"
+        # The timeline row is not sealed: its meta (tool call keys included)
+        # carries no word of any note.
+        [activity] = await call_rows(ref)
+        for said in ("Prefers afternoon showings", "Would love waterfront", "Call back Friday",
+                     "Has a dog", "Pays the deposit", "Wants a garage", "afternoon", "garage"):
+            assert said not in activity["meta"], f"note text in the timeline meta: {said!r}"
 
         # Call end: delivery finds the note and writes no second one.
         pushes.clear()
@@ -267,6 +274,61 @@ async def _scenario():
             await holder.rollback()
         assert await call_rows(lock_ref) == []
         assert (await save(lock_ref, "Prefers evenings", tool_call_id="l1")).status == "saved"
+
+        # A statement that runs past 5 s rolls the write back too.
+        assert await commands_api.record_call_note_consent(slow_ref, True) is True
+        kept = await save(slow_ref, "Prefers evenings", tool_call_id="s1")
+        real_read_mode, real_client = call_note_settings.read_mode, commands_api._call_note_client
+
+        async def slow_read_mode(conn, *args):
+            await conn.execute("SELECT pg_sleep(6)")
+            return await real_read_mode(conn, *args)
+
+        call_note_settings.read_mode = slow_read_mode
+        try:
+            started = time.monotonic()
+            with pytest.raises(asyncpg.exceptions.QueryCanceledError):
+                await save(slow_ref, "Has a boat", tool_call_id="s2")
+            assert time.monotonic() - started < 5.9, "the statement was not bounded"
+        finally:
+            call_note_settings.read_mode = real_read_mode
+        assert (await opened(kept.note_id))["text"].endswith("\n- Prefers evenings")
+
+        # A no is bounded the same way; a timeout keeps everything as it was
+        # (the bridge then retries the no at hang-up).
+        async def consent_and_note():
+            return (await admin.fetchval("SELECT consent_recorded FROM live_call_sessions "
+                                         "WHERE provider_call_id=$1", slow_ref),
+                    await admin.fetchval("SELECT count(*) FROM client_notes WHERE id=$1",
+                                         uuid.UUID(kept.note_id)))
+
+        holder = admin.transaction()
+        await holder.start()
+        try:
+            await admin.execute("SELECT 1 FROM client_notes WHERE id=$1 FOR UPDATE", uuid.UUID(kept.note_id))
+            started = time.monotonic()
+            with pytest.raises(asyncpg.exceptions.LockNotAvailableError):
+                await asyncio.wait_for(commands_api.record_call_note_consent(slow_ref, False), 15)
+            assert time.monotonic() - started < 4, "the withdrawal's lock wait was not bounded"
+        finally:
+            await holder.rollback()
+        assert await consent_and_note() == (True, 1)
+
+        async def slow_client(conn, session):
+            await conn.execute("SELECT pg_sleep(6)")
+            return await real_client(conn, session)
+
+        commands_api._call_note_client = slow_client
+        try:
+            started = time.monotonic()
+            with pytest.raises(asyncpg.exceptions.QueryCanceledError):
+                await commands_api.record_call_note_consent(slow_ref, False)
+            assert time.monotonic() - started < 5.9, "the withdrawal's statement was not bounded"
+        finally:
+            commands_api._call_note_client = real_client
+        assert await consent_and_note() == (True, 1)
+        assert await commands_api.record_call_note_consent(slow_ref, False) is True
+        assert await consent_and_note() == (False, 0)
 
         # Hang-up closes a consented call that took no note.
         assert await commands_api.record_call_note_consent(quiet_ref, True) is True

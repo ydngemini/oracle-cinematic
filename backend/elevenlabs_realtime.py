@@ -413,6 +413,10 @@ class PlivoElevenLabsBridge:
                 # A no that did not reach the database is tried again at
                 # hang-up: notes saved before it must not outlive it.
                 self._withdraw_pending = self._withdraw_pending or not granted
+            if found:
+                # The callee's latest answer is now recorded: an earlier no
+                # that failed is superseded, never replayed over a later yes.
+                self._withdraw_pending = False
             if not found:
                 self.notes_consent = False
                 return refuse, True

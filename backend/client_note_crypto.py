@@ -60,12 +60,19 @@ async def seal_body(conn: Any, tenant_id: Any, body: str, *, surface: str = "cli
         raise NoteSealError("client note could not be encrypted") from exc
 
 
+#: Domain label for the tag key: the tenant's encryption key is never used
+#: directly as an HMAC key.
+_TAG_KEY_LABEL = b"call-note-tag"
+
+
 def content_tag(tenant_id: Any, text: str) -> str:
-    """A short keyed tag of a note's text (HMAC-SHA256 under the tenant's
-    key): equal texts get equal tags, and the tag reveals nothing about the
-    text to anyone without the key — unlike a plain hash of a short note.
-    Used to tell a retried tool call from a new one (34.4 / RUN-03)."""
-    return hmac.new(_key(tenant_id).encode(), str(text).encode(), hashlib.sha256).hexdigest()[:24]
+    """A short keyed tag of a note's text: HMAC-SHA256 under a key derived
+    from the tenant's key for this purpose only (HMAC(tenant key,
+    "call-note-tag")). Equal texts get equal tags, and the tag reveals nothing
+    about the text to anyone without the key — unlike a plain hash of a short
+    note. Used to tell a retried tool call from a new one (34.4 / RUN-03)."""
+    tag_key = hmac.new(_key(tenant_id).encode(), _TAG_KEY_LABEL, hashlib.sha256).digest()
+    return hmac.new(tag_key, str(text).encode(), hashlib.sha256).hexdigest()[:24]
 
 
 async def open_rows(conn: Any, rows: Iterable[Any]) -> list[dict]:

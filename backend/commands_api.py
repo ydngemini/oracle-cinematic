@@ -3486,6 +3486,8 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
     a no is recorded too, so nobody later mistakes silence for agreement.
     Returns whether the call's session row was found — no row, no notes.
 
+    Bounded like save_call_note (2 s lock wait, 5 s per statement).
+
     A no after notes were saved during the call withdraws them, in the same
     transaction: the call's AI note is deleted and its timeline row keeps
     only that consent was withdrawn (no content) — what delivery at hang-up
@@ -3494,6 +3496,10 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
     if not provider_call_id:
         return False
     async with tenant_tx(_call_platform_ctx("ai-call-consent")) as conn:
+        # The caller is waiting on this answer too (and a no may delete the
+        # call's note): a timeout rolls everything back and raises, which the
+        # bridge treats as an unrecorded answer (a no is retried at hang-up).
+        await conn.execute(_CALL_NOTE_WRITE_LIMITS)
         row = await conn.fetchrow(
             """
             UPDATE live_call_sessions
