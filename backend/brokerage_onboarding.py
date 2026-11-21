@@ -41,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
-from tenancy import Role, TenantContext, require_context, require_role
+from tenancy import Role, TenantContext, is_reserved_pipeline_identity, require_context, require_role
 from admin_ops import require_platform_admin
 from mfa_api import ResetRequest
 
@@ -173,6 +173,11 @@ class InviteCreate(BaseModel):
             # it stops an invitation being addressed to nobody.
             if not local or "." not in domain or len(email) > 128:
                 raise ValueError(f"{raw!r} is not a valid email address.")
+            # The pipeline namespace ("system:…") is never an account
+            # (L09-12; auth._is_reserved_identity refuses it at acceptance),
+            # so an invitation to it is one nobody could accept.
+            if is_reserved_pipeline_identity(email):
+                raise ValueError(f"{raw!r} cannot be invited: that name is reserved.")
             seen.setdefault(email, email)
         if not seen:
             raise ValueError("At least one email address is required.")

@@ -291,6 +291,44 @@ async def test_a_contact_with_no_reachable_channel_is_skipped_not_failed(monkeyp
     assert recorded[0]["disposition"] == "skipped"
 
 
+@sync
+async def test_a_pool_contact_is_staged_by_the_marked_pipeline_and_an_assigned_one_for_its_agent(monkeypatch):
+    """L09-12. The requester a draft is staged as is who the command worker
+    holds it to at send time. An assigned contact's draft is the agent's:
+    it leaves only while they are an active member who may still reach the
+    contact. An unassigned contact's draft is the pipeline's own, under the
+    reserved "system:speed-to-lead" marker — never the worker's unmarked
+    "speed-to-lead-worker" name, which the worker now refuses."""
+    import commands_api
+    from tenancy import OUTREACH_PIPELINE_REQUESTERS, Role
+
+    monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+    monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder([]))
+
+    async def _allowed(ctx, **kwargs):
+        return OutreachDecision(allowed=True, channel="sms", contact="+13025550100", state_code="DE")
+
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
+    _forbid_metering(monkeypatch)
+    staged_as: list[tuple] = []
+    for assigned in ("agent-1@brokerage.test", None):
+        _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms",
+                                    "assigned_agent_id": assigned})
+
+        async def _create_command(body, ctx):
+            staged_as.append((ctx.agent_id, ctx.role, body.idempotency_key, body.context["source"]))
+            return {"command": {"id": "cmd-1"}, "created": True}
+
+        monkeypatch.setattr(commands_api, "create_command", _create_command)
+        result = await speed_to_lead._speed_to_lead_job(_payload(), _reporter())
+        assert result["state"] == "staged"
+    assert staged_as == [
+        ("agent-1@brokerage.test", Role.AGENT, "speed-to-lead:evt-1", "speed-to-lead"),
+        ("system:speed-to-lead", Role.AGENT, "speed-to-lead:evt-1", "speed-to-lead"),
+    ]
+    assert staged_as[1][0] in OUTREACH_PIPELINE_REQUESTERS
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 def _ctx():

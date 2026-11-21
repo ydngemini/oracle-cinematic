@@ -97,13 +97,15 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
     # audit 26.2; CONTRACT C3.4). An email queued just before a reassignment,
     # a revoked share or the agent's departure must not leave on their old
     # authority. Checked as the sender in their current role; a sender who is
-    # no longer an active member is refused. Final, like an opt-out.
+    # no longer an active member is refused. Final, like an opt-out. Only a
+    # person queues these (crm.send_message), so no system pipeline is
+    # admitted here (allow_pipeline=False, L09-12).
     from commands_api import requester_may_contact_record
 
     try:
         refusal = None
         if not await requester_may_contact_record(tenant_id, str(row["created_by"] or ""),
-                                                  row["client_id"], None, require_member=True):
+                                                  row["client_id"], None, allow_pipeline=False):
             refusal = (403, "the sender no longer has access to this client")
         if refusal is None:
             refusal = await billing.entitlement_refusal(worker_ctx)

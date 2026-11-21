@@ -78,6 +78,37 @@ class Role(str, Enum):
     AGENT = "agent"                    # individual node within a domain
 
 
+# ---------------------------------------------------------------------------
+# Reserved identities — server-built pipelines (L09-12)
+# ---------------------------------------------------------------------------
+
+#: The agent_id namespace of server-built pipeline identities
+#: ("system:ws-audience", "system:speed-to-lead"). No account may carry it:
+#: account creation refuses it (auth._is_reserved_identity, invitations,
+#: scripts/onboard_ai_agent.py), so a requester spelled this way is a
+#: pipeline, never a person whose membership has ended.
+SYSTEM_IDENTITY_PREFIX = "system:"
+#: The identity speed-to-lead staged unassigned contacts as before L09-12 gave
+#: it a "system:" name; reserved for the same reason.
+LEGACY_SPEED_TO_LEAD_REQUESTER = "speed-to-lead-worker"
+#: The system pipelines that stage outreach on their OWN authority, by the
+#: requester identity they stage as. The command worker judges these by the
+#: pipeline's own rule (an agent with that id: the brokerage pool only); every
+#: other requester must be an active member when the message leaves. Pipelines
+#: that act FOR a person (missions, Smart Plans, the AI tools, Our AI Sales
+#: Agent, speed-to-lead for an assigned contact) stage as that person.
+SPEED_TO_LEAD_REQUESTER = "system:speed-to-lead"
+OUTREACH_PIPELINE_REQUESTERS = frozenset({SPEED_TO_LEAD_REQUESTER})
+
+
+def is_reserved_pipeline_identity(agent_id: Optional[str]) -> bool:
+    """True for an agent_id no account may take: the "system:" namespace
+    (any case, surrounding space ignored, as login's lower() match would) or
+    a pipeline's pre-prefix name."""
+    wanted = (agent_id or "").strip().lower()
+    return wanted.startswith(SYSTEM_IDENTITY_PREFIX) or wanted == LEGACY_SPEED_TO_LEAD_REQUESTER
+
+
 @dataclass(frozen=True)
 class TenantContext:
     """The decoded identity for one request. Mirrors the Postgres session GUCs

@@ -58,8 +58,11 @@ def _access(monkeypatch, outcome):
 
     checks = []
 
-    async def check(tenant_id, requested_by, client_id, contact_id, *, require_member=False):
-        checks.append((requested_by, client_id, contact_id, require_member))
+    async def check(tenant_id, requested_by, client_id, contact_id, *, allow_pipeline=True):
+        # The 4th field is "members only": no system pipeline admitted
+        # (L09-12). The real default is already False; the outbox must say
+        # so explicitly, so this stand-in defaults the other way.
+        checks.append((requested_by, client_id, contact_id, not allow_pipeline))
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
@@ -298,8 +301,8 @@ def test_the_access_check_runs_as_the_stored_sender_for_the_stored_client(env, m
     _sender(monkeypatch, "ok")
     checks = _access(monkeypatch, True)
     asyncio.run(email_outbox.deliver("t1", "o1"))
-    (requested_by, client_id, contact_id, require_member), = checks
-    assert (requested_by, client_id, contact_id, require_member) == (
+    (requested_by, client_id, contact_id, members_only), = checks
+    assert (requested_by, client_id, contact_id, members_only) == (
         ROW["created_by"], ROW["client_id"], None, True)
 
 

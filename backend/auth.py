@@ -322,8 +322,17 @@ def _is_reserved_identity(agent_id: str) -> bool:
     """The operator/demo identities live in the environment, not in `users`, so
     nothing stopped a self-serve signup from creating a DB account with the
     same agent_id — and its token's subject then equalled the platform admin's
-    in audit attribution and the admin session view (review AUTH-3)."""
+    in audit attribution and the admin session view (review AUTH-3).
+
+    The pipeline namespace ("system:…", tenancy.is_reserved_pipeline_identity)
+    is reserved too: the command worker treats a requester spelled that way as
+    a system pipeline rather than a member (L09-12), so an account with such a
+    name could keep sending after it was deactivated."""
+    from tenancy import is_reserved_pipeline_identity
+
     wanted = (agent_id or "").strip().lower()
+    if is_reserved_pipeline_identity(wanted):
+        return True
     return any(wanted == known.strip().lower() for known in DEMO_CREDENTIALS)
 
 
