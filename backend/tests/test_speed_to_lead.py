@@ -400,6 +400,11 @@ def test_any_other_failure_is_dead_lettered_on_its_first_attempt(monkeypatch):
         assert wrote["state"] == "dead_letter", type(exc).__name__
         assert wrote["error_code"] == code
         assert words in wrote["error"]
+        # Neutral: a failure after create_command must not claim "not staged".
+        # (A recovery-mode refusal keeps its own text, unwrapped.)
+        if not isinstance(exc, recovery_mode.RecoveryModeBlocked):
+            assert wrote["error"].startswith("Speed-to-lead attempt failed, not retried"), wrote["error"]
+        assert "not staged" not in wrote["error"]
         assert recorded == []
 
 
@@ -460,6 +465,39 @@ def test_a_retry_after_a_deferral_stages_exactly_one_draft(monkeypatch):
     wrote = _through_the_worker(monkeypatch, 3)            # a re-run after a worker stopped
     assert wrote["state"] == "succeeded" and '"state":"already_recorded"' in wrote["result"]
     assert staged == ["speed-to-lead:evt-1"] and len(recorded) == 1 and len(gates) == 1
+
+
+def test_a_re_run_on_the_second_attempt_keeps_a_recorded_block(monkeypatch):
+    """The common re-run: a deploy cancels the handler after it recorded a
+    compliance block, and the job is claimed again as attempt 2 (not 3). The
+    block stands: no second gate, no draft, no second row."""
+    import commands_api
+
+    recorded: list[dict] = [{"intake_event_id": "evt-1", "disposition": "blocked", "command_id": None}]
+    gates: list[str] = []
+    staged: list[str] = []
+    monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+    _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
+    monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
+
+    async def on_record(ctx, *, intake_event_id, lead_id, contact_id, client_id):
+        rows = [r for r in recorded if r["intake_event_id"] == intake_event_id]
+        return rows[0]["disposition"] if rows else None
+
+    async def _allowed(ctx, **kwargs):
+        gates.append(kwargs["contact"])
+        return OutreachDecision(allowed=True, channel="sms", contact="+13025550100", state_code="DE")
+
+    async def _create_command(body, ctx):
+        staged.append(body.idempotency_key)
+        return {"command": {"id": "cmd-1"}, "created": True}
+
+    monkeypatch.setattr(commands_api, "create_command", _create_command)
+    monkeypatch.setattr(speed_to_lead, "_first_response_on_record", on_record)
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
+    wrote = _through_the_worker(monkeypatch, 2)
+    assert wrote["state"] == "succeeded" and '"state":"already_recorded"' in wrote["result"]
+    assert gates == [] and staged == [] and len(recorded) == 1
 
 
 @sync

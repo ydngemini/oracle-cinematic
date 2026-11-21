@@ -103,7 +103,9 @@ class SpeedToLeadAttemptFailed(RuntimeError):
 
     def __init__(self, exc: Exception):
         detail = str(exc).strip() or repr(exc)
-        super().__init__(f"First response not staged, not retried: {type(exc).__name__}: {detail}")
+        # Neutral on purpose: the attempt may have staged its draft before it
+        # failed (a heartbeat after create_command), so never claim "not staged".
+        super().__init__(f"Speed-to-lead attempt failed, not retried: {type(exc).__name__}: {detail}")
         self.job_error_code = str(getattr(exc, "job_error_code", None) or "JOB_HANDLER_ERROR")
 
 
