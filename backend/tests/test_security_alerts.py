@@ -60,8 +60,15 @@ def operator(monkeypatch):
     async def _no_user(_agent):
         return None
 
+    async def _register(_agent):
+        # The operator's session row (0181, audit 28.3) is proved on real
+        # PostgreSQL by test_operator_session_registry_live.py.
+        return "k" * 43
+
+    import operator_sessions
     import rate_limit_middleware
 
+    monkeypatch.setattr(operator_sessions, "register", _register)
     monkeypatch.setattr(auth, "_check_rate_limit", _limit)
     monkeypatch.setattr(auth, "_require_operator_otp", _otp)
     monkeypatch.setattr(auth, "_lookup_user", _no_user)
