@@ -14,7 +14,11 @@ client) — and delivery at call end writes no second note. Proves:
 - a note the agent discarded mid-call is not resurrected;
 - the live frame goes to the requester and the assignee only;
 - call end: exactly one note and one timeline row; notes that could not be
-  saved are shown there, or in a task carrying no content.
+  saved are shown there, or in a task carrying no content; a consented call
+  with no note (or no client) is closed too;
+- a stale approve or edit (expected_updated_at) is refused with 409;
+- the same tool call id with other text is written; a no after notes were
+  saved deletes them; a held lock rolls the write back within 2 s.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 
 import pytest
@@ -43,6 +48,7 @@ async def _scenario():
 
     import call_note_settings
     import client_enterprise
+    from fastapi import HTTPException
     import client_note_crypto
     import commands_api
     import ws_hub
@@ -54,11 +60,12 @@ async def _scenario():
     await connection.init_pool(min_size=1, max_size=3)
     tenant, client = str(uuid.uuid4()), uuid.uuid4()
     key = derive_tenant_key(tenant, MASTER)
-    ref, direct_ref, fail_ref, lost_ref = (f"{p}-{uuid.uuid4()}" for p in ("inc", "direct", "fail", "lost"))
+    ref, direct_ref, fail_ref, lost_ref, gone_ref, lock_ref, quiet_ref = (
+        f"{p}-{uuid.uuid4()}" for p in ("inc", "direct", "fail", "lost", "gone", "lock", "quiet"))
     agent_c = f"agent-c-{uuid.uuid4().hex[:8]}@live.test"
     pushes, tenant_wide = [], []
 
-    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True):
+    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True, **_kw):  # sensitive= etc. (#167)
         for user_id in user_ids:
             pushes.append((user_id, payload, mirror))
         return len(user_ids)
@@ -69,7 +76,7 @@ async def _scenario():
 
     async def opened(note_id):
         return await admin.fetchrow(
-            "SELECT body, author_id, review_state, reviewed_by, reviewed_at, "
+            "SELECT body, author_id, review_state, reviewed_by, reviewed_at, updated_at, "
             "pgp_sym_decrypt(body_ciphertext, $2) AS text FROM client_notes WHERE id=$1",
             uuid.UUID(note_id), key)
 
@@ -105,7 +112,8 @@ async def _scenario():
             "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
             "VALUES ($1,$2,$3,'agent',$3,'scrypt$x$y')", uuid.uuid4(), tenant, agent_c)
         for provider_ref, creator in ((ref, "agent-a"), (direct_ref, agent_c), (fail_ref, "agent-a"),
-                                      (lost_ref, "agent-a")):
+                                      (lost_ref, "agent-a"), (gone_ref, "agent-a"), (lock_ref, "agent-a"),
+                                      (quiet_ref, "agent-a")):
             await admin.execute(
                 """INSERT INTO live_call_sessions (tenant_id, client_id, consent_recorded, consent_basis,
                                                    transcript_status, provider_call_id, created_by)
@@ -146,21 +154,48 @@ async def _scenario():
         assert await ai_notes() == 1 and len(await call_rows(ref)) == 1
         assert pushes[-1][1]["notes"] == ["Prefers afternoon showings", "Would love waterfront"]
 
-        # Approved mid-call: new words reopen review.
+        # The agent opens the note; the AI appends while they read it. Approving
+        # the version they saw is refused: a line they never saw is not approved.
         agent_b = TenantContext(agent_id="agent-b", tenant_id=tenant, role=Role.AGENT)
-        await client_enterprise.approve_note(str(client), note_id, ctx=agent_b)
+        seen_at = (await opened(note_id))["updated_at"].isoformat()
         await save(ref, "Call back Friday", tool_call_id="t3")
+        with pytest.raises(HTTPException) as stale:
+            await client_enterprise.approve_note(str(client), note_id, client_enterprise.NoteApprove(
+                expected_updated_at=seen_at), ctx=agent_b)
+        assert (stale.value.status_code, stale.value.detail) == (409, client_enterprise.NOTE_CHANGED)
+        assert (await opened(note_id))["review_state"] == "proposed"
+        current = (await opened(note_id))["updated_at"].isoformat()
+        approved = await client_enterprise.approve_note(str(client), note_id, client_enterprise.NoteApprove(
+            expected_updated_at=current), ctx=agent_b)
+        assert approved["review_state"] == "approved" and approved["body"].endswith("- Call back Friday")
+
+        # Approved mid-call: new words reopen review.
+        await save(ref, "Has a dog", tool_call_id="t4")
         row = await opened(note_id)
         assert (row["review_state"], row["reviewed_by"], row["reviewed_at"]) == ("proposed", None, None)
-        assert row["text"].endswith("- Call back Friday")
+        assert row["text"].endswith("- Has a dog")
 
-        # Edited mid-call: the agent's words stay, the new note follows them.
+        # A stale editor cannot overwrite a line appended while it was open;
+        # card numbers never reach the stored note or the live frame.
+        editor_at = row["updated_at"].isoformat()
+        pushes.clear()
+        await save(ref, f"Pays the deposit with card {CARD}", tool_call_id="t5")
+        assert pushes and all(CARD not in json.dumps(p).replace(" ", "") for _, p, _ in pushes), \
+            "save_call_note sent a card number in the live frame"
+        with pytest.raises(HTTPException) as stale:
+            await client_enterprise.update_note(str(client), note_id, client_enterprise.NotePatch(
+                body="Sarah: afternoons, waterfront, call Friday.", expected_updated_at=editor_at), ctx=agent_b)
+        assert (stale.value.status_code, stale.value.detail) == (409, client_enterprise.NOTE_CHANGED)
+        assert "- Pays the deposit with card" in (await opened(note_id))["text"], "the appended line was lost"
+
+        # Edited from the latest version: the agent's words stay, the next note follows them.
+        latest = (await opened(note_id))["updated_at"].isoformat()
         await client_enterprise.update_note(str(client), note_id, client_enterprise.NotePatch(
-            body="Sarah: afternoons, waterfront, call Friday."), ctx=agent_b)
-        await save(ref, f"Pays the deposit with card {CARD}", tool_call_id="t4")
+            body="Sarah: afternoons, waterfront, call Friday, deposit by link.", expected_updated_at=latest),
+            ctx=agent_b)
+        await save(ref, "Wants a garage", tool_call_id="t6")
         row = await opened(note_id)
-        assert row["text"].startswith("Sarah: afternoons, waterfront, call Friday.\n- Pays the deposit with card")
-        assert CARD not in row["text"].replace(" ", ""), "a card number was stored"
+        assert row["text"] == "Sarah: afternoons, waterfront, call Friday, deposit by link.\n- Wants a garage"
 
         # Call end: delivery finds the note and writes no second one.
         pushes.clear()
@@ -173,11 +208,11 @@ async def _scenario():
         # A note the caller was told could not be saved shows on the call's row.
         assert await commands_api.deliver_call_notes(ref, ["x"], unsaved=1) is None
         [activity] = await call_rows(ref)
-        assert activity["summary"] == "Call notes from Neoh (4) — waiting for your review — 1 could not be saved"
+        assert activity["summary"] == "Call notes from Neoh (6) — waiting for your review — 1 could not be saved"
 
         # Discarded mid-call: it stays gone; the next note starts the call's new note.
         await client_enterprise.delete_note(str(client), note_id, ctx=agent_b)
-        fresh = await save(ref, "Has a dog", tool_call_id="t5")
+        fresh = await save(ref, "Has a dog", tool_call_id="t7")
         assert fresh.saved and fresh.note_id != note_id
         assert await admin.fetchval("SELECT count(*) FROM client_notes WHERE id=$1", uuid.UUID(note_id)) == 0
         [activity] = await call_rows(ref)
@@ -192,8 +227,53 @@ async def _scenario():
         direct = await save(direct_ref, "Prefers mornings", tool_call_id="d1")
         assert (await opened(direct.note_id))["review_state"] == "approved"
         await admin.execute("UPDATE client_notes SET review_state='proposed' WHERE id=$1", uuid.UUID(direct.note_id))
-        await save(direct_ref, "Has two cats", tool_call_id="d2")
-        assert (await opened(direct.note_id))["review_state"] == "proposed"
+        # The same tool call id with other text is a new note, not a retry.
+        cats = await save(direct_ref, "Has two cats", tool_call_id="d1")
+        assert (cats.status, cats.count) == ("saved", 2)
+        row = await opened(direct.note_id)
+        assert row["review_state"] == "proposed" and row["text"].endswith("- Prefers mornings\n- Has two cats")
+        assert (await save(direct_ref, "Has two cats", tool_call_id="d1")).status == "duplicate"
+
+        # The callee says no after notes were saved: nothing from the call is kept.
+        assert await commands_api.record_call_note_consent(gone_ref, True) is True
+        gone = await save(gone_ref, "Prefers evenings", tool_call_id="g1")
+        await save(gone_ref, "Has a boat", tool_call_id="g2")
+        assert await commands_api.record_call_note_consent(gone_ref, False) is True
+        assert await admin.fetchval("SELECT count(*) FROM client_notes WHERE id=$1", uuid.UUID(gone.note_id)) == 0
+        [withdrawn] = await call_rows(gone_ref)
+        assert withdrawn["summary"] == commands_api.CALL_NOTES_WITHDRAWN
+        meta = json.loads(withdrawn["meta"])
+        assert meta["note_id"] is None and meta["withdrawn"] is True and meta["tool_call_keys"] == []
+        assert "evenings" not in withdrawn["meta"] and "boat" not in withdrawn["meta"]
+        assert (await save(gone_ref, "Has a boat", tool_call_id="g3")).status == "refused"
+        assert await commands_api.deliver_call_notes(gone_ref, ["Prefers evenings"]) is None
+        assert await admin.fetchval(
+            "SELECT count(*) FROM client_notes n JOIN client_activities a ON a.meta->>'note_id' = n.id::text "
+            "WHERE a.meta->>'provider_call_id'=$1", gone_ref) == 0
+
+        # The caller waits on the write: a held lock rolls it back within the
+        # lock timeout, and the bridge says "not saved" (any exception).
+        assert await commands_api.record_call_note_consent(lock_ref, True) is True
+        holder = admin.transaction()
+        await holder.start()
+        try:
+            await admin.execute("SELECT 1 FROM live_call_sessions WHERE provider_call_id=$1 FOR UPDATE", lock_ref)
+            started = time.monotonic()
+            with pytest.raises(asyncpg.exceptions.LockNotAvailableError):
+                await asyncio.wait_for(save(lock_ref, "Prefers evenings", tool_call_id="l1"), 15)
+            # 2 s here; the pool default (db.connection.LOCK_TIMEOUT) is longer.
+            assert time.monotonic() - started < 4, "the lock wait was not bounded"
+        finally:
+            await holder.rollback()
+        assert await call_rows(lock_ref) == []
+        assert (await save(lock_ref, "Prefers evenings", tool_call_id="l1")).status == "saved"
+
+        # Hang-up closes a consented call that took no note.
+        assert await commands_api.record_call_note_consent(quiet_ref, True) is True
+        assert await commands_api.deliver_call_notes(quiet_ref, []) is None
+        assert await admin.fetchval(
+            "SELECT transcript_status FROM live_call_sessions WHERE provider_call_id=$1", quiet_ref) == "complete"
+        assert await call_rows(quiet_ref) == []
 
         # A failed write keeps nothing (rolled back); a retry of it is a fresh write.
         assert await commands_api.record_call_note_consent(fail_ref, True) is True
@@ -237,6 +317,13 @@ async def _scenario():
             "SELECT details FROM client_tasks WHERE tenant_id=$1 AND created_by='neoh-ai-call' "
             "AND title='Call notes were not kept: this lead has no client record'", uuid.UUID(tenant))
         assert len(told) == 1 and "Wants to sell" not in told[0]["details"]
+        # Hang-up closes the no-client call too (it never reached delivery before).
+        assert await commands_api.deliver_call_notes(prospect_ref, []) is None
+        assert await admin.fetchval(
+            "SELECT transcript_status FROM live_call_sessions WHERE provider_call_id=$1", prospect_ref) == "complete"
+        assert len(await admin.fetch(
+            "SELECT 1 FROM client_tasks WHERE tenant_id=$1 AND created_by='neoh-ai-call' "
+            "AND title='Call notes were not kept: this lead has no client record'", uuid.UUID(tenant))) == 1
     finally:
         ws_hub.broadcast_users, ws_hub.broadcast = real_users_push, real_tenant_push
         await admin.execute("SET session_replication_role = replica")

@@ -194,7 +194,9 @@ def install_notes_backend(monkeypatch):
     """commands_api's note writes, in memory. `saved` holds what a committed
     save_call_note wrote (34.4 / RUN-03: each note as it is taken); set
     `fail` to make that many writes raise before committing, or
-    `fail_after_commit` to make them commit and then raise (a lost ack)."""
+    `fail_after_commit` to make them commit and then raise (a lost ack).
+    A retry is the same tool call id with the same text, as in the database.
+    A recorded "no" deletes what the call saved."""
     import commands_api
 
     seen = {"consent": [], "delivered": [], "saved": [], "tool_ids": [], "unsaved": [],
@@ -202,7 +204,10 @@ def install_notes_backend(monkeypatch):
 
     async def consent(ref, granted):
         seen["consent"].append((ref, granted))
-        return seen.get("session_exists", True)
+        found = seen.get("session_exists", True)
+        if found and not granted:
+            seen["saved"] = [(r, n) for r, n in seen["saved"] if r != ref]
+        return found
 
     async def save(ref, note, *, tool_call_id="", conversation_id=""):
         seen["calls"] += 1
@@ -211,9 +216,9 @@ def install_notes_backend(monkeypatch):
             raise RuntimeError("database unavailable")
         if seen["status"] != "saved":
             return commands_api.CallNoteWrite(seen["status"])
-        if tool_call_id and tool_call_id in seen["tool_ids"]:
+        if tool_call_id and (tool_call_id, note) in seen["tool_ids"]:
             return commands_api.CallNoteWrite("duplicate", "note-1", len(seen["saved"]))
-        seen["tool_ids"].append(tool_call_id)
+        seen["tool_ids"].append((tool_call_id, note))
         seen["saved"].append((ref, note))
         if seen["fail_after_commit"]:
             seen["fail_after_commit"] -= 1

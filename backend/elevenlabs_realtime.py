@@ -39,6 +39,7 @@ nothing kept.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,14 @@ def _note_write_done(task: "asyncio.Task") -> None:
     _NOTE_WRITES.discard(task)
     if not task.cancelled():
         task.exception()  # retrieved; the write logged its own failure
+
+
+def _note_key(tool_call_id: Any, note: str) -> str:
+    """A tool call is a retry only with the same id and the same text."""
+    call_id = str(tool_call_id or "").strip()
+    if not call_id:
+        return ""
+    return f"{call_id}:{hashlib.sha256(note.encode()).hexdigest()[:24]}"
 
 
 async def _shielded_note_write(coro: Awaitable[Any]) -> Any:
@@ -243,14 +252,17 @@ class PlivoElevenLabsBridge:
         self.notes_consent: Optional[bool] = None
         #: Notes whose write committed (34.4 / RUN-03) — never one that did not.
         self.notes: list[str] = []
-        #: Tool call id -> the answer it got, for each committed save_note: a
-        #: retried tool call is answered again and never appended twice.
+        #: Tool call key (id + text, _note_key) -> the answer it got, for each
+        #: committed save_note: a retried tool call is answered again and never
+        #: appended twice.
         self._saved_tool_calls: dict[str, str] = {}
-        #: Tool call ids ("" when the provider sent none) whose write failed
-        #: and the caller was told so; a later success of the same id clears it.
+        #: Keys ("" when the provider sent no id) of notes whose write failed
+        #: and the caller was told so; a later success of the same key clears it.
         self.notes_unsaved: list[str] = []
         #: The call has nowhere to keep notes (a lead with no client record).
         self._notes_unavailable = False
+        #: The callee said no but the database did not record it: retried at hang-up.
+        self._withdraw_pending = False
         #: Card numbers/codes removed from save_note calls (counts only).
         self.pan_cards = 0
         self.pan_codes = 0
@@ -300,7 +312,9 @@ class PlivoElevenLabsBridge:
                 await self._hand_off_after_failure()
             raise
         finally:
-            if not inbound and (self.notes or self.notes_unsaved):
+            if not inbound and self._withdraw_pending:
+                await self._withdraw_at_hang_up()
+            elif not inbound and (self.notes_consent or self.notes or self.notes_unsaved):
                 await self._deliver_notes()
             if inbound:
                 try:
@@ -396,20 +410,23 @@ class PlivoElevenLabsBridge:
             except Exception:
                 logger.exception("Note consent not recorded: uuid=%s", self.call_uuid)
                 found = False
+                # A no that did not reach the database is tried again at
+                # hang-up: notes saved before it must not outlive it.
+                self._withdraw_pending = self._withdraw_pending or not granted
             if not found:
                 self.notes_consent = False
                 return refuse, True
             self.notes_consent = granted
             if granted:
                 return f"Consent recorded. Save each detail with {TOOL_SAVE_NOTE}.", False
-            return "Recorded that they declined. " + refuse, False
+            # The database deleted any note saved earlier on this call.
+            self.notes.clear()
+            self.notes_unsaved.clear()
+            self._saved_tool_calls.clear()
+            return "Recorded that they declined. Nothing from this call is kept. " + refuse, False
         if name == TOOL_SAVE_NOTE:
             if self.notes_consent is not True:
                 return "The caller has not agreed to notes. " + refuse, True
-            call_id = str(tool_call_id or "").strip()
-            if call_id and call_id in self._saved_tool_calls:
-                # A retried tool call: its note is saved once, never twice.
-                return self._saved_tool_calls[call_id], False
             if self._notes_unavailable:
                 return NOTE_NOT_KEPT, True
             from pan_redaction import CVV_PLACEHOLDER, PAN_PLACEHOLDER, redact, report
@@ -418,6 +435,11 @@ class PlivoElevenLabsBridge:
             note = redaction.text.strip()[:300]
             if not note:
                 return "Empty note — nothing saved.", True
+            key = _note_key(tool_call_id, note)
+            if key and key in self._saved_tool_calls:
+                # A retried tool call (same id, same text): saved once, never
+                # twice. The same id with other text is a new note.
+                return self._saved_tool_calls[key], False
             if redaction.changed:
                 # Counted, never kept: the in-call note list never holds the
                 # number (PCI DSS SAQ A).
@@ -434,9 +456,9 @@ class PlivoElevenLabsBridge:
             # (34.4 / RUN-03): a crash or hang-up cannot lose what the caller
             # heard was saved, and nothing is claimed for a failed write.
             try:
-                outcome = await _shielded_note_write(self._save_note(note, call_id))
+                outcome = await _shielded_note_write(self._save_note(note, str(tool_call_id or "").strip()))
             except Exception:
-                self.notes_unsaved.append(call_id)
+                self._mark_unsaved(key)
                 return NOTE_NOT_SAVED, True
             if outcome.status == "refused":
                 self.notes_consent = False
@@ -449,20 +471,36 @@ class PlivoElevenLabsBridge:
             if not outcome.saved:
                 logger.error("Call note NOT saved (%s); the caller is told: uuid=%s",
                              outcome.status, self.call_uuid)
-                self.notes_unsaved.append(call_id)
+                self._mark_unsaved(key)
                 return NOTE_NOT_SAVED, True
             self.notes.append(note)
-            if call_id in self.notes_unsaved:
-                self.notes_unsaved.remove(call_id)
+            if key and key in self.notes_unsaved:
+                self.notes_unsaved.remove(key)
             if redaction.changed:
                 result = ("Saved for their agent without the card details, which are never kept. "
                           "Do not repeat them; any payment is made only through a secure payment link.")
             else:
                 result = "Saved for their agent."
-            if call_id:
-                self._saved_tool_calls[call_id] = result
+            if key:
+                self._saved_tool_calls[key] = result
             return result, False
         return f"Unknown tool {name!r}.", True
+
+    def _mark_unsaved(self, key: str) -> None:
+        """Count a note the caller was told was not saved — a retried tool
+        call that fails again is still one note."""
+        if not key or key not in self.notes_unsaved:
+            self.notes_unsaved.append(key)
+
+    async def _withdraw_at_hang_up(self) -> None:
+        from commands_api import record_call_note_consent
+
+        try:
+            found = await record_call_note_consent(self._session_ref(), False)
+            logger.info("Note consent withdrawal recorded at hang-up: uuid=%s found=%s", self.call_uuid, found)
+        except Exception:
+            logger.exception("Note consent withdrawal NOT recorded; the call's notes remain: uuid=%s",
+                             self.call_uuid)
 
     async def _save_note(self, note: str, call_id: str) -> Any:
         from commands_api import save_call_note

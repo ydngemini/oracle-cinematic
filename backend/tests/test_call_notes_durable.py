@@ -214,7 +214,8 @@ def test_a_call_with_nowhere_to_keep_notes_says_so_and_stops_writing(monkeypatch
     assert results["t2"]["is_error"] and results["t3"]["is_error"]
     assert results["t2"]["result"] == el.NOTE_NOT_KEPT and "couldn't save that note" in el.NOTE_NOT_KEPT
     assert notes_backend["calls"] == 1, "a call with no client is not written again"
-    assert bridge.notes == [] and notes_backend["delivered"] == []
+    # Hang-up still closes the consented call (its transcript status), with no notes.
+    assert bridge.notes == [] and notes_backend["delivered"] == [(REF, [])]
 
 
 def test_a_hang_up_does_not_cancel_a_write_already_running(monkeypatch):
@@ -251,3 +252,101 @@ def el_commands():
     import commands_api
 
     return commands_api
+
+
+def test_the_same_tool_call_id_with_other_text_is_a_new_note(monkeypatch, notes_backend):
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Has a dog"),
+    ], state=STATE)
+    assert [a["result"] for a in _answers(agent, "t2")] == ["Saved for their agent."] * 2
+    assert notes_backend["calls"] == 2, "a reused id with new text was answered from the cache"
+    assert notes_backend["saved"] == [(REF, "Prefers afternoon showings"), (REF, "Has a dog")]
+    assert bridge.notes == ["Prefers afternoon showings", "Has a dog"]
+
+
+def test_a_retried_id_that_fails_twice_is_one_unsaved_note(monkeypatch, notes_backend):
+    notes_backend["fail"] = 4
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "", note="Has a dog"),
+        _tool(el.TOOL_SAVE_NOTE, "", note="Has a cat"),
+    ], state=STATE)
+    assert all(a["is_error"] for a in _answers(agent, "t2") + _answers(agent, ""))
+    # One note retried (t2) and two notes the provider sent without an id.
+    assert notes_backend["unsaved"] == [3] and bridge.notes == []
+
+
+@pytest.mark.parametrize("status", ["full", "empty", "unexpected"])
+def test_a_write_that_did_not_save_never_says_saved(monkeypatch, notes_backend, status):
+    notes_backend["status"] = status
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+    ], state=STATE)
+    answer = _results(agent)["t2"]
+    assert answer["is_error"] is True and "Saved for their agent" not in answer["result"]
+    assert bridge.notes == []
+    if status == "full":
+        assert "nothing more was saved" in answer["result"]
+    else:
+        assert answer["result"] == el.NOTE_NOT_SAVED and notes_backend["unsaved"] == [1]
+
+
+def test_a_refused_write_withdraws_consent_on_the_bridge(monkeypatch, notes_backend):
+    notes_backend["status"] = "refused"
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "t3", note="Has a dog"),
+    ], state=STATE)
+    results = _results(agent)
+    assert results["t2"]["is_error"] and "do not say you have noted" in results["t2"]["result"]
+    assert bridge.notes_consent is False and notes_backend["calls"] == 1, "wrote again after a refusal"
+    assert results["t3"]["is_error"] and bridge.notes == []
+
+
+def test_a_no_after_notes_were_saved_keeps_nothing_from_the_call(monkeypatch, notes_backend):
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "t3", note="Has a dog"),
+        _tool(el.TOOL_NOTE_CONSENT, "t4", granted=False),
+        _tool(el.TOOL_SAVE_NOTE, "t5", note="Call back Friday"),
+    ], state=STATE)
+    results = _results(agent)
+    assert results["t4"]["is_error"] is False
+    assert results["t4"]["result"].startswith("Recorded that they declined. Nothing from this call is kept.")
+    assert notes_backend["saved"] == [], "the call's notes outlived the withdrawal"
+    assert results["t5"]["is_error"] and notes_backend["calls"] == 2
+    assert bridge.notes == [] and notes_backend["delivered"] == []
+
+
+def test_a_no_that_did_not_reach_the_database_is_recorded_at_hang_up(monkeypatch, notes_backend):
+    events = [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_NOTE_CONSENT, "t3", granted=False),
+    ]
+    real_consent = el_commands().record_call_note_consent
+
+    async def consent(ref, granted):
+        if not granted and len(notes_backend["consent"]) == 1:
+            notes_backend["consent"].append((ref, granted))
+            raise RuntimeError("database unavailable")
+        return await real_consent(ref, granted)
+
+    monkeypatch.setattr(el_commands(), "record_call_note_consent", consent)
+    _, agent, _, bridge = _run(monkeypatch, [], events, state=STATE)
+    assert _results(agent)["t3"]["is_error"] is True
+    assert notes_backend["consent"] == [(REF, True), (REF, False), (REF, False)], "not retried at hang-up"
+    assert notes_backend["saved"] == [] and notes_backend["delivered"] == []
+
+
+def test_a_consented_call_with_no_notes_is_closed_at_hang_up(monkeypatch, notes_backend):
+    _run(monkeypatch, [], [_tool(el.TOOL_NOTE_CONSENT, "t1", granted=True)], state=STATE)
+    assert notes_backend["delivered"] == [(REF, [])] and notes_backend["unsaved"] == [0]
+

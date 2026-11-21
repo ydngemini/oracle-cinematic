@@ -3485,6 +3485,11 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
     the call, after the recorded-line disclosure, is that explicit consent;
     a no is recorded too, so nobody later mistakes silence for agreement.
     Returns whether the call's session row was found — no row, no notes.
+
+    A no after notes were saved during the call withdraws them, in the same
+    transaction: the call's AI note is deleted and its timeline row keeps
+    only that consent was withdrawn (no content) — what delivery at hang-up
+    did before notes were written as they were taken (34.4 / RUN-03).
     """
     if not provider_call_id:
         return False
@@ -3496,11 +3501,37 @@ async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool
                    consent_basis=CASE WHEN $2 THEN $3 ELSE 'declined_on_ai_call' END,
                    transcript_status=CASE WHEN $2 THEN 'active' ELSE 'complete' END
              WHERE provider_call_id=$1
-            RETURNING id
+            RETURNING id, tenant_id, client_id, lead_id
             """,
             provider_call_id, bool(granted), AI_CALL_NOTE_CONSENT_BASIS,
         )
+        if row is not None and not granted:
+            await _withdraw_call_note(conn, row, provider_call_id)
     return row is not None
+
+
+#: The call's timeline row once the caller withdrew consent: no content.
+CALL_NOTES_WITHDRAWN = "Call notes withdrawn: the caller withdrew consent, nothing from this call is kept"
+
+
+async def _withdraw_call_note(conn: Any, session: Any, provider_call_id: str) -> None:
+    client_id = await _call_note_client(conn, session)
+    if client_id is None:
+        return
+    activity = await _call_notes_activity(conn, client_id, provider_call_id)
+    if activity is None:
+        return
+    meta = _jsonb_dict(activity["meta"])
+    if meta.get("note_id"):
+        await conn.execute(
+            "DELETE FROM client_notes WHERE id=$1 AND client_id=$2 AND author_id=$3",
+            uuid.UUID(str(meta["note_id"])), client_id, AI_CALL_NOTE_AUTHOR)
+    meta.update({"note_id": None, "note_count": 0, "tool_call_keys": [], "review_state": None,
+                 "unsaved": 0, "withdrawn": True})
+    await conn.execute(
+        "UPDATE client_activities SET summary=$2, meta=$3::jsonb WHERE id=$1",
+        activity["id"], CALL_NOTES_WITHDRAWN, json.dumps(meta))
+    logger.info("call notes withdrawn with consent: %s", provider_call_id)
 
 
 def format_call_notes(notes: list[str]) -> str:
@@ -3541,6 +3572,10 @@ _CALL_NOTE_SESSION_SQL = """
       FROM live_call_sessions s
       LEFT JOIN command_executions c ON c.id = s.command_id
      WHERE s.provider_call_id=$1 FOR UPDATE OF s"""
+
+
+#: save_call_note answers a caller who is waiting on the line.
+_CALL_NOTE_WRITE_LIMITS = "SET LOCAL lock_timeout = '2s'; SET LOCAL statement_timeout = '5s'"
 
 
 def _call_note_requester(session: Any) -> str:
@@ -3608,8 +3643,11 @@ async def save_call_note(provider_call_id: str, note: str, *, tool_call_id: str 
     This returns only after the transaction committed: the AI may say "saved"
     exactly when the result is `saved` (or `duplicate`); an exception means
     nothing may be claimed. `tool_call_id` (the provider's id for this tool
-    call) is recorded on the timeline row, so a retried tool call is answered
-    `duplicate` and never appends twice.
+    call) is recorded on the timeline row with a keyed tag of the text
+    (client_note_crypto.content_tag), so a retried tool call — same id, same
+    text — is answered `duplicate` and never appends twice, while the same id
+    with other text is written. The transaction is bounded (2 s lock wait,
+    5 s statement): a timeout rolls it back and raises, i.e. "not saved".
 
     In 'review' mode an append puts the note back to proposed: words the agent
     has not read never ride on an earlier approval; 'direct' mode never
@@ -3628,6 +3666,9 @@ async def save_call_note(provider_call_id: str, note: str, *, tool_call_id: str 
     if not provider_call_id or not text:
         return CallNoteWrite("empty")
     async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
+        # Bounded: the caller is waiting on this answer. A lock or statement
+        # that runs long rolls the write back, and the AI says "not saved".
+        await conn.execute(_CALL_NOTE_WRITE_LIMITS)
         session = await conn.fetchrow(_CALL_NOTE_SESSION_SQL, provider_call_id)
         pan_redaction.report(
             "ai_call_note", redaction.cards, redaction.codes,
@@ -3645,9 +3686,13 @@ async def save_call_note(provider_call_id: str, note: str, *, tool_call_id: str 
             return CallNoteWrite("no_client")
         activity = await _call_notes_activity(conn, client_id, provider_call_id)
         meta = _jsonb_dict(activity["meta"]) if activity is not None else {}
-        seen = [str(t) for t in (meta.get("tool_call_ids") or []) if t]
+        seen = [str(t) for t in (meta.get("tool_call_keys") or []) if t]
         count = int(meta.get("note_count") or 0)
-        if tool_call_id and tool_call_id in seen:
+        # A retry is the same tool call id with the same text; the same id
+        # with other text is a new note and is written.
+        call_key = (f"{tool_call_id}:{client_note_crypto.content_tag(session['tenant_id'], text)}"
+                    if tool_call_id else "")
+        if call_key and call_key in seen:
             return CallNoteWrite("duplicate", meta.get("note_id"), count)
         if count >= _MAX_CALL_NOTES:
             return CallNoteWrite("full", meta.get("note_id"), count)
@@ -3689,15 +3734,16 @@ async def save_call_note(provider_call_id: str, note: str, *, tool_call_id: str 
                 session["tenant_id"], client_id, sealed, AI_CALL_NOTE_AUTHOR, review_state,
             ))
         count += 1
-        if tool_call_id:
-            seen.append(tool_call_id)
+        if call_key:
+            seen.append(call_key)
         meta.update({
             "source": "ai_call_notes", "note_id": note_id,
             "provider_call_id": provider_call_id,
             "command_id": str(session["command_id"]) if session["command_id"] else None,
             "consent_basis": AI_CALL_NOTE_CONSENT_BASIS,
             "conversation_id": meta.get("conversation_id") or conversation_id or None,
-            "review_state": review_state, "note_count": count, "tool_call_ids": seen,
+            "review_state": review_state, "note_count": count, "tool_call_keys": seen,
+            "withdrawn": False,
         })
         summary = _call_notes_summary(count, review_state, int(meta.get("unsaved") or 0))
         if activity is None:
@@ -3736,7 +3782,8 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     (save_call_note), so at call end the call's note normally exists already:
     delivery finds it by the same key (the call's 'ai_call_notes' timeline
     row), writes no second note and returns None. It still closes the
-    session's transcript status, and `unsaved` (notes the caller was told
+    session's transcript status (hang-up calls it for every consented call,
+    notes or not), and `unsaved` (notes the caller was told
     could not be saved) is shown on that timeline row — or, when nothing was
     saved at all, in a task for the requesting agent that carries no content.
 
@@ -3753,7 +3800,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
 
     clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
     unsaved = max(0, int(unsaved or 0))
-    if not provider_call_id or not (clean or unsaved):
+    if not provider_call_id:
         return None
     # A card number the callee read out never becomes a note, a timeline
     # entry or a CALL_NOTES frame (PCI DSS SAQ A). seal_body checks again.
@@ -3769,8 +3816,12 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         if session is None or not session["consent_recorded"]:
             logger.warning("call notes dropped — no consented session: %s", provider_call_id)
             return None
+        # Hang-up closes the consented call's transcript status, whether or not
+        # any note was taken (it used to stay 'active' when none was).
         await conn.execute(
             "UPDATE live_call_sessions SET transcript_status='complete' WHERE id=$1", session["id"])
+        if not (clean or unsaved):
+            return None
         requester = _call_note_requester(session)
         client_id = await _call_note_client(conn, session)
         if client_id is None:
