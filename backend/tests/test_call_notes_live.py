@@ -63,7 +63,7 @@ async def _scenario():
         tenant_wide.append(payload)
         return 1
 
-    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True):
+    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True, sensitive=False):
         for user_id in user_ids:
             pushes.append((tenant_id, user_id, payload))
         return len(user_ids)

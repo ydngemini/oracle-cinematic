@@ -1479,7 +1479,10 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
     record_platform_websocket(websocket, ctx)  # L17-17: a platform admin's stream is a read
     group = voice_session_group(ctx.tenant_id, session_uuid)
-    ws_hub.register(group, websocket)
+    # Registered with its member: a call's frames reach only the members in the
+    # record's audience at push time (ws_hub.broadcast_record stream=), not
+    # every socket that joined this group (owner decision 2026-11-20).
+    ws_hub.register(group, websocket, ctx.agent_id)
     try:
         await websocket.send_json(
             {
@@ -1531,7 +1534,7 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        ws_hub.unregister(group, websocket)
+        ws_hub.unregister(group, websocket, ctx.agent_id)
 
 
 @app.websocket("/ws")
