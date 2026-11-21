@@ -13,9 +13,11 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import WebSocket
@@ -61,8 +63,8 @@ _listener_stats = {"reconnects": 0, "last_error": None, "down_since": None, "las
 _PROBE_SECONDS = float(os.getenv("ORACLE_WS_LISTENER_PROBE_SECONDS", "15"))
 _RECONNECT_MAX_SECONDS = 30.0
 
-# The platform tenant's sockets double as an all-tenant firehose: every frame
-# broadcast to any tenant is mirrored there (annotated with source_tenant) so
+# The platform tenant's sockets double as an all-tenant firehose: frames
+# broadcast to any tenant are mirrored there (annotated with source_tenant) so
 # the platform-admin OPS console watches live traffic across the whole fleet.
 # Membership in this group is JWT-gated — server._resolve_websocket_identity only returns
 # the platform tenant for a verified platform_admin token, never for the
@@ -70,6 +72,29 @@ _RECONNECT_MAX_SECONDS = 30.0
 FIREHOSE_TENANT_ID = os.getenv(
     "ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"
 )
+
+# Call content never reaches the firehose (external audit 27.5, owner decision
+# 2026-11-20). A frame sent as sensitive (broadcast_record(sensitive=True)) —
+# and any frame whose type is call content, whoever sent it and on whichever
+# path — is mirrored as operational metadata only (firehose_metadata): which
+# event, which brokerage, when, and state/error flags. Never the transcript or
+# dialogue, offer or price amounts, guidance, names, phone numbers, emails,
+# addresses or record ids. Other frames keep their full copy (owner 2026-10-14).
+CALL_CONTENT_TYPE_PREFIXES = ("VOICE_", "NEGOTIATION_", "CALL_")
+FIREHOSE_METADATA_TYPE = "FIREHOSE_METADATA"
+_METADATA_FLAGS = ("consent_recorded", "requires_agent_approval")
+_METADATA_TIMES = ("created_at", "started_at")
+_TRANSCRIPT_STATES = frozenset({"pending", "active", "complete", "failed", "deleted"})
+_ISO_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})?")
+_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+# Groups admitted per record (the voice-session stream, voice_intel's
+# voice_session_group). Their sockets are registered with their member and a
+# frame reaches only the members named for it at push time (broadcast_record
+# `stream=`): never the whole group, so a member who lost access since the
+# socket's last re-check gets nothing more (ledger L03-17 blocker, owner
+# decision 2026-11-20).
+RECORD_STREAM_PREFIXES = ("voice:",)
 
 
 def register(tenant_id: str, ws: WebSocket, user_id: Optional[str] = None) -> None:
@@ -216,12 +241,11 @@ async def _send_user(tenant_id: str, user_id: str, payload: dict) -> int:
 
 
 async def _deliver_local(tenant_id: str, payload: dict) -> int:
-    """Deliver to sockets owned by this process, including the admin firehose."""
+    """Deliver to sockets owned by this process, including the admin firehose
+    (call content as metadata only, firehose_copy)."""
     delivered = await _send_group(tenant_id, payload)
     if tenant_id != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
-        delivered += await _send_group(
-            FIREHOSE_TENANT_ID, {**payload, "source_tenant": tenant_id}
-        )
+        delivered += await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, tenant_id))
     return delivered
 
 
@@ -231,11 +255,58 @@ async def _deliver_user_local(tenant_id: str, user_id: str, payload: dict) -> in
     return await _send_user(tenant_id, user_id, payload)
 
 
-def firehose_copy(payload: dict, tenant_id: str) -> dict:
-    """What the platform OPS firehose sees of a record-scoped frame: the full
-    frame, annotated like every other mirrored frame (owner 2026-10-14: the
-    ops console keeps its full copy; the firehose is platform-admin only)."""
+def is_call_content(payload: dict) -> bool:
+    """Whether a frame's type is live-call content (transcript, offer, MAO,
+    consent, voice note), by type alone, so no sender can forget it."""
+    frame_type = payload.get("type")
+    return isinstance(frame_type, str) and frame_type.startswith(CALL_CONTENT_TYPE_PREFIXES)
+
+
+def firehose_metadata(payload: dict, tenant_id: str) -> dict:
+    """The platform OPS firehose's view of a sensitive frame (audit 27.5,
+    owner decision 2026-11-20): operational metadata only, built from an
+    allowlist and type-checked value by value, so content put in an allowed
+    key (a sentence in a flag, a name in a timestamp) still never passes.
+    Its own type, so no dashboard mistakes it for the content frame."""
+    frame_type = payload.get("type")
+    meta: dict[str, Any] = {
+        "type": FIREHOSE_METADATA_TYPE,
+        "version": 1,
+        "frame_type": frame_type if isinstance(frame_type, str) and _CODE.fullmatch(frame_type) else None,
+        "source_tenant": tenant_id,
+        "content_withheld": True,
+        "mirrored_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for key in _METADATA_FLAGS:
+        if isinstance(payload.get(key), bool):
+            meta[key] = payload[key]
+    for key in _METADATA_TIMES:
+        value = payload.get(key)
+        if isinstance(value, str) and _ISO_TIME.fullmatch(value):
+            meta[key] = value
+    state = payload.get("transcript_status")
+    if isinstance(state, str) and state in _TRANSCRIPT_STATES:
+        meta["transcript_status"] = state
+    code = payload.get("extraction_code")
+    if isinstance(code, str) and _CODE.fullmatch(code):
+        meta["extraction_code"] = code  # an AI-budget error code, not content
+    if payload.get("mao_unavailable_reason"):
+        meta["mao_unavailable"] = True  # the flag, never the reason text
+    return meta
+
+
+def firehose_copy(payload: dict, tenant_id: str, *, sensitive: bool = False) -> dict:
+    """What the platform OPS firehose sees of a mirrored frame: the full
+    frame annotated with source_tenant (owner 2026-10-14), except that a
+    sensitive frame or any call-content frame is metadata only (audit 27.5,
+    owner decision 2026-11-20)."""
+    if sensitive or is_call_content(payload):
+        return firehose_metadata(payload, tenant_id)
     return {**payload, "source_tenant": tenant_id}
+
+
+def is_record_stream(group: str) -> bool:
+    return group.startswith(RECORD_STREAM_PREFIXES)
 
 
 async def _send_users(tenant_id: str, user_ids: list[str], payload: dict) -> int:
@@ -259,35 +330,45 @@ async def _send_users(tenant_id: str, user_ids: list[str], payload: dict) -> int
 
 
 async def _deliver_scoped_local(
-    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool
+    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool,
+    sensitive: bool = False,
 ) -> int:
     """This replica's half of a scoped frame: the named agents of `group`
-    (or every socket of `group` when user_ids is None — a group admitted per
-    record, such as a voice session), plus the firehose copy when mirrored."""
+    (or every socket of `group` when user_ids is None — the brokerage pool),
+    plus the firehose copy when mirrored (metadata only when `sensitive`).
+    A per-record stream group is only ever delivered to named members: a
+    whole-group frame for one (an older replica's envelope) reaches nobody."""
     if user_ids is None:
+        if is_record_stream(group):
+            logger.warning("Refusing a whole-group frame %s for a per-record stream", payload.get("type"))
+            return 0
         delivered = await _send_group(group, payload)
     else:
         delivered = await _send_users(group, user_ids, payload)
     if mirror and group != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
-        await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, group))
+        await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, group, sensitive=sensitive))
     return delivered
 
 
 async def _publish_scoped(
-    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool
+    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool,
+    sensitive: bool = False,
 ) -> None:
     if _pool is None or not _listener_started:
         return
-    envelope = _dumps_envelope(
-        {
-            "origin": _instance_id,
-            "tenant_id": group,
-            "user_ids": user_ids,
-            "mirror": mirror,
-            "scoped_payload": payload,
-        }
-    )
-    await _notify(envelope, group.split(":", 1)[0])
+    envelope: dict[str, Any] = {
+        "origin": _instance_id,
+        "tenant_id": group,
+        "user_ids": user_ids,
+        # A replica on the previous release reads only "mirror": a sensitive
+        # frame says False there, so during a rolling deploy it is not
+        # mirrored at all rather than mirrored in full.
+        "mirror": mirror and not sensitive,
+        "scoped_payload": payload,
+    }
+    if mirror and sensitive:
+        envelope["mirror_metadata"] = True
+    await _notify(_dumps_envelope(envelope), group.split(":", 1)[0])
 
 
 async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None) -> None:
@@ -411,15 +492,15 @@ async def _receive_notification(raw: str) -> None:
         logger.warning("Ignoring malformed WebSocket notification: %s", exc)
         return
     if scoped is not None:
-        group, user_ids, payload, mirror = scoped
-        await _deliver_scoped_local(group, user_ids, payload, mirror=mirror)
+        group, user_ids, payload, mirror, sensitive = scoped
+        await _deliver_scoped_local(group, user_ids, payload, mirror=mirror, sensitive=sensitive)
     elif user_id:
         await _deliver_user_local(tenant_id, user_id, payload)
     else:
         await _deliver_local(tenant_id, payload)
 
 
-def _parse_scoped(envelope: dict) -> tuple[str, Optional[list[str]], dict, bool]:
+def _parse_scoped(envelope: dict) -> tuple[str, Optional[list[str]], dict, bool, bool]:
     group = str(envelope["tenant_id"])
     user_ids = envelope.get("user_ids")
     if user_ids is not None and (
@@ -429,7 +510,8 @@ def _parse_scoped(envelope: dict) -> tuple[str, Optional[list[str]], dict, bool]
     payload = envelope["scoped_payload"]
     if not isinstance(payload, dict):
         raise TypeError("scoped_payload is not an object")
-    return group, user_ids, payload, bool(envelope.get("mirror"))
+    metadata_only = bool(envelope.get("mirror_metadata"))
+    return group, user_ids, payload, bool(envelope.get("mirror")) or metadata_only, metadata_only
 
 
 def _notification_callback(
@@ -608,28 +690,57 @@ async def broadcast_user(tenant_id: str, user_id: str, payload: dict) -> int:
 
 
 async def broadcast_users(
-    tenant_id: str, user_ids: list[str], payload: dict, *, mirror: bool = True
+    tenant_id: str, user_ids: list[str], payload: dict, *, mirror: bool = True,
+    sensitive: bool = False,
 ) -> int:
     """Deliver one frame, across replicas, to these agents of one tenant only
     (one NOTIFY for all of them). The platform firehose gets a full copy
-    unless mirror=False (private content, like broadcast_user). An empty list
-    reaches nobody."""
+    unless mirror=False (private content, like broadcast_user), and only
+    operational metadata when `sensitive` or the frame is call content
+    (audit 27.5). An empty list reaches nobody."""
     recipients = sorted({u for u in user_ids if u}, key=str.lower)
     if not recipients:
         return 0
-    delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=mirror)
-    await _publish_scoped(tenant_id, recipients, payload, mirror=mirror)
+    delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=mirror,
+                                            sensitive=sensitive)
+    await _publish_scoped(tenant_id, recipients, payload, mirror=mirror, sensitive=sensitive)
     return delivered
 
 
-async def broadcast_group(group: str, payload: dict) -> int:
-    """Deliver to every socket of a group whose members were admitted per
-    record (the voice-session stream, server.voice_telemetry_websocket), never
-    mirrored to the firehose: the same frame already reaches it once through
-    broadcast_record, and `broadcast()` would also fan it out tenant-wide."""
-    delivered = await _deliver_scoped_local(group, None, payload, mirror=False)
-    await _publish_scoped(group, None, payload, mirror=False)
+async def _broadcast_stream(group: str, user_ids: list[str], payload: dict) -> int:
+    """Deliver to the sockets of a per-record stream (the voice-session socket)
+    that belong to these members only, across replicas. Never the whole group
+    and never mirrored: the firehose already got its metadata through the
+    dashboards' copy (broadcast_record)."""
+    recipients = sorted({u for u in user_ids if u}, key=str.lower)
+    if not recipients:
+        return 0
+    delivered = await _deliver_scoped_local(group, recipients, payload, mirror=False)
+    await _publish_scoped(group, recipients, payload, mirror=False)
     return delivered
+
+
+def _stream_members(audience: Optional[list[str]], *, computed: bool, actor: Optional[str],
+                    creator: Optional[str], only: Optional[list[str]]) -> list[str]:
+    """Who on a per-record stream receives this frame, decided NOW, at push time
+    (ledger L03-17 blocker, owner decision 2026-11-20): the record's audience
+    when it has one. With no specific audience (a pool client or lead, a lead
+    whose client was erased, an unlinked call) the stricter of the dashboards'
+    rule (the actor, broadcast_record) and the pull paths' rule (the call's
+    creator, record_access.may_read_call_content): only a member who is both.
+    An audience that could not be computed reaches nobody (fail closed)."""
+    if not computed:
+        return []
+    if audience is None:
+        if not actor or not creator or actor.lower() != creator.lower():
+            return []
+        members = [actor]
+    else:
+        members = list(audience)
+    if only is not None:
+        allowed = {u.lower() for u in only if u}
+        members = [u for u in members if u and u.lower() in allowed]
+    return members
 
 
 async def broadcast_record(
@@ -643,6 +754,8 @@ async def broadcast_record(
     only: Optional[list[str]] = None,
     mirror: bool = True,
     sensitive: bool = False,
+    stream: Optional[str] = None,
+    creator: Optional[str] = None,
 ) -> int:
     """Deliver a frame that carries a client's or contact's content (a call,
     a text, a note) only to the members who may read that record (CONTRACT
@@ -664,9 +777,20 @@ async def broadcast_record(
     is NEVER delivered to the whole brokerage. Where the audience is "every
     member" (a pool client or lead — including a lead whose private client
     was deleted or erased, ON DELETE SET NULL) it goes only to `actor`, the
-    member handling the call (owner decision 2026-11-16, audit 27.1/27.4)."""
+    member handling the call (owner decision 2026-11-16, audit 27.1/27.4).
+    The platform firehose gets operational metadata only, never the content
+    (owner decision 2026-11-20, audit 27.5).
+
+    `stream` (sensitive frames only): a per-record stream group (the call's
+    voice-session socket) also receives the frame, on the sockets of the
+    members who may read the call now (_stream_members) — the same audience,
+    so a member who lost access since the socket's last re-check gets nothing
+    more; `creator` is the call's live_call_sessions.created_by."""
     import record_access
 
+    if stream is not None and (not sensitive or not is_record_stream(stream)):
+        raise ValueError("a record stream carries call content: sensitive=True and a record-stream group")
+    computed = True
     try:
         if lead_id is not None and client_id is None and contact_id is None:
             audience = await record_access.linked_audience(tenant_id, None, None, lead_id=lead_id)
@@ -676,6 +800,22 @@ async def broadcast_record(
         logger.warning("Record audience unavailable (%s); frame %s sent to the actor only",
                        type(exc).__name__, payload.get("type"))
         audience = [actor] if actor else []
+        computed = False
+    delivered = await _deliver_record(tenant_id, payload, audience, actor=actor, only=only,
+                                      mirror=mirror, sensitive=sensitive)
+    if stream is not None:
+        delivered += await _broadcast_stream(
+            stream,
+            _stream_members(audience, computed=computed, actor=actor, creator=creator, only=only),
+            payload,
+        )
+    return delivered
+
+
+async def _deliver_record(tenant_id: str, payload: dict, audience: Optional[list[str]], *,
+                          actor: Optional[str], only: Optional[list[str]], mirror: bool,
+                          sensitive: bool) -> int:
+    """broadcast_record's dashboard delivery, once the audience is known."""
     if audience is None:
         if sensitive:
             # Never the whole brokerage: the member on the call, and only if an
@@ -695,4 +835,4 @@ async def broadcast_record(
         delivered = await _deliver_scoped_local(tenant_id, None, payload, mirror=False)
         await _publish_scoped(tenant_id, None, payload, mirror=False)
         return delivered
-    return await broadcast_users(tenant_id, recipients, payload, mirror=mirror)
+    return await broadcast_users(tenant_id, recipients, payload, mirror=mirror, sensitive=sensitive)

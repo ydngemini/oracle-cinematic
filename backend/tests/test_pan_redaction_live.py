@@ -54,7 +54,7 @@ async def _scenario():
     key = derive_tenant_key(tenant, MASTER)
     frames = []
 
-    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True):
+    async def fake_users_push(tenant_id, user_ids, payload, *, mirror=True, sensitive=False):
         frames.append(payload)
         return len(user_ids)
 
