@@ -40,7 +40,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timezone
 from enum import Enum
 from typing import Optional
@@ -403,6 +403,12 @@ def evaluate(
     )
 
 
+#: The blocker when the shared store of pending spoken STOPs cannot be read
+#: (voice_opt_out.UNKNOWN): a STOP heard on another replica could be waiting.
+OPT_OUT_STATUS_UNAVAILABLE = ("spoken opt-out status unavailable (the shared store is unreachable): "
+                              "texts and calls are held until it answers")
+
+
 def _tombstone_hash(tenant_id: str, normalized: str) -> Optional[str]:
     """The keyed hash erasure stores for an opt-out it had to delete. None
     when no master key is configured (then no tombstone can exist either)."""
@@ -477,10 +483,14 @@ async def ledger_suppressed(conn, tenant_id: str, contact: Optional[str], channe
     channel = Channel(channel)
     norm = normalize_contact(contact, channel)
     if channel is not Channel.EMAIL:
-        # A spoken STOP still spooled (not yet written) blocks, as at the gate.
+        # A spoken STOP not yet written blocks, as at the gate — in this
+        # container's spool or the shared store. A shared store that cannot be
+        # read counts as pending (fail closed): this answers "may we plan a
+        # send?", and "yes" would be a guess.
         import voice_opt_out
 
-        if voice_opt_out.pending_opt_out(tenant_id, normalize_contact(contact, Channel.VOICE)):
+        status = await voice_opt_out.opt_out_status(tenant_id, normalize_contact(contact, Channel.VOICE))
+        if status != voice_opt_out.CLEAR:
             return True
     return bool(await conn.fetchval(_LEDGER_SUPPRESSED, norm, channel.value, _tombstone_hash(tenant_id, norm)))
 
@@ -657,12 +667,26 @@ async def guard_outreach(
     is_voice = channel is Channel.VOICE
     tombstone = _tombstone_hash(ctx.tenant_id, norm)
 
-    import voice_opt_out  # a spoken STOP still being written counts as suppressed (23.5)
+    # A spoken STOP still being written counts as suppressed (23.5), wherever
+    # it was heard: this container's spool or the shared store (34.5). Read
+    # BEFORE any transaction, so no lock waits on Valkey. A shared store that
+    # cannot be read holds SMS and voice (fail closed); email never consulted
+    # pending STOPs.
+    import voice_opt_out
+
+    stop_status = voice_opt_out.CLEAR
+    if channel in (Channel.SMS, Channel.VOICE):
+        stop_status = await voice_opt_out.opt_out_status(ctx.tenant_id, normalize_contact(contact, Channel.VOICE))
 
     def decide(row) -> OutreachDecision:
-        suppressed = bool(row["suppressed"]) or (
-            channel in (Channel.SMS, Channel.VOICE)
-            and voice_opt_out.pending_opt_out(ctx.tenant_id, normalize_contact(contact, Channel.VOICE)))
+        decision = _evaluate_row(row)
+        if stop_status == voice_opt_out.UNKNOWN:
+            decision = replace(decision, allowed=False,
+                               blockers=decision.blockers + (OPT_OUT_STATUS_UNAVAILABLE,))
+        return decision
+
+    def _evaluate_row(row) -> OutreachDecision:
+        suppressed = bool(row["suppressed"]) or stop_status == voice_opt_out.PENDING
         return evaluate(
             channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
             suppressed=suppressed, has_consent=bool(row["has_consent"]),

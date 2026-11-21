@@ -113,11 +113,15 @@ The spec says not to assume Redis can be discarded. It cannot, uniformly:
 | Use | Module | On loss |
 |---|---|---|
 | Plivo live call state | `plivo_call_handler.py` | **Fails closed.** Raises `PlivoCallStateUnavailable`; calls are refused rather than mishandled. |
+| Pending spoken STOPs (audit 34.5) | `voice_opt_out.py` | **Fails closed.** A STOP whose suppression write failed is in the spool of the container that heard it AND in Valkey (keyed hash, sealed number, 30-day TTL re-set by every retry). Unreadable: the outreach gate holds texts and calls (email is not held); the owner's spool still blocks; the owner's retries and its container's sweep re-write the entry when Valkey returns. Data lost on a restart: other replicas miss the STOP until the owner's next retry (at most 300 s). |
 | Rate limiting | `rate_limit_middleware.py` | **Degrades.** Falls back to per-process in-memory limiting — so with `instance_count: 2` the effective limit doubles. Not fail-open, but quantifiably weaker. |
 | Data-integration cache | `data_integrations/cache.py` | Rebuildable; PostgreSQL is the fallback. |
 
-Valkey holds no authoritative state. Losing it drops in-flight calls and
-loosens rate limits; it does not lose business data.
+Losing Valkey drops in-flight calls, loosens rate limits and holds texts and
+calls until it answers. It loses no business data on its own: pending spoken
+STOPs are a mirror of each container's spool, and one is lost only if Valkey
+and the container that heard it both lose their data before the suppression
+row is written (`scripts/dr-drill-redis.sh`).
 
 ---
 

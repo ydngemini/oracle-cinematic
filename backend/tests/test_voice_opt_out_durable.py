@@ -23,6 +23,8 @@ NUMBER = outreach_compliance.normalize_contact(STATE["callee"], outreach_complia
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     # conftest._private_opt_out_spool already gives every test its own spool.
+    # The local spool on its own: no shared store (test_voice_opt_out_shared_store.py).
+    monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr(voice_opt_out, "RETRY_DELAYS", (0.0, 0.0, 0.0))
     monkeypatch.setattr(voice_opt_out, "SLOW_RETRY_FIRST", 0.0)
     monkeypatch.setattr(voice_opt_out, "SLOW_RETRY_CAP", 0.0)
@@ -75,7 +77,7 @@ def test_a_persistent_failure_is_spooled_privately_and_blocks_outreach(monkeypat
     assert stat.S_IMODE(voice_opt_out.SPOOL_PATH.stat().st_mode) == 0o600
     assert "said" not in voice_opt_out.SPOOL_PATH.read_text()   # number + tenant only
     assert voice_opt_out.pending_opt_out(TENANT, NUMBER)
-    assert component_health._outbound_opt_outs()["state"] == component_health.DEGRADED
+    assert asyncio.run(component_health._outbound_opt_outs())["state"] == component_health.DEGRADED
 
 
 def test_the_outreach_gate_treats_a_pending_stop_as_suppressed(monkeypatch):
@@ -120,7 +122,7 @@ def test_replay_writes_spooled_stops_and_keeps_only_failures(monkeypatch):
     fake_writer(monkeypatch, ["ok"])
     assert asyncio.run(voice_opt_out.replay_spool()) == {"replayed": 1, "still_pending": 0}
     assert voice_opt_out.pending_count() == 0
-    assert component_health._outbound_opt_outs()["state"] == component_health.HEALTHY
+    assert asyncio.run(component_health._outbound_opt_outs())["state"] == component_health.HEALTHY
 
 
 def test_a_spool_write_failure_still_blocks_in_memory(monkeypatch):

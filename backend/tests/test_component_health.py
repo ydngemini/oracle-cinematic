@@ -35,7 +35,7 @@ def test_user_banner_uses_product_language_only():
                            "database": {"state": ch.HEALTHY}}}
     messages = ch.user_banner(snap)
     assert "Neoh is having trouble answering right now. Your work is saved." in messages
-    assert "Calling is temporarily unavailable." in messages
+    assert "Calling and texting are temporarily unavailable." in messages
     assert not any(word in " ".join(messages).lower() for word in ("redis", "valkey", "qwen", "plivo", "http"))
 
 

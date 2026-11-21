@@ -444,7 +444,8 @@ def test_the_redis_drill_connects_to_the_port_docker_chose(tmp_path, published, 
 
     assert code == 0
     assert ["port", "neoh-dr-valkey", "6379/tcp"] in calls
-    assert urls == [f"REDIS_URL=redis://127.0.0.1:{port}/0"] * 2
+    # Phase 2's checks, the pending-STOP live test (34.5), then phase 4's.
+    assert urls == [f"REDIS_URL=redis://127.0.0.1:{port}/0"] * 3
 
 
 def test_the_redis_drill_stops_when_docker_published_no_port(tmp_path):

@@ -184,7 +184,8 @@ services:
       # Redis — DigitalOcean Managed Valkey. rediss:// (TLS) is parsed natively
       # by redis-py's from_url() in every one of the three call sites that use
       # it (rate_limiter.py, rate_limit_middleware.py, data_integrations/cache.py)
-      # — no code change needed, just the URL scheme.
+      # — no code change needed, just the URL scheme. Plivo call state and the
+      # pending spoken-STOP mirror (voice_opt_out.py) fail closed without it.
       - key: REDIS_URL
         value: ${neoh-redis.DATABASE_URL}
         type: SECRET

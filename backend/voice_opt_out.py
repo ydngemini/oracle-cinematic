@@ -21,11 +21,14 @@ never what was said.
 from __future__ import annotations
 
 import asyncio
+import base64
 import fcntl
+import hashlib
 import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -87,13 +90,11 @@ async def record_outbound_opt_out(state: Mapping[str, Any]) -> None:
 #: process retries until the write succeeds (fast, then capped backoff) and
 #: resumes a leftover spool at startup in every process role; reconciliation.run_sweep replays it
 #: when it runs in the same container; component_health reports it.
-#: LIMITS (stated honestly; a shared durable store is an owner decision):
-#:   * the spool is per CONTAINER: in production the block covers sends made
-#:     from the same api container only — the other api replica and the worker
-#:     container (missions, automations) do not see a pending STOP until the
-#:     write lands; health is per replica too;
-#:   * an App Platform redeploy wipes the container disk, losing a STOP that
-#:     is still pending at that moment (the health component pages first).
+#: The spool alone is per CONTAINER (re-review of PR #84), so a pending STOP is
+#: ALSO mirrored into the shared Valkey store (owner instruction 2026-11-20;
+#: see "The shared store" below): every api replica and the worker see it, and
+#: the worker's sweep writes it even after the api container that heard it was
+#: redeployed and its disk wiped.
 RETRY_DELAYS: tuple[float, ...] = (0.5, 2.0, 5.0)
 #: Absolute and OUTSIDE the source tree by default (never committed, never in
 #: the image); point ORACLE_OPT_OUT_SPOOL at a mounted volume where one exists.
@@ -189,40 +190,300 @@ def _remove(keys: set[tuple[str, str]]) -> None:
 
 def pending_opt_out(tenant_id: str, contact: str) -> bool:
     """True while this number's spoken STOP is spooled (by any process in this
-    container) and not
-    yet written: the outreach gate treats it as suppressed (fail closed)."""
+    container) and not yet written. LOCAL only: send paths use
+    opt_out_status(), which also reads the shared store."""
     key = (str(tenant_id), contact)
     return key in _PENDING or key in _spooled()
 
 
 def pending_count() -> int:
+    """Pending STOPs in THIS container's spool and memory."""
     return len(_spooled() | _PENDING)
 
 
+# ── The shared store ─────────────────────────────────────────────────────────
+#: Owner instruction 2026-11-20 ('continue all' on the open decisions; design
+#: chosen by the Claude session). A pending STOP lives in BOTH places:
+#:   * the local spool (above), as before;
+#:   * Valkey, through the process's shared client (rate_limit_middleware:
+#:     0.5 s connect / 1 s socket timeouts), every operation bounded by
+#:     SHARED_TIMEOUT_SECONDS:
+#:       key    voice:opt_out_pending:<tenant uuid>:<digest>
+#:       digest privacy_lifecycle.contact_hmac — the per-tenant keyed hash the
+#:              erasure tombstones use; never the number. With no master key
+#:              configured (development only: production requires one) the
+#:              digest is the normalised number, as the local spool holds it.
+#:       value  a Fernet token (key derived from the master key, as
+#:              acs_call_handler seals its Valkey state) over the tenant and
+#:              number, so the worker can write the row; plain JSON without a
+#:              master key, as the spool.
+#:       index  the set voice:opt_out_pending:index of "<tenant>:<digest>", so
+#:              the sweep lists entries without SCAN.
+#:       TTL    SHARED_TTL_SECONDS (30 days), RE-SET by every retry or sweep
+#:              that still cannot write the row (the owner retries at least
+#:              every SLOW_RETRY_CAP seconds, the worker sweeps every 15 min):
+#:              it lapses only for an entry nobody has retried for 30 days.
+#: Order: spool, then Valkey, then honour() returns. An entry is removed from
+#: Valkey only AFTER the suppression row's transaction has committed.
+#: Readers (opt_out_status): this container's spool, then Valkey. REDIS_URL set
+#: but Valkey unreadable -> UNKNOWN, never CLEAR: the send gate holds SMS and
+#: voice (fail closed, as plivo_call_handler refuses a call it cannot track);
+#: email never consulted pending STOPs and is unaffected. REDIS_URL unset ->
+#: no shared store: this container's spool only, as before.
+#: Valkey DOWN when a STOP is honoured: the spool still blocks in this
+#: container and the owner's retries (and this container's sweep) re-write the
+#: entry when Valkey answers. Valkey LOSING its data (a restart without
+#: persistence): other replicas miss the STOP until the owner's next retry
+#: re-writes it (at most SLOW_RETRY_CAP seconds); the owner's own gate never
+#: does.
+PENDING, CLEAR, UNKNOWN = "pending", "clear", "unknown"
+SHARED_PREFIX = "voice:opt_out_pending:"
+SHARED_INDEX = SHARED_PREFIX + "index"
+SHARED_TTL_SECONDS = 30 * 24 * 3600
+SHARED_TIMEOUT_SECONDS = 1.5
+_SEAL_LABEL = b"oracle:voice-opt-out-pending:v1\x00"
+_UNREADABLE_LOG_EVERY = 60.0
+_last_unreadable_log = 0.0
+
+
+class SharedStoreUnavailable(RuntimeError):
+    """REDIS_URL is set but Valkey cannot be reached."""
+
+
+def shared_store_configured() -> bool:
+    return bool(os.environ.get("REDIS_URL", "").strip())
+
+
+async def _shared_client() -> Any:
+    from rate_limit_middleware import get_redis_client
+
+    client = await get_redis_client()
+    if client is None:
+        raise SharedStoreUnavailable("Valkey is configured but unreachable")
+    return client
+
+
+def _master_key() -> str:
+    return os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "")
+
+
+def _member(key: tuple[str, str]) -> str:
+    tenant_id, contact = key
+    if _master_key():
+        from privacy_lifecycle import contact_hmac
+
+        return f"{tenant_id}:{contact_hmac(tenant_id, contact)}"
+    return f"{tenant_id}:{contact}"
+
+
+def _cipher() -> Any:
+    from cryptography.fernet import Fernet
+
+    digest = hashlib.sha256(_SEAL_LABEL + _master_key().encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _seal(key: tuple[str, str]) -> str:
+    if not _master_key():
+        return json.dumps({"v": 1, "tenant_id": key[0], "contact": key[1]})
+    body = json.dumps({"tenant_id": key[0], "contact": key[1]}, separators=(",", ":")).encode("utf-8")
+    return json.dumps({"v": 1, "sealed": _cipher().encrypt(body).decode("ascii")})
+
+
+def _unseal(raw: Any) -> Optional[tuple[str, str]]:
+    from cryptography.fernet import InvalidToken
+
+    try:
+        item = json.loads(raw)
+        if "sealed" in item:
+            if not _master_key():
+                return None
+            item = json.loads(_cipher().decrypt(str(item["sealed"]).encode("ascii")))
+        return str(item["tenant_id"]), str(item["contact"])
+    except (ValueError, KeyError, TypeError, InvalidToken):
+        return None
+
+
+async def _bounded(coro) -> Any:
+    return await asyncio.wait_for(coro, SHARED_TIMEOUT_SECONDS)
+
+
+async def _mirror(key: tuple[str, str]) -> bool:
+    """Write the shared entry, or re-assert it (re-setting its TTL). False
+    when no shared store is configured. Raises when Valkey fails."""
+    if not shared_store_configured():
+        return False
+    member = _member(key)
+
+    async def write() -> None:
+        client = await _shared_client()
+        async with client.pipeline(transaction=True) as pipe:
+            pipe.set(SHARED_PREFIX + member, _seal(key), ex=SHARED_TTL_SECONDS)
+            pipe.sadd(SHARED_INDEX, member)
+            pipe.expire(SHARED_INDEX, SHARED_TTL_SECONDS)
+            await pipe.execute()
+
+    await _bounded(write())
+    return True
+
+
+async def _ensure_mirrored(key: tuple[str, str], call_ref: str) -> bool:
+    """_mirror that never raises (a failure is retried on the next pass)."""
+    try:
+        return await _mirror(key)
+    except Exception as exc:  # noqa: BLE001 — Valkey down: the spool still blocks here; retried
+        logger.error("Pending spoken opt-out is NOT in the shared store (%s): other replicas cannot see "
+                     "it until a retry re-writes it: call=%s", type(exc).__name__, call_ref)
+        return False
+
+
+async def _unmirror(keys: set[tuple[str, str]]) -> None:
+    """Remove shared entries. Only ever called after the rows committed."""
+    if not keys or not shared_store_configured():
+        return
+    members = sorted(_member(k) for k in keys)
+
+    async def delete() -> None:
+        client = await _shared_client()
+        async with client.pipeline(transaction=True) as pipe:
+            pipe.delete(*[SHARED_PREFIX + m for m in members])
+            pipe.srem(SHARED_INDEX, *members)
+            await pipe.execute()
+
+    await _bounded(delete())
+
+
+async def _written(keys: set[tuple[str, str]], call_ref: str) -> None:
+    """The suppression rows for `keys` have COMMITTED: drop them from this
+    container's spool and memory, then from the shared store. Never raises:
+    an entry left behind only over-blocks a number that is already
+    suppressed, and the next sweep or retry writes it (a no-op) and drops it."""
+    if not keys:
+        return
+    try:
+        _remove(keys)
+    except OSError:
+        logger.exception("Spoken opt-out recorded but the spool could not be updated: call=%s", call_ref)
+    try:
+        await _unmirror(keys)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Spoken opt-out recorded but its shared entry could not be removed yet (%s); "
+                       "the next sweep removes it: call=%s", type(exc).__name__, call_ref)
+
+
+async def opt_out_status(tenant_id: str, contact: str) -> str:
+    """PENDING when this number's spoken STOP is waiting to be written — in
+    this container's spool or in the shared store (any replica, the worker);
+    CLEAR when neither holds it; UNKNOWN when the shared store is configured
+    but cannot be read. Callers must never treat UNKNOWN as CLEAR."""
+    global _last_unreadable_log
+    if pending_opt_out(tenant_id, contact):
+        return PENDING
+    if not contact or not shared_store_configured():
+        return CLEAR
+    name = SHARED_PREFIX + _member((str(tenant_id), contact))
+
+    async def read() -> Any:
+        client = await _shared_client()
+        return await client.exists(name)
+
+    try:
+        found = await _bounded(read())
+    except Exception as exc:  # noqa: BLE001 — unreadable is UNKNOWN, never CLEAR
+        now = time.monotonic()
+        if now - _last_unreadable_log >= _UNREADABLE_LOG_EVERY:
+            _last_unreadable_log = now
+            logger.error("Shared spoken opt-out store unreadable (%s): the outreach gate holds SMS and "
+                         "voice until it answers", type(exc).__name__)
+        return UNKNOWN
+    return PENDING if found else CLEAR
+
+
+async def shared_summary() -> dict[str, Any]:
+    """For health: the shared store's pending count (every replica's STOPs)
+    and how many of THIS container's pending STOPs it is missing."""
+    if not shared_store_configured():
+        return {"configured": False}
+    local = _spooled() | _PENDING
+
+    async def read() -> tuple[int, int]:
+        client = await _shared_client()
+        pending = int(await client.scard(SHARED_INDEX) or 0)
+        missing = 0
+        for key in local:
+            if not await client.exists(SHARED_PREFIX + _member(key)):
+                missing += 1
+        return pending, missing
+
+    try:
+        pending, missing = await _bounded(read())
+    except Exception as exc:  # noqa: BLE001 - a probe never raises
+        return {"configured": True, "reachable": False, "reason": type(exc).__name__}
+    return {"configured": True, "reachable": True, "pending": pending, "unmirrored": missing}
+
+
 async def replay_spool() -> dict[str, int]:
-    """Write every spooled opt-out; remove only the ones written. Called by
-    reconciliation.run_sweep. Idempotent (ON CONFLICT DO NOTHING). A STOP
-    spooled while this runs is never dropped."""
+    """Write every opt-out spooled in this container; remove only the ones
+    written (spool, then shared store, after the commit). One still not
+    written is re-written to the shared store (Valkey may have been down when
+    it was spooled, or lost it since). Called by reconciliation.run_sweep.
+    Idempotent (ON CONFLICT DO NOTHING). A STOP spooled while this runs is
+    never dropped."""
     queued = sorted(_spooled() | _PENDING)
     written = set()
     for tenant_id, contact in queued:
         try:
             await record_outbound_opt_out({"tenant_id": tenant_id, "callee": contact})
         except OptOutNotRecorded:
+            await _ensure_mirrored((tenant_id, contact), "sweep")
             continue
         written.add((tenant_id, contact))
-    try:
-        _remove(written)
-    except OSError:
-        logger.exception("Replayed spoken opt-outs but the spool could not be updated")
+    await _written(written, "sweep")
     return {"replayed": len(written), "still_pending": len(queued) - len(written)}
+
+
+async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
+    """The worker's sweep over the SHARED store: write every pending STOP —
+    including one whose api container is gone — and remove each entry only
+    after its row has committed. An entry it cannot write keeps (re-sets) its
+    TTL; one it cannot read (another master key, a damaged value) is kept,
+    never written as something else, and lapses at its TTL. Raises when the
+    store cannot be read (the caller reports it)."""
+    if not shared_store_configured():
+        return {"configured": False}
+    client = await _bounded(_shared_client())
+    members = sorted(str(m) for m in await _bounded(client.smembers(SHARED_INDEX)))
+    replayed = still = unreadable = gone = 0
+    for member in members:
+        if only_tenant and not member.startswith(f"{only_tenant}:"):
+            continue
+        raw = await _bounded(client.get(SHARED_PREFIX + member))
+        if raw is None:  # written and removed meanwhile, or lapsed
+            await _bounded(client.srem(SHARED_INDEX, member))
+            gone += 1
+            continue
+        key = _unseal(raw)
+        if key is None or _member(key) != member:
+            unreadable += 1
+            logger.error("A shared pending spoken opt-out cannot be read; kept (it still blocks)")
+            continue
+        try:
+            await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
+        except OptOutNotRecorded:
+            await _bounded(client.expire(SHARED_PREFIX + member, SHARED_TTL_SECONDS))
+            still += 1
+            continue
+        await _written({key}, "shared-sweep")
+        replayed += 1
+    return {"replayed": replayed, "still_pending": still, "unreadable": unreadable, "gone": gone}
 
 
 #: After the fast retries, the OWNING process keeps trying with capped
 #: backoff. In production the media websockets (and so honour()) run in the
 #: api service while reconciliation runs in a separate worker container with
-#: its own disk, so the sweep cannot replay this process's spool; this loop
-#: is what gets a pending STOP written.
+#: its own disk: the worker's sweep reaches a pending STOP only through the
+#: shared store (replay_shared), so with Valkey down or not configured this
+#: loop is what gets it written.
 SLOW_RETRY_FIRST, SLOW_RETRY_CAP = 60.0, 300.0
 
 
@@ -242,14 +503,14 @@ async def _retry_later(key: tuple[str, str], call_ref: str) -> None:
         try:
             await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
         except OptOutNotRecorded:
+            # Re-assert the shared entry every pass: Valkey may have been down
+            # when it was spooled, or lost its data since.
+            await _ensure_mirrored(key, call_ref)
             if not delays and slow == SLOW_RETRY_CAP:
                 logger.error("Outbound opt-out still not recorded; retrying every %.0fs: call=%s",
                              SLOW_RETRY_CAP, call_ref)
             continue
-        try:
-            _remove({key})
-        except OSError:
-            logger.exception("Spoken opt-out recorded but the spool could not be updated: call=%s", call_ref)
+        await _written({key}, call_ref)
         logger.info("Spooled outbound opt-out recorded on retry: call=%s", call_ref)
         return
 
@@ -276,8 +537,10 @@ def resume_pending() -> int:
 async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
     """ONE attempt inside the call (the bridge hangs up right after, so a
     caller who said "stop" is never kept on the line by retries). On failure:
-    spool at once (safe even if this process dies), block in memory, and
-    retry in the background after the call has ended."""
+    spool at once (safe even if this process dies), block in memory, write
+    the shared entry (every replica and the worker then see it; bounded by
+    SHARED_TIMEOUT_SECONDS), and retry in the background after the call has
+    ended."""
     state = state or {}
     try:
         await record_outbound_opt_out(state)
@@ -297,6 +560,8 @@ async def _honour(state: Optional[Mapping[str, Any]], call_ref: str) -> None:
         _PENDING.add(key)  # at least this process keeps honouring it
         logger.exception("Outbound opt-out could not be written OR spooled (kept in memory only): call=%s",
                          call_ref)
+    if await _ensure_mirrored(key, call_ref):
+        logger.info("Pending outbound opt-out written to the shared store: call=%s", call_ref)
     _background(_retry_later(key, call_ref))
 
 
