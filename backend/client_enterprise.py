@@ -199,6 +199,34 @@ class NoteCreate(BaseModel):
 class NotePatch(BaseModel):
     body: Optional[str] = Field(None, min_length=1, max_length=20000)
     pinned: Optional[bool] = None
+    #: The note's updated_at as the editor read it. When given, the change is
+    #: made only if the note has not changed since (409 otherwise): an AI call
+    #: note grows while the call goes on (34.4 / RUN-03), and a stale editor
+    #: must not overwrite a line the agent never saw.
+    expected_updated_at: Optional[str] = Field(None, max_length=64)
+
+
+class NoteApprove(BaseModel):
+    #: The note's updated_at as the agent saw it; approve only that version.
+    expected_updated_at: Optional[str] = Field(None, max_length=64)
+
+
+#: The one sentence a stale edit or approval gets (409).
+NOTE_CHANGED = "This note changed while you were editing; reload to see the latest."
+
+
+def _expected_updated_at(value: Optional[str]) -> Optional[datetime]:
+    """The version an editor read, or None when the caller sent none."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "expected_updated_at is not a timestamp") from None
+    if parsed.tzinfo is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "expected_updated_at needs a time zone")
+    return parsed
 
 
 class TaskCreate(BaseModel):
@@ -1038,8 +1066,10 @@ async def update_note(
 ):
     _require_uuid(client_id, "client_id")
     _require_uuid(note_id, "note_id")
+    expected = _expected_updated_at(body.expected_updated_at)
     # An explicit null is "leave it", not "erase it" (body is NOT NULL).
-    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items()
+              if v is not None and k != "expected_updated_at"}
     if not fields:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "no fields to update")
 
@@ -1059,17 +1089,21 @@ async def update_note(
             if "pinned" in fields:
                 sets.append(f"pinned = ${len(args) + 1}")
                 args.append(fields["pinned"])
-            args.extend([note_id, client_id])
+            args.extend([note_id, client_id, expected])
             row = await client_note_crypto.open_row(conn, await conn.fetchrow(
                 f"""
                 UPDATE client_notes
                    SET {", ".join(sets)}
-                 WHERE id = ${len(args) - 1} AND client_id = ${len(args)}
+                 WHERE id = ${len(args) - 2} AND client_id = ${len(args) - 1}
+                   AND (${len(args)}::timestamptz IS NULL OR updated_at = ${len(args)}::timestamptz)
              RETURNING id, body, author_id, pinned, created_at, updated_at,
                        review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                 """,
                 *args,
             ))
+            if row is None and expected is not None and await conn.fetchval(
+                    "SELECT 1 FROM client_notes WHERE id = $1 AND client_id = $2", note_id, client_id):
+                raise HTTPException(status.HTTP_409_CONFLICT, NOTE_CHANGED)
     except RuntimeError as exc:
         raise memory_core_offline(exc, "note not persisted") from exc
     if row is None:
@@ -1082,12 +1116,16 @@ async def update_note(
 async def approve_note(
     client_id: str,
     note_id: str,
+    body: Optional[NoteApprove] = None,
     ctx: TenantContext = Depends(require_context),
 ):
     """Accept an AI call note the agent reviewed. Discarding one is DELETE;
-    editing one is PATCH (it stays proposed until approved)."""
+    editing one is PATCH (it stays proposed until approved). With
+    `expected_updated_at`, only the version the agent saw is approved: a
+    line the AI appended since is never approved unseen (409)."""
     _require_uuid(client_id, "client_id")
     _require_uuid(note_id, "note_id")
+    expected = _expected_updated_at(body.expected_updated_at if body else None)
     try:
         async with tenant_tx(ctx) as conn:
             await require_client_edit(conn, client_id)
@@ -1097,10 +1135,11 @@ async def approve_note(
                    SET review_state = 'approved', reviewed_by = $3, reviewed_at = now(),
                        updated_at = now()
                  WHERE id = $1 AND client_id = $2 AND review_state = 'proposed'
+                   AND ($4::timestamptz IS NULL OR updated_at = $4::timestamptz)
              RETURNING id, body, author_id, pinned, created_at, updated_at,
                        review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                 """,
-                note_id, client_id, ctx.agent_id,
+                note_id, client_id, ctx.agent_id, expected,
             ))
             if row is None:
                 exists = await conn.fetchval(
@@ -1108,6 +1147,8 @@ async def approve_note(
                     note_id, client_id)
                 if exists is None:
                     raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
+                if exists == "proposed":
+                    raise HTTPException(status.HTTP_409_CONFLICT, NOTE_CHANGED)
                 raise HTTPException(status.HTTP_409_CONFLICT, "note is not waiting for review")
             await _log_activity(conn, ctx, client_id, "note", "Call notes approved",
                                 {"note_id": str(row["id"]), "source": "ai_call_notes_review"})

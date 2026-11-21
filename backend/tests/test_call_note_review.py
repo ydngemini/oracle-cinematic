@@ -18,11 +18,14 @@ def test_the_frame_goes_to_the_requester_and_the_assignee_once_each():
 
 
 def test_delivery_never_broadcasts_note_text_tenant_wide():
-    src = inspect.getsource(commands_api.deliver_call_notes)
-    # The requester and the assignee, among the members who may still read the
-    # client (L03-08: broadcast_record re-checks the record, 0145).
-    assert "ws_hub.broadcast_record(" in src and "only=call_note_recipients(" in src
-    assert "ws_hub.broadcast(" not in src, "CALL_NOTES carries customer content (CONTRACT C3.6)"
+    # At call end, and as each note is saved during the call (34.4 / RUN-03).
+    for fn in (commands_api.deliver_call_notes, commands_api.save_call_note):
+        src = inspect.getsource(fn)
+        # The requester and the assignee, among the members who may still read
+        # the client (L03-08: broadcast_record re-checks the record, 0145).
+        assert "ws_hub.broadcast_record(" in src and "only=call_note_recipients(" in src, fn.__name__
+        assert "mirror=False" in src, f"{fn.__name__}: CALL_NOTES is private to its recipients"
+        assert "ws_hub.broadcast(" not in src, "CALL_NOTES carries customer content (CONTRACT C3.6)"
 
 
 def test_review_is_the_default_and_unknown_modes_fall_back_to_it():
