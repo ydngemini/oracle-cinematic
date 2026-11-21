@@ -129,6 +129,21 @@ _WS_FRAMES_PER_SECOND: float = float(os.getenv("ORACLE_WS_FRAMES_PER_SECOND", "1
 _WS_FRAME_BURST: int = int(os.getenv("ORACLE_WS_FRAME_BURST", "40"))
 
 
+def _ws_session_recheck(ctx: TenantContext) -> tuple[float, bool]:
+    """(seconds between session re-checks, close when a re-check cannot run)
+    for a /ws socket. A platform admin's socket (the environment operator's
+    included) can carry the platform firehose, so it is re-proved every
+    tenancy.SESSION_RECHECK_SECONDS (60 s), like the operator streams, and
+    closed (1011) when the check cannot run: a revoked operator session stops
+    receiving within a minute (0181, audit 28.3). Other sockets keep
+    _WS_SESSION_RECHECK_SECONDS and ride out a database blip."""
+    import tenancy
+
+    if ctx.is_platform_admin:
+        return min(_WS_SESSION_RECHECK_SECONDS, tenancy.SESSION_RECHECK_SECONDS), True
+    return _WS_SESSION_RECHECK_SECONDS, False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Memory Core ignition. Bring the asyncpg pool online BEFORE the server
@@ -190,6 +205,11 @@ async def lifespan(app: FastAPI):
         import security_alerts
 
         security_alerts.start_boot_checks()
+        # Stretch the operator credential once, off the request path, and
+        # revoke sessions a previous credential issued (0181, audit 28.3).
+        import operator_sessions
+
+        operator_sessions.start_boot()
         ledger.start_fallback_drain()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     from automation_jobs import start_job_workers, stop_job_workers
@@ -389,6 +409,13 @@ async def _session_no_longer_valid(request: Request, exc: Exception):
 _ALLOWED_ORIGINS = get_allowed_origins()
 
 app.add_middleware(AuditMiddleware)
+# Every HTTP request carrying an environment-operator token proves its
+# operator_sessions row first, including routes that answer from memory
+# (0181, audit 28.3). Inside the rate limiter and CSRF, so neither a flood nor
+# a forged cross-site request reaches the database through it.
+from operator_sessions import OperatorSessionMiddleware
+
+app.add_middleware(OperatorSessionMiddleware)
 app.add_middleware(RateLimitMiddleware, enabled=not os.environ.get("ORACLE_DISABLE_RATE_LIMIT"))
 # Cookie authentication is a built-in browser authentication path, so CSRF
 # protection is not optional. CSRFMiddleware protects every unsafe method,
@@ -1647,7 +1674,8 @@ async def websocket_endpoint(websocket: WebSocket):
         Authentication at the handshake is not enough for a socket that can
         stay open for days: it used to outlive both its token's expiry and any
         revocation, still receiving the tenant's pushes (AUTH-7)."""
-        ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2)
+        recheck_every, recheck_fails_closed = _ws_session_recheck(ctx)
+        ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2, recheck_every)
         last_session_check = time.monotonic()
         while True:
             await asyncio.sleep(ping_interval)
@@ -1655,7 +1683,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info("Session token expired — closing WebSocket for %s", client_label)
                 await websocket.close(code=4401)
                 return
-            if time.monotonic() - last_session_check >= _WS_SESSION_RECHECK_SECONDS:
+            if time.monotonic() - last_session_check >= recheck_every:
                 last_session_check = time.monotonic()
                 try:
                     await verify_session_current(ctx)
@@ -1664,6 +1692,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.close(code=4401)
                     return
                 except Exception as exc:  # noqa: BLE001 — a DB blip must not drop live sockets
+                    if recheck_fails_closed:
+                        # ...except a platform admin's: an unprovable session
+                        # must not keep receiving the firehose.
+                        logger.warning("WebSocket session re-check failed for %s (%s); closing.",
+                                       client_label, type(exc).__name__)
+                        await websocket.close(code=1011)
+                        return
                     logger.warning("WebSocket session re-check failed for %s: %s", client_label, exc)
             idle_for = time.monotonic() - _last_seen["t"]
             if idle_for >= _WS_IDLE_TIMEOUT:
