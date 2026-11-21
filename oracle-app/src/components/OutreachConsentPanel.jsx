@@ -72,6 +72,8 @@ export default function OutreachConsentPanel() {
   const [proof, setProof] = useState('');
   const [captureMethod, setCaptureMethod] = useState('');
   const [evidenceRef, setEvidenceRef] = useState('');
+  // When the person agreed, as the recorder states it; empty = now (server default).
+  const [capturedAt, setCapturedAt] = useState('');
   const [purpose, setPurpose] = useState('marketing');
   const [recorded, setRecorded] = useState(null);
   const [optOutReason, setOptOutReason] = useState('manual_dnc');
@@ -116,6 +118,11 @@ export default function OutreachConsentPanel() {
     if (proof.trim()) payload.proof_text = proof.trim();
     if (needsEvidence && captureMethod) payload.proof_source = captureMethod;
     if (needsEvidence && evidenceRef.trim()) payload.evidence_ref = evidenceRef.trim();
+    if (capturedAt) {
+      // datetime-local is the recorder's local clock; the server stores UTC.
+      const when = new Date(capturedAt);
+      if (!Number.isNaN(when.getTime())) payload.captured_at = when.toISOString();
+    }
     const saved = await crmPost('/api/compliance/outreach/consent', payload);
     if (needsEvidence) {
       // Whatever the server stored, never what was hoped for: no status back
@@ -161,7 +168,7 @@ export default function OutreachConsentPanel() {
         {error ? <div className={styles.error} role="alert">{error}</div> : null}
         {notice ? <div className={styles.success} role="status">{notice}</div> : null}
         {recorded?.documented ? (
-          <div className={styles.success} role="status">Consent recorded with documented evidence.</div>
+          <div className={styles.success} role="status">Consent recorded with evidence details (not verified by Neoh).</div>
         ) : null}
         {recorded && !recorded.documented ? (
           <div className={styles.notice} role="status">
@@ -249,11 +256,20 @@ export default function OutreachConsentPanel() {
             />
           </label>
         ) : null}
+        <label>
+          <span>When they agreed (optional, defaults to now)</span>
+          <input
+            type="datetime-local"
+            value={capturedAt}
+            onChange={(event) => setCapturedAt(event.target.value)}
+          />
+        </label>
         {needsEvidence ? (
           <p>
             Written consent and voiceprint releases count only when documented: a capture method,
             the disclosure text and an evidence reference. Without them the claim is kept, but it
-            authorises no AI call, voiceprint recording or marketing text.
+            authorises no AI call, voiceprint recording or marketing text. Neoh records the details
+            you give; it does not check them or keep the evidence itself.
           </p>
         ) : null}
 

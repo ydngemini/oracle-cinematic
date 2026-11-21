@@ -49,6 +49,15 @@ def test_the_approver_declares_a_texts_purpose_and_the_gate_applies_it(monkeypat
         "gate: oral consent, default (marketing)": ("marketing", False),
         "gate: prior business only, informational": ("informational", False),
         "gate: speed-to-lead": ("marketing", False),
+        # Review of PR #170: an edit that drops the context cannot launder a
+        # campaign text into a one-to-one one.
+        "edited campaign context kept": {"speed-to-lead": "speed-to-lead", "smart-plan": "smart-plan",
+                                         "sales-agent": "our-ai-sales-agent", "mission": "mission_id kept"},
+        "edited campaign declared informational": {"speed-to-lead": 422, "smart-plan": 422,
+                                                   "sales-agent": 422, "mission": 422},
+        "edited campaign approvals after the refusal": {"speed-to-lead": "pending", "smart-plan": "pending",
+                                                        "sales-agent": "pending", "mission": "pending"},
+        "gate: campaign text, context emptied, stale informational declaration": ("marketing", False),
     }
 
 
@@ -84,13 +93,13 @@ async def _scenario(monkeypatch) -> dict:
 
     monkeypatch.setattr(approval_service.ledger, "record", capture)
 
-    async def stage(key: str, who: str, context: dict | None = None) -> dict:
+    async def stage(key: str, who: str, context: dict | None = None, idem: str | None = None) -> dict:
         target = {"phone": phones[who], "client_id": clients[who], "state_code": "DE",
                   "timezone": "America/New_York"}
         created = await ca.create_command(CommandCreate(
             command_type=CommandType.SMS, target=target,
             draft={"body": "Your showing at 12 Elm St is confirmed for 3 pm."},
-            idempotency_key=f"purpose-{s}-{key}", context=context or {}), ctx=actx)
+            idempotency_key=idem or f"purpose-{s}-{key}", context=context or {}), ctx=actx)
         return await ca._get_command(actx, created["command"]["id"])
 
     async def stored(cid) -> tuple:
@@ -173,6 +182,52 @@ async def _scenario(monkeypatch) -> dict:
                                  ctx=actx)
         out["speed-to-lead approved as marketing"] = (await stored(stl["id"]))[0]["purpose"]
 
+        # 5b. Each campaign pipeline's text, edited with no context, still cannot
+        #     be declared informational: the edit keeps the server-owned context
+        #     and the idempotency key / created_by mark the origin anyway.
+        target = {"phone": phones["oral"], "client_id": clients["oral"], "state_code": "DE",
+                  "timezone": "America/New_York"}
+        mission_id = str(uuid.uuid4())
+        campaigns = {
+            "speed-to-lead": await stage("c-stl", "oral", {"source": "speed-to-lead", "intake_event_id": "i-1"},
+                                         idem=f"speed-to-lead:{s}"),
+            "smart-plan": await stage("c-sp", "oral", {"source": "smart-plan", "step_run_id": "r-1"},
+                                      idem=f"smart-plan:{s}"),
+            "sales-agent": await stage("c-sa", "oral", {"source": "our-ai-sales-agent"},
+                                       idem=f"sales-agent:follow_up:{s}"),
+        }
+        staged = await ca.stage_command(
+            actx, command_type=CommandType.SMS, target=target,
+            draft={"body": "Your showing at 12 Elm St is confirmed for 3 pm."},
+            context={"mission_id": mission_id, "objective": "book showings", "required_disclosures": []},
+            idempotency_key=f"mission:{mission_id}:action:{s}", created_by=f"mission:{mission_id}")
+        campaigns["mission"] = await ca._get_command(actx, staged["command"]["id"])
+        kept, refused, after = {}, {}, {}
+        for name, command in campaigns.items():
+            await ca.edit_command(str(command["id"]), CommandEdit(
+                target=target, draft={"body": "Edited: your showing is at 4 pm."}), ctx=actx)
+            context = json.loads(await admin.fetchval(
+                "SELECT draft->'context' FROM command_executions WHERE id=$1", uuid.UUID(str(command["id"]))))
+            kept[name] = "mission_id kept" if context.get("mission_id") == mission_id else context.get("source")
+            refused[name] = await status_of(ca.approve_command(
+                str(command["id"]), ApprovalDecision(reason="edited, now informational", purpose="informational"),
+                ctx=actx))
+            after[name] = (await stored(command["id"]))[2]
+        out["edited campaign context kept"] = kept
+        out["edited campaign declared informational"] = refused
+        out["edited campaign approvals after the refusal"] = after
+
+        # A campaign text whose context was emptied before this fix, carrying
+        # a stale informational declaration for its current approval.
+        laundered = campaigns["speed-to-lead"]
+        await ca.approve_command(str(laundered["id"]), ApprovalDecision(reason="first response, marketing"),
+                                 ctx=actx)
+        await admin.execute(
+            "UPDATE command_executions SET draft = jsonb_set(jsonb_set(draft, '{context}', '{}'::jsonb), "
+            "'{declared_purpose}', jsonb_build_object('purpose', 'informational', 'declared', true, "
+            "'declared_by', $2::text, 'approval_id', approval_id::text)) WHERE id=$1",
+            uuid.UUID(str(laundered["id"])), agent_a)
+
         # 6. The worker reads the declaration and the real gate applies it.
         seen: list = []
         real_guard = outreach_compliance.guard_outreach
@@ -190,7 +245,8 @@ async def _scenario(monkeypatch) -> dict:
         for label, command in (("gate: oral consent, informational", informational),
                                ("gate: oral consent, default (marketing)", default),
                                ("gate: prior business only, informational", ebr),
-                               ("gate: speed-to-lead", stl)):
+                               ("gate: speed-to-lead", stl),
+                               ("gate: campaign text, context emptied, stale informational declaration", laundered)):
             row = await admin.fetchrow("SELECT * FROM command_executions WHERE id=$1", uuid.UUID(str(command["id"])))
             target = json.loads(row["target"]) if isinstance(row["target"], str) else row["target"]
 

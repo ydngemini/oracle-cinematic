@@ -32,16 +32,27 @@ const PURPOSE_OPTIONS = [
   ['informational', 'Informational',
     'A reply to them, a showing or appointment confirmation, or a document or deadline reminder, with no promotion. Needs their consent to be texted.'],
 ];
-// Texts a pipeline wrote for a campaign stay marketing (mirrors the server).
+// Texts a pipeline wrote for a campaign stay marketing (mirrors the server's
+// commands_api._campaign_origin). Any one signal counts: created_by and the
+// idempotency key (which no edit can change), or the context.
 const CAMPAIGN_SOURCES = {
   'speed-to-lead': 'speed-to-lead',
   'smart-plan': 'a sales sequence',
   'our-ai-sales-agent': 'the AI sales agent',
 };
+const CAMPAIGN_KEY_PREFIXES = [
+  ['speed-to-lead:', 'speed-to-lead'],
+  ['smart-plan:', 'a sales sequence'],
+  ['sales-agent:', 'the AI sales agent'],
+  ['mission:', 'a mission'],
+];
 
 function campaignOrigin(command) {
   const context = command.draft?.context || {};
   if (context.mission_id || String(command.created_by || '').startsWith('mission:')) return 'a mission';
+  const key = String(command.idempotency_key || '');
+  const byKey = CAMPAIGN_KEY_PREFIXES.find(([prefix]) => key.startsWith(prefix));
+  if (byKey) return byKey[1];
   return CAMPAIGN_SOURCES[context.source] || null;
 }
 

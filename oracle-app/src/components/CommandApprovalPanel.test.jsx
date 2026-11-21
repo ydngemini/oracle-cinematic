@@ -79,6 +79,20 @@ describe('CommandApprovalPanel', () => {
         { reason: 'Reviewed target, content, timing, and compliance context.' }));
     });
 
+    it.each([
+      ['speed-to-lead:intake-1', 'agent@x.test', 'speed-to-lead'],
+      ['smart-plan:run-1', 'agent@x.test', 'a sales sequence'],
+      ['sales-agent:follow_up:c1:u1', 'agent@x.test', 'the AI sales agent'],
+      ['mission:m1:action:a1', 'mission:m1', 'a mission'],
+    ])('never offers informational for an edited campaign text with an emptied context (%s)', async (key, createdBy, origin) => {
+      await open([sms({ idempotency_key: key, created_by: createdBy })]);
+      expect(screen.queryByRole('radio')).toBeNull();
+      expect(screen.getByText(new RegExp(`comes from ${origin}, so it is treated as marketing`))).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+      await waitFor(() => expect(api.crmPost).toHaveBeenCalledWith('/api/commands/s1/approve',
+        { reason: 'Reviewed target, content, timing, and compliance context.' }));
+    });
+
     it('never sends a purpose with a rejection', async () => {
       await open([sms()]);
       fireEvent.click(screen.getByRole('radio', { name: /^Informational/ }));

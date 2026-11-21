@@ -657,7 +657,10 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
         "email_outbox": "SELECT id, to_email, subject, body_text, status, sent_at, created_at, "
                         "subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id, "
                         "body_text_ciphertext, tenant_id AS body_text_ciphertext_tenant_id FROM email_outbox",
-        "outreach_consent": "SELECT id, contact, channel, consent_type, proof_source, created_at, revoked_at FROM outreach_consent",
+        # 0183: the evidence status and reference are about this person's consent;
+        # recorded_by (the staff member who recorded it) is not exported.
+        "outreach_consent": "SELECT id, contact, channel, consent_type, proof_source, evidence_status, "
+                            "evidence_ref, captured_at, created_at, revoked_at FROM outreach_consent",
         "outreach_suppression": "SELECT id, contact, channel, reason, created_at, lifted_at FROM outreach_suppression",
     }
     for table, sql in queries.items():

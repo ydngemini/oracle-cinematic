@@ -812,6 +812,19 @@ def _decode(value: Any) -> Any:
 # speed-to-lead stay marketing.
 _CAMPAIGN_SOURCES = {"speed-to-lead": "speed-to-lead", "smart-plan": "a sales sequence",
                      "our-ai-sales-agent": "the AI sales agent"}
+# The idempotency-key prefixes those pipelines stage with (speed_to_lead,
+# sales_api's AI sales agent and smart plans, missions/executor). The key is
+# set at staging and no edit can change it, so it marks the origin even when
+# the editable context does not (review of PR #170). The pipelines themselves
+# are pinned in tests/test_command_staging_origins.py.
+_CAMPAIGN_KEY_PREFIXES = (("speed-to-lead:", "speed-to-lead"), ("smart-plan:", "a sales sequence"),
+                          ("sales-agent:", "the AI sales agent"), ("mission:", "a mission"))
+# Context keys only the staging pipeline sets: where the draft came from and
+# what it owes (a mission's disclosures). An edit keeps the stored values and
+# cannot add, change or drop them, so it cannot launder a campaign text into a
+# one-to-one one (_edited_context).
+_SERVER_CONTEXT_KEYS = ("source", "origin", "mission_id", "objective", "required_disclosures",
+                        "step_run_id", "intake_event_id", "message_id")
 _DECLARED_PURPOSE_KEY = "declared_purpose"
 
 
@@ -830,11 +843,27 @@ def _stored_draft(command: Mapping[str, Any]) -> dict[str, Any]:
 
 def _campaign_origin(command: Mapping[str, Any]) -> Optional[str]:
     """Which campaign pipeline staged this command, in words, or None for a
-    one-to-one draft (typed by an agent, or asked of Neoh in chat)."""
+    one-to-one draft (typed by an agent, or asked of Neoh in chat). ANY one
+    signal marks a campaign: created_by, the idempotency key (neither can be
+    edited) or the context's origin keys."""
     context = dict(_stored_draft(command).get("context") or {})
-    if context.get("mission_id") or str(_field(command, "created_by") or "").startswith("mission:"):
+    created_by = str(_field(command, "created_by") or "")
+    key = str(_field(command, "idempotency_key") or "")
+    if created_by.startswith("mission:") or context.get("mission_id"):
         return "a mission"
+    for prefix, origin in _CAMPAIGN_KEY_PREFIXES:
+        if key.startswith(prefix):
+            return origin
     return _CAMPAIGN_SOURCES.get(str(context.get("source") or ""))
+
+
+def _edited_context(stored_command: Mapping[str, Any], sent: Mapping[str, Any]) -> dict[str, Any]:
+    """The context an edit stores: what the client sent, except the
+    server-owned keys, which keep their stored values (and are not added)."""
+    stored = dict(_stored_draft(stored_command).get("context") or {})
+    context = {k: v for k, v in dict(sent or {}).items() if k not in _SERVER_CONTEXT_KEYS}
+    context.update({k: stored[k] for k in _SERVER_CONTEXT_KEYS if k in stored})
+    return context
 
 
 def _purpose_declaration(command: Mapping[str, Any], purpose: Optional[Purpose],
@@ -2331,6 +2360,8 @@ async def edit_command(
             raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
         if row["state"] not in {"draft", "awaiting_approval"}:
             raise HTTPException(status_code=409, detail="Command can no longer be edited.")
+        # Where the draft came from is not the editor's to change (26.5).
+        body.context = _edited_context(row, body.context)
         # An edit replaces the approval with one requested by the editor, so
         # only someone who may decide the current one may edit (0142): before,
         # any agent who could see a colleague's draft could edit it into their

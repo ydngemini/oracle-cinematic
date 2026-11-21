@@ -54,13 +54,26 @@ def test_evidence_and_purpose_decide_what_consent_authorises():
     }
 
 
-def test_the_database_refuses_documented_without_evidence():
+def test_the_database_enforces_the_evidence_rule_and_keeps_the_row_immutable():
+    """0183's trigger (review of PR #170): a claim of 'documented' that does
+    not hold is stored attested_unverified whoever writes it, an unknown status
+    is refused, and after insert only revoked_at may change, once."""
     assert asyncio.run(_constraints()) == {
-        "documented, no evidence_ref": "CheckViolationError",
-        "documented, unrecognised method": "CheckViolationError",
-        "documented, blank disclosure": "CheckViolationError",
+        "documented, no evidence_ref": "attested_unverified",
+        "documented, unrecognised method": "attested_unverified",
+        "documented, blank disclosure (spaces)": "attested_unverified",
+        "documented, blank reference (tab and newline)": "attested_unverified",
+        "documented, capture time in the future": "attested_unverified",
+        "documented, captured two years ago": "documented",
+        "documented with evidence": "documented",
         "unknown status": "CheckViolationError",
-        "documented with evidence": "ok",
+        "update evidence_status": "CheckViolationError",
+        "update evidence_ref": "CheckViolationError",
+        "update recorded_by": "CheckViolationError",
+        "update consent_type": "CheckViolationError",
+        "update captured_at": "CheckViolationError",
+        "set revoked_at": "ok",
+        "clear revoked_at": "CheckViolationError",
         "expires_at comment": "Consent validity",
     }
 
@@ -176,20 +189,41 @@ async def _constraints() -> dict:
     admin = await asyncpg.connect(DSN)
     tenant = await _tenant(admin)
     out: dict = {}
-    cases = {
-        "documented, no evidence_ref": ("documented", "web_form", "I agree.", None),
-        "documented, unrecognised method": ("documented", "signed_doc", "I agree.", "doc-1"),
-        "documented, blank disclosure": ("documented", "web_form", "   ", "form-1"),
-        "unknown status": ("verified", "web_form", "I agree.", "form-1"),
-        "documented with evidence": ("documented", "ivr_keypress", "Press 1 to agree.", "ivr-log-9"),
+    cases = {   # status claimed, method, disclosure, reference, captured_at offset
+        "documented, no evidence_ref": ("documented", "web_form", "I agree.", None, "0"),
+        "documented, unrecognised method": ("documented", "signed_doc", "I agree.", "doc-1", "0"),
+        "documented, blank disclosure (spaces)": ("documented", "web_form", "   ", "form-1", "0"),
+        "documented, blank reference (tab and newline)": ("documented", "web_form", "I agree.", "\t\n", "0"),
+        "documented, capture time in the future": ("documented", "e_signature", "I agree.", "env-2", "1 day"),
+        "documented, captured two years ago": ("documented", "signed_document", "I agree.", "doc-3", "-2 years"),
+        "documented with evidence": ("documented", "ivr_keypress", "Press 1 to agree.", "ivr-log-9", "0"),
+        "unknown status": ("verified", "web_form", "I agree.", "form-1", "0"),
     }
     try:
-        for label, (status, source, text, ref) in cases.items():
+        for label, (status, source, text, ref, offset) in cases.items():
             try:
-                await admin.execute(
+                out[label] = await admin.fetchval(
                     "INSERT INTO outreach_consent (tenant_id, contact, channel, consent_type, evidence_status, "
-                    "proof_source, proof_text, evidence_ref) VALUES ($1,'+13025550790','sms','express_written',"
-                    "$2,$3,$4,$5)", tenant, status, source, text, ref)
+                    "proof_source, proof_text, evidence_ref, captured_at, recorded_by) VALUES "
+                    "($1,'+13025550790','sms','express_written',$2,$3,$4,$5, now() + $6::text::interval, 'a@x.test') "
+                    "RETURNING evidence_status", tenant, status, source, text, ref, offset)
+            except asyncpg.PostgresError as exc:
+                out[label] = type(exc).__name__
+        row_id = await admin.fetchval(
+            "SELECT id FROM outreach_consent WHERE tenant_id=$1 AND evidence_ref='ivr-log-9'", tenant)
+        assert row_id is not None
+        updates = {
+            "update evidence_status": "evidence_status = 'attested_unverified'",
+            "update evidence_ref": "evidence_ref = 'other'",
+            "update recorded_by": "recorded_by = 'b@x.test'",
+            "update consent_type": "consent_type = 'express_oral'",
+            "update captured_at": "captured_at = captured_at - interval '1 day'",
+            "set revoked_at": "revoked_at = now()",
+            "clear revoked_at": "revoked_at = NULL",
+        }
+        for label, assignment in updates.items():
+            try:
+                await admin.execute(f"UPDATE outreach_consent SET {assignment} WHERE id=$1", row_id)
                 out[label] = "ok"
             except asyncpg.PostgresError as exc:
                 out[label] = type(exc).__name__

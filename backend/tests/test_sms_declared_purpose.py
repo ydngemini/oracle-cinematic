@@ -27,12 +27,12 @@ APPROVAL = "11111111-1111-1111-1111-111111111111"
 
 
 def _row(command_type="SMS", context=None, created_by="agent-a@brokerage.test", declared=None,
-         approval_id=APPROVAL, as_text=False):
+         approval_id=APPROVAL, as_text=False, key="client-key-1234"):
     draft = {"content": {"body": "Your showing is confirmed for 3 pm."}, "context": context or {}}
     if declared is not None:
         draft["declared_purpose"] = declared
     return {"command_type": command_type, "created_by": created_by, "approval_id": approval_id,
-            "draft": json.dumps(draft) if as_text else draft}
+            "idempotency_key": key, "draft": json.dumps(draft) if as_text else draft}
 
 
 def test_an_approval_may_carry_a_purpose_and_nothing_else_new():
@@ -113,3 +113,47 @@ def test_the_declaration_is_outside_the_approved_payload():
     release = inspect.getsource(ca.release_command)
     assert release.index("_purpose_declaration(") < release.index("decide_approval_in_tx(")
     assert "extra_metadata=" in release
+
+
+# ── review of PR #170: an edit cannot launder a campaign text ────────────────
+EDITED_CAMPAIGNS = [   # the context an edit could empty; the key and created_by it cannot
+    ("speed-to-lead:intake-1", "agent-a@brokerage.test", "speed-to-lead"),
+    ("smart-plan:step-run-1", "agent-a@brokerage.test", "a sales sequence"),
+    ("sales-agent:follow_up:contact-1:uuid", "agent-a@brokerage.test", "the AI sales agent"),
+    ("mission:m-1:action:a-1", "mission:m-1", "a mission"),
+    ("client-chosen-key", "mission:m-2", "a mission"),
+]
+
+
+@pytest.mark.parametrize("key, created_by, origin", EDITED_CAMPAIGNS)
+def test_a_campaign_text_with_an_emptied_context_still_cannot_be_declared_informational(key, created_by, origin):
+    row = _row(context={}, key=key, created_by=created_by)
+    assert ca._campaign_origin(row) == origin
+    with pytest.raises(HTTPException) as refused:
+        ca._purpose_declaration(row, Purpose.INFORMATIONAL, CTX)
+    assert refused.value.status_code == 422 and origin in refused.value.detail
+
+
+@pytest.mark.parametrize("key, created_by, origin", EDITED_CAMPAIGNS)
+def test_the_worker_reads_marketing_for_an_edited_campaign_text_even_with_a_stale_declaration(key, created_by, origin):
+    stale = {"purpose": "informational", "declared": True, "declared_by": CTX.agent_id, "approval_id": APPROVAL}
+    assert ca.declared_sms_purpose(_row(context={}, key=key, created_by=created_by, declared=stale)) \
+        is Purpose.MARKETING
+
+
+def test_an_edit_keeps_the_server_owned_context_and_cannot_add_it():
+    stored = _row(context={"source": "speed-to-lead", "intake_event_id": "i-1", "contact_id": "c-1"})
+    assert ca._edited_context(stored, {}) == {"source": "speed-to-lead", "intake_event_id": "i-1"}
+    assert ca._edited_context(stored, {"source": "manual", "contact_id": "c-2", "note": "x"}) == {
+        "source": "speed-to-lead", "intake_event_id": "i-1", "contact_id": "c-2", "note": "x"}
+    mission = _row(context={"mission_id": "m-1", "objective": "o", "required_disclosures": ["AI voice"]})
+    assert ca._edited_context(mission, {"mission_id": None})["required_disclosures"] == ["AI voice"]
+    assert ca._edited_context(mission, {"mission_id": None})["mission_id"] == "m-1"
+    one_to_one = _row(context={"client_id": "c-1"})
+    assert ca._edited_context(one_to_one, {"client_id": "c-1", "source": "speed-to-lead",
+                                           "mission_id": "m-9"}) == {"client_id": "c-1"}
+
+
+def test_a_client_chosen_key_or_a_chat_request_is_one_to_one():
+    assert ca._campaign_origin(_row(key="parse:abc")) is None
+    assert ca._campaign_origin(_row(key="ai:msg:tool:anchor", context={"origin": "ai_chat"})) is None

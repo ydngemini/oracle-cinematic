@@ -31,8 +31,21 @@ describe('OutreachConsentPanel evidence (external audit 26.6)', () => {
       contact: '+13025550142', channel: 'sms', consent_type: 'express_written',
       proof_text: 'I agree to marketing texts.', proof_source: 'e_signature', evidence_ref: 'envelope-123',
     });
-    expect(await screen.findByText('Consent recorded with documented evidence.')).toBeTruthy();
+    expect(await screen.findByText('Consent recorded with evidence details (not verified by Neoh).')).toBeTruthy();
     expect(screen.queryByText(/unverified claim/)).toBeNull();
+  });
+
+  it('sends the capture time the recorder enters, and none when left empty (review of PR #170)', async () => {
+    render(<OutreachConsentPanel />);
+    type('Contact (phone or email)', '+13025550142');
+    record();
+    await waitFor(() => expect(consentCall()).toBeTruthy());
+    expect(consentCall()[1]).not.toHaveProperty('captured_at');
+    api.crmPost.mockClear();
+    type('When they agreed (optional, defaults to now)', '2025-03-04T10:30');
+    record();
+    await waitFor(() => expect(consentCall()).toBeTruthy());
+    expect(consentCall()[1].captured_at).toBe(new Date('2025-03-04T10:30').toISOString());
   });
 
   it('never sends a status: the server decides', async () => {
@@ -56,7 +69,7 @@ describe('OutreachConsentPanel evidence (external audit 26.6)', () => {
     const status = await screen.findByText(/Recorded as an unverified claim/);
     expect(status.textContent).toMatch(/authorises no AI call, no voiceprint recording and no marketing text/);
     expect(screen.getByText(/Recorded as attested, not documented\./)).toBeTruthy();
-    expect(screen.queryByText('Consent recorded with documented evidence.')).toBeNull();
+    expect(screen.queryByText(/Consent recorded with evidence details/)).toBeNull();
     expect(screen.queryByText('Consent recorded.')).toBeNull();
   });
 
