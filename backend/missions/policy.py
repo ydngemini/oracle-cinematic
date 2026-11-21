@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from tenancy import TenantContext
@@ -302,6 +302,18 @@ async def evaluate_action(
             ctx, channel=channel, contact=contact, state_code=state_code,
             now_utc=now, log=False,
         )
+        if not decision.allowed and getattr(decision, "transient", None):
+            # The gate could not decide yet (pending spoken STOPs unreadable):
+            # moved, not withheld — would_have_done would take the action out
+            # of the due queue for good.
+            from outreach_compliance import TRANSIENT_RETRY_SECONDS
+
+            return Verdict(
+                may_stage=False, may_release=False,
+                reason="compliance could not be checked yet: " + "; ".join(decision.blockers),
+                defer_until=now + timedelta(seconds=TRANSIENT_RETRY_SECONDS),
+                dial_allowed=dial_allowed, dial_reason=dial_reason,
+            )
         if not decision.allowed:
             return _withheld(
                 "compliance: " + "; ".join(decision.blockers or ("not permitted",)),

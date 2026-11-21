@@ -24,6 +24,7 @@ import asyncio
 import base64
 import fcntl
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -209,8 +210,9 @@ def pending_count() -> int:
 #:     0.5 s connect / 1 s socket timeouts), every operation bounded by
 #:     SHARED_TIMEOUT_SECONDS:
 #:       key    voice:opt_out_pending:<tenant uuid>:<digest>
-#:       digest privacy_lifecycle.contact_hmac — the per-tenant keyed hash the
-#:              erasure tombstones use; never the number. With no master key
+#:       digest a per-tenant keyed hash (_digest: contact_hmac's construction
+#:              under its own label, so never equal to an erasure tombstone's
+#:              hash); never the number. With no master key
 #:              configured (development only: production requires one) the
 #:              digest is the normalised number, as the local spool holds it.
 #:       value  a Fernet token (key derived from the master key, as
@@ -242,8 +244,14 @@ SHARED_INDEX = SHARED_PREFIX + "index"
 SHARED_TTL_SECONDS = 30 * 24 * 3600
 SHARED_TIMEOUT_SECONDS = 1.5
 _SEAL_LABEL = b"oracle:voice-opt-out-pending:v1\x00"
+_DIGEST_LABEL = ":voice-opt-out-pending-key"
+#: Drops an index member only while its entry is ABSENT, atomically: a plain
+#: SREM after a GET that saw nothing could drop an entry re-written in between
+#: (review of PR #173), leaving it invisible to the sweep.
+_SREM_IF_ABSENT = ("if redis.call('EXISTS', KEYS[1]) == 0 then "
+                   "return redis.call('SREM', KEYS[2], ARGV[1]) else return 0 end")
 _UNREADABLE_LOG_EVERY = 60.0
-_last_unreadable_log = 0.0
+_last_unreadable_log = float("-inf")
 
 
 class SharedStoreUnavailable(RuntimeError):
@@ -267,12 +275,20 @@ def _master_key() -> str:
     return os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "")
 
 
+def _digest(tenant_id: str, contact: str) -> str:
+    """Keyed hash of a normalised number, per tenant, under its OWN label: the
+    same construction as privacy_lifecycle.contact_hmac, but never equal to a
+    suppression tombstone's hash (review of PR #173)."""
+    from crypto import derive_tenant_key
+
+    key = derive_tenant_key(tenant_id, _master_key() + _DIGEST_LABEL).encode()
+    return hmac.new(key, contact.strip().lower().encode(), hashlib.sha256).hexdigest()
+
+
 def _member(key: tuple[str, str]) -> str:
     tenant_id, contact = key
     if _master_key():
-        from privacy_lifecycle import contact_hmac
-
-        return f"{tenant_id}:{contact_hmac(tenant_id, contact)}"
+        return f"{tenant_id}:{_digest(tenant_id, contact)}"
     return f"{tenant_id}:{contact}"
 
 
@@ -299,6 +315,8 @@ def _unseal(raw: Any) -> Optional[tuple[str, str]]:
             if not _master_key():
                 return None
             item = json.loads(_cipher().decrypt(str(item["sealed"]).encode("ascii")))
+        elif _master_key():
+            return None  # with a master key every entry is sealed: plain JSON is not ours
         return str(item["tenant_id"]), str(item["contact"])
     except (ValueError, KeyError, TypeError, InvalidToken):
         return None
@@ -459,7 +477,7 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
             continue
         raw = await _bounded(client.get(SHARED_PREFIX + member))
         if raw is None:  # written and removed meanwhile, or lapsed
-            await _bounded(client.srem(SHARED_INDEX, member))
+            await _bounded(client.eval(_SREM_IF_ABSENT, 2, SHARED_PREFIX + member, SHARED_INDEX, member))
             gone += 1
             continue
         key = _unseal(raw)
@@ -470,7 +488,12 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
         try:
             await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
         except OptOutNotRecorded:
-            await _bounded(client.expire(SHARED_PREFIX + member, SHARED_TTL_SECONDS))
+            # Keep the entry AND its index reachable for another 30 days.
+            async with client.pipeline(transaction=True) as pipe:
+                pipe.expire(SHARED_PREFIX + member, SHARED_TTL_SECONDS)
+                pipe.sadd(SHARED_INDEX, member)
+                pipe.expire(SHARED_INDEX, SHARED_TTL_SECONDS)
+                await _bounded(pipe.execute())
             still += 1
             continue
         await _written({key}, "shared-sweep")

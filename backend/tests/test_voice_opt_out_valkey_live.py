@@ -59,9 +59,20 @@ def _replica_main(argv: list[str]) -> None:
         if action == "honour":
             await voice_opt_out.honour({"tenant_id": args[0], "callee": args[1], "direction": "outbound"},
                                        "live-drill")
+            # Asked on a SEPARATE, blocking connection before this event loop
+            # runs anything else: a shared write left to a background task
+            # would not be there yet (review of PR #173).
+            import redis
+
+            key = (args[0], normalize_contact(args[1], Channel.VOICE))
+            try:
+                with redis.Redis.from_url(os.environ["REDIS_URL"], socket_timeout=2) as probe:
+                    at_return = bool(probe.exists(voice_opt_out.SHARED_PREFIX + voice_opt_out._member(key)))
+            except redis.RedisError:
+                at_return = None
             for task in list(voice_opt_out._IN_FLIGHT):
                 task.cancel()
-            return {"spooled": voice_opt_out.pending_count()}
+            return {"spooled": voice_opt_out.pending_count(), "shared_at_return": at_return}
         if action == "status":
             return await voice_opt_out.opt_out_status(args[0], normalize_contact(args[1], Channel.VOICE))
         if action == "gate":
@@ -232,7 +243,7 @@ def world(tmp_path):
 
 def test_a_stop_heard_on_one_replica_blocks_the_other_until_the_row_lands(world):
     t = world.tenants[0]
-    assert world.replica("api-1", "honour", t, CALLEE) == {"spooled": 1}
+    assert world.replica("api-1", "honour", t, CALLEE) == {"spooled": 1, "shared_at_return": True}
     [name] = world.entries(t)
     assert CALLEE[2:] not in name                                       # keyed hash, not the number
 
@@ -252,7 +263,7 @@ def test_a_stop_heard_on_one_replica_blocks_the_other_until_the_row_lands(world)
 
 def test_valkey_cut_mid_flight_the_spool_blocks_others_fail_closed_and_the_entry_returns(world):
     t = world.tenants[0]
-    world.replica("api-1", "honour", t, CALLEE)
+    assert world.replica("api-1", "honour", t, CALLEE)["shared_at_return"] is True
     assert len(world.entries(t)) == 1
 
     world.proxy.cut()                                                   # Valkey gone...

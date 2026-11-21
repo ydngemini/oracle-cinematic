@@ -719,3 +719,28 @@ def test_a_missing_sdk_is_a_configuration_error_not_an_uncertain_send(monkeypatc
     assert isinstance(exc, ProviderConfigurationError), repr(exc)
     assert not ca._provider_submission_is_uncertain(True, exc)
     assert net.reached == []
+
+
+# ── a gate that could not decide yet is retried, never refused (PR #173) ────
+@pytest.mark.parametrize("rail", ["email", "sms_twilio", "sms_telnyx", "call_plivo", "call_twilio"])
+def test_an_undecidable_gate_is_retried_not_refused(monkeypatch, rail):
+    """Pending spoken STOPs unreadable (Valkey down): the approved send is not
+    sent, recorded 'failed' (executable again), and raised as a RETRYABLE
+    error spaced past a failover, not as a final refusal."""
+    import outreach_compliance as oc
+
+    net = Network(monkeypatch)
+    conn, run = _worker(monkeypatch, rail)
+
+    async def undecidable(*_a, **_k):
+        return oc.OutreachDecision(allowed=False, channel="sms", contact=TO, state_code="DE",
+                                   blockers=(oc.OPT_OUT_STATUS_UNAVAILABLE,),
+                                   transient=oc.OPT_OUT_STATUS_UNAVAILABLE_CODE)
+
+    monkeypatch.setattr(ca, "guard_outreach", undecidable)
+    with pytest.raises(oc.OutreachDeferred) as err:
+        asyncio.run(run())
+    assert getattr(err.value, "job_terminal", False) is False
+    assert err.value.job_retry_after_seconds == oc.TRANSIENT_RETRY_SECONDS
+    assert conn.failure_state() == "failed"
+    assert net.reached == []

@@ -15,6 +15,7 @@ import asyncio
 import json
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -30,11 +31,16 @@ STATE = {"tenant_id": TENANT, "callee": "+1 (302) 555-0142", "direction": "outbo
 NUMBER = outreach_compliance.normalize_contact(STATE["callee"], Channel.VOICE)
 DIGITS = "3025550142"
 MONTH = 30 * 24 * 3600
+#: Midday in Delaware: the calling window never adds a blocker of its own.
+NOON_DE = datetime(2026, 11, 18, 17, 0, tzinfo=timezone.utc)
 
 
 class FakeValkey:
     """The commands voice_opt_out uses. `down` makes every command fail as a
-    dead server does; `stall` makes them hang."""
+    dead server does; `stall` makes them hang. Every command yields to the
+    event loop first, as real network I/O does, so a write moved to a
+    background task is not finished by the time honour() returns.
+    `after_get` runs right after a GET (to interleave another replica)."""
 
     def __init__(self):
         self.kv: dict[str, str] = {}
@@ -43,8 +49,11 @@ class FakeValkey:
         self.down = False
         self.stall = False
         self.ops = 0
+        self.after_get = None
 
     async def _cmd(self):
+        for _ in range(5):          # a network round trip is several loop turns, not one
+            await asyncio.sleep(0)
         self.ops += 1
         if self.stall:
             await asyncio.sleep(30)
@@ -60,7 +69,20 @@ class FakeValkey:
 
     async def get(self, name):
         await self._cmd()
-        return self.kv.get(name)
+        value = self.kv.get(name)
+        if self.after_get:
+            self.after_get(name)
+        return value
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        """Only the one script voice_opt_out sends: SREM if the key is absent."""
+        await self._cmd()
+        assert script == voice_opt_out._SREM_IF_ABSENT and numkeys == 2
+        entry, index, member = keys_and_args
+        if entry in self.kv:
+            return 0
+        self.sets.get(index, set()).discard(member)
+        return 1
 
     async def smembers(self, name):
         await self._cmd()
@@ -215,9 +237,7 @@ def status(number=NUMBER, tenant=TENANT):
 
 
 def entry_name(tenant=TENANT, number=NUMBER):
-    from privacy_lifecycle import contact_hmac
-
-    return f"{voice_opt_out.SHARED_PREFIX}{tenant}:{contact_hmac(tenant, number)}"
+    return f"{voice_opt_out.SHARED_PREFIX}{tenant}:{voice_opt_out._digest(tenant, number)}"
 
 
 def gate(monkeypatch, channel, contact=STATE["callee"]):
@@ -235,7 +255,7 @@ def gate(monkeypatch, channel, contact=STATE["callee"]):
 
     ctx = TenantContext(agent_id="a@x.test", tenant_id=TENANT, role=Role.AGENT)
     return asyncio.run(outreach_compliance.guard_outreach(
-        ctx, channel=channel, contact=contact, state_code="DE", log=False))
+        ctx, channel=channel, contact=contact, state_code="DE", log=False, now_utc=NOON_DE))
 
 
 class _LedgerConn:
@@ -264,6 +284,9 @@ def test_a_pending_stop_is_in_the_shared_store_before_honour_returns_and_never_a
     assert valkey.ttl[name] == MONTH and valkey.ttl[voice_opt_out.SHARED_INDEX] == MONTH
     raw = valkey.kv[name]
     assert DIGITS not in name and DIGITS not in raw          # the number is sealed, the key is a keyed hash
+    from privacy_lifecycle import contact_hmac
+
+    assert contact_hmac(TENANT, NUMBER) not in name          # ...under its own label, not a tombstone's hash
     assert voice_opt_out._unseal(raw) == (TENANT, NUMBER)  # yet the worker can write the row
     assert (TENANT, NUMBER) in set(voice_opt_out._read_spool())   # and the local spool still has it
 
@@ -412,11 +435,14 @@ def test_an_entry_the_sweep_cannot_write_keeps_blocking_with_its_ttl_reset(monke
     writer(monkeypatch, ["fail"])
     honour_now()
     valkey.ttl[entry_name()] = 5                                    # nearly lapsed
+    valkey.ttl[voice_opt_out.SHARED_INDEX] = 5                      # and so is the index
     be("worker")
     writer(monkeypatch, ["fail"])
     result = asyncio.run(voice_opt_out.replay_shared())
     assert result["still_pending"] == 1 and result["replayed"] == 0
     assert valkey.ttl[entry_name()] == MONTH
+    assert valkey.ttl[voice_opt_out.SHARED_INDEX] == MONTH          # the sweep can still find it
+    assert voice_opt_out._member((TENANT, NUMBER)) in valkey.sets[voice_opt_out.SHARED_INDEX]
     assert status() == voice_opt_out.PENDING
 
 
@@ -506,3 +532,139 @@ def test_without_a_master_key_the_entry_is_what_the_local_spool_holds(monkeypatc
     assert json.loads(valkey.kv[name]) == {"v": 1, "tenant_id": TENANT, "contact": NUMBER}
     be("api-2")
     assert status() == voice_opt_out.PENDING
+
+
+# ── review of PR #173 ────────────────────────────────────────────────────────
+def test_the_shared_entry_exists_the_moment_honour_returns(monkeypatch, valkey, be):
+    """Checked synchronously, before any other task can run: a write moved to
+    a background task (the fake yields like real I/O) fails this."""
+    be("api-1")
+    writer(monkeypatch, ["fail"])
+
+    async def go():
+        await voice_opt_out.honour(STATE, "call")
+        present = entry_name() in valkey.kv                   # no await between return and check
+        for task in list(voice_opt_out._IN_FLIGHT):
+            task.cancel()
+        await asyncio.gather(*list(voice_opt_out._IN_FLIGHT), return_exceptions=True)
+        return present
+
+    saved = voice_opt_out.RETRY_DELAYS
+    voice_opt_out.RETRY_DELAYS = (30.0, 30.0, 30.0)
+    try:
+        assert asyncio.run(go()) is True
+    finally:
+        voice_opt_out.RETRY_DELAYS = saved
+
+
+def test_a_lapsed_index_member_is_dropped_only_while_its_entry_is_absent(monkeypatch, valkey, be):
+    """The sweep saw no entry, then another replica re-wrote it before the
+    SREM: the member must stay, or the sweep could never find it again."""
+    be("api-1")
+    writer(monkeypatch, ["fail"])
+    honour_now()
+    name, member = entry_name(), voice_opt_out._member((TENANT, NUMBER))
+    stored = valkey.kv.pop(name)                              # lapsed, as the sweep's GET will see
+
+    def rewritten_meanwhile(got):
+        if got == name:
+            valkey.kv[name] = stored                          # another replica re-wrote it
+            valkey.after_get = None
+
+    valkey.after_get = rewritten_meanwhile
+    be("worker")
+    writer(monkeypatch, [])
+    result = asyncio.run(voice_opt_out.replay_shared())
+    assert result["gone"] == 1
+    assert member in valkey.sets[voice_opt_out.SHARED_INDEX]  # still listed
+    valkey.kv.pop(name)                                       # truly gone this time
+    asyncio.run(voice_opt_out.replay_shared())
+    assert member not in valkey.sets[voice_opt_out.SHARED_INDEX]
+
+
+def test_with_a_master_key_a_plain_entry_is_never_accepted(monkeypatch, valkey):
+    plain = json.dumps({"v": 1, "tenant_id": TENANT, "contact": NUMBER})
+    assert voice_opt_out._unseal(plain) is None
+    assert voice_opt_out._unseal(voice_opt_out._seal((TENANT, NUMBER))) == (TENANT, NUMBER)
+    monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY")
+    assert voice_opt_out._unseal(plain) == (TENANT, NUMBER)   # development, as the spool
+
+
+def test_outside_development_no_shared_store_is_degraded(monkeypatch, valkey, be):
+    import config
+
+    monkeypatch.delenv("REDIS_URL")
+    be("api-1")
+    monkeypatch.setattr(config, "IS_DEV", False)
+    comp = health()
+    assert comp["state"] == component_health.DEGRADED and comp["detail"]["shared_store"] == "not_configured"
+    monkeypatch.setattr(config, "IS_DEV", True)
+    assert health()["state"] == component_health.HEALTHY
+
+
+def test_boot_warns_outside_development_without_redis_url(monkeypatch, caplog):
+    import logging
+
+    import config
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(config, "IS_DEV", False)
+    with caplog.at_level(logging.WARNING, logger="oracle.config"):
+        try:
+            config.validate_or_die()
+        except RuntimeError:
+            pass   # missing production secrets in a test process; the warning comes first
+    assert any("REDIS_URL is not set" in r.getMessage() for r in caplog.records)
+
+
+def test_an_undecidable_gate_is_transient_only_when_nothing_else_blocks(monkeypatch, valkey, be):
+    be("api-2")
+    valkey.down = True
+    decision = gate(monkeypatch, Channel.SMS, "+13025550199")
+    assert decision.transient == outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE
+    assert decision.as_dict()["transient"] == outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE
+
+    async def no_consent(_conn, _norm, _channel, _tomb, **_kw):
+        return {"suppressed": False, "has_consent": False, "has_written_consent": False,
+                "vp_consent": False, "recent_voice": 0}
+
+    monkeypatch.setattr(outreach_compliance.ConsentLedger, "gather_state", no_consent)
+    from tenancy import Role, TenantContext
+
+    ctx = TenantContext(agent_id="a@x.test", tenant_id=TENANT, role=Role.AGENT)
+    other = asyncio.run(outreach_compliance.guard_outreach(
+        ctx, channel=Channel.SMS, contact="+13025550199", state_code="DE", log=False, now_utc=NOON_DE))
+    assert not other.allowed and other.transient is None          # a retry cannot help this one
+    assert outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE in other.blockers
+    valkey.down = False
+    assert gate(monkeypatch, Channel.SMS, "+13025550199").transient is None
+
+
+def test_enforce_outreach_answers_try_again_not_a_legal_refusal(monkeypatch, valkey, be):
+    from fastapi import HTTPException
+
+    be("api-2")
+    valkey.down = True
+    gate(monkeypatch, Channel.SMS, "+13025550199")                 # installs the no-db fakes
+    from tenancy import Role, TenantContext
+
+    ctx = TenantContext(agent_id="a@x.test", tenant_id=TENANT, role=Role.AGENT)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(outreach_compliance.enforce_outreach(
+            ctx, channel=Channel.SMS, contact="+13025550199", state_code="DE", log=False,
+            now_utc=NOON_DE))
+    assert err.value.status_code == 503
+    assert err.value.headers["Retry-After"] == str(outreach_compliance.TRANSIENT_RETRY_SECONDS)
+    assert err.value.detail["code"] == outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE
+
+
+def test_raise_if_deferred_is_retryable_and_spaced():
+    d = outreach_compliance.OutreachDecision(
+        allowed=False, channel="sms", contact="x", state_code=None,
+        blockers=(outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE,),
+        transient=outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE)
+    with pytest.raises(outreach_compliance.OutreachDeferred) as err:
+        outreach_compliance.raise_if_deferred(d)
+    assert err.value.job_terminal is False and err.value.job_retry_after_seconds >= 60
+    outreach_compliance.raise_if_deferred(outreach_compliance.OutreachDecision(
+        allowed=False, channel="sms", contact="x", state_code=None, blockers=("opted out",)))  # no raise

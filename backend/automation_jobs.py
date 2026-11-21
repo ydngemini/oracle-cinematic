@@ -503,7 +503,11 @@ async def fail_job(
     attempt = int(job.get("attempt_count") or 1)
     max_attempts = int(job.get("max_attempts") or 1)
     terminal = terminal or attempt >= max_attempts
-    retry_seconds = min(3_600, 5 * (2 ** max(0, attempt - 1)))
+    # An error may say how long retrying is pointless for (job_retry_after_
+    # seconds, e.g. outreach_compliance.OutreachDeferred while Valkey cannot
+    # be read): the backoff never retries sooner than that.
+    hinted = int(getattr(exc, "job_retry_after_seconds", 0) or 0)
+    retry_seconds = min(3_600, max(5 * (2 ** max(0, attempt - 1)), hinted))
     error_detail = _exception_detail(exc)
     await _lease_update(
         job,

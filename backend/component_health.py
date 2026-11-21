@@ -466,9 +466,18 @@ async def _outbound_opt_outs() -> dict:
         return _c(UNKNOWN, "spoken opt-out spool unreadable", reason=type(exc).__name__)
     shared = await voice_opt_out.shared_summary()
     if not shared["configured"]:
+        import config
+
         if pending:
             return _c(DEGRADED, "spoken opt-outs are waiting to be recorded (spooled in this container only: "
                       "no shared store is configured; retrying)", pending=pending, shared_store="not_configured")
+        if not config.IS_DEV:
+            # A deployment with replicas and no Valkey is back to the per-
+            # container spool: a STOP pending on one replica would not block
+            # the others (34.5). Development runs one process.
+            return _c(DEGRADED, "no shared store (REDIS_URL) is configured: a spoken opt-out still waiting "
+                      "to be recorded would block sends only from the container that heard it",
+                      shared_store="not_configured")
         return _c(HEALTHY, "spoken opt-outs recorded", shared_store="not_configured")
     if not shared["reachable"]:
         return _c(DEGRADED, "the shared spoken opt-out store is unreachable: texts and calls are held by the "
