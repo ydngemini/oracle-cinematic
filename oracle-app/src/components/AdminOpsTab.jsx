@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useOracleState } from '../state';
+import { shortTenantId } from '../state/firehoseMetadata';
 import { HarvestControl } from './HarvestControl';
 // GET /api/billing/usage had no caller. Usage has been accruing into
 // billing_usage_events all along — recorded regardless of pricing model so the
@@ -368,10 +369,14 @@ function LiveFeedPanel() {
       }
     >
       {entries.length === 0 ? (
-        <p className={styles.quietNote}>Awaiting live frames — the firehose mirrors every tenant’s traffic here.</p>
+        <p className={styles.quietNote}>
+          Awaiting live frames. Activity mirrored from the brokerages appears here as it happens;
+          private messages are not mirrored, and calls show only their type, brokerage, time and flags.
+        </p>
       ) : (
         <ul className={styles.feedList} role="list">
           {entries.map((e, i) => {
+            if (e.kind === 'firehose_metadata') return <MetadataFeedRow key={e.id ?? i} entry={e} />;
             const tag = e.tag ?? e.type ?? e.kind;
             const who = e.actorName ?? e.agent;
             const text = e.text ?? e.label ?? e.summary;
@@ -397,6 +402,32 @@ function LiveFeedPanel() {
         </ul>
       )}
     </Section>
+  );
+}
+
+// A call frame the firehose mirrored as metadata only (ledger L03-22): what
+// kind of frame, which brokerage (short id), when, and its flags. Nothing
+// else is shown, and nothing else is in the entry (state/firehoseMetadata).
+function MetadataFeedRow({ entry }) {
+  const when = relTime(entry.timestamp);
+  const flags = Array.isArray(entry.flags) ? entry.flags : [];
+  const kind = entry.frameType ? entry.frameType.replace(/_/g, ' ') : 'Call event';
+  return (
+    <li className={`${styles.feedRow} ${styles.feedRowMeta}`}>
+      <div className={styles.feedTop}>
+        <span className={styles.feedTag}>{kind}</span>
+        {when && <span className={styles.rowWhen}>{when}</span>}
+      </div>
+      <div className={styles.metaRow}>
+        {entry.tenant ? (
+          <span className={styles.feedTenant} title="Brokerage id (first 8 characters)">
+            {shortTenantId(entry.tenant)}
+          </span>
+        ) : null}
+        {flags.map((flag) => <span key={flag} className={styles.metaFlag}>{flag}</span>)}
+        <span className={styles.metaFlag}>content withheld</span>
+      </div>
+    </li>
   );
 }
 

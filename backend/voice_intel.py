@@ -663,6 +663,66 @@ async def load_session_events(conn: Any, session_id: str, *, limit: int = 100) -
     return await sealed_text.open_rows(conn, rows, sealed_text.TRANSCRIPT)
 
 
+# negotiation_events.event_type's CHECK (0027): a code, never content.
+_EVENT_TYPES = frozenset({"transcript", "counter_offer", "mao_update", "threshold", "objection_draft",
+                          "consent"})
+
+
+async def load_session_event_metadata(conn: Any, session_id: str, *, limit: int = 100) -> list[dict]:
+    """The latest `limit` events of one call, newest first, for a reader
+    outside the call record's audience (a platform admin, ledger L03-22):
+    no transcript (nothing is unsealed), no amounts, no threshold. The
+    payload is read only to pass through event_metadata's allowlist."""
+    return await conn.fetch(
+        """
+        SELECT id,event_type,payload,created_at
+          FROM negotiation_events
+         WHERE call_session_id=$1::uuid
+         ORDER BY created_at DESC
+         LIMIT $2
+        """,
+        session_id,
+        limit,
+    )
+
+
+def event_metadata(row: Any) -> dict[str, Any]:
+    """One call event as operational metadata only (ledger L03-22): its type
+    (the 0027 enum), when it happened, and the firehose's type-checked flags
+    (ws_hub.metadata_fields: consent recorded, MAO unavailable, ...). Never
+    the transcript, offer/ARV/rehab/MAO amounts, threshold, guidance,
+    objection draft, consent basis, names, numbers or addresses — whatever
+    columns `row` carries. The event id stays: it is the REST feed's cursor."""
+    event_type = row["event_type"]
+    created_at = row["created_at"]
+    meta: dict[str, Any] = {
+        "event_id": row["id"] if isinstance(row["id"], int) and not isinstance(row["id"], bool) else None,
+        "event_type": event_type if isinstance(event_type, str) and event_type in _EVENT_TYPES else None,
+        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
+        "content_withheld": True,
+    }
+    meta.update(ws_hub.metadata_fields(_json_object(row["payload"])))
+    return meta
+
+
+def hydrate_metadata_frame(session_id: str, session: Any, events: list) -> dict[str, Any]:
+    """The voice-session socket's first frame for a platform admin outside the
+    call record's audience (ledger L03-22): the call's consent and transcript
+    state and each event's metadata (event_metadata), never its content."""
+    frame: dict[str, Any] = {
+        "type": "VOICE_SESSION_HYDRATED",
+        "version": 1,
+        "session_id": session_id,
+        "content_withheld": True,
+        # "id", as in the content hydrate's events.
+        "events": [{"id": meta.pop("event_id"), **meta}
+                   for meta in (event_metadata(row) for row in reversed(events))],
+    }
+    frame.update(ws_hub.metadata_fields({"consent_recorded": session["consent_recorded"],
+                                         "transcript_status": session["transcript_status"]}))
+    return frame
+
+
 @router.get("/telemetry")
 async def read_voice_telemetry(
     session_id: Optional[uuid.UUID] = None,
@@ -675,7 +735,10 @@ async def read_voice_telemetry(
     Call content (transcript, offer, MAO) is readable only by the call record's
     audience — or, for a pool / erased-client / unlinked call, by the member
     who created it (record_access.may_read_call_content; owner decision
-    2026-11-16). Anyone else gets 404, as if the session did not exist."""
+    2026-11-16). Anyone else gets 404, as if the session did not exist —
+    except a platform admin, who gets the call's events as operational
+    metadata only (event_metadata, `content_withheld`), unless the same rule
+    makes them a reader (ledger L03-22; break-glass access is not built)."""
     # Which sessions the caller can see (their row-level security) ...
     async with tenant_tx(ctx) as conn:
         if session_id is None:
@@ -691,11 +754,16 @@ async def read_voice_telemetry(
             visible = [session_id] if await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)", session_id) else []
     # ... and, in ONE query outside that transaction (never two pool
-    # connections at once), whose content they may read, newest first.
-    if ctx.is_platform_admin:
-        readable = [str(v) for v in visible]
-    else:
-        readable = await record_access.may_read_call_content_many(ctx.tenant_id, visible, ctx.agent_id)
+    # connections at once), whose content they may read, newest first. A
+    # platform admin's power is to SEE every brokerage's calls, not to read
+    # them: the same rule decides content for them as for anyone else.
+    readable = await record_access.may_read_call_content_many(ctx.tenant_id, visible, ctx.agent_id)
+    if ctx.is_platform_admin and visible:
+        # The newest call they can see (as before), its content only if readable.
+        chosen = str(visible[0])
+        if chosen not in readable:
+            return await _read_voice_event_metadata(ctx, uuid.UUID(chosen), after_event_id, limit)
+        readable = [chosen]
     if not readable:
         if session_id is None:
             return {"session_id": None, "events": [], "next_event_id": after_event_id}
@@ -749,6 +817,34 @@ async def read_voice_telemetry(
         "session_id": str(session_id),
         "events": events,
         "next_event_id": events[-1]["event_id"] if events else after_event_id,
+    }
+
+
+async def _read_voice_event_metadata(ctx: TenantContext, session_id: uuid.UUID, after_event_id: int,
+                                     limit: int) -> dict[str, Any]:
+    """read_voice_telemetry for a platform admin outside the call record's
+    audience (ledger L03-22): the same cursor, each event as metadata only.
+    Nothing is unsealed and no amount is read."""
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id,event_type,payload,created_at
+              FROM negotiation_events
+             WHERE call_session_id=$1 AND id>$2
+             ORDER BY id ASC
+             LIMIT $3
+            """,
+            session_id,
+            after_event_id,
+            limit,
+        )
+    events = [{"type": "VOICE_TELEMETRY", "version": 1, "session_id": str(session_id), **event_metadata(row)}
+              for row in rows]
+    return {
+        "session_id": str(session_id),
+        "content_withheld": True,
+        "events": events,
+        "next_event_id": rows[-1]["id"] if rows else after_event_id,
     }
 
 

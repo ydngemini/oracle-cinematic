@@ -95,6 +95,8 @@ _CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # socket's last re-check gets nothing more (ledger L03-17 blocker, owner
 # decision 2026-11-20).
 RECORD_STREAM_PREFIXES = ("voice:",)
+#: connection_counts()'s key for each kind of record stream (not a tenant id).
+RECORD_STREAM_COUNT_KEYS = frozenset(prefix.rstrip(":") for prefix in RECORD_STREAM_PREFIXES)
 
 
 def register(tenant_id: str, ws: WebSocket, user_id: Optional[str] = None) -> None:
@@ -115,8 +117,23 @@ def unregister(tenant_id: str, ws: WebSocket, user_id: Optional[str] = None) -> 
 
 
 def connection_counts() -> dict[str, int]:
-    """Live socket count per tenant group — surfaced on /api/admin/system."""
-    return {tenant_id: len(socks) for tenant_id, socks in _sockets.items()}
+    """Live socket count per tenant group — surfaced on /api/admin/system,
+    /overview and /runtime-load. A per-record stream group's name carries its
+    call's session id (voice:{tenant}:{session}), so those groups are folded
+    into one count per kind ("voice": n): an ops console never lists which
+    calls are live, nor hands out a session id to open (ledger L03-22)."""
+    counts: dict[str, int] = {}
+    for group, socks in list(_sockets.items()):
+        key = _count_key(group)
+        counts[key] = counts.get(key, 0) + len(socks)
+    return counts
+
+
+def _count_key(group: str) -> str:
+    for prefix in RECORD_STREAM_PREFIXES:
+        if group.startswith(prefix):
+            return prefix.rstrip(":")
+    return group
 
 
 def total_connections() -> int:
@@ -240,9 +257,27 @@ async def _send_user(tenant_id: str, user_id: str, payload: dict) -> int:
     return await _fan_out(targets, json.dumps(payload), lambda ws: unregister(tenant_id, ws, user_id))
 
 
+def _refuses_record_stream(group: str, payload: dict) -> bool:
+    """A per-record stream (the voice-session socket) takes frames only from
+    broadcast_record(stream=), addressed to the members in the call record's
+    audience at push time. Every other path — broadcast(), deliver_local(),
+    broadcast_user(), broadcast_users() and a received v1 envelope — names a
+    whole group or members its caller chose, so it is refused here, before
+    any socket or the firehose sees the frame (ledger L03-22)."""
+    if not is_record_stream(group):
+        return False
+    frame_type = payload.get("type") if isinstance(payload, dict) else None
+    logger.warning("Refusing a frame %s for a per-record stream outside broadcast_record(stream=)",
+                   frame_type if isinstance(frame_type, str) and _CODE.fullmatch(frame_type) else "?")
+    return True
+
+
 async def _deliver_local(tenant_id: str, payload: dict) -> int:
     """Deliver to sockets owned by this process, including the admin firehose
-    (call content as metadata only, firehose_copy)."""
+    (call content as metadata only, firehose_copy). Never to a per-record
+    stream group (_refuses_record_stream)."""
+    if _refuses_record_stream(tenant_id, payload):
+        return 0
     delivered = await _send_group(tenant_id, payload)
     if tenant_id != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
         delivered += await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, tenant_id))
@@ -252,6 +287,8 @@ async def _deliver_local(tenant_id: str, payload: dict) -> int:
 async def _deliver_user_local(tenant_id: str, user_id: str, payload: dict) -> int:
     # Private assistant content is intentionally never mirrored to the platform
     # firehose. Platform operators can inspect health metrics, not conversations.
+    if _refuses_record_stream(tenant_id, payload):
+        return 0
     return await _send_user(tenant_id, user_id, payload)
 
 
@@ -277,6 +314,19 @@ def firehose_metadata(payload: dict, tenant_id: str) -> dict:
         "content_withheld": True,
         "mirrored_at": datetime.now(timezone.utc).isoformat(),
     }
+    meta.update(metadata_fields(payload))
+    return meta
+
+
+def metadata_fields(payload: dict) -> dict[str, Any]:
+    """The operational state of a call frame or event that someone outside
+    the call record's audience may see (the firehose; a platform admin's
+    voice-session hydrate and REST feed, L03-22): consent/approval flags,
+    ISO timestamps, the transcript state, an upper-case error code and a
+    mao_unavailable flag. Allowlisted and type-checked value by value, so
+    content put in an allowed key never passes; never text, amounts,
+    guidance, names, numbers, emails, addresses or record ids."""
+    meta: dict[str, Any] = {}
     for key in _METADATA_FLAGS:
         if isinstance(payload.get(key), bool):
             meta[key] = payload[key]
@@ -345,7 +395,10 @@ async def _deliver_scoped_local(
         delivered = await _send_group(group, payload)
     else:
         delivered = await _send_users(group, user_ids, payload)
-    if mirror and group != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
+    # A per-record stream is never mirrored, whatever an envelope says: its
+    # firehose copy (metadata) comes from the dashboards' delivery.
+    if (mirror and group != FIREHOSE_TENANT_ID and not is_record_stream(group)
+            and FIREHOSE_TENANT_ID in _sockets):
         await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, group, sensitive=sensitive))
     return delivered
 
@@ -674,16 +727,22 @@ async def stop() -> None:
 
 
 async def broadcast(tenant_id: str, payload: dict) -> int:
-    """Deliver locally and publish once for every other backend replica."""
+    """Deliver locally and publish once for every other backend replica.
+    A per-record stream group is refused (not published either)."""
+    if _refuses_record_stream(tenant_id, payload):
+        return 0
     delivered = await _deliver_local(tenant_id, payload)
     await _publish(tenant_id, payload)
     return delivered
 
 
 async def broadcast_user(tenant_id: str, user_id: str, payload: dict) -> int:
-    """Deliver a private frame across replicas to one tenant agent only."""
+    """Deliver a private frame across replicas to one tenant agent only.
+    A per-record stream group is refused (not published either)."""
     if not user_id:
         raise ValueError("user_id is required for a private WebSocket broadcast")
+    if _refuses_record_stream(tenant_id, payload):
+        return 0
     delivered = await _deliver_user_local(tenant_id, user_id, payload)
     await _publish(tenant_id, payload, user_id)
     return delivered
@@ -697,9 +756,11 @@ async def broadcast_users(
     (one NOTIFY for all of them). The platform firehose gets a full copy
     unless mirror=False (private content, like broadcast_user), and only
     operational metadata when `sensitive` or the frame is call content
-    (audit 27.5). An empty list reaches nobody."""
+    (audit 27.5). An empty list reaches nobody, and so does a per-record
+    stream group: its members are named by broadcast_record(stream=) from
+    the record's audience, never by a caller."""
     recipients = sorted({u for u in user_ids if u}, key=str.lower)
-    if not recipients:
+    if not recipients or _refuses_record_stream(tenant_id, payload):
         return 0
     delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=mirror,
                                             sensitive=sensitive)

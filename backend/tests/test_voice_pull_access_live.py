@@ -38,15 +38,21 @@ def test_the_socket_checks_call_content_before_its_transaction():
     tx = min(line for line, name in calls if name == "tenant_tx")
     send = min(line for line, name in calls if name.endswith("send_json"))
     assert check < tx < send
+    # The answer is kept for everyone, platform admins included (L03-22) ...
+    assigns = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+               and "may_read_call_content" in ast.unparse(node.value)]
+    assert [ast.unparse(t) for a in assigns for t in a.targets] == ["may_read_content"]
     # ... and the refusal is on a NEGATED check that closes the socket: an
-    # inverted check (admit the refused, refuse the admitted) fails here.
+    # inverted check (admit the refused, refuse the admitted) fails here. Only
+    # a platform admin passes without content.
     guards = [node for node in ast.walk(tree) if isinstance(node, ast.If)
-              and "may_read_call_content" in ast.unparse(node.test)]
+              and "close(code=4404)" in ast.unparse(node.body[0])
+              and "may_read_content" in ast.unparse(node.test)]
     assert len(guards) == 1
-    test, body = guards[0].test, ast.unparse(guards[0].body[0])
+    test = guards[0].test
     assert isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And), ast.unparse(test)
     assert all(isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not) for v in test.values), ast.unparse(test)
-    assert "close(code=4404)" in body, body
+    assert sorted(ast.unparse(v.operand) for v in test.values) == ["ctx.is_platform_admin", "may_read_content"]
 
 
 @live
@@ -70,9 +76,13 @@ def test_call_content_pull_paths_fail_closed_live():
         lead = {k: uuid.uuid4() for k in ("pool", "erased", "foreign")}
         contact_a = uuid.uuid4()
 
+        member_admin = f"padmin-{tag}@pull.test"
+
         def ctx(k):
             if k == "ops":
                 return TenantContext(agent_id=f"ops-{tag}@platform.test", tenant_id=tenant, role=Role.PLATFORM_ADMIN)
+            if k == "member-admin":
+                return TenantContext(agent_id=member_admin, tenant_id=tenant, role=Role.PLATFORM_ADMIN)
             if k == "B-upper":
                 return TenantContext(agent_id=who["b"].upper(), tenant_id=tenant, role=Role.AGENT)
             role = Role.BROKER_OWNER if k == "owner" else Role.AGENT
@@ -94,6 +104,12 @@ def test_call_content_pull_paths_fail_closed_live():
                 await admin.execute(
                     "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
                     "VALUES ($1,$2,$3,$4,$3,'scrypt$x$y')", uuid.uuid4(), tenant, who[k], role)
+            # A platform admin whose account belongs to this brokerage: in the
+            # record audience by the normal rule (0145 lists the tenant's
+            # platform_admin users), so a reader of a private client's call.
+            await admin.execute(
+                "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+                "VALUES ($1,$2,$3,'platform_admin',$3,'scrypt$x$y')", uuid.uuid4(), tenant, member_admin)
             for k in ("a", "erased"):
                 await admin.execute("INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,$3,$4)",
                                     client[k], tenant, f"Client {k}", who["a"])
@@ -117,6 +133,20 @@ def test_call_content_pull_paths_fail_closed_live():
                 "transcript_status, started_at, created_by) VALUES ($1,$2,true,'verbal','active',now(),$3) "
                 "RETURNING id", tenant, contact_a, who["b"])
             await admin.execute("DELETE FROM clients WHERE id = $1", client["erased"])  # erasure: lead -> pool
+            # Call content on the pool call and the private call (legacy
+            # plaintext excerpt; the sealed shape is test_sealed_text_live's).
+            insert_event = ("INSERT INTO negotiation_events (tenant_id, call_session_id, event_type, "
+                            "transcript_excerpt, counter_offer, arv, rehab, mao, threshold, payload, "
+                            "model_version, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'v',$11)")
+            for call in (pool, private):
+                await admin.execute(insert_event, tenant, call, "consent", None, None, None, None, None, None,
+                                    '{"consent_recorded": true, "basis": "verbal Pat Owner"}', who["b"])
+                await admin.execute(
+                    insert_event, tenant, call, "counter_offer", "Pat Owner: 251357 is my number",
+                    251357, 410000, 41733, 233911, "amber",
+                    '{"speaker": "CLIENT", "is_final": true, "guidance": {"objection_draft": '
+                    '"Pat Owner, the roof needs 41733"}, "mao_unavailable_reason": "Pat Owner 302-555-0147"}',
+                    who["b"])
 
             got = {
                 "private": {k: await read(k, private) for k in who},
@@ -128,14 +158,35 @@ def test_call_content_pull_paths_fail_closed_live():
                 "pool_upper_case_creator": await read("B-upper", pool),
                 "pool_platform_admin": await read("ops", pool),
                 "missing": await record_access.may_read_call_content(tenant, uuid.uuid4(), who["a"]),
+                # L03-22: what each reader actually gets back.
+                "ops_pool_feed": await voice_intel.read_voice_telemetry(
+                    session_id=pool, after_event_id=0, limit=100, ctx=ctx("ops")),
+                "ops_pool_paged": await voice_intel.read_voice_telemetry(
+                    session_id=pool, after_event_id=0, limit=1, ctx=ctx("ops")),
+                "ops_latest": await voice_intel.read_voice_telemetry(
+                    session_id=None, after_event_id=0, limit=100, ctx=ctx("ops")),
+                "creator_pool_feed": await voice_intel.read_voice_telemetry(
+                    session_id=pool, after_event_id=0, limit=100, ctx=ctx("b")),
+                "member_admin_private_feed": await voice_intel.read_voice_telemetry(
+                    session_id=private, after_event_id=0, limit=100, ctx=ctx("member-admin")),
+                "member_admin_pool_feed": await voice_intel.read_voice_telemetry(
+                    session_id=pool, after_event_id=0, limit=100, ctx=ctx("member-admin")),
+                "member_admin_socket": await record_access.may_read_call_content(tenant, private, member_admin),
+                "ops_socket": await record_access.may_read_call_content(tenant, pool, f"ops-{tag}@platform.test"),
             }
+            async with connection.tenant_tx(ctx("ops")) as conn:
+                rows = await voice_intel.load_session_event_metadata(conn, str(pool), limit=100)
+                session = await conn.fetchrow(
+                    "SELECT consent_recorded, transcript_status FROM live_call_sessions WHERE id=$1", pool)
+            got["ops_hydrate"] = voice_intel.hydrate_metadata_frame(str(pool), session, rows)
             return got, {"private": str(private), "pool": str(pool), "erased": str(erased),
                          "contact_only": str(contact_only)}
         finally:
             await admin.execute("SET session_replication_role = replica")
             try:
                 for t in (tenant, other):
-                    for table in ("live_call_sessions", "agent_contacts", "leads", "clients", "users"):
+                    for table in ("negotiation_events", "live_call_sessions", "agent_contacts", "leads",
+                                  "clients", "users"):
                         await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", t)
                     await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", t)
             finally:
@@ -161,6 +212,37 @@ def test_call_content_pull_paths_fail_closed_live():
         got["contact_only"]
     # A call naming another brokerage's lead: no one here may read it, not even its creator.
     assert set(got["foreign"].values()) == {404}, got["foreign"]
-    # Agent ids compare case-insensitively; the platform admin keeps read.
+    # Agent ids compare case-insensitively; the platform admin still sees the call ...
     assert got["pool_upper_case_creator"] == ids["pool"]
     assert got["pool_platform_admin"] == ids["pool"]
+
+    # ... but outside its audience reads operational metadata only (L03-22):
+    # event types, times and flags; never the transcript, amounts, threshold,
+    # guidance, consent basis or anything a reason text said.
+    feed = got["ops_pool_feed"]
+    assert feed["content_withheld"] is True and feed["session_id"] == ids["pool"]
+    assert [e["event_type"] for e in feed["events"]] == ["consent", "counter_offer"]
+    assert feed["events"][0]["consent_recorded"] is True and feed["events"][1]["mao_unavailable"] is True
+    assert feed["next_event_id"] == feed["events"][-1]["event_id"]
+    assert got["ops_pool_paged"]["next_event_id"] == feed["events"][0]["event_id"], "the cursor still pages"
+    allowed = {"type", "version", "session_id", "event_id", "event_type", "created_at", "content_withheld",
+               "consent_recorded", "mao_unavailable"}
+    for event in feed["events"] + got["ops_hydrate"]["events"]:
+        assert set(event) <= allowed | {"id"}, set(event) - allowed
+    for out in (feed, got["ops_latest"], got["ops_hydrate"]):
+        text = repr(out)
+        for content in ("Pat", "251357", "410000", "41733", "233911", "amber", "verbal", "302-555"):
+            assert content not in text, (content, out)
+    assert got["ops_latest"]["content_withheld"] is True, "the newest call it sees: metadata only too"
+    assert got["ops_hydrate"]["content_withheld"] is True and got["ops_socket"] is False
+    assert [e["event_type"] for e in got["ops_hydrate"]["events"]] == ["consent", "counter_offer"]
+    # The creator reads the content as before.
+    assert got["creator_pool_feed"].get("content_withheld") is None
+    assert got["creator_pool_feed"]["events"][1]["counter_offer"] == 251357.0
+    # A platform admin whose account is in the brokerage is in a private
+    # client's audience by the normal rule: content, on both pull paths ...
+    private_feed = got["member_admin_private_feed"]
+    assert private_feed.get("content_withheld") is None and got["member_admin_socket"] is True
+    assert private_feed["events"][1]["transcript"]["text"] == "Pat Owner: 251357 is my number"
+    # ... but not a pool call it did not create (metadata only).
+    assert got["member_admin_pool_feed"]["content_withheld"] is True
