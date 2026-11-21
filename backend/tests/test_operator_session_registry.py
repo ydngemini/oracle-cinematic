@@ -98,7 +98,8 @@ def test_an_operator_token_without_a_jti_is_not_a_session(operator):
     with pytest.raises(HTTPException) as exc:
         tenancy.require_context(f"Bearer {_operator_token()}")
     assert exc.value.status_code == 401
-    for bad in ("short", "x" * 200, "has spaces in it and is long enough....", 12345):
+    # A trailing newline too: `$` would have let it through (review nit).
+    for bad in ("short", "x" * 200, "has spaces in it and is long enough....", 12345, JTI + "\n"):
         with pytest.raises(HTTPException):
             tenancy.require_context(f"Bearer {_operator_token(jti=bad)}")
 
@@ -236,8 +237,66 @@ def test_operator_login_fails_when_the_registry_cannot_be_written(operator, monk
         raise OSError("connection refused")
 
     monkeypatch.setattr(operator_sessions, "register", _down)
-    with pytest.raises(OSError):
+    # The second factor is already spent: say "try again shortly" (503), not a
+    # bare 500 or a misleading "session ended" (review r1).
+    with pytest.raises(HTTPException) as exc:
         _login(OPS, PASSPHRASE)
+    assert exc.value.status_code == 503 and exc.value.detail["code"] == "session_unverifiable"
+
+
+def test_a_sign_in_revokes_sessions_another_credential_issued(operator, monkeypatch):
+    """Rolling a rotated credential back must not revive the sessions the
+    rotation ended (review r1): the stale rows are revoked before the insert."""
+    import db.connection
+
+    calls = []
+
+    class _Conn:
+        async def execute(self, query, *args):
+            calls.append((query, args))
+            return "UPDATE 2" if query.startswith("UPDATE") else "INSERT 0 1"
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
+    jti = asyncio.run(operator_sessions.register(OPS))
+    (revoke, revoke_args), (insert, insert_args) = calls
+    fingerprint = asyncio.run(operator_sessions.credential_fingerprint(OPS))
+    assert revoke.startswith("UPDATE operator_sessions SET revoked_at = now()")
+    assert "credential_fingerprint <> $2" in revoke and revoke_args == (OPS, fingerprint)
+    assert insert.startswith("INSERT INTO operator_sessions") and "lower($2)" in insert
+    assert insert_args[0] == hashlib.sha256(jti.encode()).hexdigest() and insert_args[1] == OPS
+
+
+def test_boot_stretches_the_credential_and_revokes_other_credentials_sessions(operator, monkeypatch):
+    import db.connection
+
+    calls = []
+
+    class _Conn:
+        async def execute(self, query, *args):
+            calls.append((query, args))
+            return "UPDATE 1"
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(operator_sessions, "_FINGERPRINTS", {})
+    monkeypatch.setattr(db.connection, "get_pool", lambda: object())
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
+    asyncio.run(operator_sessions.boot())
+    assert len(operator_sessions._FINGERPRINTS) == 1          # warmed off the request path
+    (query, args), = calls
+    assert "credential_fingerprint <> $2" in query and args[0] == OPS
+
+    def _broken():
+        raise OSError("pool gone")
+
+    monkeypatch.setattr(db.connection, "get_pool", _broken)
+    asyncio.run(operator_sessions.boot())                      # never raises
 
 
 def test_a_demo_login_that_is_not_an_operator_registers_nothing(monkeypatch):
@@ -295,7 +354,8 @@ def _client() -> TestClient:
     async def ok(_request):
         return PlainTextResponse("ok")
 
-    app = Starlette(routes=[Route("/api/thing", ok), Route("/auth/session", ok)])
+    app = Starlette(routes=[Route("/api/thing", ok), Route("/auth/session", ok),
+                            Route("/auth/policy-acceptance", ok), Route("/auth/brand-new-route", ok)])
     app.add_middleware(operator_sessions.OperatorSessionMiddleware)
     return TestClient(app)
 
@@ -344,6 +404,39 @@ def test_auth_routes_and_other_tokens_are_not_held_up(operator, monkeypatch):
     assert entered == []
 
 
+def test_an_auth_route_is_checked_unless_it_is_on_the_allow_list(operator, monkeypatch):
+    """Exact paths, not the /auth/ prefix (review nit): a new /auth route, and
+    the policy and two-step routes that read the session, are checked."""
+    entered = []
+    _fake_tx(monkeypatch, "revoked", entered)
+    client = _client()
+    for path in ("/auth/policy-acceptance", "/auth/brand-new-route"):
+        client.cookies.set("oracle_session", _operator_token(jti=JTI))
+        assert client.get(path).status_code == 401, path
+    assert len(entered) == 2
+
+
+def test_the_allow_list_names_real_routes_that_must_skip_the_check():
+    import server
+
+    auth_paths = {getattr(r, "path", "") for r in server.app.routes if getattr(r, "path", "").startswith("/auth/")}
+    assert operator_sessions.SELF_CHECKING_PATHS <= auth_paths, operator_sessions.SELF_CHECKING_PATHS - auth_paths
+    for checked in ("/auth/change-password", "/auth/policy-acceptance", "/auth/account-security-esa",
+                    "/auth/mfa", "/auth/mfa/totp/setup"):
+        assert checked in auth_paths and checked not in operator_sessions.SELF_CHECKING_PATHS
+
+
+def test_a_refusal_logs_the_path_and_a_pseudonymous_address(operator, monkeypatch, caplog):
+    _fake_tx(monkeypatch, "revoked", [])
+    client = _client()
+    client.cookies.set("oracle_session", _operator_token(jti=JTI))
+    with caplog.at_level(logging.WARNING, logger="oracle.auth.operator_sessions"):
+        assert client.get("/api/thing").status_code == 401
+    (line,) = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+    assert "GET /api/thing" in line and re.search(r"ip:[0-9a-f]{12}", line)
+    assert OPS not in line and "testclient" not in line
+
+
 def test_with_no_operator_configured_nothing_is_decoded(monkeypatch):
     monkeypatch.setattr(auth, "DEMO_TENANCY", {"demo@example.test": (TENANT, "agent")})
 
@@ -364,6 +457,24 @@ def test_the_server_installs_the_middleware_inside_the_rate_limiter_and_csrf():
     order = [m.cls for m in server.app.user_middleware]   # outermost first
     mine = order.index(operator_sessions.OperatorSessionMiddleware)
     assert mine > order.index(RateLimitMiddleware) and mine > order.index(CSRFMiddleware)
+
+
+def test_a_platform_admin_socket_is_rechecked_every_minute_and_fails_closed():
+    """/ws carried a revoked operator's firehose for up to 300 s, and kept it
+    open when the re-check errored (review r1, INFO)."""
+    import inspect
+
+    import server
+
+    admin = _operator_ctx()
+    agent = TenantContext("a@x.test", TENANT, Role.AGENT, verify_session=True, user_id=UID)
+    assert server._ws_session_recheck(admin) == (min(server._WS_SESSION_RECHECK_SECONDS,
+                                                     tenancy.SESSION_RECHECK_SECONDS), True)
+    assert server._ws_session_recheck(admin)[0] <= 60
+    assert server._ws_session_recheck(agent) == (server._WS_SESSION_RECHECK_SECONDS, False)
+    src = inspect.getsource(server.websocket_endpoint)
+    assert "_ws_session_recheck(ctx)" in src
+    assert "if recheck_fails_closed:" in src and "websocket.close(code=1011)" in src
 
 
 def test_session_probe_proves_an_operator_session(operator, monkeypatch):
@@ -387,21 +498,28 @@ class _CooldownError(Exception):
 
 
 class _OtpStore:
-    """operator_otp_challenges for the queries auth.py issues, with the 0181
-    trigger: an insert within 900 s of a lock raises SQLSTATE OTPLK."""
+    """operator_otp_challenges for the queries auth.py issues, with 0181's
+    operator_otp_cooldown_seconds() and its trigger (an insert within 900 s of a
+    lock raises SQLSTATE OTPLK). No unique index here, so a sibling challenge
+    can be planted to test the lock's own sibling retirement."""
 
     def __init__(self):
         self.rows: list[dict] = []
         self.now = 1_000_000.0
+        self.account_locks = 0
+
+    def cooldown(self, account) -> int:
+        locks = [r["locked_at"] for r in self.rows if r["account"] == account and r["locked_at"]]
+        return max(0, int(max(locks) + 900 - self.now)) if locks else 0
 
     async def fetchval(self, query, *args):
+        if "operator_otp_cooldown_seconds" in query:
+            return self.cooldown(args[0])
         if "SELECT 1 FROM operator_otp_challenges" in query:
             return None
         if "INSERT INTO operator_otp_challenges" in query:
-            locks = [r["locked_at"] for r in self.rows
-                     if r["account"] == args[0] and r["locked_at"] and r["locked_at"] > self.now - 900]
-            if locks:
-                raise _CooldownError(int(max(locks) + 900 - self.now))
+            if self.cooldown(args[0]):
+                raise _CooldownError(self.cooldown(args[0]))
             row = {"id": str(uuid.uuid4()), "account": args[0], "code_hmac": "", "attempts": 0,
                    "consumed": False, "locked_at": None}
             self.rows.append(row)
@@ -413,7 +531,10 @@ class _OtpStore:
         return dict(live[-1]) if live else None
 
     async def execute(self, query, *args):
-        if "SET code_hmac" in query:
+        if "pg_advisory_xact_lock" in query:
+            assert args == (OPS.lower(),)
+            self.account_locks += 1
+        elif "SET code_hmac" in query:
             next(r for r in self.rows if r["id"] == args[0])["code_hmac"] = args[1]
         elif "SET attempts = attempts + 1" in query:
             assert "locked_at = CASE WHEN attempts + 1 >= $2::int" in query
@@ -423,9 +544,12 @@ class _OtpStore:
                 r["consumed"], r["locked_at"] = True, self.now
         elif "SET consumed_at = now() WHERE id" in query:
             next(r for r in self.rows if r["id"] == args[0])["consumed"] = True
-        elif "SET consumed_at = now()" in query:
+        elif "SET consumed_at = now() WHERE account = $1 AND consumed_at IS NULL" in query:
             for r in self.rows:
-                r["consumed"] = True
+                if r["account"] == args[0]:
+                    r["consumed"] = True
+        else:
+            raise AssertionError(query)
         return "OK"
 
 
@@ -486,6 +610,42 @@ def test_the_fifth_wrong_code_pauses_new_codes_for_15_minutes(otp_env, caplog):
         assert OPS not in record.getMessage() and "owner@example.test" not in record.getMessage()
 
 
+def test_every_issue_and_check_takes_the_account_lock(otp_env):
+    store, sent = otp_env
+    with pytest.raises(HTTPException):
+        _otp(None)
+    with pytest.raises(HTTPException):
+        _otp("000000" if sent[-1] != "000000" else "111111")
+    assert store.account_locks == 2
+
+
+def test_a_lock_retires_every_sibling_and_no_code_is_accepted_in_the_cool_down(otp_env):
+    """Review r1: two concurrent requests could each issue a challenge; the
+    fifth wrong code retired only the newest and checking moved to the other,
+    so ten guesses (and a right code during the cool-down) got through."""
+    store, sent = otp_env
+    with pytest.raises(HTTPException):
+        _otp(None)
+    sibling_code = sent[-1]
+    sibling = store.rows[-1]
+    store.rows.append({"id": str(uuid.uuid4()), "account": OPS.lower(), "code_hmac": "",
+                       "attempts": 0, "consumed": False, "locked_at": None})   # the racing twin
+    store.rows[-1]["code_hmac"] = auth._otp_hmac(store.rows[-1]["id"], "424242")
+    wrong = "000000" if sibling_code != "000000" and "424242" != "000000" else "111111"
+    statuses = []
+    for _ in range(5):
+        with pytest.raises(HTTPException) as refused:
+            _otp(wrong)
+        statuses.append(refused.value.status_code)
+    assert statuses == [401, 401, 401, 401, 429]
+    assert sibling["consumed"], "the lock must retire the other live challenge too"
+    for code in (sibling_code, "424242", wrong):
+        with pytest.raises(HTTPException) as later:
+            _otp(code)
+        assert later.value.status_code == 429 and later.value.detail == auth._OTP_LOCKED
+    assert sibling["attempts"] == 0     # a guess in the cool-down is not even counted
+
+
 def test_after_the_cool_down_a_new_code_is_sent(otp_env):
     store, sent = otp_env
     with pytest.raises(HTTPException):
@@ -530,13 +690,21 @@ def test_a_lock_at_sign_in_raises_the_second_factor_alert(operator, monkeypatch)
 def test_the_migration_and_the_code_agree():
     sql = re.sub(r"--[^\n]*", "", MIGRATION.read_text())
     # The cool-down interval is the constant the 429 sentence and Retry-After use.
-    assert re.findall(r"interval '(\d+) seconds'", sql) == [str(auth._EMAIL_OTP_COOLDOWN_SECONDS)] * 2
+    assert re.findall(r"interval '(\d+) seconds'", sql) == [str(auth._EMAIL_OTP_COOLDOWN_SECONDS)]
     assert f"ERRCODE = '{auth._EMAIL_OTP_COOLDOWN_SQLSTATE}'" in sql
     assert "BEFORE INSERT ON operator_otp_challenges" in sql
     # Platform-only, never deleted by the app, the check function granted (0003 revoked PUBLIC).
     assert "ALTER TABLE operator_sessions FORCE ROW LEVEL SECURITY" in sql
     assert "USING (app_is_platform_admin()) WITH CHECK (app_is_platform_admin())" in sql
-    assert "REVOKE DELETE, TRUNCATE ON operator_sessions FROM oracle_app" in sql
+    assert "REVOKE UPDATE, DELETE, TRUNCATE ON operator_sessions FROM oracle_app" in sql
+    assert "GRANT SELECT, INSERT ON operator_sessions TO oracle_app" in sql
+    assert "GRANT UPDATE (revoked_at) ON operator_sessions TO oracle_app" in sql
+    assert "BEFORE UPDATE ON operator_sessions" in sql
+    # One live challenge per account; the 0121 tables platform-only too.
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_otp_challenges_live" in sql
+    for table in ("operator_otp_challenges", "operator_totp_uses"):
+        assert f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY" in sql
+    assert "GRANT EXECUTE ON FUNCTION operator_otp_cooldown_seconds(text) TO oracle_app" in sql
     assert ("GRANT EXECUTE ON FUNCTION app_begin_operator_session(text, text, text, text, text, text) "
             "TO oracle_app") in sql
     # The refusal is 0117's, which the API already maps to 401.

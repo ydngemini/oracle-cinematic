@@ -454,14 +454,14 @@ def _context_from_authorization(
 
     environment_identity = _is_environment_identity(agent_id, tenant_id, role)
     operator_session = None
-    from operator_sessions import JTI_RE, is_registry_identity
+    from operator_sessions import is_registry_identity, valid_jti
 
     if environment_identity and is_registry_identity(agent_id, tenant_id, role):
         # An environment operator's token is a session only with a registry
         # row (0181, audit 28.3); one without a jti was issued before the
         # registry existed and cannot be revoked, so it is not accepted.
         jti = payload.get("jti")
-        if not isinstance(jti, str) or not JTI_RE.match(jti):
+        if not valid_jti(jti):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Your session has ended. Sign in again.",
@@ -539,6 +539,13 @@ async def verify_session_current(ctx: TenantContext) -> None:
         return
     import asyncpg
     from db.connection import tenant_tx  # lazy: db.connection imports tenancy
+
+    if ctx.operator_session:
+        # Stretch the credential (once per process) before taking a
+        # platform-pool connection, not inside the transaction.
+        from operator_sessions import credential_fingerprint
+
+        await credential_fingerprint(ctx.agent_id)
 
     try:
         async with tenant_tx(ctx):

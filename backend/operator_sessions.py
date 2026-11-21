@@ -20,9 +20,14 @@ ends every session issued before it. Where it is checked:
     below, including routes that answer from memory and open no transaction;
   * /auth/session and /auth/verify (auth._live_session).
 
-/auth/logout revokes the account's live rows. When the registry cannot be read
-the request is refused (503 session_unverifiable for HTTP, 1011 for operator
+/auth/logout revokes the account's live rows. A sign-in and every process
+start (boot) revoke the rows another credential issued, so rolling a rotated
+credential back does not revive them. When the registry cannot be read the
+request is refused (503 session_unverifiable for HTTP, 1011 for operator
 streams): an unprovable operator session is never admitted.
+
+The account is lower()-cased in SQL on every path (insert, revoke, the check
+in app_begin_operator_session), so both sides normalise it the same way.
 
 Other environment (demo) identities keep their behaviour: they are trusted by
 signature, dev/staging only (config.DEMO_LOGIN_ENVS).
@@ -39,7 +44,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from log_redaction import actor_ref
+from log_redaction import actor_ref, redact_path
 
 if TYPE_CHECKING:
     from tenancy import TenantContext
@@ -47,7 +52,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("oracle.auth.operator_sessions")
 
 # secrets.token_urlsafe(32) is 43 characters; accept a little either side.
-JTI_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+# Always matched with fullmatch(): `$` would also accept a trailing newline.
+JTI_RE = re.compile(r"[A-Za-z0-9_-]{32,128}")
 _JTI_BYTES = 32
 _PLATFORM_ADMIN = "platform_admin"
 
@@ -74,6 +80,10 @@ def any_registry_identity() -> bool:
     from auth import DEMO_TENANCY
 
     return any(role == _PLATFORM_ADMIN for _tenant, role in DEMO_TENANCY.values())
+
+
+def valid_jti(jti: Any) -> bool:
+    return isinstance(jti, str) and JTI_RE.fullmatch(jti) is not None
 
 
 def jti_hash(jti: str) -> str:
@@ -121,21 +131,76 @@ async def credential_fingerprint(agent_id: str) -> str:
     return fingerprint
 
 
+_REVOKE_OTHER_CREDENTIALS = (
+    "UPDATE operator_sessions SET revoked_at = now() "
+    "WHERE account = lower($1) AND revoked_at IS NULL AND credential_fingerprint <> $2"
+)
+
+
+def _revoked_count(status: Any) -> int:
+    text = str(status)
+    return int(text.rsplit(" ", 1)[-1]) if text.startswith("UPDATE") else 0
+
+
 async def register(agent_id: str) -> str:
     """Record a new operator session and return its jti (for the token).
-    Raises when the registry cannot be written: no row, no session."""
+    Rows issued under another credential are revoked first, so a rotated-out
+    credential that is later configured again finds them ended. Raises when
+    the registry cannot be written: no row, no session."""
     from auth import TOKEN_TTL_SECONDS, _admin_ctx
     from db.connection import tenant_tx
 
     jti = secrets.token_urlsafe(_JTI_BYTES)
     fingerprint = await credential_fingerprint(agent_id)
     async with tenant_tx(_admin_ctx()) as conn:
+        stale = _revoked_count(await conn.execute(_REVOKE_OTHER_CREDENTIALS, agent_id, fingerprint))
         await conn.execute(
             "INSERT INTO operator_sessions (jti_hash, account, credential_fingerprint, expires_at) "
-            "VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
-            jti_hash(jti), agent_id.strip().lower(), fingerprint, TOKEN_TTL_SECONDS,
+            "VALUES ($1, lower($2), $3, now() + make_interval(secs => $4))",
+            jti_hash(jti), agent_id, fingerprint, TOKEN_TTL_SECONDS,
         )
+    if stale:
+        log.warning("Operator sign-in revoked %d session(s) issued under a previous credential (%s).",
+                    stale, actor_ref(agent_id))
     return jti
+
+
+def registry_identities() -> list[str]:
+    from auth import DEMO_TENANCY
+
+    return [agent for agent, (_tenant, role) in DEMO_TENANCY.items() if role == _PLATFORM_ADMIN]
+
+
+async def boot() -> None:
+    """Once per process, off the request path: stretch each operator
+    credential (so the first check does not run scrypt while holding a
+    platform-pool connection) and revoke the sessions another credential
+    issued (a restart is how a rotated credential takes effect). Never raises."""
+    import db.connection as dbc
+    from auth import _admin_ctx
+
+    for agent_id in registry_identities():
+        try:
+            fingerprint = await credential_fingerprint(agent_id)
+            if dbc.get_pool() is None:
+                continue
+            async with dbc.tenant_tx(_admin_ctx()) as conn:
+                stale = _revoked_count(await conn.execute(_REVOKE_OTHER_CREDENTIALS, agent_id, fingerprint))
+            if stale:
+                log.warning("Operator credential changed: %d session(s) issued under the previous one "
+                            "revoked at boot (%s).", stale, actor_ref(agent_id))
+        except Exception as exc:  # noqa: BLE001 - a boot step must not stop the boot
+            log.warning("Operator session boot step skipped (%s): %s", actor_ref(agent_id),
+                        type(exc).__name__)
+
+
+_boot_tasks: set = set()
+
+
+def start_boot() -> None:
+    task = asyncio.get_running_loop().create_task(boot(), name="operator-sessions-boot")
+    _boot_tasks.add(task)
+    task.add_done_callback(_boot_tasks.discard)
 
 
 async def revoke(payload: dict) -> int:
@@ -146,24 +211,23 @@ async def revoke(payload: dict) -> int:
     agent_id, jti = payload.get("sub"), payload.get("jti")
     if not is_registry_identity(agent_id, payload.get("tenant_id"), payload.get("role")):
         return 0
-    if not isinstance(jti, str) or not JTI_RE.match(jti):
+    if not valid_jti(jti):
         return 0
     from auth import _admin_ctx
     from db.connection import tenant_tx
 
-    account = agent_id.strip().lower()
     fingerprint = await credential_fingerprint(agent_id)
     async with tenant_tx(_admin_ctx()) as conn:
         status = await conn.execute(
             "UPDATE operator_sessions SET revoked_at = now() "
-            "WHERE account = $1 AND revoked_at IS NULL "
+            "WHERE account = lower($1) AND revoked_at IS NULL "
             "AND EXISTS (SELECT 1 FROM operator_sessions AS presented "
-            "WHERE presented.jti_hash = $2 AND presented.account = $1 "
+            "WHERE presented.jti_hash = $2 AND presented.account = lower($1) "
             "AND presented.revoked_at IS NULL AND presented.expires_at > now() "
             "AND presented.credential_fingerprint = $3)",
-            account, jti_hash(jti), fingerprint,
+            agent_id, jti_hash(jti), fingerprint,
         )
-    revoked = int(str(status).rsplit(" ", 1)[-1]) if str(status).startswith("UPDATE") else 0
+    revoked = _revoked_count(status)
     log.info("Operator signed out: %d session(s) revoked (%s).", revoked, actor_ref(agent_id))
     return revoked
 
@@ -182,7 +246,35 @@ def renewal_claims(ctx: "TenantContext") -> dict:
 
 # ── every HTTP request ────────────────────────────────────────────────────
 
-_SELF_CHECKING_PREFIX = "/auth/"
+# The only paths the middleware leaves alone, matched exactly: everything else,
+# including any /auth/ route added later, is checked. login, logout and csrf
+# must work with a dead cookie; session and verify run the same proof
+# themselves (auth._live_session) with their own answers; register, forgot,
+# reset, invitation and accept-invite are pre-sign-in forms that never read the
+# session, so a stale operator cookie must not block them. The policy and
+# two-step routes do read it and are checked (they also prove it in their own
+# transaction).
+SELF_CHECKING_PATHS = frozenset({
+    "/auth/login", "/auth/logout", "/auth/csrf", "/auth/session", "/auth/verify",
+    "/auth/register", "/auth/forgot", "/auth/reset", "/auth/invitation", "/auth/accept-invite",
+})
+
+
+def _ip_ref(scope) -> str:
+    """A stable, non-reversible reference for the caller's address (the
+    rate limiter's view of it), for the refusal log line."""
+    import os
+
+    from starlette.requests import Request
+
+    from rate_limit_middleware import _get_client_ip
+
+    try:
+        ip = _get_client_ip(Request(scope))
+    except Exception:  # noqa: BLE001 - a log reference must never fail the request
+        ip = "unknown"
+    key = (os.environ.get("ORACLE_SECRET_KEY", "") or "neoh-log-ip").encode()
+    return "ip:" + hmac.new(key, b"log-ip:v1:" + ip.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:12]
 
 
 def _authorization(scope) -> Optional[str]:
@@ -198,7 +290,7 @@ def _authorization(scope) -> Optional[str]:
     return f"Bearer {token}" if token else None
 
 
-async def _verdict(authorization: str):
+async def _verdict(authorization: str, scope=None):
     """None to let the request through, or the response that refuses it."""
     from fastapi import HTTPException
     from starlette.responses import JSONResponse
@@ -216,9 +308,15 @@ async def _verdict(authorization: str):
     try:
         await auth._prove_session_live(ctx)
     except auth.SessionUnverifiable:
+        log.warning("Operator request refused: its session could not be checked (%s, %s).",
+                    actor_ref(ctx.agent_id), redact_path(str((scope or {}).get("path", "-"))))
         return JSONResponse(status_code=503, content={"detail": auth._session_unverifiable().detail})
     except HTTPException:
-        log.warning("Operator request refused: session ended (%s).", actor_ref(ctx.agent_id))
+        # Someone presented an ended operator session: a copied token after
+        # logout or a rotation, or the operator's own stale cookie.
+        log.warning("Operator request refused: session ended (%s, %s %s, %s).", actor_ref(ctx.agent_id),
+                    (scope or {}).get("method", "-"), redact_path(str((scope or {}).get("path", "-"))),
+                    _ip_ref(scope) if scope else "ip:-")
         response = JSONResponse(status_code=401, content={"detail": "Your session has ended. Sign in again."})
         auth._clear_session_cookie(response)
         return response
@@ -227,22 +325,20 @@ async def _verdict(authorization: str):
 
 class OperatorSessionMiddleware:
     """Prove the registry row of every HTTP request that carries an operator
-    token before the route runs. /auth/ routes are left to themselves: login
-    and logout must work with a dead cookie, and /auth/session and
-    /auth/verify run the same proof (auth._live_session) with their own
-    answers. Requests without an operator token pass untouched (one HMAC
-    check of the token's signature, no database)."""
+    token before the route runs, except on SELF_CHECKING_PATHS. Requests
+    without an operator token pass untouched (one HMAC check of the token's
+    signature, no database)."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
         if (scope.get("type") == "http"
-                and not str(scope.get("path", "")).startswith(_SELF_CHECKING_PREFIX)
+                and str(scope.get("path", "")) not in SELF_CHECKING_PATHS
                 and any_registry_identity()):
             authorization = _authorization(scope)
             if authorization:
-                refusal = await _verdict(authorization)
+                refusal = await _verdict(authorization, scope)
                 if refusal is not None:
                     await refusal(scope, receive, send)
                     return

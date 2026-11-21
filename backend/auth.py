@@ -158,6 +158,11 @@ _EMAIL_OTP_RESEND_SECONDS = 30
 # trigger's interval (tests pin both).
 _EMAIL_OTP_COOLDOWN_SECONDS = 900
 _EMAIL_OTP_COOLDOWN_SQLSTATE = "OTPLK"
+# Issuing and checking a code take this per-account transaction lock, so two
+# concurrent requests cannot both issue (two live challenges, two emails) and a
+# check never races an issue (0181 also allows one live challenge per account).
+_OPERATOR_OTP_ACCOUNT_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('operator-otp:' || $1, 0))"
+_OPERATOR_OTP_COOLDOWN_QUERY = "SELECT operator_otp_cooldown_seconds($1)"
 if _ADMIN_ID and _ADMIN_PASSPHRASE:
     DEMO_CREDENTIALS[_ADMIN_ID] = _ADMIN_PASSPHRASE
     DEMO_TENANCY[_ADMIN_ID] = (PLATFORM_TENANT_ID, "platform_admin")
@@ -396,9 +401,13 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
     account = agent_id.strip().lower()
     if not otp:
         code = f"{secrets.randbelow(10 ** 6):06d}"
+        cooldown = 0
         try:
             async with tenant_tx(_admin_ctx()) as conn:
-                recent = await conn.fetchval(
+                await conn.execute(_OPERATOR_OTP_ACCOUNT_LOCK, account)
+                # No code during the cool-down after a lockout (0181, L17-32).
+                cooldown = int(await conn.fetchval(_OPERATOR_OTP_COOLDOWN_QUERY, account) or 0)
+                recent = cooldown > 0 or await conn.fetchval(
                     "SELECT 1 FROM operator_otp_challenges WHERE account = $1 AND consumed_at IS NULL "
                     "AND created_at > now() - make_interval(secs => $2)",
                     account, _EMAIL_OTP_RESEND_SECONDS,
@@ -409,8 +418,8 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
                         "UPDATE operator_otp_challenges SET consumed_at = now() "
                         "WHERE account = $1 AND consumed_at IS NULL", account,
                     )
-                    # Refused by the database during the cool-down after a
-                    # lockout (0181 trigger, SQLSTATE OTPLK), on every replica.
+                    # The database refuses this during a cool-down on any
+                    # path (0181 trigger, SQLSTATE OTPLK), on every replica.
                     challenge_id = await conn.fetchval(
                         "INSERT INTO operator_otp_challenges (account, code_hmac, expires_at) "
                         "VALUES ($1, '', now() + make_interval(secs => $2)) RETURNING id::text",
@@ -427,6 +436,10 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
             log.warning("Operator sign-in code refused: codes are paused for %d more seconds after "
                         "a lockout (%s).", retry_after, actor_ref(account))
             raise _otp_locked(retry_after) from None
+        if cooldown:
+            log.warning("Operator sign-in code refused: codes are paused for %d more seconds after "
+                        "a lockout (%s).", cooldown, actor_ref(account))
+            raise _otp_locked(cooldown)
         if not recent:
             try:
                 await asyncio.to_thread(_send_operator_code, _ADMIN_OTP_EMAIL, code)
@@ -447,7 +460,11 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
     # guessed without limit for its 10-minute life.
     accepted = locked = False
     async with tenant_tx(_admin_ctx()) as conn:
-        row = await conn.fetchrow(
+        await conn.execute(_OPERATOR_OTP_ACCOUNT_LOCK, account)
+        # During a cool-down no code is accepted, not even a right one for a
+        # challenge that escaped the lock (0181, L17-32 review).
+        cooldown = int(await conn.fetchval(_OPERATOR_OTP_COOLDOWN_QUERY, account) or 0)
+        row = None if cooldown else await conn.fetchrow(
             "SELECT id::text AS id, code_hmac, attempts FROM operator_otp_challenges "
             "WHERE account = $1 AND consumed_at IS NULL AND expires_at > now() "
             "ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
@@ -475,6 +492,17 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
                 )
                 # The row is FOR UPDATE-locked, so its count is this request's.
                 locked = int(row["attempts"] or 0) + 1 >= _EMAIL_OTP_MAX_ATTEMPTS
+                if locked:
+                    # Retire every other live challenge of the account with it,
+                    # so the next guess cannot move to a sibling.
+                    await conn.execute(
+                        "UPDATE operator_otp_challenges SET consumed_at = now() "
+                        "WHERE account = $1 AND consumed_at IS NULL", account,
+                    )
+    if cooldown:
+        log.warning("Operator sign-in code refused: codes are paused for %d more seconds after "
+                    "a lockout (%s).", cooldown, actor_ref(account))
+        raise _otp_locked(cooldown)
     if locked:
         # For alerting: a passphrase holder has spent a challenge's five guesses.
         log.error("Operator sign-in locked: %d wrong codes retired the challenge; new codes are "
@@ -1135,6 +1163,11 @@ async def _prove_session_live(ctx) -> None:
     import asyncpg
     from db.connection import tenant_tx
 
+    if ctx.operator_session:
+        import operator_sessions
+
+        await operator_sessions.credential_fingerprint(ctx.agent_id)  # outside the transaction
+
     try:
         async with tenant_tx(ctx):
             pass  # apply_rls_context runs app_begin_session
@@ -1319,7 +1352,12 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         # operator_sessions, which logout and a credential rotation end
         # (0181, audit 28.3). No row, no token — a registry failure fails
         # the sign-in.
-        token_claims["jti"] = await operator_sessions.register(agent_identity)
+        try:
+            token_claims["jti"] = await operator_sessions.register(agent_identity)
+        except Exception as exc:  # noqa: BLE001 — no row, no session: say so, never a bare 500
+            log.error("Operator sign-in refused: its session could not be recorded (%s).",
+                      type(exc).__name__)
+            raise _session_unverifiable() from None
     token = _issue_jwt(
         agent_identity,
         tenant_id,

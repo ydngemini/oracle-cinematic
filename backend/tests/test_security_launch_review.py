@@ -518,6 +518,8 @@ class _OtpStore:
         self.rows: list[dict] = []
 
     async def fetchval(self, query, *args):
+        if "operator_otp_cooldown_seconds" in query:
+            return 0   # the 0181 cool-down: modelled in test_operator_session_registry.py
         if "SELECT 1 FROM operator_otp_challenges" in query:
             return None
         if "INSERT INTO operator_otp_challenges" in query:

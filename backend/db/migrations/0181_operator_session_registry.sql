@@ -16,43 +16,69 @@
 --    and carry the fingerprint of the operator credential configured NOW: the
 --    fingerprint is a keyed, stretched hash (operator_sessions.credential_fingerprint)
 --    of the passphrase and second-factor material, never the material, so
---    rotating either ends every session issued before. /auth/logout sets
+--    rotating either ends every session issued before. A sign-in and every
+--    process start also REVOKE the rows another credential issued, so rolling
+--    the credential back does not bring them back. /auth/logout sets
 --    revoked_at. Refusal is SQLSTATE 28000 with 0117's message, which the API
---    already turns into 401 "Your session has ended".
+--    already turns into 401 "Your session has ended". The account is
+--    lower()-cased here, in SQL, on every path (insert, revoke, check).
 --
 --    Platform-only: RLS on and forced, and only a platform-admin context
 --    (app_is_platform_admin(): the admin GUC AND a login in
---    platform_admin_role, 0120) reads or writes a row. The app may insert and
---    update (revoke); it may not delete. Rows past expires_at are dead weight
---    and may be purged by an operator.
+--    platform_admin_role, 0120) reads or writes a row. The app may insert a
+--    row and set revoked_at (a column grant); nothing else. Trigger
+--    operator_sessions_guard refuses, for every role including the owner, an
+--    un-revoke, a later expiry and any change to the identity columns: a row
+--    only ever moves towards ended. Rows past expires_at are dead weight and
+--    may be purged (DELETE) by an operator on their own role.
 --
--- 2. operator_otp_challenges.locked_at + trigger operator_otp_cooldown
---    (ledger L17-32 owner decision). Five wrong emailed codes retire a
---    challenge (28.1), but a fresh code was issued at once, so a passphrase
---    holder got ~50 guesses a minute across challenges. auth now stamps
---    locked_at when the fifth wrong code retires a challenge, and this
---    BEFORE INSERT trigger refuses any new challenge for that account for 15
---    minutes after it (SQLSTATE 'OTPLK', DETAIL retry_after_seconds=<n>), on
---    every replica. The trigger's query is its own statement, so it sees a
---    lock committed by a concurrent request after this transaction began.
+-- 2. The emailed-code cool-down (ledger L17-32 owner decision). Five wrong
+--    emailed codes retire a challenge (28.1), but a fresh code was issued at
+--    once, so a passphrase holder got ~50 guesses a minute across challenges.
+--    auth now stamps locked_at when the fifth wrong code retires a challenge
+--    (and retires every other live challenge of the account with it);
+--    operator_otp_cooldown_seconds() is the seconds left of the 15 minutes
+--    after the account's latest lock; auth refuses both a new code and any
+--    code typed while it is above 0, and BEFORE INSERT trigger
+--    operator_otp_cooldown refuses a new challenge on any path (SQLSTATE
+--    'OTPLK', DETAIL retry_after_seconds=<n>), on every replica.
+--    uq_operator_otp_challenges_live makes two live challenges for one account
+--    impossible: concurrent requests could each insert one (each saw no recent
+--    code; neither saw the other's uncommitted row), and the fifth wrong code
+--    then retired only one of them. auth also serialises issuance and checking
+--    per account (pg_advisory_xact_lock), so the second request waits, sees the
+--    first's code and sends no second email. Duplicates already present are
+--    retired (the newest kept) before the index is built.
 --
--- Previous release on this schema: unaffected. It never reads
--- operator_sessions, never sets locked_at (so the trigger never refuses its
--- inserts), and calls neither function.
+-- 3. operator_otp_challenges and operator_totp_uses (0121) get RLS on and
+--    forced with a platform-admin policy: a brokerage (request) connection
+--    could read the code HMACs or clear locked_at. Every path that touches them
+--    (auth's operator second factor, at sign-in and at step-up) runs in the
+--    platform context.
+--
+-- Previous release on this schema: it never reads operator_sessions, never
+-- sets locked_at (so the cool-down never refuses its inserts) and calls no new
+-- function; it reaches the 0121 tables in the platform context, which the new
+-- policies admit. Two of its concurrent code requests for one account can now
+-- fail one with a unique violation (500) instead of sending two codes.
 --
 -- Rollback: DROP TRIGGER operator_otp_cooldown ON operator_otp_challenges;
--- DROP FUNCTION operator_otp_cooldown_guard(); DROP FUNCTION
--- app_begin_operator_session(text, text, text, text, text, text); DROP TABLE
--- operator_sessions; ALTER TABLE operator_otp_challenges DROP COLUMN locked_at.
--- Rolling the application back alone is safe (see above); rolling the schema
--- back while this release serves would refuse every operator request (fail
--- closed).
+-- DROP TRIGGER operator_sessions_guard ON operator_sessions; DROP FUNCTION
+-- operator_otp_cooldown_guard(), operator_otp_cooldown_seconds(text),
+-- operator_sessions_guard(), app_begin_operator_session(text, text, text,
+-- text, text, text); DROP INDEX uq_operator_otp_challenges_live; DROP POLICY
+-- operator_otp_challenges_platform ON operator_otp_challenges; DROP POLICY
+-- operator_totp_uses_platform ON operator_totp_uses; ALTER TABLE ... NO FORCE /
+-- DISABLE ROW LEVEL SECURITY on both; DROP TABLE operator_sessions; ALTER
+-- TABLE operator_otp_challenges DROP COLUMN locked_at. Rolling the
+-- application back alone is safe (see above); rolling the schema back while
+-- this release serves would refuse every operator request (fail closed).
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS operator_sessions (
     -- SHA-256 (hex) of the session token's `jti`; the jti itself is not stored.
     jti_hash               text PRIMARY KEY CHECK (jti_hash ~ '^[0-9a-f]{64}$'),
-    -- The environment identity's sign-in id, lower-cased.
+    -- The environment identity's sign-in id, lower()-cased in SQL.
     account                text NOT NULL CHECK (account <> ''),
     -- Keyed, stretched hash of the credential that issued the session.
     credential_fingerprint text NOT NULL CHECK (credential_fingerprint ~ '^[0-9a-f]{64}$'),
@@ -77,9 +103,41 @@ CREATE POLICY operator_sessions_platform ON operator_sessions
     FOR ALL USING (app_is_platform_admin()) WITH CHECK (app_is_platform_admin());
 
 -- Default privileges hand the app arwd on every new table; narrow explicitly.
+-- The only column the app may change is revoked_at.
 REVOKE ALL ON operator_sessions FROM PUBLIC;
-REVOKE DELETE, TRUNCATE ON operator_sessions FROM oracle_app;
-GRANT SELECT, INSERT, UPDATE ON operator_sessions TO oracle_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON operator_sessions FROM oracle_app;
+GRANT SELECT, INSERT ON operator_sessions TO oracle_app;
+GRANT UPDATE (revoked_at) ON operator_sessions TO oracle_app;
+
+-- A row only moves towards ended, whoever writes it.
+CREATE OR REPLACE FUNCTION operator_sessions_guard()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    VOLATILE
+    SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    IF OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at THEN
+        RAISE EXCEPTION 'an ended operator session cannot be revived or re-dated' USING ERRCODE = '42501';
+    END IF;
+    IF NEW.expires_at > OLD.expires_at THEN
+        RAISE EXCEPTION 'an operator session cannot be extended' USING ERRCODE = '42501';
+    END IF;
+    IF NEW.jti_hash IS DISTINCT FROM OLD.jti_hash
+       OR NEW.account IS DISTINCT FROM OLD.account
+       OR NEW.credential_fingerprint IS DISTINCT FROM OLD.credential_fingerprint
+       OR NEW.issued_at IS DISTINCT FROM OLD.issued_at THEN
+        RAISE EXCEPTION 'an operator session''s identity cannot change' USING ERRCODE = '42501';
+    END IF;
+    RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION operator_sessions_guard() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS operator_sessions_guard ON operator_sessions;
+CREATE TRIGGER operator_sessions_guard
+    BEFORE UPDATE ON operator_sessions
+    FOR EACH ROW EXECUTE FUNCTION operator_sessions_guard();
 
 -- Same three GUCs as app_begin_session (0117), then the registry check.
 -- SECURITY INVOKER on purpose: the GUCs are set first, so the policy above
@@ -129,11 +187,40 @@ GRANT EXECUTE ON FUNCTION app_begin_operator_session(text, text, text, text, tex
 ALTER TABLE operator_otp_challenges ADD COLUMN IF NOT EXISTS locked_at timestamptz;
 
 COMMENT ON COLUMN operator_otp_challenges.locked_at IS
-    '0181 (L17-32): set when the fifth wrong code retired this challenge; no new challenge is issued to the '
-    'account for 15 minutes after it (trigger operator_otp_cooldown).';
+    '0181 (L17-32): set when the fifth wrong code retired this challenge; no code is issued to or accepted '
+    'from the account for 15 minutes after it (operator_otp_cooldown_seconds, trigger operator_otp_cooldown).';
 
 CREATE INDEX IF NOT EXISTS idx_operator_otp_challenges_locked
     ON operator_otp_challenges (account, locked_at DESC) WHERE locked_at IS NOT NULL;
+
+-- At most one live challenge per account. Retire older duplicates first (a
+-- concurrent pair could exist), keeping each account's newest.
+UPDATE operator_otp_challenges AS older
+   SET consumed_at = now()
+ WHERE older.consumed_at IS NULL
+   AND EXISTS (SELECT 1 FROM operator_otp_challenges AS newer
+                WHERE newer.account = older.account
+                  AND newer.consumed_at IS NULL
+                  AND (newer.created_at, newer.id) > (older.created_at, older.id));
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_otp_challenges_live
+    ON operator_otp_challenges (account) WHERE consumed_at IS NULL;
+
+-- Seconds left of the account's cool-down (0 when none). The one place the
+-- 15 minutes is written; auth calls it before issuing and before checking a code.
+CREATE OR REPLACE FUNCTION operator_otp_cooldown_seconds(p_account text)
+    RETURNS integer
+    LANGUAGE sql
+    STABLE
+    SET search_path = pg_catalog, public
+AS $$
+    SELECT COALESCE(greatest(0, ceil(extract(epoch FROM (max(c.locked_at) + interval '900 seconds' - now())))::integer), 0)
+      FROM public.operator_otp_challenges c
+     WHERE c.account = p_account
+       AND c.locked_at IS NOT NULL
+$$;
+REVOKE ALL ON FUNCTION operator_otp_cooldown_seconds(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION operator_otp_cooldown_seconds(text) TO oracle_app;
 
 CREATE OR REPLACE FUNCTION operator_otp_cooldown_guard()
     RETURNS trigger
@@ -142,16 +229,10 @@ CREATE OR REPLACE FUNCTION operator_otp_cooldown_guard()
     SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    last_lock timestamptz;
     wait_seconds integer;
 BEGIN
-    SELECT max(c.locked_at) INTO last_lock
-      FROM public.operator_otp_challenges c
-     WHERE c.account = NEW.account
-       AND c.locked_at IS NOT NULL
-       AND c.locked_at > now() - interval '900 seconds';
-    IF last_lock IS NOT NULL THEN
-        wait_seconds := greatest(1, ceil(extract(epoch FROM (last_lock + interval '900 seconds' - now())))::integer);
+    wait_seconds := public.operator_otp_cooldown_seconds(NEW.account);
+    IF wait_seconds > 0 THEN
         RAISE EXCEPTION 'operator sign-in codes are paused after a lockout'
             USING ERRCODE = 'OTPLK',
                   DETAIL = format('retry_after_seconds=%s', wait_seconds);
@@ -165,3 +246,17 @@ DROP TRIGGER IF EXISTS operator_otp_cooldown ON operator_otp_challenges;
 CREATE TRIGGER operator_otp_cooldown
     BEFORE INSERT ON operator_otp_challenges
     FOR EACH ROW EXECUTE FUNCTION operator_otp_cooldown_guard();
+
+-- ── the operator's second-factor tables are platform-only ──────────────────
+
+ALTER TABLE operator_otp_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operator_otp_challenges FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS operator_otp_challenges_platform ON operator_otp_challenges;
+CREATE POLICY operator_otp_challenges_platform ON operator_otp_challenges
+    FOR ALL USING (app_is_platform_admin()) WITH CHECK (app_is_platform_admin());
+
+ALTER TABLE operator_totp_uses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operator_totp_uses FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS operator_totp_uses_platform ON operator_totp_uses;
+CREATE POLICY operator_totp_uses_platform ON operator_totp_uses
+    FOR ALL USING (app_is_platform_admin()) WITH CHECK (app_is_platform_admin());
