@@ -360,9 +360,12 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
         noon_et = datetime(2026, 10, 14, 16, 0, tzinfo=timezone.utc)
         for phone in (phone_b, phone_cap, phone_voice):
             for channel in (Channel.SMS, Channel.VOICE):
-                await ConsentLedger.record_consent(
+                # Documented (0183, 26.6): an attested claim no longer clears an AI call.
+                _id, status = await ConsentLedger.record_consent(
                     ctx("b"), contact=phone, channel=channel, consent_type="express_written", state_code="DE",
-                    proof_source="matrix", proof_text="signed form", client_id=str(people["b"]["client"]))
+                    proof_source="e_signature", proof_text="signed form", evidence_ref=f"env-{tag}",
+                    client_id=str(people["b"]["client"]))
+                assert status == "documented"
 
         # 1. B's client texts STOP to B's line — the real inbound path.
         message_id = await messaging_data.record_inbound_message(

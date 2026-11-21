@@ -68,7 +68,7 @@ from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
 from llm_gateway import SpendRefused, SpendUnavailable
-from outreach_compliance import Channel, guard_outreach
+from outreach_compliance import Channel, Purpose, guard_outreach
 from platform_policy import (
     ActionRisk,
     Feature,
@@ -349,6 +349,10 @@ class CommandEdit(BaseModel):
 class ApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     reason: str = Field(min_length=8, max_length=500)
+    # External audit 26.5: what an approved TEXT is for, declared by the person
+    # approving it. Omitted = marketing (strict). Only a one-to-one text may be
+    # declared informational; see _purpose_declaration.
+    purpose: Optional[Purpose] = None
 
 
 class CallTelemetry(BaseModel):
@@ -800,6 +804,109 @@ def _decode(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+# ── 26.5: the purpose of an approved text ────────────────────────────────────
+# Texts a pipeline wrote for a campaign: their purpose is not the approver's to
+# declare. Missions, sales sequences (smart plans), the AI sales agent and
+# speed-to-lead stay marketing.
+_CAMPAIGN_SOURCES = {"speed-to-lead": "speed-to-lead", "smart-plan": "a sales sequence",
+                     "our-ai-sales-agent": "the AI sales agent"}
+# The idempotency-key prefixes those pipelines stage with (speed_to_lead,
+# sales_api's AI sales agent and smart plans, missions/executor). The key is
+# set at staging and no edit can change it, so it marks the origin even when
+# the editable context does not (review of PR #170). The pipelines themselves
+# are pinned in tests/test_command_staging_origins.py.
+_CAMPAIGN_KEY_PREFIXES = (("speed-to-lead:", "speed-to-lead"), ("smart-plan:", "a sales sequence"),
+                          ("sales-agent:", "the AI sales agent"), ("mission:", "a mission"))
+# Context keys only the staging pipeline sets: where the draft came from and
+# what it owes (a mission's disclosures). An edit keeps the stored values and
+# cannot add, change or drop them, so it cannot launder a campaign text into a
+# one-to-one one (_edited_context).
+_SERVER_CONTEXT_KEYS = ("source", "origin", "mission_id", "objective", "required_disclosures",
+                        "step_run_id", "intake_event_id", "message_id")
+_DECLARED_PURPOSE_KEY = "declared_purpose"
+
+
+def _field(row: Mapping[str, Any], key: str) -> Any:
+    """A column of a command row, None when the row does not carry it."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _stored_draft(command: Mapping[str, Any]) -> dict[str, Any]:
+    draft = _decode(_field(command, "draft"))
+    return draft if isinstance(draft, dict) else {}
+
+
+def _campaign_origin(command: Mapping[str, Any]) -> Optional[str]:
+    """Which campaign pipeline staged this command, in words, or None for a
+    one-to-one draft (typed by an agent, or asked of Neoh in chat). ANY one
+    signal marks a campaign: created_by, the idempotency key (neither can be
+    edited) or the context's origin keys."""
+    context = dict(_stored_draft(command).get("context") or {})
+    created_by = str(_field(command, "created_by") or "")
+    key = str(_field(command, "idempotency_key") or "")
+    if created_by.startswith("mission:") or context.get("mission_id"):
+        return "a mission"
+    for prefix, origin in _CAMPAIGN_KEY_PREFIXES:
+        if key.startswith(prefix):
+            return origin
+    return _CAMPAIGN_SOURCES.get(str(context.get("source") or ""))
+
+
+def _edited_context(stored_command: Mapping[str, Any], sent: Mapping[str, Any]) -> dict[str, Any]:
+    """The context an edit stores: what the client sent, except the
+    server-owned keys, which keep their stored values (and are not added)."""
+    stored = dict(_stored_draft(stored_command).get("context") or {})
+    context = {k: v for k, v in dict(sent or {}).items() if k not in _SERVER_CONTEXT_KEYS}
+    context.update({k: stored[k] for k in _SERVER_CONTEXT_KEYS if k in stored})
+    return context
+
+
+def _purpose_declaration(command: Mapping[str, Any], purpose: Optional[Purpose],
+                         ctx: TenantContext) -> Optional[dict[str, Any]]:
+    """What the approver declares a TEXT is for, checked before the decision.
+
+    Returns the record stored with the command (draft.declared_purpose) for an
+    SMS command, None for any other type. 422 when the declaration is not the
+    approver's to make: an email or call declared informational (they stay
+    marketing), or a campaign text declared informational."""
+    command_type = CommandType(command["command_type"])
+    if command_type is not CommandType.SMS:
+        if purpose is Purpose.INFORMATIONAL:
+            raise HTTPException(status_code=422,
+                                detail="Only a text message can be declared informational; emails and "
+                                       "calls are treated as marketing.")
+        return None
+    origin = _campaign_origin(command)
+    if purpose is Purpose.INFORMATIONAL and origin:
+        raise HTTPException(status_code=422,
+                            detail=f"This text comes from {origin}, so it is treated as marketing and "
+                                   "needs documented written consent.")
+    return {
+        "purpose": (purpose or Purpose.MARKETING).value,
+        "declared": purpose is not None,     # False = the strict default applied
+        "declared_by": ctx.agent_id,
+        "approval_id": str(command["approval_id"]),
+    }
+
+
+def declared_sms_purpose(command: Mapping[str, Any]) -> Purpose:
+    """At send time: INFORMATIONAL only when the person who approved THIS
+    approval declared it (the record names the command's current approval) and
+    no campaign staged the text; anything else (a row without the record or
+    the columns) is MARKETING."""
+    record = _stored_draft(command).get(_DECLARED_PURPOSE_KEY) or {}
+    approval_id = _field(command, "approval_id")
+    if (isinstance(record, dict) and record.get("purpose") == Purpose.INFORMATIONAL.value
+            and approval_id is not None
+            and record.get("approval_id") == str(approval_id)
+            and _campaign_origin(command) is None):
+        return Purpose.INFORMATIONAL
+    return Purpose.MARKETING
 
 
 def _command_dict(row: Any) -> dict[str, Any]:
@@ -2253,6 +2360,8 @@ async def edit_command(
             raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
         if row["state"] not in {"draft", "awaiting_approval"}:
             raise HTTPException(status_code=409, detail="Command can no longer be edited.")
+        # Where the draft came from is not the editor's to change (26.5).
+        body.context = _edited_context(row, body.context)
         # An edit replaces the approval with one requested by the editor, so
         # only someone who may decide the current one may edit (0142): before,
         # any agent who could see a colleague's draft could edit it into their
@@ -2384,7 +2493,7 @@ async def _queue_execution_in_tx(conn: Any, ctx: TenantContext, command: Mapping
 
 
 async def release_command(
-    ctx: TenantContext, row: Any, *, reason: str = "",
+    ctx: TenantContext, row: Any, *, reason: str = "", purpose: Optional[Purpose] = None,
 ) -> dict[str, Any]:
     """Approve a staged command and put it on the queue.
 
@@ -2401,6 +2510,11 @@ async def release_command(
     self-release calls this directly, and must not queue a send for a lapsed
     or closing brokerage either (F18.07). Refused, the command stays awaiting
     approval and nothing is queued.
+
+    ``purpose`` (26.5): for a text, what the approving person declares it is
+    for; stored with the command in the same transaction as the decision and
+    named in the decision's audit entry. A mission's self-release passes none:
+    marketing.
     """
     refusal = await billing.entitlement_refusal(ctx)
     if refusal is not None:
@@ -2423,6 +2537,8 @@ async def release_command(
             raise HTTPException(status_code=409, detail=f"Command is {current['state']}.")
         if current["approval_id"] is None:
             raise HTTPException(status_code=409, detail="This command has no approval to release.")
+        # Checked before the decision: a refused declaration decides nothing.
+        declaration = _purpose_declaration(current, purpose, ctx)
         try:
             decided, before = await decide_approval_in_tx(
                 conn, ctx, str(current["approval_id"]), decision="approved", reason=reason)
@@ -2436,12 +2552,23 @@ async def release_command(
             # an edit can request a fresh approval, as for one nobody clicked.
             expired = (decided, before)
         else:
+            if declaration is not None:
+                # Outside the hashed execution payload (content/context), so the
+                # approved message is unchanged; written only by an approver, in
+                # the decision's own transaction. After this the command is
+                # queued and nothing can edit or re-approve it.
+                await conn.execute(
+                    "UPDATE command_executions SET draft = jsonb_set(draft, '{declared_purpose}', $2::jsonb, true) "
+                    "WHERE id=$1::uuid", command_id, json.dumps(declaration))
             job = await _queue_execution_in_tx(conn, ctx, current, created_by=ctx.agent_id)
             updated = await conn.fetchrow("SELECT * FROM command_executions WHERE id=$1::uuid", command_id)
     if expired is not None:
         await record_approval_decision(ctx, str(current["approval_id"]), *expired)
         raise HTTPException(status_code=409, detail="This approval expired before it was approved. Edit the message to request a new approval.")
-    approval = await record_approval_decision(ctx, str(current["approval_id"]), decided, before)
+    approval = await record_approval_decision(
+        ctx, str(current["approval_id"]), decided, before,
+        extra_metadata=({"purpose": declaration["purpose"], "purpose_declared": declaration["declared"]}
+                        if declaration is not None else None))
     return {"command": _command_dict(updated), "approval": approval, "job": job}
 
 
@@ -2567,7 +2694,7 @@ async def approve_command(
     async with tenant_tx(ctx) as conn:
         await _require_destination_on_record(conn, ctx.tenant_id, CommandType(row["command_type"]),
                                              _decode(row["target"]) or {})
-    return await release_command(ctx, row, reason=body.reason)
+    return await release_command(ctx, row, reason=body.reason, purpose=body.purpose)
 
 
 @router.post("/{command_id}/reject")
@@ -4268,6 +4395,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 channel=Channel.EMAIL,
                 contact=str(target["email"]),
                 state_code=target.get("state_code"),
+                # Purpose: an approved free-text email is not classified, so strict (26.5);
+                # the email gate does not read it (opt-out model, footer on every send).
+                purpose=Purpose.MARKETING,
             )
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
@@ -4325,12 +4455,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 list_unsubscribe_url=commercial.unsubscribe_url,
             )
         elif command_type is CommandType.SMS:
+            sms_purpose = declared_sms_purpose(command)
             decision = await guard_outreach(
                 ctx,
                 channel=Channel.SMS,
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: what the approving person declared for THIS approval; undeclared,
+                # or a mission / sequence / speed-to-lead text, is marketing (26.5).
+                purpose=sms_purpose,
             )
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
@@ -4418,6 +4552,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
                 tz_name=target.get("timezone"),
+                # Purpose: an approved AI call is not classified, so strict (26.5); AI voice
+                # needs documented written consent whatever it says.
+                purpose=Purpose.MARKETING,
             )
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))

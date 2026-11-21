@@ -39,7 +39,7 @@ from db.connection import tenant_tx
 from memory_core_errors import memory_core_offline
 from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
-from outreach_compliance import Channel, enforce_outreach
+from outreach_compliance import Channel, Purpose, enforce_outreach
 from client_ai_automation import enqueue_client_reconcile
 from log_redaction import actor_ref
 
@@ -1496,6 +1496,9 @@ async def send_message(
                 await enforce_outreach(
                     ctx, channel=Channel.EMAIL, contact=client["email"], state_code=None,
                     conn=conn,
+                    # Purpose: an agent's free-text email cannot be classified, so strict
+                    # (26.5); the email gate does not read it (opt-out model).
+                    purpose=Purpose.MARKETING,
                 )
 
             # actor_role must satisfy the interaction_logs CHECK. Outbound is the
