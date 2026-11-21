@@ -75,7 +75,15 @@ from platform_policy import (
     enforce_public_property_data,
     require_feature,
 )
-from tenancy import Role, TenantContext, require_context, require_role
+from tenancy import (
+    LEGACY_SPEED_TO_LEAD_REQUESTER,
+    OUTREACH_PIPELINE_REQUESTERS,
+    SPEED_TO_LEAD_REQUESTER,
+    Role,
+    TenantContext,
+    require_context,
+    require_role,
+)
 import billing
 from billing import require_active_subscription
 
@@ -1146,17 +1154,62 @@ async def _require_command_edit(ctx: TenantContext, command_id: str) -> None:
         await record_access.require_linked_edit(conn, "command_executions", command_id, _COMMAND_NOT_FOUND)
 
 
-async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
+class RequesterMayNotContact(RuntimeError):
+    """At execution: the person (or pipeline) who asked for this send may no
+    longer make it — no longer an active member of the brokerage, or no
+    longer able to reach the record. Terminal, like an opt-out: a retry could
+    send once the account is reactivated or the record handed back, after the
+    requester was told it was not sent (L09-12)."""
+
+    job_terminal = True
+    job_error_code = "REQUESTER_NOT_AUTHORIZED"
+
+
+#: Why requester_contact_refusal said no.
+NOT_A_MEMBER = "not_a_member"
+NO_RECORD_ACCESS = "no_record_access"
+
+
+def _legacy_pipeline_requester(requester: str, command: Any) -> Optional[str]:
+    """A command speed-to-lead staged before its requester carried the
+    "system:" marker (L09-12): its unassigned-contact drafts were staged as
+    "speed-to-lead-worker". Read as the pipeline only when every origin
+    signal the pipeline wrote agrees — the approval's requester AND the
+    command's created_by are exactly that identity, its idempotency key is
+    the pipeline's ("speed-to-lead:…") and its draft context names the
+    pipeline as its source. Anything less is ambiguous and stays a
+    non-member, so it is refused. (A person's draft cannot match: their
+    created_by is their own agent id, and no account may be named
+    "speed-to-lead-worker" — tenancy.is_reserved_pipeline_identity.)"""
+    if requester != LEGACY_SPEED_TO_LEAD_REQUESTER:
+        return None
+    if str(command.get("created_by") or "") != LEGACY_SPEED_TO_LEAD_REQUESTER:
+        return None
+    if not str(command.get("idempotency_key") or "").startswith("speed-to-lead:"):
+        return None
+    draft = _decode(command.get("draft"))
+    context = draft.get("context") if isinstance(draft, dict) else None
+    if not isinstance(context, dict) or context.get("source") != "speed-to-lead":
+        return None
+    return SPEED_TO_LEAD_REQUESTER
+
+
+async def _requester_may_contact(tenant_id: str, command: Any, *,
+                                 reasons: Optional[list[str]] = None) -> bool:
     """Re-check, at execution, that the person who asked for this send may
-    still contact the record it is about (CONTRACT C3.4, 0142).
+    still make it (CONTRACT C3.4, 0142, L09-12).
 
     Approval happens hours or days before a scheduled send; in between the
-    client can be reassigned to a colleague or a share revoked. The worker runs
-    as platform admin, which sees everything, so the check is made as the
-    requester: the approval's requested_by (the agent the AI, a mission or a
-    Smart Plan acted for), in their own role. A requester who is not a member
-    (a system pipeline such as speed-to-lead) is checked as an agent with that
-    id, which is exactly what it could stage: pool records only."""
+    client can be reassigned to a colleague, a share revoked, or the agent
+    suspended or offboarded. The worker runs as platform admin, which sees
+    everything, so the check is made as the requester: the approval's
+    requested_by (the agent the AI, a mission or a Smart Plan acted for), in
+    their own role. The requester must be an ACTIVE member of the brokerage —
+    whether or not the draft names a record — except a system pipeline that
+    stages on its own authority (tenancy.OUTREACH_PIPELINE_REQUESTERS:
+    speed-to-lead for an unassigned contact), which is judged by its own
+    rule: an agent with that id, the brokerage pool only. A refusal's cause
+    is appended to `reasons` when given (NOT_A_MEMBER / NO_RECORD_ACCESS)."""
     client_id, contact_id = command.get("client_id"), command.get("contact_id")
     # A lead the draft names is re-read now (26.3): its seller client today,
     # not only the client it was linked to when staged (0179).
@@ -1166,8 +1219,6 @@ async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
         lead = str(uuid.UUID(str(lead))) if lead else None
     except (ValueError, TypeError, AttributeError):
         lead = None
-    if client_id is None and contact_id is None and lead is None:
-        return True
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     lead_client = None
     async with tenant_tx(platform) as conn:
@@ -1182,45 +1233,72 @@ async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
             if lead_row is None:
                 # The lead this was about is gone: nothing to check against,
                 # so not sent (stage it again if it should still go out).
+                if reasons is not None:
+                    reasons.append(NO_RECORD_ACCESS)
                 return False
             lead_client = lead_row["seller_client_id"]
     requester = str(requested_by or command.get("created_by") or "")
-    if not await requester_may_contact_record(tenant_id, requester, client_id, contact_id):
-        return False
-    if lead_client is not None and str(lead_client) != str(client_id):
-        return await requester_may_contact_record(tenant_id, requester, lead_client, None)
-    return True
+    requester = _legacy_pipeline_requester(requester, command) or requester
+    refusal = await requester_contact_refusal(tenant_id, requester, client_id, contact_id, allow_pipeline=True)
+    if refusal is None and lead_client is not None and str(lead_client) != str(client_id):
+        refusal = await requester_contact_refusal(tenant_id, requester, lead_client, None, allow_pipeline=True)
+    if refusal is not None and reasons is not None:
+        reasons.append(refusal)
+    return refusal is None
 
 
-async def requester_may_contact_record(tenant_id: str, requested_by: str, client_id: Any,
-                                       contact_id: Any, *, require_member: bool = False) -> bool:
-    """May `requested_by`, in their CURRENT role, still reach this client or
-    contact? Checked as them, not as the platform-admin worker. With
-    require_member, someone who is no longer an active member (departed,
-    deactivated) is refused outright — checked merely as "an agent with that
-    id" they would still reach the clients they used to own."""
-    if client_id is None and contact_id is None:
-        return True
+async def requester_contact_refusal(tenant_id: str, requested_by: str, client_id: Any,
+                                    contact_id: Any, *, allow_pipeline: bool = False) -> Optional[str]:
+    """None when `requested_by`, in their CURRENT role, may still reach this
+    client or contact (checked as them, not as the platform-admin worker);
+    otherwise why not: NOT_A_MEMBER or NO_RECORD_ACCESS.
+
+    The requester must be an ACTIVE member of this brokerage (users row,
+    is_active): someone departed, suspended, deactivated or never a member is
+    refused outright, with or without a record to check — checked merely as
+    "an agent with that id" they would still reach the clients they used to
+    own (L09-12). With allow_pipeline, one other kind of requester is
+    admitted: a system pipeline that stages outreach on its own authority
+    (tenancy.OUTREACH_PIPELINE_REQUESTERS, exact spelling), judged by that
+    pipeline's rule — an agent with that id, so the brokerage pool only — and
+    only while no account of the brokerage, active or not, carries its name
+    (account creation refuses the "system:" namespace; this keeps a row
+    written some other way from passing as the pipeline)."""
+    requested_by = str(requested_by or "")
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     async with tenant_tx(platform) as conn:
         member = await record_access.find_member(conn, tenant_id, requested_by)
-    if member is None and require_member:
-        return False
-    role = Role.AGENT
+        pipeline = False
+        if member is None and allow_pipeline and requested_by in OUTREACH_PIPELINE_REQUESTERS:
+            pipeline = not await conn.fetchval(
+                "SELECT 1 FROM users WHERE tenant_id=$1::uuid AND lower(agent_id)=lower($2) LIMIT 1",
+                tenant_id, requested_by,
+            )
+    if member is None and not pipeline:
+        return NOT_A_MEMBER
+    if client_id is None and contact_id is None:
+        return None
     if member is not None:
         try:
             role = Role(member["role"])
         except ValueError:
             role = Role.AGENT
-    actor = TenantContext(
-        agent_id=str(member["agent_id"]) if member else requested_by,
-        tenant_id=tenant_id,
-        role=role,
-    )
+        actor = TenantContext(agent_id=str(member["agent_id"]), tenant_id=tenant_id, role=role)
+    else:
+        actor = TenantContext(agent_id=requested_by, tenant_id=tenant_id, role=Role.AGENT)
     async with tenant_tx(actor) as conn:
-        return bool(await conn.fetchval(
-            "SELECT app_linked_access($1::uuid, $2::uuid, true)", client_id, contact_id,
-        ))
+        if await conn.fetchval("SELECT app_linked_access($1::uuid, $2::uuid, true)", client_id, contact_id):
+            return None
+    return NO_RECORD_ACCESS
+
+
+async def requester_may_contact_record(tenant_id: str, requested_by: str, client_id: Any,
+                                       contact_id: Any, *, allow_pipeline: bool = False) -> bool:
+    """requester_contact_refusal(...) is None: an active member who may still
+    reach this record in their current role (or, with allow_pipeline, a
+    system pipeline within its own rule)."""
+    return await requester_contact_refusal(tenant_id, requested_by, client_id, contact_id,
+                                           allow_pipeline=allow_pipeline) is None
 
 
 # "text" is an ordinary English noun as often as it is a verb — "email her the
@@ -4377,8 +4455,17 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
         refusal = await billing.entitlement_refusal(ctx)
         if refusal is not None:
             raise billing.NotEntitled(f"Not sent: {refusal[1]}")
-        if not await _requester_may_contact(tenant_id, command):
-            raise RuntimeError(
+        reasons: list[str] = []
+        if not await _requester_may_contact(tenant_id, command, reasons=reasons):
+            # Terminal (L09-12): reactivating the account or handing the
+            # record back later must not fire it unseen.
+            if NOT_A_MEMBER in reasons:
+                raise RequesterMayNotContact(
+                    "Not sent: the person who asked for this is not an active member of this "
+                    "brokerage (suspended, deactivated or offboarded since it was staged, or never "
+                    "had an account here). A member can stage it again if it should still go out."
+                )
+            raise RequesterMayNotContact(
                 "Not sent: the person who asked for this can no longer contact this "
                 "client or contact (reassigned, or access removed since it was approved). "
                 "Stage it again if it should still go out."

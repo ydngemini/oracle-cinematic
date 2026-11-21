@@ -277,13 +277,20 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         # The owner gives the pool client to B after A's draft was staged.
         await admin.execute("UPDATE clients SET assignee_id=$2 WHERE id=$1", people["pool"]["client"], agent["b"])
         assert await commands_api._requester_may_contact(tenant, await row_for(drafts["pool"])) is False
-        # A system requester that is not a member is checked as an agent: pool only.
+        # A system pipeline requester (the reserved "system:" marker, L09-12)
+        # is judged by its own rule — an agent with that id: pool only.
         await admin.execute(
-            "UPDATE action_approvals SET requested_by='speed-to-lead' WHERE id=(SELECT approval_id FROM "
+            "UPDATE action_approvals SET requested_by='system:speed-to-lead' WHERE id=(SELECT approval_id FROM "
             "command_executions WHERE id=$1)", uuid.UUID(drafts["gone"]))
         assert await commands_api._requester_may_contact(tenant, await row_for(drafts["gone"])) is False
         await admin.execute("UPDATE clients SET assignee_id=NULL WHERE id=$1", people["gone"]["client"])
         assert await commands_api._requester_may_contact(tenant, await row_for(drafts["gone"])) is True
+        # Any other non-member requester is refused, even on a pool record:
+        # an unmarked name is not a pipeline (it used to pass as one).
+        await admin.execute(
+            "UPDATE action_approvals SET requested_by='speed-to-lead' WHERE id=(SELECT approval_id FROM "
+            "command_executions WHERE id=$1)", uuid.UUID(drafts["gone"]))
+        assert await commands_api._requester_may_contact(tenant, await row_for(drafts["gone"])) is False
         # The worker stops before the gate and records why.
         await admin.execute("UPDATE command_executions SET state='queued' WHERE id=$1", uuid.UUID(drafts["pool"]))
         stored = await row_for(drafts["pool"])

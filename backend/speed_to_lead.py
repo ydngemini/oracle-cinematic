@@ -47,7 +47,7 @@ from automation_jobs import ActionRisk, enqueue_job, register_handler
 from db.connection import tenant_tx
 from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach, raise_if_deferred
 from platform_policy import Feature, feature_enabled
-from tenancy import Role, TenantContext
+from tenancy import SPEED_TO_LEAD_REQUESTER, Role, TenantContext
 
 logger = logging.getLogger("oracle.speed_to_lead")
 
@@ -340,8 +340,15 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
         return {"state": "blocked", "reason": reason, "channel": channel}
 
     await reporter.progress(70, "Staging first-response draft")
+    # Staged FOR the assigned agent when there is one: they are the requester,
+    # and the message leaves only while they are an active member who may
+    # still reach the contact. An unassigned (pool) contact is staged by the
+    # pipeline on its own authority, under its reserved "system:" name — the
+    # marker the command worker reads to judge it by the pipeline's rule
+    # (pool records only) instead of membership (L09-12). Never the worker's
+    # own "speed-to-lead-worker" name: that one carries no such marker.
     actor_ctx = TenantContext(
-        agent_id=str(contact.get("assigned_agent_id") or worker_ctx.agent_id),
+        agent_id=str(contact.get("assigned_agent_id") or SPEED_TO_LEAD_REQUESTER),
         tenant_id=tenant_id,
         role=Role.AGENT,
     )
