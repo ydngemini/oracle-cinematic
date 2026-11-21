@@ -35,7 +35,7 @@ from commands_api import (
 )
 from contacts_api import _CONTACT_SELECT, _contact_json, search_contact_rows
 from db.connection import tenant_tx
-from outreach_compliance import Channel, VoiceMode, guard_outreach
+from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach
 from platform_policy import ActionRisk, Feature, feature_enabled, require_feature
 import record_access
 from tenancy import Role, TenantContext, require_context, require_role
@@ -1110,6 +1110,8 @@ async def _preview(ctx: TenantContext, plan_id: str, body: PreviewRequest) -> di
                 log=False,
                 voice_mode=VoiceMode.AI,
                 recording_enabled=True,
+                # Purpose: a sales-sequence step is promotional outreach by design (26.5).
+                purpose=Purpose.MARKETING,
             )
             blockers.extend(
                 {"contact_id": contact["id"], "step_key": step.key, "code": "compliance_block", "message": message}

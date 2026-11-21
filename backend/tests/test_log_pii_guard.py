@@ -126,7 +126,7 @@ def test_consent_and_opt_out_logs_carry_no_contact(caplog, monkeypatch):
     from tenancy import Role, TenantContext
 
     async def _record(*_a, **_kw):
-        return "consent-1"
+        return "consent-1", "attested_unverified"
 
     async def _suppress(*_a, **_kw):
         return None

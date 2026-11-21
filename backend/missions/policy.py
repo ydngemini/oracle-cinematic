@@ -296,11 +296,13 @@ async def evaluate_action(
     #    express written consent for an AI voice call (FCC 24-17).
     disclosures: tuple[str, ...] = ()
     if contact and channel in ("email", "sms", "voice"):
-        from outreach_compliance import guard_outreach
+        from outreach_compliance import Purpose, guard_outreach
 
         decision = await guard_outreach(
             ctx, channel=channel, contact=contact, state_code=state_code,
             now_utc=now, log=False,
+            # Purpose: a mission's outreach is autonomous campaign work, so strict (26.5).
+            purpose=Purpose.MARKETING,
         )
         if not decision.allowed:
             return _withheld(
