@@ -60,10 +60,14 @@ def test_five_wrong_codes_lock_the_challenge_in_postgres(monkeypatch):
             await connection.close_pool()
 
     statuses, row, after = asyncio.run(go())
-    assert statuses == [401] * 5
+    # The fifth wrong code retires the challenge and starts the cool-down
+    # (0181, L17-32): 429, not another "try again".
+    assert statuses == [401, 401, 401, 401, 429]
     assert row["attempts"] == 5, f"the attempt counter did not persist: {row['attempts']}"
     assert row["consumed_at"] is not None, "five wrong codes must retire the challenge"
-    assert after == 401
+    # Even the right code is refused, and inside the cool-down that refusal is
+    # the 429 lock (0181, L17-32 review r1), not a "try again".
+    assert after == 429
 
 
 def test_an_expired_code_is_refused_in_postgres(monkeypatch):

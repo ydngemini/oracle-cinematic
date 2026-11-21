@@ -231,6 +231,8 @@ TABLES: dict[str, TableEntry] = {
                                                              "no tenant; updated_by is a platform admin"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
+    "operator_sessions": TableEntry(C.SECRET, G, "environment operator's sessions (0181): SHA-256 of the "
+                                    "token jti and a keyed credential fingerprint; operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────
     "provider_credentials": TableEntry(C.SECRET, E, "revoked at the provider first"),
     "lead_source_connectors": TableEntry(C.SECRET, E),
