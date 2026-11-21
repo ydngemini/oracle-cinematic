@@ -363,6 +363,16 @@ def validate_or_die() -> None:
             ORACLE_ENV or "(unset)",
         )
         return
+    if not os.environ.get("REDIS_URL", "").strip():
+        # Not a boot failure: rate limiting is designed to run on PostgreSQL
+        # without Valkey. But Plivo calls are refused without it, and a pending
+        # spoken STOP blocks sends only from the container that heard it
+        # (voice_opt_out; health reports outbound_opt_outs DEGRADED).
+        log.warning(
+            "REDIS_URL is not set: rate limits use the database, Plivo calls are refused, and a "
+            "spoken opt-out still waiting to be recorded blocks sends only from the container "
+            "that heard it."
+        )
     enable_webhooks = flag("ORACLE_ENABLE_WEBHOOKS", default=False)
     required = list(_REQUIRED_IN_PROD)
     if enable_webhooks:

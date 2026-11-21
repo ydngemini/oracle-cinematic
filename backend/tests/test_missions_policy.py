@@ -145,6 +145,64 @@ class TestComplianceIsNotNegotiable:
         assert "compliance" in verdict.blocked_reason
         assert "express written consent" in verdict.blocked_reason
 
+    def test_an_undecidable_gate_defers_the_action_instead_of_withholding_it(self, gate, monkeypatch):
+        """PR #173 review: pending spoken STOPs unreadable (Valkey down) moves
+        the action a few minutes on; would_have_done would drop it for good."""
+        import outreach_compliance
+
+        async def undecidable(_ctx, **_kwargs):
+            return outreach_compliance.OutreachDecision(
+                allowed=False, channel="sms", contact="+13025551234", state_code="DE",
+                blockers=(outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE,),
+                transient=outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE)
+
+        monkeypatch.setattr(outreach_compliance, "guard_outreach", undecidable)
+        verdict = evaluate(mission(auto_channels=["sms"], consent_at="2026-09-01T00:00:00Z"))
+        assert verdict.may_stage is False and verdict.may_release is False
+        assert verdict.defer_until == NOW + timedelta(seconds=outreach_compliance.TRANSIENT_RETRY_SECONDS)
+        assert verdict.blocked_reason is None
+
+    def test_an_undecidable_gate_reaches_the_executor_as_a_deferral(self, gate, monkeypatch):
+        import outreach_compliance
+        from missions import executor
+
+        async def undecidable(_ctx, **_kwargs):
+            return outreach_compliance.OutreachDecision(
+                allowed=False, channel="sms", contact="+13025551234", state_code="DE",
+                blockers=(outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE,),
+                transient=outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE)
+
+        seen = {"defer": [], "states": [], "journal": []}
+
+        async def context(*_a):
+            return {"subject_id": None}
+
+        async def defer(_ctx, action_id, until):
+            seen["defer"].append(until)
+
+        async def set_state(_ctx, _id, state, **_k):
+            seen["states"].append(state)
+
+        async def journal(_ctx, _mid, kind, _payload):
+            seen["journal"].append(kind)
+
+        real_evaluate = policy.evaluate_action
+
+        async def at_now(*a, **k):
+            return await real_evaluate(*a, now=NOW, **k)
+
+        monkeypatch.setattr(outreach_compliance, "guard_outreach", undecidable)
+        monkeypatch.setattr(executor, "_candidate_context", context)
+        monkeypatch.setattr(executor, "_contact_from", lambda *_a: ("+13025551234", "DE"))
+        monkeypatch.setattr(executor.policy, "evaluate_action", at_now)
+        monkeypatch.setattr(executor, "_defer", defer)
+        monkeypatch.setattr(executor, "_set_state", set_state)
+        monkeypatch.setattr(executor, "_journal", journal)
+        outcome = asyncio.run(executor._work_one(CTX, mission(), {"id": "a1", "channel": "sms"}))
+        assert outcome == "deferred" and seen["states"] == []
+        assert seen["defer"] == [NOW + timedelta(seconds=outreach_compliance.TRANSIENT_RETRY_SECONDS)]
+        assert seen["journal"] == ["action_deferred"]
+
     def test_required_disclosures_are_carried_to_the_caller(self, gate):
         verdict = evaluate(mission())
         assert "This is an AI assistant." in verdict.disclosures

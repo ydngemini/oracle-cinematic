@@ -56,7 +56,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timezone
 from enum import Enum
 from typing import Optional
@@ -289,7 +289,11 @@ _STATE_TZ: dict[str, str] = {
 class OutreachDecision:
     """Result of evaluating one outbound attempt. ``allowed`` is the only thing
     a caller must check; ``blockers`` explains a denial, ``warnings`` and
-    ``required_disclosures`` carry obligations the caller must still satisfy."""
+    ``required_disclosures`` carry obligations the caller must still satisfy.
+    ``transient`` is a code (OPT_OUT_STATUS_UNAVAILABLE_CODE) set only when
+    the ONLY thing denying the attempt is a temporary inability to decide:
+    an unattended caller retries later (raise_if_deferred, or a deferral)
+    instead of recording a refusal; a person is told to try again."""
     allowed: bool
     channel: str
     contact: str
@@ -297,6 +301,7 @@ class OutreachDecision:
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     required_disclosures: tuple[str, ...] = ()
+    transient: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
@@ -307,6 +312,7 @@ class OutreachDecision:
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
             "required_disclosures": list(self.required_disclosures),
+            "transient": self.transient,
         }
 
 
@@ -508,6 +514,38 @@ def evaluate(
     )
 
 
+#: The blocker when the shared store of pending spoken STOPs cannot be read
+#: (voice_opt_out.UNKNOWN): a STOP heard on another replica could be waiting.
+OPT_OUT_STATUS_UNAVAILABLE = ("spoken opt-out status unavailable (the shared store is unreachable): "
+                              "texts and calls are held until it answers")
+#: OutreachDecision.transient when that blocker is the only one. Callers
+#: branch on this code, never on the blocker's wording.
+OPT_OUT_STATUS_UNAVAILABLE_CODE = "opt_out_status_unavailable"
+#: How long an unattended send waits before asking again (a Valkey failover
+#: takes tens of seconds; five job attempts spaced this far cover ~8 minutes).
+TRANSIENT_RETRY_SECONDS = 120
+
+
+class OutreachDeferred(RuntimeError):
+    """An unattended send whose gate could not decide yet (decision.transient):
+    not sent, not refused — the durable job worker retries it, spaced by
+    job_retry_after_seconds (automation_jobs.fail_job)."""
+
+    job_terminal = False
+    job_retry_after_seconds = TRANSIENT_RETRY_SECONDS
+
+    def __init__(self, decision: "OutreachDecision"):
+        super().__init__("Not sent yet, retrying: " + "; ".join(decision.blockers))
+        self.code = decision.transient
+
+
+def raise_if_deferred(decision: "OutreachDecision") -> None:
+    """For unattended senders: a temporary denial raises OutreachDeferred (a
+    retry), so it is never recorded as a final refusal."""
+    if not decision.allowed and getattr(decision, "transient", None):
+        raise OutreachDeferred(decision)
+
+
 def _tombstone_hash(tenant_id: str, normalized: str) -> Optional[str]:
     """The keyed hash erasure stores for an opt-out it had to delete. None
     when no master key is configured (then no tombstone can exist either)."""
@@ -576,16 +614,26 @@ async def record_crm_suppression(conn, tenant_id: str, *, phone: Optional[str], 
 async def ledger_suppressed(conn, tenant_id: str, contact: Optional[str], channel: Channel | str) -> bool:
     """Is this destination suppressed for this channel in the outreach ledger
     (an opt-out, a CRM do-not-contact, an erased person's tombstone)? The same
-    rule the send gate applies (ConsentLedger.gather_state)."""
+    rule the send gate applies (ConsentLedger.gather_state).
+
+    The pending-STOP read may wait up to voice_opt_out.SHARED_TIMEOUT_SECONDS
+    on Valkey while the caller holds `conn`: its one caller (contacts_api
+    nurture-job reservation) learns the destination inside its transaction,
+    from rows it has locked, so the read cannot move before it without
+    splitting that transaction. Bounded, user-initiated, low volume."""
     if not contact:
         return False
     channel = Channel(channel)
     norm = normalize_contact(contact, channel)
     if channel is not Channel.EMAIL:
-        # A spoken STOP still spooled (not yet written) blocks, as at the gate.
+        # A spoken STOP not yet written blocks, as at the gate — in this
+        # container's spool or the shared store. A shared store that cannot be
+        # read counts as pending (fail closed): this answers "may we plan a
+        # send?", and "yes" would be a guess.
         import voice_opt_out
 
-        if voice_opt_out.pending_opt_out(tenant_id, normalize_contact(contact, Channel.VOICE)):
+        status = await voice_opt_out.opt_out_status(tenant_id, normalize_contact(contact, Channel.VOICE))
+        if status != voice_opt_out.CLEAR:
             return True
     return bool(await conn.fetchval(_LEDGER_SUPPRESSED, norm, channel.value, _tombstone_hash(tenant_id, norm)))
 
@@ -795,12 +843,29 @@ async def guard_outreach(
     is_voice = channel is Channel.VOICE
     tombstone = _tombstone_hash(ctx.tenant_id, norm)
 
-    import voice_opt_out  # a spoken STOP still being written counts as suppressed (23.5)
+    # A spoken STOP still being written counts as suppressed (23.5), wherever
+    # it was heard: this container's spool or the shared store (34.5). Read
+    # BEFORE any transaction, so no lock waits on Valkey. A shared store that
+    # cannot be read holds SMS and voice (fail closed); email never consulted
+    # pending STOPs.
+    import voice_opt_out
+
+    stop_status = voice_opt_out.CLEAR
+    if channel in (Channel.SMS, Channel.VOICE):
+        stop_status = await voice_opt_out.opt_out_status(ctx.tenant_id, normalize_contact(contact, Channel.VOICE))
 
     def decide(row) -> OutreachDecision:
-        suppressed = bool(row["suppressed"]) or (
-            channel in (Channel.SMS, Channel.VOICE)
-            and voice_opt_out.pending_opt_out(ctx.tenant_id, normalize_contact(contact, Channel.VOICE)))
+        decision = _evaluate_row(row)
+        if stop_status == voice_opt_out.UNKNOWN:
+            # Transient only when nothing else blocks: a retry cannot help a
+            # contact who is denied for another reason as well.
+            decision = replace(decision, allowed=False,
+                               blockers=decision.blockers + (OPT_OUT_STATUS_UNAVAILABLE,),
+                               transient=None if decision.blockers else OPT_OUT_STATUS_UNAVAILABLE_CODE)
+        return decision
+
+    def _evaluate_row(row) -> OutreachDecision:
+        suppressed = bool(row["suppressed"]) or stop_status == voice_opt_out.PENDING
         return evaluate(
             channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,
             suppressed=suppressed, has_consent=bool(row["has_consent"]),
@@ -846,6 +911,14 @@ async def enforce_outreach(ctx: TenantContext, **kwargs) -> OutreachDecision:
     Purpose: forwarded as given — each caller classifies its own send (26.5);
     absent, guard_outreach's strict MARKETING default applies."""
     decision = await guard_outreach(ctx, **kwargs)
+    if not decision.allowed and decision.transient:
+        # Not a legal refusal: the gate could not decide yet. Try again.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "outreach could not be checked right now; try again shortly",
+                    "code": decision.transient},
+            headers={"Retry-After": str(TRANSIENT_RETRY_SECONDS)},
+        )
     if not decision.allowed:
         # Do NOT echo the normalized contact back in the error body — it's a
         # preprocessing artifact the client never submitted in that form, and

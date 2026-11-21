@@ -68,7 +68,7 @@ from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
 from llm_gateway import SpendRefused, SpendUnavailable
-from outreach_compliance import Channel, Purpose, guard_outreach
+from outreach_compliance import Channel, Purpose, guard_outreach, raise_if_deferred
 from platform_policy import (
     ActionRisk,
     Feature,
@@ -4399,6 +4399,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # the email gate does not read it (opt-out model, footer on every send).
                 purpose=Purpose.MARKETING,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
             # Commercial email basics (CAN-SPAM, RFC 8058): the approved body
@@ -4466,6 +4467,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # or a mission / sequence / speed-to-lead text, is marketing (26.5).
                 purpose=sms_purpose,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
             from messaging_provider import messaging_provider_name
@@ -4556,6 +4558,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # needs documented written consent whatever it says.
                 purpose=Purpose.MARKETING,
             )
+            raise_if_deferred(decision)   # not decided yet: the job retries
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))
             # Neoh places the call, but the client must see the agent's own
