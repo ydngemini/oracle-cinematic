@@ -44,7 +44,7 @@ Their integrity matters, because a tampered redirect could send a customer to a 
 | Surface (`report()` name) | Path | Stored in |
 |---|---|---|
 | `client_note` | `client_note_crypto.seal_body`: every note write (agent route create/update, AI chat tool, AI call) | `client_notes.body_ciphertext` |
-| `ai_call_note`, `ai_call_save_note` | `commands_api.deliver_call_notes`, `elevenlabs_realtime` `save_note` tool | client note, `client_activities`, CALL_NOTES frame |
+| `ai_call_note`, `ai_call_save_note` | `commands_api.save_call_note` (each note as it is taken) and `commands_api.deliver_call_notes`, `elevenlabs_realtime` `save_note` tool | client note, `client_activities`, CALL_NOTES frame |
 | `call_transcript_excerpt` | `commands_api.call_telemetry` | `negotiation_events.transcript_excerpt` |
 | `voice_transcript_chunk` | `voice_intel.ingest_voice_telemetry` (before the counter-offer parser) | `negotiation_events`, VOICE_TELEMETRY frame |
 | `voice_note_transcript` | `voice_intel._process` (before the extraction model) | `interaction_logs.payload` |
