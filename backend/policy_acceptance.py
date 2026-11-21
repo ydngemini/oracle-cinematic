@@ -148,7 +148,13 @@ async def policy_acceptance_status(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Your session has ended. Sign in again.",
                 )
-            token = _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value, auth_time=ctx.auth_time)
+            # An environment operator's renewal keeps its registered session
+            # (same jti, no later expiry): tenant_tx above already proved
+            # that row live (0181, audit 28.3).
+            import operator_sessions
+
+            token = _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value, auth_time=ctx.auth_time,
+                               **operator_sessions.renewal_claims(ctx))
             _set_session_cookie(response, token)
             return PolicyAcceptanceStatus(
                 required=False,

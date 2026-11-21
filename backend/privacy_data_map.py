@@ -136,7 +136,9 @@ TABLES: dict[str, TableEntry] = {
                                      "transcript_excerpt sealed in transcript_ciphertext since 0152; "
                                      "pre-0152 rows plaintext until backfill_sealed_text.py"),
     "command_executions": TableEntry(C.COMMUNICATION_CONTENT, E,
-                                     "outbound drafts; client_id/contact_id (0142) = link to the record, no PII"),
+                                     "outbound drafts; client_id/contact_id (0142) = link to the record, no PII; "
+                                     "a data-subject deletion redacts target/draft/free text to the action "
+                                     "skeleton (0182, L17-38)"),
     "telephony_routes": TableEntry(C.COMMUNICATION_METADATA, E, "numbers released first"),
     "provider_purchases": TableEntry(C.FINANCIAL_BILLING, E, "number purchase, hosted-SMS order, 10DLC brand/campaign and number-to-campaign assignment intents (the brokerage's own business number); numbers released first"),
     "messaging_routes": TableEntry(C.COMMUNICATION_METADATA, E, "hosted SMS disconnected first"),
@@ -163,7 +165,8 @@ TABLES: dict[str, TableEntry] = {
     "outreach_attempt_log": TableEntry(C.CONSENT_SUPPRESSION, E),
     "suppression_tombstones": TableEntry(C.CONSENT_SUPPRESSION, R, "keyed hash only, 5 years"),
     "action_approvals": TableEntry(C.AUDIT_SECURITY, E,
-                                   "draft_payload carries the draft; client_id/contact_id (0142) = link, no PII"),
+                                   "draft_payload carries the draft; client_id/contact_id (0142) = link, no PII; "
+                                   "a data-subject deletion redacts draft_payload/reason (0182, L17-38)"),
     "protected_override_events": TableEntry(C.AUDIT_SECURITY, E),
     "source_licenses": TableEntry(C.BUSINESS_CRM, E),
     # ── billing (Neoh is the controller of its own billing records) ──────
@@ -184,7 +187,8 @@ TABLES: dict[str, TableEntry] = {
     "user_interactions": TableEntry(C.AI_CHAT, E,
                                     "raw chat turns sealed in content_ciphertext since 0152; pre-0152 "
                                     "rows plaintext until backfill_sealed_text.py; tenant_id text"),
-    "ai_decision_traces": TableEntry(C.DERIVED, E),
+    "ai_decision_traces": TableEntry(C.DERIVED, E, "an approval's trace holds the whole draft; a data-subject "
+                                     "deletion redacts proposal/final and withdraws it (0182, L17-38)"),
     "agent_decisions": TableEntry(C.DERIVED, E),
     "beliefs": TableEntry(C.AI_MEMORY, E, "source_quote sealed in source_quote_ciphertext since 0154 (L17-22)"),
     "outcome_events": TableEntry(C.DERIVED, E),
@@ -220,7 +224,9 @@ TABLES: dict[str, TableEntry] = {
     "video_studio_jobs": TableEntry(C.MEDIA, E, "created_by is the requesting agent's sign-in email since 0166 (L03-13)"),
     "voice_walkthrough_jobs": TableEntry(C.CALL_AUDIO, E),
     # ── audit / security ─────────────────────────────────────────────────
-    "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure"),
+    "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure; an approval "
+                               "decision's metadata.reason (approver's free text) is not rewritten by a "
+                               "data-subject deletion"),
     "audit_anomaly_alerts": TableEntry(C.AUDIT_SECURITY, R),
     "audit_chain_checkpoints": TableEntry(C.AUDIT_SECURITY, G, "hash anchors of expired audit rows; no customer data"),
     "audit_chain_verification": TableEntry(C.AUDIT_SECURITY, G, "scheduled chain-verifier cursor (0148); seq numbers and hashes, no customer data"),
@@ -235,6 +241,8 @@ TABLES: dict[str, TableEntry] = {
                                                              "no tenant; updated_by is a platform admin"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
+    "operator_sessions": TableEntry(C.SECRET, G, "environment operator's sessions (0181): SHA-256 of the "
+                                    "token jti and a keyed credential fingerprint; operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────
     "provider_credentials": TableEntry(C.SECRET, E, "revoked at the provider first"),
     "lead_source_connectors": TableEntry(C.SECRET, E),
@@ -245,8 +253,10 @@ TABLES: dict[str, TableEntry] = {
     "user_mfa_recovery_codes": TableEntry(C.SECRET, E, "SHA-256 of one-time recovery codes (0150); never exported"),
     "client_portals": TableEntry(C.CAPABILITY_TOKEN, E),
     # ── operational ──────────────────────────────────────────────────────
-    "automation_jobs": TableEntry(C.OPERATIONAL, E),
-    "automation_job_attempts": TableEntry(C.OPERATIONAL, E),
+    "automation_jobs": TableEntry(C.OPERATIONAL, E, "a command:execute payload copies the approved draft; "
+                                  "a data-subject deletion redacts it (0182, L17-38)"),
+    "automation_job_attempts": TableEntry(C.OPERATIONAL, E, "error_detail may quote a recipient; redacted with "
+                                          "its execute job by a data-subject deletion (0182, L17-38)"),
     "harvest_sources": TableEntry(C.PUBLIC_DATA, E),
     "harvest_runs": TableEntry(C.PUBLIC_DATA, E),
     "source_records": TableEntry(C.PUBLIC_DATA, E),
