@@ -209,7 +209,11 @@ async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
     import ws_hub as _ws_hub
     from db.connection import pool_stats
 
-    sockets_by_tenant = _ws_hub.connection_counts()
+    # connection_counts() folds the per-record voice streams into one count
+    # (their group names carry session ids, L03-22): kept apart from tenants.
+    sockets_by_group = _ws_hub.connection_counts()
+    sockets_by_tenant = {group: n for group, n in sockets_by_group.items()
+                         if group not in _ws_hub.RECORD_STREAM_COUNT_KEYS}
     stats = pool_stats()
 
     # `usable_for_requests` / `reserved_for_listener` come from pool_stats(),
@@ -226,9 +230,11 @@ async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
     return {
         "instance": getattr(_ws_hub, "_instance_id", "unknown"),
         "websockets": {
-            "total": sum(sockets_by_tenant.values()),
+            "total": sum(sockets_by_group.values()),
             "tenants": len(sockets_by_tenant),
             "by_tenant": sockets_by_tenant,
+            "voice_streams": sum(n for group, n in sockets_by_group.items()
+                                 if group in _ws_hub.RECORD_STREAM_COUNT_KEYS),
         },
         "asyncio_tasks": tasks,
         "db_pool": {
