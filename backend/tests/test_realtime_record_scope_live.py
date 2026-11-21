@@ -13,8 +13,12 @@ Two halves:
    private-client NEGOTIATION_TELEMETRY / CALL_CONSENT / VOICE_TELEMETRY while
    the broker owner's and the view-share holder's do; the same frames about a
    pool client reach only the member on the call (owner 2026-11-16); the
-   platform-admin firehose gets one
-   full copy of each (owner 2026-10-14), the voice-session stream none.
+   platform-admin firehose gets one operational-metadata frame for each —
+   never the transcript, offer, ARV/MAO or record ids (audit 27.5, owner
+   decision 2026-11-20; before it got a full copy); the voice-session stream
+   reaches only the stream sockets of members in the call record's audience
+   at push time, so a share revoked mid-call stops the next frame (L03-17
+   blocker, owner decision 2026-11-20), and is never mirrored.
 """
 
 from __future__ import annotations
@@ -144,6 +148,20 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
             for s in socks.values():
                 s.frames.clear()
 
+        # What was said and computed on these calls; none of it may reach the
+        # platform firehose (27.5). mirrored_at is the hub's clock, left out.
+        call_content = ("We would take two fifty", "Call me after five", "Thanks.", "250000", "410000",
+                        "247000", "Client a", "Client pool", calls["a"], calls["pool"], str(client["a"]))
+
+        def firehose_types() -> list[str]:
+            frames = socks["firehose"].frames
+            assert all(f["type"] == "FIREHOSE_METADATA" and f["content_withheld"] is True
+                       and f["source_tenant"] == tenant for f in frames), frames
+            text = json.dumps([{k: v for k, v in f.items() if k != "mirrored_at"} for f in frames])
+            leaked = [x for x in call_content if x in text]
+            assert not leaked, (leaked, frames)
+            return [f["frame_type"] for f in frames]
+
         for k in ("a", "pool"):
             clear()
             await commands_api.call_telemetry(
@@ -162,8 +180,7 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
                 for who in ("owner", "a", "c"):
                     assert socks[who].types() == expected, (who, socks[who].types())
                 assert socks["b"].frames == [], "agent B received a colleague's private-client call"
-                assert [f["type"] for f in socks["firehose"].frames] == expected
-                assert all(f["source_tenant"] == tenant for f in socks["firehose"].frames)
+                assert firehose_types() == expected
                 negotiation = socks["owner"].frames[0]
                 assert negotiation["counter_offer"] == 250000 and negotiation["call_session_id"] == calls["a"]
                 assert socks["c"].frames[2]["transcript"]["text"] == "Call me after five."
@@ -173,7 +190,7 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
                 assert socks["a"].types() == expected, socks["a"].types()
                 for who in ("owner", "b", "c"):
                     assert socks[who].frames == [], (who, "received a pool client's call content")
-                assert [f["type"] for f in socks["firehose"].frames] == expected
+                assert firehose_types() == expected
             assert socks["x"].frames == [], "another brokerage's socket"
 
         # B cannot even post to A's call (0140) — and receives nothing for trying.
@@ -186,20 +203,54 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
         assert getattr(denied.value, "status_code", None) == 404
         assert all(s.frames == [] for s in socks.values())
 
-        # The voice-session stream: admitted per session, never mirrored.
-        watcher = Socket()
+        # The voice-session stream: each socket registered with its member (as
+        # server.voice_telemetry_websocket does); a frame reaches the stream
+        # sockets of the call record's audience at push time, never mirrored.
+        # B (colleague) and E (revoked share) joined the group but are not in
+        # the audience — e.g. access lost since their socket's last re-check.
         group = voice_intel.voice_session_group(tenant, calls["a"])
-        ws_hub.register(group, watcher)
-        try:
+        watchers = {k: Socket() for k in ("owner", "a", "b", "c", "e")}
+        for k, w in watchers.items():
+            ws_hub.register(group, w, agent[k])
+        pool_group = voice_intel.voice_session_group(tenant, calls["pool"])
+        pool_watchers = {k: Socket() for k in ("owner", "a", "b")}
+        for k, w in pool_watchers.items():
+            ws_hub.register(pool_group, w, agent[k])
+
+        async def say(call: str, text: str) -> None:
             await voice_intel.ingest_voice_telemetry(
-                voice_intel.VoiceTelemetryRequest(session_id=calls["a"], transcript_chunk="Thanks.",
-                                                  speaker="AGENT"),
+                voice_intel.VoiceTelemetryRequest(session_id=call, transcript_chunk=text, speaker="AGENT"),
                 ctx("a"))
+
+        try:
+            await say(calls["a"], "Thanks.")
+            got = {k for k, w in watchers.items() if w.frames}
+            assert got == {"owner", "a", "c"}, got
+            assert watchers["c"].frames[0]["transcript"]["text"] == "Thanks."
+            # One metadata frame (through the dashboards' copy), none from the stream.
+            assert firehose_types() == ["VOICE_TELEMETRY"]
+
+            # C's view share is revoked mid-call: the very next frame skips C's
+            # stream socket (no waiting for its 60 s re-check).
+            for w in watchers.values():
+                w.frames.clear()
+            await admin.execute("UPDATE record_shares SET revoked_at = now() WHERE resource_id = $1 "
+                                "AND grantee_user_id = $2", client["a"], uid["c"])
+            await say(calls["a"], "Thanks.")
+            got = {k for k, w in watchers.items() if w.frames}
+            assert got == {"owner", "a"}, got
+
+            # A pool client's call: only the member who is both the actor and
+            # the call's creator (A) — not the broker owner, not B.
+            clear()
+            await say(calls["pool"], "Thanks.")
+            got = {k for k, w in pool_watchers.items() if w.frames}
+            assert got == {"a"}, got
         finally:
-            ws_hub.unregister(group, watcher)
-        assert watcher.types() == ["VOICE_TELEMETRY"]
-        # One full copy (through broadcast_record), not a second from the stream.
-        assert [f["type"] for f in socks["firehose"].frames] == ["VOICE_TELEMETRY"], socks["firehose"].frames
+            for k, w in watchers.items():
+                ws_hub.unregister(group, w, agent[k])
+            for k, w in pool_watchers.items():
+                ws_hub.unregister(pool_group, w, agent[k])
     finally:
         ws_hub._sockets, ws_hub._user_sockets = saved
         await admin.execute("SET session_replication_role = replica")

@@ -177,6 +177,11 @@ def test_losing_access_to_the_call_closes_the_stream(world, monkeypatch):
     assert ws.sent[0]["type"] == "VOICE_SESSION_HYDRATED"
     # The socket leaves the call's broadcast group it joined.
     assert len(world.registered) == 1 and world.unregistered == world.registered
+    # It joined as its member, so a push reaches it only while that member is
+    # in the call record's audience (ws_hub.broadcast_record stream=; owner
+    # decision 2026-11-20), not merely because it is in the group.
+    group, _ws, member = world.registered[0]
+    assert group == f"voice:{TENANT}:{SESSION}" and member == "agent@voice.test"
 
 
 def test_an_ended_account_session_closes_the_stream(world, monkeypatch):

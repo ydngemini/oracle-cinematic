@@ -26,7 +26,9 @@ Surfaces:
   * /system   — process uptime, DB health, WS groups, session registry.
 
 Live counterpart: ws_hub mirrors every tenant's frames into the platform
-firehose group, so the OPS tab's feed updates in real time over /ws.
+firehose group, so the OPS tab's feed updates in real time over /ws. Call
+content (transcripts, offers, MAO, consent, voice notes) is mirrored as
+operational metadata only (ws_hub.firehose_metadata; audit 27.5).
 """
 
 import asyncio

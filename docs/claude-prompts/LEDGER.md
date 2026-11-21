@@ -713,7 +713,7 @@ tests_run:
   - {cmd: "live PostgreSQL (FORCE RLS, app role): test_a_missing_or_foreign_lead_has_an_empty_audience_not_everyone against 5723117's record_access", result: "red: audience None (everyone) for a lead that does not exist", date: 2026-11-16}
   - {cmd: "owner decision 2026-11-16: ws_hub.broadcast_record(sensitive=True) — a pool/unresolvable audience goes to the actor only; applied to all six call-content sites (incl. VOICE_NOTE_LOGGED); frame-type scan requires lead_id + sensitive=True", result: "unit 97 passed", date: 2026-11-16}
   - {cmd: "live PG + real hub: test_sensitive_lead_frames_fail_closed_live (private lead -> owner+assignee; pool lead -> caller only; erased client (ON DELETE SET NULL) -> caller only; deleted lead -> nobody; foreign lead -> nobody; non-sensitive pool frame -> everyone) and the end-to-end scenario (pool client's call -> the member on the call only)", result: "2 passed; red without the sensitive branch (pool content reached owner, a and b)", date: 2026-11-16}
-authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose copy is unchanged (27.5 open)."
+authz_checked: "Call-content frames follow the record (client/contact, else the lead's seller client); a pool or erased-client record reaches only the member on the call; a missing or other-brokerage lead reaches no one. Non-sensitive pool frames keep the pool audience. The platform firehose gets operational metadata only for these frames since L03-21 (27.5, owner decision 2026-11-20)."
 blockers:
   - "27.2/27.8 (voice-session socket re-checks, capacity, idle): addressed by L03-17. 27.3 (workflow engine fan-out): addressed by L03-16."
   - "Pull paths (voice-session socket, GET /api/voice/telemetry): addressed by L03-15."
@@ -722,8 +722,8 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [27.1, 27.4]
 decision_refs: []
-next_task: "27.2/27.8 done in L03-17; 27.5 platform firehose copy remains."
-updated: 2026-11-16
+next_task: "27.2/27.8 in L03-17; 27.5 in L03-21."
+updated: 2026-11-20
 ```
 
 #### L03-15 Live-call content over the PULL paths follows the record too: voice socket and REST feed fail closed (privacy review of PR #77; owner decision 2026-11-16)
@@ -785,15 +785,16 @@ tests_run:
   - {cmd: "pytest tests/test_voice_socket_lifecycle.py against e31c3b7's server.py", result: "red: 8 failed", date: 2026-11-16}
   - {cmd: "same with the fix", result: "8 passed: revoked session 4401 and full replica 1013 before the upgrade; after joining, lost call access 4404, ended session 4401, expired token 4401, re-check error 1011, silent client 1001 while a pinging one stays open; a platform admin is not gated on record visibility; full suite 6612 passed", date: 2026-11-16}
   - {cmd: "independent review (APPROVE; should-fix: 300 s re-check too slow for call content; nits: a DB error at the handshake escaped as a 500, a hung re-check stalled the expiry/idle checks, RuntimeError after a failed send surfaced as an ASGI error, lockstep re-checks, unregister/may_read-error/stall untested)", result: "re-check every tenancy.SESSION_RECHECK_SECONDS (60 s, as operator streams) with a jittered first check; admission via tenancy.admit_operator_stream (4401 / 1011); re-check bounded by 10 s (1011); closes ignore an already-closed socket and a RuntimeError in receive is a disconnect. 12 tests pass (3 repeat runs); mutant without the re-check timeout red", date: 2026-11-16}
-authz_checked: "Before accepting: tenancy.admit_operator_stream (session ended 4401, database unreachable 1011) and ws_hub.at_capacity() (1013), then the existing may_read_call_content + session lookup. While open, _watch_voice_socket checks token expiry (4401) every tick; every tenancy.SESSION_RECHECK_SECONDS (60 s, first check jittered) verify_session_current (4401: demotion, deactivation, sign-out everywhere) and, for non-admins, may_read_call_content for THIS session (4404: share revoked, client reassigned, erasure); a re-check that fails or exceeds 10 s closes 1011 (fail closed on call content, unlike /ws which keeps sockets through a DB blip); no client message for _WS_IDLE_TIMEOUT (300 s) closes 1001; unregister from the call group always runs. A client keeps the stream by sending \"PING\" (answered \"PONG\"); no in-repo client uses this socket yet."
+  - {cmd: "owner blocker closed by a push-time filter (L03-21): pytest tests/test_voice_socket_lifecycle.py + the stream tests in tests/test_realtime_fanout_scope.py; live tests/test_realtime_record_scope_live.py", result: "12 passed (the socket joins its call's group as its member); 85 passed; live 2 passed: a view-share holder revoked mid-call gets no further frame on the stream; red against 5d339ea: a colleague's and a revoked share holder's stream sockets received the transcript", date: 2026-11-20}
+authz_checked: "Before accepting: tenancy.admit_operator_stream (session ended 4401, database unreachable 1011) and ws_hub.at_capacity() (1013), then the existing may_read_call_content + session lookup. While open, _watch_voice_socket checks token expiry (4401) every tick; every tenancy.SESSION_RECHECK_SECONDS (60 s, first check jittered) verify_session_current (4401: demotion, deactivation, sign-out everywhere) and, for non-admins, may_read_call_content for THIS session (4404: share revoked, client reassigned, erasure); a re-check that fails or exceeds 10 s closes 1011 (fail closed on call content, unlike /ws which keeps sockets through a DB blip); no client message for _WS_IDLE_TIMEOUT (300 s) closes 1001; unregister from the call group always runs. A client keeps the stream by sending \"PING\" (answered \"PONG\"); no in-repo client uses this socket yet. Pushes (L03-21): the socket is registered with ctx.agent_id and a frame reaches it only while that member is in the call record's audience at push time."
 blockers:
-  - {type: owner, note: "Access lost after joining is noticed within 60 s, not instantly: voice_intel broadcasts to the whole call group (ws_hub.broadcast_group, no per-recipient filter), so transcript/offer/MAO frames still reach a just-revoked member in that window. A push-time filter (register voice sockets with their user and deliver only to the record audience broadcast_record already computes; reconcile its 'actor' vs may_read's 'created_by' rule for pool calls) would close it: owner/privacy call whether the 60 s window is acceptable."}
+  - "Resolved by owner decision 2026-11-20 (L03-21): voice_intel no longer broadcasts to the whole call group. Voice sockets are registered with their member and each frame is delivered only to the call record's audience computed at push time (no specific audience: only a member who is both the actor and the call's creator; audience error: nobody), so a just-revoked member gets no further transcript/offer/MAO frame inside the 60 s re-check window. The socket itself still closes at the next re-check."
   - "Privacy (call content): independent review + owner approval before merge (owner decision 4)."
   - "Not deployed (C4.4)."
 audit_refs: [27.2, 27.8]
 decision_refs: []
 next_task: "22.x erasure and DSAR items."
-updated: 2026-11-16
+updated: 2026-11-20
 ```
 #### L03-18 An outbound command that names only a lead follows that lead's record: staged, read and sent only by who may contact the lead's client (external audit 26.3)
 ```yaml
@@ -864,8 +865,39 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [27.6, 27.7]
 decision_refs: []
-next_task: "27.5 (platform firehose content: owner decision)."
-updated: 2026-11-19
+next_task: "27.5: L03-21 (owner decision 2026-11-20)."
+updated: 2026-11-20
+```
+
+#### L03-21 The platform OPS firehose gets operational metadata only for call content, and a voice-session stream frame reaches only the call record's audience at push time (external audit 27.5; L03-17 owner blocker; owner decision 2026-11-20)
+```yaml
+id: L03-21
+status: tests_pass
+env: local
+evidence_shas: [5d339ea]   # base; fix in the commit that adds this row
+files: [backend/ws_hub.py, backend/voice_intel.py, backend/server.py, backend/admin_ops.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py, backend/tests/test_voice_socket_lifecycle.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_call_notes_live.py, backend/tests/test_pan_redaction_live.py]
+tests_run:
+  - {cmd: "read backend/ws_hub.py, voice_intel.py, server.voice_telemetry_websocket and record_access.py at 5d339ea", result: "confirmed 27.5: broadcast_record mirrors by default (ws_hub.py:644) and firehose_copy (ws_hub.py:234-238) forwarded the whole frame with source_tenant, so the platform firehose received every brokerage's VOICE_TELEMETRY (transcript text, counter offer, MAO, objection draft), NEGOTIATION_TELEMETRY, CALL_CONSENT, VOICE_SESSION and VOICE_NOTE_LOGGED (summary, sentiment, price adjustment); a call-content frame sent by broadcast() was mirrored in full too (ws_hub.py:218-225); test_realtime_record_scope_live asserted the full firehose copy. Confirmed the L03-17 blocker: voice_intel._broadcast_voice (voice_intel.py:249-263) sent each frame to ws_hub.broadcast_group (ws_hub.py:625-632, every socket of the call's group) and the voice socket was registered without its member (server.py:1474)", date: 2026-11-20}
+  - {cmd: "pytest tests/test_realtime_fanout_scope.py tests/test_voice_socket_lifecycle.py tests/test_pan_redaction_paths.py with 5d339ea's ws_hub.py, voice_intel.py and server.py", result: "red: 51 failed, 65 passed (the firehose got full call frames on every path; the stream tests fail on the missing push-time filter API; the voice socket registered without its member)", date: 2026-11-20}
+  - {cmd: "live PostgreSQL (FORCE RLS, app role), throwaway oracle-backend container: tests/test_realtime_record_scope_live.py with 5d339ea's production files", result: "red: 1 failed, 1 passed (the firehose received the full NEGOTIATION_TELEMETRY, CALL_CONSENT and VOICE_TELEMETRY frames). With the firehose half disabled for evidence only (restored after), the stream half failed as well: a colleague's (B) and a revoked share holder's (E) stream sockets received the transcript ({a, b, c, e, owner} instead of {a, c, owner})", date: 2026-11-20}
+  - {cmd: "after: pytest tests/test_realtime_fanout_scope.py; tests/test_voice_socket_lifecycle.py; the 29 unit files touching ws_hub, voice_intel, realtime scope, WS admission, PAN paths, AI-budget voice paths, chat, platform audit and tests/test_static_gate.py; the 5 admin_ops route test files; ruff check . in backend", result: "85 passed; 12 passed; 840 passed; 109 passed; ruff all checks passed", date: 2026-11-20}
+  - {cmd: "after: live PostgreSQL, throwaway container: test_realtime_record_scope_live, test_voice_pull_access_live, test_call_notes_live, test_pan_redaction_live, test_ws_hub_parts_live, test_sealed_text_live, test_lead_children_access_live, test_lead_record_access_live, test_communications_access_matrix_live", result: "14 passed. Firehose: one FIREHOSE_METADATA frame per call frame, no transcript, amounts, client name or ids; stream: owner, A and view-share C get the frame, colleague B and revoked E do not; C's share revoked mid-call -> the next frame skips C; a pool call's stream -> A (actor and creator) only", date: 2026-11-20}
+  - {cmd: "9 ws_hub mutants against tests/test_realtime_fanout_scope.py", result: "each red: stream sent to the whole group 4 failed; firehose always full 36; call-content type guard removed 16; value type checks removed 1; audience error -> actor on the stream 1; pool stream -> actor rule only 2; whole-group refusal removed 1; previous-release replicas told mirror=true 1; mirror_metadata ignored on receive 1", date: 2026-11-20}
+authz_checked: "Firehose (ws_hub.firehose_copy): a frame sent sensitive=True, or any frame whose type starts VOICE_, NEGOTIATION_ or CALL_ on any path (broadcast_record, broadcast_users, broadcast(), a received envelope), reaches the platform firehose as type FIREHOSE_METADATA: frame_type, source_tenant, mirrored_at, content_withheld and, only when each value passes its type check, consent_recorded / requires_agent_approval (booleans), created_at / started_at (ISO timestamps), transcript_status (enum), extraction_code (upper-case code) and a mao_unavailable flag. Never transcript or dialogue, offer/ARV/MAO amounts, guidance, objection draft, summary, sentiment, names, phone numbers, emails, addresses or record ids. A sensitive frame's envelope says mirror=false (a previous-release replica mirrors nothing) and mirror_metadata=true. Other mirrored frames keep their full copy (owner 2026-10-14). Stream: server registers the voice socket with ctx.agent_id; broadcast_record(stream=, creator=) reuses its one audience query: the record's audience (client/contact, else the lead's seller client); no specific audience -> only a member who is both the actor and the call's created_by (the stricter of broadcast_record's and may_read_call_content's rules); audience error or empty -> no stream socket; a whole-group frame for a voice: group is refused locally and from other replicas; never mirrored; broadcast_group is removed. Dashboards keep their rules (sensitive pool -> actor; audience error -> actor)."
+blockers:
+  - {type: owner, note: "Break-glass access to call content for platform operators is not built (out of scope by owner decision 2026-11-20): an audited, time-bounded, per-session workflow to inspect redacted/consented content when justified, with a broker/tenant access policy and audit tests. Until it exists the firehose carries no call content."}
+  - "Ops console: AdminOpsTab's Live Feed has no case for FIREHOSE_METADATA, so call activity no longer appears there (it used to show the MAO figure and the voice-note summary). Showing the event type, brokerage and time is a small frontend follow-up."
+  - "Platform admins: the voice-session socket still admits a platform admin without record visibility and hydrates it with the call's last 100 events (audited once per subscription, L17-17); live pushes now reach only the record audience, so it gets no further frames. GET /api/voice/telemetry keeps platform read (L03-15). Both belong with the break-glass decision."
+  - "Not covered here: /api/admin/ops/activity (the 'firehose at rest', admin_ops.py:583-603) lists recent interaction_logs across all brokerages with client names and decrypted subjects to platform admins; a REST surface, not the WebSocket mirror, with the same governance question as 27.5."
+  - "A pool call's dashboards keep broadcast_record's actor rule (the actor already receives the same frame as the HTTP response); only the stream applies the stricter actor-and-creator rule, as decided."
+  - "Rolling deploy: this release refuses a previous-release replica's whole-group voice frame, and a stream frame from this release reaches no previous-release voice socket (registered without a member), so voice streams miss frames across mixed replicas until the deploy finishes (fails closed). A previous-release replica still mirrors call content in full to its own firehose sockets until it is replaced."
+  - "Not run across two real backend replicas; cross-replica envelopes are tested in-process."
+  - "Privacy (call content): independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: [27.5]
+decision_refs: []
+next_task: "Owner: the break-glass content-access design; then show FIREHOSE_METADATA in the ops Live Feed."
+updated: 2026-11-20
 ```
 
 ### L04
