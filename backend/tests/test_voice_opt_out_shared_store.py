@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError as RedisResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 import component_health
 import outreach_compliance
@@ -581,6 +583,81 @@ def test_a_store_that_dies_mid_sweep_ends_it_after_a_few_failures(monkeypatch, v
     with pytest.raises(voice_opt_out.SharedStoreUnavailable, match="3 shared store operations failed"):
         asyncio.run(voice_opt_out.replay_shared())
     assert len(gets) == voice_opt_out.SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES == 3
+
+
+def _scripted_gets(monkeypatch, valkey, script):
+    """GET answers in member order: 'down' raises the client's connection
+    error (the store did not answer), 'wrongtype' a ResponseError (the store
+    answered: that one value is unusable), 'ok' reads normally (a stale
+    member: nothing there)."""
+    names = [f"m{i:02d}" for i in range(len(script))]
+    _stale(valkey, *names)
+    outcome = {f"{voice_opt_out.SHARED_PREFIX}{TENANT}:!{n}": o for n, o in zip(names, script, strict=True)}
+    real_get = valkey.get
+    gets = []
+
+    async def get(name):
+        gets.append(name)
+        what = outcome.get(name, "ok")
+        if what == "down":
+            await valkey._cmd()
+            raise RedisConnectionError("Connection reset by peer")
+        if what == "wrongtype":
+            await valkey._cmd()
+            raise RedisResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return await real_get(name)
+
+    monkeypatch.setattr(valkey, "get", get)
+    return gets
+
+
+def test_a_success_resets_the_store_failure_streak(monkeypatch, valkey, be):
+    """Two store failures, a read that answers, two more: never three in a
+    row, so the sweep goes on to the end (review of PR #175)."""
+    be("worker")
+    assert voice_opt_out.SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES == 3
+    gets = _scripted_gets(monkeypatch, valkey, ["down", "down", "ok", "down", "down", "ok"])
+    result = asyncio.run(voice_opt_out.replay_shared())
+    assert len(gets) == 6                                 # every member was reached
+    assert result["errors"] == 4 and result["gone"] == 2
+
+
+def test_an_entrys_own_failure_never_counts_toward_giving_up(monkeypatch, valkey, be):
+    """A value the store refuses (WRONGTYPE) is that entry's problem, not the
+    store's: five in a row never stop the sweep; each is counted."""
+    be("worker")
+    gets = _scripted_gets(monkeypatch, valkey, ["wrongtype"] * 5 + ["ok"])
+    result = asyncio.run(voice_opt_out.replay_shared())
+    assert len(gets) == 6
+    assert result["errors"] == 5 and result["gone"] == 1
+
+
+def test_an_entrys_own_failure_does_not_reset_the_store_failure_streak(monkeypatch, valkey, be):
+    """Nor does it hide a dying store: two store failures, one entry's own
+    failure, a third store failure is three store failures in a row, and the
+    sweep stops there."""
+    be("worker")
+    gets = _scripted_gets(monkeypatch, valkey, ["down", "down", "wrongtype", "down", "ok", "ok"])
+    with pytest.raises(voice_opt_out.SharedStoreUnavailable, match="3 shared store operations failed"):
+        asyncio.run(voice_opt_out.replay_shared())
+    assert len(gets) == 4                                 # stopped at the third store failure
+
+
+#: Built when the test runs, not at collection: test_voice_opt_out_durable
+#: reloads voice_opt_out, which replaces SharedStoreUnavailable.
+@pytest.mark.parametrize("make, unreachable", [
+    (lambda: RedisConnectionError("refused"), True),
+    (lambda: TimeoutError(), True),                       # _bounded's bound ran out
+    (lambda: ConnectionResetError(), True),
+    (lambda: voice_opt_out.SharedStoreUnavailable("no client"), True),
+    (lambda: RedisTimeoutError("slow"), True),
+    (lambda: RedisResponseError("WRONGTYPE"), False),
+    (lambda: UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), False),
+    (lambda: ValueError("bad entry"), False),
+], ids=["redis-connection", "timeout", "socket", "no-client", "redis-timeout", "wrongtype", "undecodable",
+        "other"])
+def test_only_connection_and_timeout_errors_mean_the_store_is_unreachable(make, unreachable):
+    assert voice_opt_out._store_unreachable(make()) is unreachable
 
 
 def test_a_targeted_sweep_touches_only_its_tenant(monkeypatch, valkey, be):

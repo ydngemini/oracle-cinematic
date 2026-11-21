@@ -77,6 +77,7 @@ from platform_policy import (
 )
 from tenancy import (
     LEGACY_SPEED_TO_LEAD_REQUESTER,
+    MISSION_IDENTITY_PREFIX,
     OUTREACH_PIPELINE_REQUESTERS,
     SPEED_TO_LEAD_REQUESTER,
     Role,
@@ -1168,10 +1169,12 @@ class RequesterMayNotContact(RuntimeError):
 
 class SenderNotAMember(RequesterMayNotContact):
     """At execution: the person whose identity the message would go out under
-    (the command's created_by: their business number or verified caller ID,
-    their SMTP identity and Reply-To) is no longer an active member of the
-    brokerage, although the approval's requester may still be (an edit makes
-    the editor the requester; the draft still carries its creator). Terminal,
+    is no longer an active member of the brokerage, although the approval's
+    requester may still be. For a text, call or email that is the command's
+    created_by (their business number or verified caller ID, their SMTP
+    identity and Reply-To; an edit makes the editor the requester, the draft
+    still carries its creator). For a calendar event it is the job's creator,
+    whose Google account the invitation is created on and sent from. Terminal,
     never a send under a departed person's name (L09-12)."""
 
     job_error_code = "SENDER_NOT_A_MEMBER"
@@ -1180,24 +1183,42 @@ class SenderNotAMember(RequesterMayNotContact):
 #: Why requester_contact_refusal said no.
 NOT_A_MEMBER = "not_a_member"
 NO_RECORD_ACCESS = "no_record_access"
-#: Why _requester_may_contact said no when the requester passed: the sender
-#: identity (created_by) is a person who is no longer an active member.
+#: Why _requester_may_contact said no when the requester passed: the identity
+#: the action goes out under (the creator's, or for a calendar event the
+#: approving job creator's Google account) is a person who is no longer an
+#: active member.
 SENDER_NOT_A_MEMBER = "sender_not_a_member"
 SENDER_NOT_A_MEMBER_MESSAGE = ("Not sent: this draft's sender is no longer an active member; "
                                "create it again from your own account.")
+CALENDAR_SENDER_NOT_A_MEMBER_MESSAGE = (
+    "Not sent: the person whose Google Calendar this event would be created on (who approved it) "
+    "is no longer an active member; stage it again and approve it from your own account.")
 #: The command types that go out under the creator's own identity: a text
 #: from their business number, a call showing their verified caller ID, an
 #: email from their SMTP identity with their Reply-To. (A calendar event is
-#: created on the approving job creator's Google account instead.)
+#: created on the approving job creator's Google account instead:
+#: _requester_may_contact's calendar_account.)
 _SENDS_AS_CREATOR = frozenset({"EMAIL", "SMS", "CALL"})
 
 
+#: The created_by a mission stages its commands with, exactly:
+#: missions/executor._stage writes f"mission:{mission['id']}", the missions
+#: table's uuid primary key as asyncpg renders it (lower-case, hyphenated).
+#: Only that shape is a mission. Anything else spelled "mission:…" is read as
+#: a person and membership-checked: no account may take the prefix now
+#: (tenancy.is_reserved_account_name), but one made before that was reserved
+#: is still a person who can be offboarded.
+_MISSION_CREATOR = re.compile(
+    re.escape(MISSION_IDENTITY_PREFIX) + r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
 def _human_sender(created_by: Any) -> Optional[str]:
-    """The command's creator when that is a person: not a mission
-    ("mission:<id>"), not a reserved pipeline identity ("system:…", the
-    pre-marker "speed-to-lead-worker"), not empty."""
-    sender = str(created_by or "").strip()
-    if not sender or sender.lower().startswith("mission:") or is_reserved_pipeline_identity(sender):
+    """The identity's owner when that is a person: not a mission (exactly
+    "mission:<uuid>", _MISSION_CREATOR), not a reserved pipeline identity
+    ("system:…", the pre-marker "speed-to-lead-worker"), not empty."""
+    raw = str(created_by or "")
+    sender = raw.strip()
+    if not sender or _MISSION_CREATOR.fullmatch(raw) or is_reserved_pipeline_identity(sender):
         return None
     return sender
 
@@ -1227,7 +1248,8 @@ def _legacy_pipeline_requester(requester: str, command: Any) -> Optional[str]:
 
 
 async def _requester_may_contact(tenant_id: str, command: Any, *,
-                                 reasons: Optional[list[str]] = None) -> bool:
+                                 reasons: Optional[list[str]] = None,
+                                 calendar_account: Optional[str] = None) -> bool:
     """Re-check, at execution, that the person who asked for this send may
     still make it (CONTRACT C3.4, 0142, L09-12).
 
@@ -1245,8 +1267,11 @@ async def _requester_may_contact(tenant_id: str, command: Any, *,
     brokerage carries either name.
 
     The SENDER is checked too: a text, call or email goes out under its
-    creator's identity (created_by), which an edit does not change. When that
-    creator is a person who is no longer an active member, the send is
+    creator's identity (created_by), which an edit does not change; a
+    calendar event is created on, and its invitation sent from, the Google
+    account of `calendar_account` (the worker passes the job's creator, the
+    person whose approval queued it: _load_google_access_token's label). When
+    that identity is a person who is no longer an active member, the send is
     refused (SENDER_NOT_A_MEMBER) even if the requester may still send. A
     refusal's cause is appended to `reasons` when given (NOT_A_MEMBER /
     NO_RECORD_ACCESS / SENDER_NOT_A_MEMBER)."""
@@ -1261,8 +1286,13 @@ async def _requester_may_contact(tenant_id: str, command: Any, *,
         lead = None
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     lead_client = None
-    sender = (_human_sender(command.get("created_by"))
-              if str(command.get("command_type") or "") in _SENDS_AS_CREATOR else None)
+    command_type = str(command.get("command_type") or "")
+    if command_type in _SENDS_AS_CREATOR:
+        sender = _human_sender(command.get("created_by"))
+    elif command_type == "CALENDAR":
+        sender = _human_sender(calendar_account)
+    else:
+        sender = None
     sender_is_member = True
     async with tenant_tx(platform) as conn:
         requested_by = None
@@ -4502,6 +4532,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     # A gate that cannot decide on the job's last attempt is recorded as not
     # sent (OutreachUndecided), not as "retrying" on a dead-lettered job.
     final_attempt = is_final_attempt(reporter.job)
+    # The Google account a calendar event is created on: the job's creator,
+    # who approved it. Checked as an active member before anything is sent
+    # (_requester_may_contact) and used as the token's label below: one value.
+    calendar_account = str(reporter.job.get("created_by") or "")
     submission_started = False
     # Assigned only by a provider call that returned: every branch below sets
     # it from the adapter's result and nothing else. A failure after that point
@@ -4515,13 +4549,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
         if refusal is not None:
             raise billing.NotEntitled(f"Not sent: {refusal[1]}")
         reasons: list[str] = []
-        if not await _requester_may_contact(tenant_id, command, reasons=reasons):
+        if not await _requester_may_contact(tenant_id, command, reasons=reasons,
+                                            calendar_account=calendar_account):
             # Terminal (L09-12): reactivating the account or handing the
             # record back later must not fire it unseen.
             if SENDER_NOT_A_MEMBER in reasons:
                 # The requester may send, but the message would go out under
-                # a departed person's number, caller ID or mailbox.
-                raise SenderNotAMember(SENDER_NOT_A_MEMBER_MESSAGE)
+                # a departed person's number, caller ID, mailbox or calendar.
+                raise SenderNotAMember(CALENDAR_SENDER_NOT_A_MEMBER_MESSAGE
+                                       if command_type is CommandType.CALENDAR
+                                       else SENDER_NOT_A_MEMBER_MESSAGE)
             if NOT_A_MEMBER in reasons:
                 raise RequesterMayNotContact(
                     "Not sent: the person who asked for this is not an active member of this "
@@ -4925,7 +4962,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             event_draft["event"] = event
             google_token = await _load_google_access_token(
                 ctx,
-                account_label=str(reporter.job.get("created_by") or ""),
+                account_label=calendar_account,
             )
             submission_started = True
             provider_result = await create_google_calendar_event(

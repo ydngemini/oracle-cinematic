@@ -336,14 +336,15 @@ def _is_reserved_identity(agent_id: str) -> bool:
     same agent_id — and its token's subject then equalled the platform admin's
     in audit attribution and the admin session view (review AUTH-3).
 
-    The pipeline namespace ("system:…", tenancy.is_reserved_pipeline_identity)
-    is reserved too: the command worker treats a requester spelled that way as
-    a system pipeline rather than a member (L09-12), so an account with such a
-    name could keep sending after it was deactivated."""
-    from tenancy import is_reserved_pipeline_identity
+    The pipeline and mission namespaces ("system:…", "mission:…",
+    tenancy.is_reserved_account_name) are reserved too: the command worker
+    treats a requester or creator spelled that way as a system pipeline or a
+    mission rather than a member (L09-12), so an account with such a name
+    could keep sending after it was deactivated."""
+    from tenancy import is_reserved_account_name
 
     wanted = (agent_id or "").strip().lower()
-    if is_reserved_pipeline_identity(wanted):
+    if is_reserved_account_name(wanted):
         return True
     return any(wanted == known.strip().lower() for known in DEMO_CREDENTIALS)
 

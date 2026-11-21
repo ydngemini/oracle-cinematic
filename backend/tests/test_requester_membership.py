@@ -23,11 +23,15 @@ from tenancy import (
     OUTREACH_PIPELINE_REQUESTERS,
     SPEED_TO_LEAD_REQUESTER,
     Role,
+    is_reserved_account_name,
     is_reserved_pipeline_identity,
 )
 
 T = "11111111-1111-4111-8111-111111111111"
 CLIENT = "33333333-3333-4333-8333-333333333333"
+#: What missions/executor._stage writes as created_by: "mission:" + the
+#: missions row's uuid primary key.
+MISSION_CREATOR = "mission:7c9e6679-7425-40de-944b-e07fc1f90ae7"
 MEMBER = {"id": "u-1", "agent_id": "ava@brokerage.test", "role": "agent"}
 
 
@@ -43,11 +47,26 @@ def test_the_pipeline_marker_is_a_reserved_name():
         assert not is_reserved_pipeline_identity(name), name
 
 
+def test_the_mission_namespace_is_a_reserved_account_name_but_not_a_pipeline():
+    """A reviewer registered "mission:ops@example.com": the worker read that
+    creator as a mission and never checked their membership (review of
+    PR #175). No account may take the prefix; the pipeline rule (which judges
+    a REQUESTER as a pipeline) is unchanged, because a mission is not one."""
+    for name in ("mission:ops@example.com", " Mission:Ops@Example.com ", MISSION_CREATOR, "MISSION:42",
+                 "system:speed-to-lead", "System:Other@X.test", LEGACY_SPEED_TO_LEAD_REQUESTER):
+        assert is_reserved_account_name(name), name
+    for name in ("ava@brokerage.test", "missionary@x.test", "mission@x.test", "my-mission:x@x.test", "", None):
+        assert not is_reserved_account_name(name), name
+    for name in ("mission:ops@example.com", MISSION_CREATOR):
+        assert not is_reserved_pipeline_identity(name), name
+
+
 def test_account_creation_refuses_the_pipeline_namespace(monkeypatch):
     import auth
     import db.connection
 
-    for name in ("system:speed-to-lead@x.test", "System:Other@X.test", "speed-to-lead-worker"):
+    for name in ("system:speed-to-lead@x.test", "System:Other@X.test", "speed-to-lead-worker",
+                 "mission:ops@example.com", "MISSION:Ops@Example.com"):
         assert auth._is_reserved_identity(name), name
     assert not auth._is_reserved_identity("someone@x.test")
 
@@ -59,11 +78,12 @@ def test_account_creation_refuses_the_pipeline_namespace(monkeypatch):
     monkeypatch.setattr(db.connection, "tenant_tx", never)
     from fastapi import HTTPException, Response
 
-    with pytest.raises(HTTPException) as refused:
-        asyncio.run(auth.register(auth.RegisterRequest(
-            email="system:speed-to-lead@x.test", password=secrets.token_urlsafe(24),  # built at run time
-            full_name="Not a pipeline"), Response()))
-    assert refused.value.status_code == 409
+    for email in ("system:speed-to-lead@x.test", "mission:ops@example.com"):
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(auth.register(auth.RegisterRequest(
+                email=email, password=secrets.token_urlsafe(24),  # built at run time
+                full_name="Not a pipeline"), Response()))
+        assert refused.value.status_code == 409, email
 
 
 def test_an_invitation_to_the_pipeline_namespace_is_refused():
@@ -71,8 +91,9 @@ def test_an_invitation_to_the_pipeline_namespace_is_refused():
 
     import brokerage_onboarding
 
-    with pytest.raises(ValidationError, match="reserved"):
-        brokerage_onboarding.InviteCreate(emails=["System:Speed-To-Lead@x.test"])
+    for email in ("System:Speed-To-Lead@x.test", "Mission:Ops@Example.com"):
+        with pytest.raises(ValidationError, match="reserved"):
+            brokerage_onboarding.InviteCreate(emails=[email])
     assert brokerage_onboarding.InviteCreate(emails=["ava@x.test"]).emails == ["ava@x.test"]
 
 
@@ -80,7 +101,8 @@ def test_the_ai_agent_onboarding_script_refuses_the_namespace_before_writing():
     # Read, not imported: the script loads the repository .env at import.
     src = (Path(__file__).resolve().parents[1] / "scripts" / "onboard_ai_agent.py").read_text()
     body = src[src.index("async def onboard("):]
-    assert body.index("is_reserved_pipeline_identity(agent_id)") < body.index("INSERT INTO users")
+    # The account-name rule (system: AND mission:), not only the pipeline one.
+    assert body.index("is_reserved_account_name(agent_id)") < body.index("INSERT INTO users")
 
 
 # ── pre-marker rows: every origin signal or nothing ──────────────────────────
@@ -377,7 +399,7 @@ def test_a_refused_requester_ends_failed_and_is_never_retried(monkeypatch, reaso
     async def none(*_a, **_k):
         return None
 
-    async def refuse(_tenant, _command, *, reasons):
+    async def refuse(_tenant, _command, *, reasons, calendar_account=None):
         reasons.append(reason)
         return False
 
@@ -447,10 +469,12 @@ class _ReachedTheDestinationCheck(Exception):
     pass
 
 
-def _send(monkeypatch, command_type, created_by, *, active):
+def _send(monkeypatch, command_type, created_by, *, active, job_creator="editor@brokerage.test"):
     """The real _execute_command_job and _requester_may_contact. The
-    requester (the editor) may send; `active` is who is an active member.
-    Stops at the destination check, the first step after the identity checks."""
+    requester (the editor) may send; `active` is who is an active member;
+    `job_creator` approved it (a calendar event is created on their Google
+    account). Stops at the destination check, the first step after the
+    identity checks."""
     import billing
     import record_access
 
@@ -479,11 +503,12 @@ def _send(monkeypatch, command_type, created_by, *, active):
     monkeypatch.setattr(ca, "requester_contact_refusal", none)        # the requester may send
     monkeypatch.setattr(record_access, "find_member", find_member)
     monkeypatch.setattr(ca, "_destination_still_on_record", destination)
-    for name in ("guard_outreach", "_resolve_email_provider", "_load_provider_credential"):
+    for name in ("guard_outreach", "_resolve_email_provider", "_load_provider_credential",
+                 "_load_google_access_token", "create_google_calendar_event"):
         monkeypatch.setattr(ca, name, never)
 
     class Reporter:
-        job = {"tenant_id": T, "created_by": "editor@brokerage.test"}
+        job = {"tenant_id": T, "created_by": job_creator}
 
         async def progress(self, *_a, **_k):
             return None
@@ -523,7 +548,7 @@ def test_an_active_creator_still_sends_after_a_colleagues_edit(monkeypatch, comm
     assert looked_up == ["ava@brokerage.test"]
 
 
-@pytest.mark.parametrize("created_by", ["mission:42", "MISSION:42", SPEED_TO_LEAD_REQUESTER,
+@pytest.mark.parametrize("created_by", [MISSION_CREATOR, SPEED_TO_LEAD_REQUESTER,
                                         LEGACY_SPEED_TO_LEAD_REQUESTER])
 def test_a_mission_or_pipeline_creator_is_not_a_person_to_look_up(monkeypatch, created_by):
     _conn, looked_up, run = _send(monkeypatch, "SMS", created_by, active={"editor@brokerage.test"})
@@ -532,11 +557,53 @@ def test_a_mission_or_pipeline_creator_is_not_a_person_to_look_up(monkeypatch, c
     assert looked_up == []
 
 
-def test_a_calendar_event_is_not_sent_under_the_creators_identity(monkeypatch):
+@pytest.mark.parametrize("created_by", [
+    "mission:ops@example.com",       # an account a reviewer registered before the prefix was reserved
+    "mission:42",                    # not a mission id
+    MISSION_CREATOR.upper(),         # missions write the uuid lower-case
+    MISSION_CREATOR + "x",
+    " " + MISSION_CREATOR,
+])
+def test_only_the_exact_mission_shape_skips_the_sender_check(monkeypatch, created_by):
+    """Was: any created_by starting "mission:" skipped it, so an offboarded
+    person whose account was named that way kept sending (review of PR #175).
+    Now anything but "mission:<uuid>" is a person: looked up, and refused."""
+    conn, looked_up, run = _send(monkeypatch, "SMS", created_by, active={"editor@brokerage.test"})
+    with pytest.raises(ca.SenderNotAMember) as refused:
+        asyncio.run(run)
+    assert refused.value.job_terminal is True
+    assert refused.value.job_error_code == "SENDER_NOT_A_MEMBER"
+    assert looked_up == [created_by.strip()]
+    assert [args[2] for sql, args in conn.executed if "SET state=$3" in sql] == ["failed"]
+    assert ca._human_sender(MISSION_CREATOR) is None
+
+
+def test_a_calendar_event_is_checked_against_the_approvers_account_not_the_drafts(monkeypatch):
     """A calendar event is created on the approving job creator's Google
-    account, not the draft creator's: the sender check does not apply."""
+    account, not the draft creator's: that is the identity looked up."""
     _conn, looked_up, run = _send(monkeypatch, "CALENDAR", "gone@brokerage.test",
                                   active={"editor@brokerage.test"})
     with pytest.raises(_ReachedTheDestinationCheck):
         asyncio.run(run)
-    assert looked_up == []
+    assert looked_up == ["editor@brokerage.test"]
+
+
+def test_a_calendar_event_on_a_departed_approvers_account_is_refused_terminally(monkeypatch):
+    """Was: only EMAIL/SMS/CALL checked the identity they go out under, so an
+    event approved by someone offboarded since was still created on their
+    Google account, its invitations sent from it (review of PR #175). Now:
+    refused before any token is loaded, 'failed', never retried."""
+    conn, looked_up, run = _send(monkeypatch, "CALENDAR", "ava@brokerage.test",
+                                 active={"ava@brokerage.test", "editor@brokerage.test"},
+                                 job_creator="gone@brokerage.test")
+    with pytest.raises(ca.SenderNotAMember,
+                       match="the person whose Google Calendar this event would be created on "
+                             r"\(who approved it\) is no longer an active member") as refused:
+        asyncio.run(run)
+    assert refused.value.job_terminal is True
+    assert refused.value.job_error_code == "SENDER_NOT_A_MEMBER"
+    assert looked_up == ["gone@brokerage.test"]
+    states = [args[2] for sql, args in conn.executed if "SET state=$3" in sql]
+    assert states == ["failed"]                                   # a definite "not sent"
+    (stored,) = [args[1] for sql, args in conn.executed if "SET state=$3" in sql]
+    assert "Google Calendar" in stored and "no longer an active member" in stored

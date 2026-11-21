@@ -220,17 +220,10 @@ async def test_a_compliance_block_succeeds_and_is_recorded_not_retried(monkeypat
     assert recorded[0]["blocked_reason"] == "outside_calling_window"
 
 
-@sync
-async def test_an_undecidable_gate_retries_the_job_instead_of_withholding_for_good(monkeypatch):
-    """PR #173 review: pending spoken STOPs unreadable (a Valkey failover) is
-    not a compliance outcome. Recording "blocked" would withhold this lead's
-    first reply forever; the job must fail RETRYABLY and record nothing."""
-    import pytest
-
+def _undecidable_gate(monkeypatch, recorded: list[dict]):
     import outreach_compliance as oc
 
     monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
-    recorded: list[dict] = []
     _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
     monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
 
@@ -242,10 +235,48 @@ async def test_an_undecidable_gate_retries_the_job_instead_of_withholding_for_go
 
     monkeypatch.setattr(speed_to_lead, "guard_outreach", _undecidable)
     _forbid_metering(monkeypatch)
+
+
+@sync
+async def test_an_undecidable_gate_retries_the_job_instead_of_withholding_for_good(monkeypatch):
+    """PR #173 review: pending spoken STOPs unreadable (a Valkey failover) is
+    not a compliance outcome. Recording "blocked" would withhold this lead's
+    first reply forever; with attempts left the job must fail RETRYABLY and
+    record nothing."""
+    import pytest
+
+    import outreach_compliance as oc
+
+    recorded: list[dict] = []
+    _undecidable_gate(monkeypatch, recorded)
     with pytest.raises(oc.OutreachDeferred) as err:
-        await speed_to_lead._speed_to_lead_job(_payload(), _reporter())
+        await speed_to_lead._speed_to_lead_job(_payload(), _reporter(attempt_count=1, max_attempts=3))
     assert getattr(err.value, "job_terminal", False) is False
     assert recorded == []                                   # nothing final written
+
+
+@sync
+async def test_an_undecidable_gate_on_the_last_attempt_says_not_sent_not_retrying(monkeypatch):
+    """Review of PR #175: the job called raise_if_deferred without
+    final_attempt, so on its last attempt — every attempt, with
+    JOB_MAX_ATTEMPTS = 1 — the dead-lettered job read "Not sent yet,
+    retrying". Now it is OutreachUndecided: terminal, and its words say it
+    was not sent and will not be retried. Still nothing recorded as blocked."""
+    import pytest
+
+    import automation_jobs
+    import outreach_compliance as oc
+
+    recorded: list[dict] = []
+    _undecidable_gate(monkeypatch, recorded)
+    job = {"attempt_count": 1, "max_attempts": speed_to_lead.JOB_MAX_ATTEMPTS}
+    assert automation_jobs.is_final_attempt(job)
+    with pytest.raises(oc.OutreachUndecided, match="will not be retried") as err:
+        await speed_to_lead._speed_to_lead_job(_payload(), _reporter(**job))
+    assert err.value.job_terminal is True
+    assert err.value.job_error_code == "OUTREACH_UNDECIDED"
+    assert "retrying" not in str(err.value).lower()
+    assert recorded == []
 
 
 @sync
@@ -378,9 +409,11 @@ def _payload(created_at: datetime | None = None) -> dict:
     }
 
 
-def _reporter():
+def _reporter(**job_fields):
+    row = {"tenant_id": TENANT_ID, "id": "job-1", "job_type": speed_to_lead.JOB_TYPE, **job_fields}
+
     class _R:
-        job = {"tenant_id": TENANT_ID, "id": "job-1", "job_type": speed_to_lead.JOB_TYPE}
+        job = row
 
         async def progress(self, *a, **k):
             return None

@@ -116,3 +116,69 @@ def test_a_hang_up_cannot_cancel_the_suppression_write(monkeypatch):
         return written
 
     assert asyncio.run(scenario()) == ["+13025550101"]
+
+
+# ── record_outbound_opt_out never passes a failed write off as recorded ─────
+
+_TENANT = "11111111-1111-1111-1111-111111111111"
+
+
+class _UnexpectedDriverError(Exception):
+    """Not a database error the code names: what the catch-all is for."""
+
+
+def _write_that_raises(monkeypatch, *, at):
+    """record_outbound_opt_out's transaction, failing unexpectedly either on
+    entering it ('enter': no connection to hand out) or in the INSERT."""
+    from contextlib import asynccontextmanager
+
+    import db.connection
+
+    attempted: list[str] = []
+
+    class _Conn:
+        async def execute(self, sql, *args):
+            attempted.append(sql)
+            raise _UnexpectedDriverError("driver blew up")
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        if at == "enter":
+            raise _UnexpectedDriverError("pool closed")
+        yield _Conn()
+
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
+    return attempted
+
+
+@pytest.mark.parametrize("at", ["enter", "insert"])
+def test_an_unexpected_write_error_is_raised_as_not_recorded_never_swallowed(monkeypatch, at):
+    """The catch-all in record_outbound_opt_out re-raises any failure as the
+    one documented failure, OptOutNotRecorded, chained to the original: the
+    caller (honour, the sweeps) then spools and retries the STOP. Returning
+    normally would be a false "recorded" for a suppression never written."""
+    import asyncio
+
+    import voice_opt_out
+
+    attempted = _write_that_raises(monkeypatch, at=at)
+    with pytest.raises(voice_opt_out.OptOutNotRecorded, match="could not be written") as err:
+        asyncio.run(voice_opt_out.record_outbound_opt_out({"tenant_id": _TENANT, "callee": "+13025550142"}))
+    assert isinstance(err.value.__cause__, _UnexpectedDriverError)
+    assert len(attempted) == (1 if at == "insert" else 0)
+
+
+def test_an_unexpected_write_error_leaves_the_stop_pending(monkeypatch):
+    """End to end through the spool replay: the STOP is not counted as
+    replayed and stays pending, so the outreach gate keeps blocking it."""
+    import asyncio
+
+    import voice_opt_out
+    from outreach_compliance import Channel, normalize_contact
+
+    monkeypatch.delenv("REDIS_URL", raising=False)       # the local spool on its own
+    number = normalize_contact("+13025550142", Channel.VOICE)
+    voice_opt_out._PENDING.add((_TENANT, number))         # conftest gives each test its own
+    _write_that_raises(monkeypatch, at="insert")
+    assert asyncio.run(voice_opt_out.replay_spool()) == {"replayed": 0, "still_pending": 1}
+    assert voice_opt_out.pending_opt_out(_TENANT, number)
