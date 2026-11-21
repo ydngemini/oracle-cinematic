@@ -30,7 +30,7 @@ EXPECTED = sorted([
     ("missions/executor.py", "_stage", "mission:", "a mission"),
     ("sales_api.py", "_smart_plan_dispatch", "smart-plan:", "a sales sequence"),
     ("sales_api.py", "run_agent_action", "sales-agent:", "the AI sales agent"),
-    ("speed_to_lead.py", "_speed_to_lead_job", "speed-to-lead:", "speed-to-lead"),
+    ("speed_to_lead.py", "_attempt_first_response", "speed-to-lead:", "speed-to-lead"),
 ])
 
 

@@ -32,6 +32,11 @@ retry loop against a compliance denial would be both useless and abusive, and
 dropping the row entirely would make the latency metric survivorship-biased —
 it would report only the leads we were allowed to contact.
 
+**Only a deferral is retried.** When the gate cannot decide yet (the shared
+store of pending spoken STOPs is unreachable, e.g. during a Valkey failover)
+nothing is sent or recorded and the job tries again a few minutes later
+(``JOB_MAX_ATTEMPTS``); every other failure ends the job on its first attempt.
+
 The feature is off unless ``ORACLE_FEATURE_SPEED_TO_LEAD`` is truthy, matching
 every other outbound-capable subsystem in this codebase.
 """
@@ -43,9 +48,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import recovery_mode
 from automation_jobs import ActionRisk, enqueue_job, is_final_attempt, register_handler
 from db.connection import tenant_tx
-from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach, raise_if_deferred
+from outreach_compliance import (
+    Channel,
+    OutreachDeferred,
+    OutreachUndecided,
+    Purpose,
+    VoiceMode,
+    guard_outreach,
+    raise_if_deferred,
+)
 from platform_policy import Feature, feature_enabled
 from tenancy import SPEED_TO_LEAD_REQUESTER, Role, TenantContext
 
@@ -58,16 +72,41 @@ JOB_TYPE = "crm:speed_to_lead"
 # batch of client-AI reconciles (priority 45) the feature has already failed.
 JOB_PRIORITY = 5
 
-# One attempt, then stop. Retrying a first-response send is close to meaningless
-# — by the time a retry lands the "first response" window has closed — and a
-# retry against a compliance block would be an unwanted repeat contact.
-JOB_MAX_ATTEMPTS = 1
+# One attempt, except after a deferral. A retry after the "first response"
+# window has closed is close to meaningless, and a compliance block is a
+# successful job (never retried: a repeat against a denial would be an unwanted
+# contact), so every failure ends the job on its first attempt
+# (_speed_to_lead_job makes it terminal: SpeedToLeadAttemptFailed) — except
+# OutreachDeferred. That one says the gate could not decide yet (the shared
+# STOP store is unreachable, e.g. a Valkey failover): nothing was sent and
+# nothing recorded, and a draft a few minutes late (it still waits for a
+# human's approval) beats no first response at all. So it is retried, spaced
+# by its job_retry_after_seconds (TRANSIENT_RETRY_SECONDS, 120 s): the third
+# and last attempt runs about four minutes after the first. If the gate still
+# cannot decide then, the job ends OutreachUndecided and the ledger records the
+# lead as 'failed' (L09-11).
+JOB_MAX_ATTEMPTS = 3
 
 # Fall back to SMS when the contact expressed no preference: it is the channel
 # with the fastest median human response and the one the sub-90-second finding
 # was measured on. 'none'/unknown lands here too.
 _DEFAULT_CHANNEL = "sms"
 _CHANNEL_ALIASES = {"text": "sms", "phone": "voice", "call": "voice"}
+
+
+class SpeedToLeadAttemptFailed(RuntimeError):
+    """A speed-to-lead attempt that failed for any reason but a deferral:
+    dead-lettered now (job_terminal), never retried (JOB_MAX_ATTEMPTS). Keeps
+    the original error's code when it names one, and its class and text."""
+
+    job_terminal = True
+
+    def __init__(self, exc: Exception):
+        detail = str(exc).strip() or repr(exc)
+        # Neutral on purpose: the attempt may have staged its draft before it
+        # failed (a heartbeat after create_command), so never claim "not staged".
+        super().__init__(f"Speed-to-lead attempt failed, not retried: {type(exc).__name__}: {detail}")
+        self.job_error_code = str(getattr(exc, "job_error_code", None) or "JOB_HANDLER_ERROR")
 
 
 def _enabled() -> bool:
@@ -244,7 +283,55 @@ async def enqueue_speed_to_lead(
         return {"state": "deferred", "created": False}
 
 
+async def _first_response_on_record(
+    ctx: TenantContext,
+    *,
+    intake_event_id: Optional[str],
+    lead_id: Optional[str],
+    contact_id: Optional[str],
+    client_id: Optional[str],
+) -> Optional[str]:
+    """The disposition of the ledger row that already answers for this lead,
+    or None: the row 0067's partial unique indexes would make a new write
+    collide with (ON CONFLICT DO NOTHING) — by intake event, else by lead —
+    or, for a lead with neither (no unique index covers it), the row this job
+    writes for the same contact and client."""
+    if intake_event_id:
+        where, anchors = "intake_event_id = $2::uuid", (intake_event_id,)
+    elif lead_id:
+        where, anchors = "lead_id = $2::uuid AND intake_event_id IS NULL", (lead_id,)
+    else:
+        where = ("origin = 'speed_to_lead' AND intake_event_id IS NULL AND lead_id IS NULL "
+                 "AND contact_id IS NOT DISTINCT FROM $2::uuid AND client_id IS NOT DISTINCT FROM $3::uuid")
+        anchors = (contact_id, client_id)
+    async with tenant_tx(ctx) as conn:
+        return await conn.fetchval(
+            "SELECT disposition FROM lead_response_events WHERE tenant_id = $1::uuid AND "
+            + where + " ORDER BY responded_at LIMIT 1",
+            ctx.tenant_id, *anchors,
+        )
+
+
 async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str, Any]:
+    """The registered handler: one attempt, retried only after a deferral.
+
+    The job is enqueued with JOB_MAX_ATTEMPTS so that OutreachDeferred can be
+    retried; every other exception is made terminal here, so it is
+    dead-lettered on the attempt that raised it, exactly as when the job had
+    one attempt. One already terminal keeps its own code (OutreachUndecided,
+    billing.NotEntitled), and a recovery-mode refusal reaches the job worker
+    unchanged (dead-lettered as RECOVERY_MODE_BLOCKED)."""
+    try:
+        return await _attempt_first_response(payload, reporter)
+    except (OutreachDeferred, recovery_mode.RecoveryModeBlocked):
+        raise
+    except Exception as exc:
+        if getattr(exc, "job_terminal", False):
+            raise
+        raise SpeedToLeadAttemptFailed(exc) from exc
+
+
+async def _attempt_first_response(payload: dict[str, Any], reporter: Any) -> dict[str, Any]:
     """Resolve the contact, clear the compliance gate, stage the opening touch."""
     tenant_id = str(reporter.job["tenant_id"])
     worker_ctx = TenantContext(
@@ -262,6 +349,19 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
         intake_event_id=intake_event_id, contact_id=contact_id,
         client_id=client_id, lead_id=lead_id, lead_created_at=lead_created_at,
     )
+
+    if int(reporter.job.get("attempt_count") or 1) > 1:
+        # Only a deferral is retried, and a deferral records nothing. A row
+        # here means an earlier attempt finished its work and its worker
+        # stopped before the job was marked done (a restart, an expired
+        # lease): that outcome stands. A recorded block is never re-gated into
+        # a draft, and no second draft or second row is ever staged.
+        on_record = await _first_response_on_record(
+            worker_ctx, intake_event_id=intake_event_id, lead_id=lead_id,
+            contact_id=contact_id, client_id=client_id,
+        )
+        if on_record is not None:
+            return {"state": "already_recorded", "disposition": on_record}
 
     if not _enabled():
         # The flag can flip between enqueue and execution. Recording the skip
@@ -326,11 +426,21 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
     # The gate could not decide yet (a Valkey outage hides pending spoken
     # STOPs): NOT a compliance outcome, so nothing is recorded as "blocked"
     # (that would withhold this lead's first reply for good). With attempts
-    # left the job fails retryably (OutreachDeferred). On its last attempt —
-    # every attempt while JOB_MAX_ATTEMPTS is 1 — the job is dead-lettered, so
-    # it raises OutreachUndecided, which says not sent and not retried, never
-    # "retrying" (L09-11).
-    raise_if_deferred(decision, final_attempt=is_final_attempt(reporter.job))
+    # left (JOB_MAX_ATTEMPTS) it raises OutreachDeferred: nothing is recorded
+    # and the job worker retries it about two minutes later. On the last
+    # attempt it raises OutreachUndecided — not sent, not retried — and the
+    # ledger records the lead 'failed', so it reads as a failed first response
+    # instead of vanishing from the metric. (0067's CHECK allows a reason on a
+    # 'blocked' row only; the dead-lettered job keeps the cause,
+    # OUTREACH_UNDECIDED.) Nothing can run a dead-lettered job again, so this
+    # row never shadows a later draft (L09-11).
+    try:
+        raise_if_deferred(decision, final_attempt=is_final_attempt(reporter.job))
+    except OutreachUndecided:
+        await _record_response_event(
+            worker_ctx, channel=channel, disposition="failed", **ledger
+        )
+        raise
     if not decision.allowed:
         reason = decision.blockers[0] if decision.blockers else "blocked_by_compliance"
         await _record_response_event(

@@ -588,6 +588,46 @@ def test_a_calendar_event_is_checked_against_the_approvers_account_not_the_draft
     assert looked_up == ["editor@brokerage.test"]
 
 
+def test_the_calendar_token_is_loaded_for_the_account_the_membership_check_cleared(monkeypatch):
+    """Review of PR #176: the worker computes calendar_account once, for the
+    membership check and for the Google token's label, but replacing the
+    label with the draft creator's id (account_label=command['created_by'])
+    passed every test. Run the CALENDAR path to the token load, with a
+    draft creator who is not the approver: the token is loaded for exactly
+    the account the membership check was asked about, and looked up."""
+    checked: list = []
+    labels: list = []
+    real_check = ca._requester_may_contact
+
+    async def check(tenant_id, command, *, reasons=None, calendar_account=None):
+        checked.append(calendar_account)
+        return await real_check(tenant_id, command, reasons=reasons, calendar_account=calendar_account)
+
+    class _TokenLoaded(Exception):
+        pass
+
+    async def load_token(_ctx, account_label):
+        labels.append(account_label)
+        raise _TokenLoaded
+
+    async def on_record(*_a, **_k):
+        return None
+
+    conn, looked_up, run = _send(monkeypatch, "CALENDAR", "ava@brokerage.test",
+                                 active={"ava@brokerage.test", "editor@brokerage.test",
+                                         "approver@brokerage.test"},
+                                 job_creator="approver@brokerage.test")
+    monkeypatch.setattr(ca, "_requester_may_contact", check)
+    monkeypatch.setattr(ca, "_destination_still_on_record", on_record)
+    monkeypatch.setattr(ca, "_load_google_access_token", load_token)
+    with pytest.raises(_TokenLoaded):
+        asyncio.run(run)
+    assert checked == ["approver@brokerage.test"]
+    assert looked_up == ["approver@brokerage.test"]       # the membership lookup itself
+    assert labels == checked                              # the token: the same account
+    assert conn.row["created_by"] == "ava@brokerage.test" not in labels
+
+
 def test_a_calendar_event_on_a_departed_approvers_account_is_refused_terminally(monkeypatch):
     """Was: only EMAIL/SMS/CALL checked the identity they go out under, so an
     event approved by someone offboarded since was still created on their

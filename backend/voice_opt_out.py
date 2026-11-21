@@ -461,28 +461,45 @@ async def replay_spool() -> dict[str, int]:
 
 
 #: replay_shared gives up on a sweep after this many store operations in a
-#: row failed because the store did not answer (the store itself is down, not
-#: one entry): each is bounded at SHARED_TIMEOUT_SECONDS, so a dead store
-#: cannot hold the sweep for minutes.
+#: row failed because the store could not serve (the store itself is down or
+#: failing over, not one entry: _store_unreachable): each is bounded at
+#: SHARED_TIMEOUT_SECONDS, so a dead store cannot hold the sweep for minutes.
 SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES = 3
 
 
+#: Server error codes that describe the STORE, which the plain client
+#: (rate_limit_middleware's redis.asyncio.from_url) has no class for: it
+#: raises a bare ResponseError whose text starts with the code. MASTERDOWN is
+#: what every GET to a replica answers while its master is down (a failover);
+#: CLUSTERDOWN, a cluster that cannot serve. (redis-py's cluster client maps
+#: both to ClusterDownError / MasterDownError, checked by class below.)
+_STORE_ERROR_CODES = frozenset({"MASTERDOWN", "CLUSTERDOWN"})
+
+
 def _store_unreachable(exc: BaseException) -> bool:
-    """Whether a failed shared-store operation says the STORE is not
-    answering, as opposed to one entry being refused or unreadable: no client
+    """Whether a failed shared-store operation says the STORE cannot serve,
+    as opposed to one entry being refused or unreadable: no client
     (SharedStoreUnavailable), the operation's bound ran out (_bounded raises
-    TimeoutError), a socket error, or the client's own connection or timeout
+    TimeoutError), a socket error, the client's own connection or timeout
     error (redis.exceptions.ConnectionError / TimeoutError, which are not the
-    builtins). Anything else (a WRONGTYPE ResponseError, a value that will
-    not decode) is that entry's problem."""
+    builtins; ConnectionError includes LOADING, authentication and pool
+    exhaustion), or an answer about the server rather than the key:
+    MASTERDOWN / CLUSTERDOWN (a failover), READONLY (a replica still being
+    written to), OOM (no memory for any write), NOPERM (these credentials may
+    not run the command, or touch the key prefix every entry shares), or a
+    reply the client could not parse (InvalidResponse: the connection's
+    stream is broken). Anything else (a WRONGTYPE ResponseError, a value that
+    will not decode or unseal) is that entry's problem."""
     if isinstance(exc, (SharedStoreUnavailable, TimeoutError, OSError)):
         return True
     try:
-        from redis.exceptions import ConnectionError as RedisConnectionError
-        from redis.exceptions import TimeoutError as RedisTimeoutError
+        from redis import exceptions as rx
     except ImportError:  # pragma: no cover - redis is pinned in requirements.txt
         return False
-    return isinstance(exc, (RedisConnectionError, RedisTimeoutError))
+    if isinstance(exc, (rx.ConnectionError, rx.TimeoutError, rx.InvalidResponse, rx.ClusterDownError,
+                        rx.ReadOnlyError, rx.OutOfMemoryError, rx.NoPermissionError)):
+        return True
+    return isinstance(exc, rx.ResponseError) and str(exc).split(" ", 1)[0] in _STORE_ERROR_CODES
 
 
 async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
@@ -499,11 +516,12 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
     server refuses scripting) is counted in 'cleanup_failed' and never
     counts toward giving up — the member only costs a GET on the next sweep.
     Only SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES store operations in a row that
-    failed because the store did not answer (_store_unreachable: connection
-    or timeout errors) end it, raising SharedStoreUnavailable. A read that
-    succeeds resets that streak; a failure that is one entry's own (a
-    WRONGTYPE value, one that will not decode) is counted in 'errors' and
-    neither adds to the streak nor resets it."""
+    failed because the store could not serve (_store_unreachable: connection
+    or timeout errors, and answers about the server such as MASTERDOWN during
+    a failover) end it, raising SharedStoreUnavailable. A read that succeeds
+    resets that streak; a failure that is one entry's own (a WRONGTYPE value,
+    one that will not decode) is counted in 'errors' and neither adds to the
+    streak nor resets it."""
     if not shared_store_configured():
         return {"configured": False}
     client = await _bounded(_shared_client())

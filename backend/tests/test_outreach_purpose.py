@@ -31,7 +31,7 @@ EXPECTED = [
     ("missions/policy.py", "evaluate_action", "guard_outreach", "Purpose.MARKETING"),
     ("outreach_compliance.py", "check_outreach", "guard_outreach", "body.purpose"),
     ("sales_api.py", "_preview", "guard_outreach", "Purpose.MARKETING"),
-    ("speed_to_lead.py", "_speed_to_lead_job", "guard_outreach", "Purpose.MARKETING"),
+    ("speed_to_lead.py", "_attempt_first_response", "guard_outreach", "Purpose.MARKETING"),
     ("telephony_api.py", "prepare_agent_call", "guard_outreach", "Purpose.MARKETING"),
     ("telephony_api.py", "twilio_agent_outbound", "guard_outreach", "Purpose.MARKETING"),
 ]

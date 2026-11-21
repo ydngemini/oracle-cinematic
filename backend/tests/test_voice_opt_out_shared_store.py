@@ -18,6 +18,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
+from redis import exceptions as rx
+from redis._parsers.base import BaseParser
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError as RedisResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -587,9 +589,10 @@ def test_a_store_that_dies_mid_sweep_ends_it_after_a_few_failures(monkeypatch, v
 
 def _scripted_gets(monkeypatch, valkey, script):
     """GET answers in member order: 'down' raises the client's connection
-    error (the store did not answer), 'wrongtype' a ResponseError (the store
-    answered: that one value is unusable), 'ok' reads normally (a stale
-    member: nothing there)."""
+    error (the store did not answer), 'masterdown' what the plain client
+    raises for a replica whose master is down (a failover: the store cannot
+    serve any key), 'wrongtype' a ResponseError (the store answered: that one
+    value is unusable), 'ok' reads normally (a stale member: nothing there)."""
     names = [f"m{i:02d}" for i in range(len(script))]
     _stale(valkey, *names)
     outcome = {f"{voice_opt_out.SHARED_PREFIX}{TENANT}:!{n}": o for n, o in zip(names, script, strict=True)}
@@ -602,6 +605,9 @@ def _scripted_gets(monkeypatch, valkey, script):
         if what == "down":
             await valkey._cmd()
             raise RedisConnectionError("Connection reset by peer")
+        if what == "masterdown":
+            await valkey._cmd()
+            raise BaseParser.parse_error(_MASTERDOWN)
         if what == "wrongtype":
             await valkey._cmd()
             raise RedisResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
@@ -643,20 +649,57 @@ def test_an_entrys_own_failure_does_not_reset_the_store_failure_streak(monkeypat
     assert len(gets) == 4                                 # stopped at the third store failure
 
 
+#: What a replica answers to every command while its master is down
+#: (replica-serve-stale-data no): the failover the sweep must report.
+_MASTERDOWN = "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'."
+
+
+def test_a_failover_that_answers_masterdown_to_every_read_ends_the_sweep(monkeypatch, valkey, be):
+    """Review of PR #176: MASTERDOWN was read as each entry's own problem, so
+    a failover that answered it to every GET ended the sweep "normally" with
+    errors=N instead of reporting the store unavailable. The plain client
+    raises it as a bare ResponseError (no class of its own outside cluster
+    mode): it is the store's failure, and three in a row stop the sweep."""
+    be("worker")
+    assert type(BaseParser.parse_error(_MASTERDOWN)) is rx.ResponseError
+    gets = _scripted_gets(monkeypatch, valkey, ["masterdown"] * 6)
+    with pytest.raises(voice_opt_out.SharedStoreUnavailable, match="3 shared store operations failed"):
+        asyncio.run(voice_opt_out.replay_shared())
+    assert len(gets) == voice_opt_out.SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES
+
+
 #: Built when the test runs, not at collection: test_voice_opt_out_durable
-#: reloads voice_opt_out, which replaces SharedStoreUnavailable.
+#: reloads voice_opt_out, which replaces SharedStoreUnavailable. Server
+#: answers go through redis-py's own reply parser (BaseParser.parse_error),
+#: so each is the exception the plain client really raises for that reply.
 @pytest.mark.parametrize("make, unreachable", [
     (lambda: RedisConnectionError("refused"), True),
     (lambda: TimeoutError(), True),                       # _bounded's bound ran out
     (lambda: ConnectionResetError(), True),
     (lambda: voice_opt_out.SharedStoreUnavailable("no client"), True),
     (lambda: RedisTimeoutError("slow"), True),
+    # the store answered, but about itself: no key can be served
+    (lambda: BaseParser.parse_error(_MASTERDOWN), True),
+    (lambda: BaseParser.parse_error("CLUSTERDOWN The cluster is down"), True),
+    (lambda: BaseParser.parse_error("READONLY You can't write against a read only replica."), True),
+    (lambda: BaseParser.parse_error("OOM command not allowed when used memory > 'maxmemory'."), True),
+    (lambda: BaseParser.parse_error("NOPERM this user has no permissions to run the 'get' command"), True),
+    (lambda: BaseParser.parse_error("LOADING Redis is loading the dataset in memory"), True),
+    (lambda: rx.InvalidResponse("Protocol Error: b'?'"), True),
+    # the cluster client's classes for the same answers
+    (lambda: rx.MasterDownError("Link with MASTER is down"), True),
+    (lambda: rx.ClusterDownError("The cluster is down"), True),
+    # that one entry's problem: the store is serving
+    (lambda: BaseParser.parse_error("WRONGTYPE Operation against a key holding the wrong kind of value"), False),
     (lambda: RedisResponseError("WRONGTYPE"), False),
+    (lambda: RedisResponseError("ERR value is not an integer or out of range"), False),
+    (lambda: rx.DataError("Invalid input of type: 'NoneType'"), False),
     (lambda: UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), False),
     (lambda: ValueError("bad entry"), False),
-], ids=["redis-connection", "timeout", "socket", "no-client", "redis-timeout", "wrongtype", "undecodable",
-        "other"])
-def test_only_connection_and_timeout_errors_mean_the_store_is_unreachable(make, unreachable):
+], ids=["redis-connection", "timeout", "socket", "no-client", "redis-timeout", "masterdown", "clusterdown",
+        "readonly", "oom", "noperm", "loading", "invalid-response", "cluster-masterdown", "cluster-down",
+        "wrongtype-parsed", "wrongtype", "err", "data-error", "undecodable", "other"])
+def test_only_errors_about_the_store_mean_the_store_is_unreachable(make, unreachable):
     assert voice_opt_out._store_unreachable(make()) is unreachable
 
 

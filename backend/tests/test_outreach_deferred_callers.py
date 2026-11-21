@@ -151,3 +151,38 @@ def test_the_last_attempt_is_undecided_not_retrying_and_matches_the_dead_letter_
         job = {"id": "j-1", "attempt_count": attempt, "max_attempts": maximum}
         asyncio.run(automation_jobs.fail_job(job, "w-1", RuntimeError("retryable")))
         assert (seen["state"] == "dead_letter") is automation_jobs.is_final_attempt(job), (attempt, maximum)
+
+
+def test_speed_to_lead_retries_a_deferral_within_its_budget_and_nothing_else(monkeypatch):
+    """Review of PR #176: speed-to-lead had one attempt, so every attempt was
+    the last and a lead that arrived during a Valkey failover never got a
+    first-response draft. Its budget now lets a deferral be retried, with
+    fail_job's real spacing, and the last retry lands within ~5 minutes of
+    the first attempt; the last attempt itself is dead-lettered. Any other
+    error the job raises is terminal on its first attempt (the job makes it
+    so), and dead-lettered there by the same fail_job."""
+    import automation_jobs
+    import speed_to_lead
+
+    seen = []
+
+    async def lease_update(job, worker_id, sql, *args, finish=None):
+        seen.append((args[0], int(args[4])))
+        return {"id": job["id"]}
+
+    monkeypatch.setattr(automation_jobs, "_lease_update", lease_update)
+    budget = speed_to_lead.JOB_MAX_ATTEMPTS
+    deferred = oc.OutreachDeferred(asyncio.run(undecidable()))
+    for attempt in range(1, budget + 1):
+        job = {"id": "j-1", "attempt_count": attempt, "max_attempts": budget}
+        asyncio.run(automation_jobs.fail_job(job, "w-1", deferred))
+    assert [state for state, _ in seen] == ["failed"] * (budget - 1) + ["dead_letter"]
+    waits = [seconds for state, seconds in seen if state == "failed"]
+    assert waits == [oc.TRANSIENT_RETRY_SECONDS] * (budget - 1)
+    assert budget >= 3 and sum(waits) <= 300
+
+    seen.clear()
+    other = speed_to_lead.SpeedToLeadAttemptFailed(RuntimeError("database is down"))
+    job = {"id": "j-1", "attempt_count": 1, "max_attempts": budget}
+    asyncio.run(automation_jobs.fail_job(job, "w-1", other, terminal=other.job_terminal))
+    assert seen[0][0] == "dead_letter" and other.job_error_code == "JOB_HANDLER_ERROR"
