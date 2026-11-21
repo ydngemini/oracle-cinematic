@@ -116,18 +116,23 @@ class _Conn:
         self.world = world
 
     async def fetchval(self, sql, *args):
-        if "FROM users" in sql:                    # an account carrying the pipeline's name
-            return 1 if self.world["named_account"] else None
+        if "FROM users" in sql:                    # an account carrying one of the names asked about
+            names = args[1] if isinstance(args[1], list) else [str(args[1]).lower()]
+            self.world["names_checked"].append(names)
+            if self.world["named_account"] and SPEED_TO_LEAD_REQUESTER in names:
+                return 1
+            return 1 if set(names) & self.world["accounts"] else None
         if "app_linked_access" in sql:
             self.world["access_checked_as"].append(self.world["current"])
             return self.world["access"]
         raise AssertionError(sql)
 
 
-def _world(monkeypatch, *, member=None, access=True, named_account=False):
+def _world(monkeypatch, *, member=None, access=True, named_account=False, accounts=()):
     import record_access
 
     world = {"member": member, "access": access, "named_account": named_account,
+             "accounts": {a.lower() for a in accounts}, "names_checked": [],
              "access_checked_as": [], "current": None}
 
     @asynccontextmanager
@@ -210,6 +215,21 @@ def test_an_account_carrying_the_pipelines_name_is_not_the_pipeline(monkeypatch)
     assert world["access_checked_as"] == []
 
 
+def test_an_account_carrying_an_unclaimed_old_name_is_not_the_pipeline(monkeypatch):
+    """A pre-marker row is read as the pipeline only while no account of the
+    brokerage carries its OLD name either (review of PR #172): such a row,
+    written outside account creation, makes the row's origin ambiguous."""
+    world = _world(monkeypatch, member=None, access=True, accounts=("Speed-To-Lead-Worker",))
+    assert _refusal(SPEED_TO_LEAD_REQUESTER, allow_pipeline=True,
+                    also_unclaimed=(LEGACY_SPEED_TO_LEAD_REQUESTER,)) == ca.NOT_A_MEMBER
+    assert world["names_checked"] == [sorted([SPEED_TO_LEAD_REQUESTER, LEGACY_SPEED_TO_LEAD_REQUESTER])]
+    assert world["access_checked_as"] == []
+    # with no such account the pipeline's own rule applies, as before
+    world["accounts"] = set()
+    assert _refusal(SPEED_TO_LEAD_REQUESTER, allow_pipeline=True,
+                    also_unclaimed=(LEGACY_SPEED_TO_LEAD_REQUESTER,)) is None
+
+
 # ── _requester_may_contact (the command worker's check) ──────────────────────
 
 class _WorkerConn:
@@ -224,19 +244,28 @@ class _WorkerConn:
         raise AssertionError("no lead named")
 
 
-def _worker_check(monkeypatch, command, requested_by, verdict):
+def _worker_check(monkeypatch, command, requested_by, verdict, *, members=None, unclaimed=None):
+    import record_access
+
     seen = []
 
     @asynccontextmanager
     async def tx(_ctx):
         yield _WorkerConn(requested_by)
 
-    async def refusal(tenant_id, requester, client_id, contact_id, *, allow_pipeline=False):
+    async def refusal(tenant_id, requester, client_id, contact_id, *, allow_pipeline=False, also_unclaimed=()):
         seen.append((requester, client_id, contact_id, allow_pipeline))
+        if unclaimed is not None:
+            unclaimed.append(also_unclaimed)
         return verdict
+
+    async def find_member(_conn, _tenant, ref):     # the sender lookup (created_by)
+        active = members if members is not None else {ref.lower()}
+        return {**MEMBER, "agent_id": ref} if ref.lower() in active else None
 
     monkeypatch.setattr(ca, "tenant_tx", tx)
     monkeypatch.setattr(ca, "requester_contact_refusal", refusal)
+    monkeypatch.setattr(record_access, "find_member", find_member)
     reasons: list[str] = []
     ok = asyncio.run(ca._requester_may_contact(T, command, reasons=reasons))
     return ok, reasons, seen
@@ -264,6 +293,57 @@ def test_the_worker_keeps_a_partial_legacy_row_unmarked(monkeypatch):
                **LEGACY, "idempotency_key": "execute:1"}
     _ok, _reasons, seen = _worker_check(monkeypatch, command, LEGACY_SPEED_TO_LEAD_REQUESTER, ca.NOT_A_MEMBER)
     assert seen[0][0] == LEGACY_SPEED_TO_LEAD_REQUESTER
+
+
+def test_the_worker_asks_that_a_legacy_rows_old_name_is_unclaimed_too(monkeypatch):
+    whole = {"approval_id": "a-1", "client_id": CLIENT, "contact_id": None, "target": {}, **LEGACY}
+    unclaimed: list = []
+    _worker_check(monkeypatch, whole, LEGACY_SPEED_TO_LEAD_REQUESTER, None, unclaimed=unclaimed)
+    assert unclaimed == [(LEGACY_SPEED_TO_LEAD_REQUESTER,)]
+    unclaimed.clear()
+    marked = {**whole, "created_by": SPEED_TO_LEAD_REQUESTER}
+    _worker_check(monkeypatch, marked, SPEED_TO_LEAD_REQUESTER, None, unclaimed=unclaimed)
+    assert unclaimed == [()]
+
+
+class _LegacyWorldConn:
+    """One fake for the whole check: the approval's requester, the active
+    members and every account name the brokerage has (active or not)."""
+
+    def __init__(self, accounts):
+        self.accounts = {a.lower() for a in accounts}
+
+    async def fetchval(self, sql, *args):
+        if "requested_by FROM action_approvals" in sql:
+            return LEGACY_SPEED_TO_LEAD_REQUESTER
+        if "FROM users" in sql:
+            names = args[1] if isinstance(args[1], list) else [str(args[1]).lower()]
+            return 1 if set(names) & self.accounts else None
+        if "app_linked_access" in sql:
+            return True                              # a pool client
+        raise AssertionError(sql)
+
+    async def fetchrow(self, sql, *args):
+        if "FROM users" in sql:                      # find_member: no ACTIVE member has either name
+            return None
+        raise AssertionError(sql)
+
+
+@pytest.mark.parametrize("accounts, allowed", [
+    ((), True),
+    (("Speed-To-Lead-Worker",), False),             # an inactive or stray account with the old name
+    (("system:speed-to-lead",), False),
+])
+def test_a_legacy_row_is_refused_when_an_account_carries_either_name(monkeypatch, accounts, allowed):
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _LegacyWorldConn(accounts)
+
+    monkeypatch.setattr(ca, "tenant_tx", tx)
+    command = {"approval_id": "a-1", "client_id": CLIENT, "contact_id": None, "target": {}, **LEGACY}
+    reasons: list[str] = []
+    assert asyncio.run(ca._requester_may_contact(T, command, reasons=reasons)) is allowed
+    assert reasons == ([] if allowed else [ca.NOT_A_MEMBER])
 
 
 # ── the worker stops, finally, with the reason ───────────────────────────────
@@ -326,3 +406,137 @@ def test_a_refused_requester_ends_failed_and_is_never_retried(monkeypatch, reaso
     assert refused.value.job_error_code == "REQUESTER_NOT_AUTHORIZED"
     states = [args[2] for sql, args in conn.executed if "SET state=$3" in sql]
     assert states == ["failed"]
+
+
+# ── the sender identity: whose number, caller ID or mailbox it goes out under ─
+
+class _SendConn:
+    """The worker's command row (created_by = the draft's creator, whose
+    identity the send uses) and the approval's requester (the editor)."""
+
+    def __init__(self, command_type, created_by, requested_by="editor@brokerage.test"):
+        self.requested_by = requested_by
+        self.row = {"state": "queued", "approval_id": "a-1", "created_by": created_by,
+                    "command_type": command_type, "client_id": CLIENT, "contact_id": None,
+                    "target": {}, "draft": {}, "idempotency_key": "execute:1",
+                    "provider": None, "provider_reference": None}
+        self.executed = []
+
+    async def fetchrow(self, sql, *args):
+        assert "FROM command_executions" in sql, sql
+        return self.row
+
+    async def fetchval(self, sql, *args):
+        assert "requested_by FROM action_approvals" in sql, sql
+        return self.requested_by
+
+    async def execute(self, sql, *args):
+        self.executed.append((sql, args))
+        return "UPDATE 1"
+
+
+SEND_PAYLOADS = {
+    "EMAIL": {"target": {"email": "x@y.test", "client_id": CLIENT}, "draft": {"subject": "Hi", "body": "Hello"}},
+    "SMS": {"target": {"phone": "+13025550142", "client_id": CLIENT}, "draft": {"body": "Hello"}},
+    "CALL": {"target": {"phone": "+13025550142", "client_id": CLIENT}, "draft": {"script": "Hello"}},
+    "CALENDAR": {"target": {"client_id": CLIENT}, "draft": {"event": {"summary": "Walkthrough"}}},
+}
+
+
+class _ReachedTheDestinationCheck(Exception):
+    pass
+
+
+def _send(monkeypatch, command_type, created_by, *, active):
+    """The real _execute_command_job and _requester_may_contact. The
+    requester (the editor) may send; `active` is who is an active member.
+    Stops at the destination check, the first step after the identity checks."""
+    import billing
+    import record_access
+
+    conn = _SendConn(command_type, created_by)
+    looked_up: list[str] = []
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    async def none(*_a, **_k):
+        return None
+
+    async def find_member(_conn, _tenant, ref):
+        looked_up.append(ref)
+        return {**MEMBER, "agent_id": ref} if ref.lower() in active else None
+
+    async def destination(*_a, **_k):
+        raise _ReachedTheDestinationCheck
+
+    async def never(*_a, **_k):
+        raise AssertionError("a refused sender reached the gate or a provider")
+
+    monkeypatch.setattr(ca, "tenant_tx", tx)
+    monkeypatch.setattr(billing, "entitlement_refusal", none)
+    monkeypatch.setattr(ca, "requester_contact_refusal", none)        # the requester may send
+    monkeypatch.setattr(record_access, "find_member", find_member)
+    monkeypatch.setattr(ca, "_destination_still_on_record", destination)
+    for name in ("guard_outreach", "_resolve_email_provider", "_load_provider_credential"):
+        monkeypatch.setattr(ca, name, never)
+
+    class Reporter:
+        job = {"tenant_id": T, "created_by": "editor@brokerage.test"}
+
+        async def progress(self, *_a, **_k):
+            return None
+
+    payload = {"command_id": "c-1", "command_type": command_type, **SEND_PAYLOADS[command_type]}
+    return conn, looked_up, ca._execute_command_job(payload, Reporter())
+
+
+@pytest.mark.parametrize("command_type", ["SMS", "EMAIL", "CALL"])
+def test_a_send_under_a_departed_creators_identity_is_refused_terminally(monkeypatch, command_type):
+    """The worker checked the approval's requester but sent as created_by:
+    after a colleague edited (so requested) a departed agent's draft, the text
+    left from the departed agent's business number, the call showed their
+    caller ID, the email used their SMTP identity and Reply-To (review of
+    PR #172). Now: refused, 'failed', never retried, never 'maybe sent'."""
+    conn, looked_up, run = _send(monkeypatch, command_type, "gone@brokerage.test",
+                                 active={"editor@brokerage.test"})
+    with pytest.raises(ca.RequesterMayNotContact,
+                       match="this draft's sender is no longer an active member; "
+                             "create it again from your own account") as refused:
+        asyncio.run(run)
+    assert refused.value.job_terminal is True
+    assert refused.value.job_error_code == "SENDER_NOT_A_MEMBER"
+    assert looked_up == ["gone@brokerage.test"]
+    states = [args[2] for sql, args in conn.executed if "SET state=$3" in sql]
+    assert states == ["failed"]                                   # a definite "not sent"
+    (stored,) = [args[1] for sql, args in conn.executed if "SET state=$3" in sql]
+    assert "sender is no longer an active member" in stored
+
+
+@pytest.mark.parametrize("command_type", ["SMS", "EMAIL", "CALL"])
+def test_an_active_creator_still_sends_after_a_colleagues_edit(monkeypatch, command_type):
+    _conn, looked_up, run = _send(monkeypatch, command_type, "ava@brokerage.test",
+                                  active={"editor@brokerage.test", "ava@brokerage.test"})
+    with pytest.raises(_ReachedTheDestinationCheck):
+        asyncio.run(run)
+    assert looked_up == ["ava@brokerage.test"]
+
+
+@pytest.mark.parametrize("created_by", ["mission:42", "MISSION:42", SPEED_TO_LEAD_REQUESTER,
+                                        LEGACY_SPEED_TO_LEAD_REQUESTER])
+def test_a_mission_or_pipeline_creator_is_not_a_person_to_look_up(monkeypatch, created_by):
+    _conn, looked_up, run = _send(monkeypatch, "SMS", created_by, active={"editor@brokerage.test"})
+    with pytest.raises(_ReachedTheDestinationCheck):
+        asyncio.run(run)
+    assert looked_up == []
+
+
+def test_a_calendar_event_is_not_sent_under_the_creators_identity(monkeypatch):
+    """A calendar event is created on the approving job creator's Google
+    account, not the draft creator's: the sender check does not apply."""
+    _conn, looked_up, run = _send(monkeypatch, "CALENDAR", "gone@brokerage.test",
+                                  active={"editor@brokerage.test"})
+    with pytest.raises(_ReachedTheDestinationCheck):
+        asyncio.run(run)
+    assert looked_up == []

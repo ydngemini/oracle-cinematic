@@ -455,7 +455,8 @@ def test_the_worker_writes_a_stop_whose_api_container_was_redeployed(monkeypatch
     be("worker")
     calls = writer(monkeypatch, ["ok"])
     result = asyncio.run(voice_opt_out.replay_shared())
-    assert result == {"replayed": 1, "still_pending": 0, "unreadable": 0, "gone": 0}
+    assert result == {"replayed": 1, "still_pending": 0, "unreadable": 0, "gone": 0, "errors": 0,
+                      "cleanup_failed": 0}
     assert calls == [{"tenant_id": TENANT, "callee": NUMBER}]
     assert valkey.kv == {}
     be("api-2")
@@ -478,10 +479,108 @@ def test_the_sweep_never_writes_an_entry_it_cannot_read_or_that_was_moved(monkey
     valkey.sets[voice_opt_out.SHARED_INDEX].add(f"{TENANT}:lapsed")   # its key expired
     calls = writer(monkeypatch, ["ok", "ok"])
     result = asyncio.run(voice_opt_out.replay_shared())
-    assert calls == [] and result == {"replayed": 0, "still_pending": 0, "unreadable": 2, "gone": 1}
+    assert calls == [] and result == {"replayed": 0, "still_pending": 0, "unreadable": 2, "gone": 1,
+                                      "errors": 0, "cleanup_failed": 0}
     assert len(valkey.kv) == 2                                      # kept: they still block
     assert f"{TENANT}:lapsed" not in valkey.sets[voice_opt_out.SHARED_INDEX]
     assert status() == voice_opt_out.PENDING
+
+
+# ── one member's failure never ends the sweep (review of PR #173) ──────────
+def _stale(valkey, *names):
+    """Index members whose entries are gone; '!' sorts them before any real
+    member (a keyed hex digest), so the sweep meets them first."""
+    for name in names:
+        valkey.sets.setdefault(voice_opt_out.SHARED_INDEX, set()).add(f"{TENANT}:!{name}")
+
+
+def test_a_refused_cleanup_script_never_stops_the_sweep(monkeypatch, valkey, be):
+    """Where the server refuses EVAL (a managed Valkey with scripting off),
+    every stale member's clean-up fails; the pending STOPs after them are
+    still written, and the failures never count toward giving up."""
+    from redis.exceptions import ResponseError
+
+    be("api-1")
+    writer(monkeypatch, ["fail"])
+    honour_now()
+    be("worker")
+    _stale(valkey, "a", "b", "c", "d", "e")              # more than the give-up threshold
+
+    async def no_scripting(*_a, **_k):
+        await valkey._cmd()
+        raise ResponseError("ERR unknown command 'EVAL'")
+
+    monkeypatch.setattr(valkey, "eval", no_scripting)
+    calls = writer(monkeypatch, ["ok"])
+    result = asyncio.run(voice_opt_out.replay_shared())
+    assert result == {"replayed": 1, "still_pending": 0, "unreadable": 0, "gone": 5, "errors": 0,
+                      "cleanup_failed": 5}
+    assert calls == [{"tenant_id": TENANT, "callee": NUMBER}]
+    assert entry_name() not in valkey.kv
+    assert {m for m in valkey.sets[voice_opt_out.SHARED_INDEX] if "!" in m} == {
+        f"{TENANT}:!{n}" for n in "abcde"}               # kept: they cost a GET next time, nothing more
+
+
+def test_one_entry_that_cannot_be_read_or_re_asserted_is_skipped_not_fatal(monkeypatch, valkey, be):
+    from redis.exceptions import ResponseError
+
+    be("api-1")
+    writer(monkeypatch, ["fail", "fail"])
+    honour_now()
+    honour_now({**STATE, "callee": "+13025550123"})
+    be("worker")
+    _stale(valkey, "broken")
+    real_get = valkey.get
+
+    async def get(name):
+        if name.endswith(":!broken"):
+            await valkey._cmd()
+            raise ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return await real_get(name)
+
+    monkeypatch.setattr(valkey, "get", get)
+    real_pipeline = valkey.pipeline
+    pipelines = []
+
+    def pipeline(transaction=True):
+        pipelines.append(1)
+        if len(pipelines) == 1:      # the first entry's re-assert fails once
+            raise RedisConnectionError("Connection reset by peer")
+        return real_pipeline(transaction)
+
+    monkeypatch.setattr(valkey, "pipeline", pipeline)
+    calls = writer(monkeypatch, ["fail", "fail"])        # both writes fail: both are re-asserted
+    result = asyncio.run(voice_opt_out.replay_shared())
+    assert result == {"replayed": 0, "still_pending": 1, "unreadable": 0, "gone": 0, "errors": 2,
+                      "cleanup_failed": 0}
+    assert len(calls) == 2                               # the second entry was still reached
+    assert status() == voice_opt_out.PENDING             # nothing was dropped
+
+
+def test_a_store_that_dies_mid_sweep_ends_it_after_a_few_failures(monkeypatch, valkey, be):
+    """One failure is one entry; several in a row are the store itself. Each
+    is bounded, but a dead store must not cost a timeout per member."""
+    be("worker")
+    _stale(valkey, *[f"m{i:02d}" for i in range(10)])
+    real_smembers = valkey.smembers
+    gets = []
+
+    async def smembers(name):
+        members = await real_smembers(name)
+        valkey.down = True                                # dies right after listing
+        return members
+
+    real_get = valkey.get
+
+    async def get(name):
+        gets.append(name)
+        return await real_get(name)
+
+    monkeypatch.setattr(valkey, "smembers", smembers)
+    monkeypatch.setattr(valkey, "get", get)
+    with pytest.raises(voice_opt_out.SharedStoreUnavailable, match="3 shared store operations failed"):
+        asyncio.run(voice_opt_out.replay_shared())
+    assert len(gets) == voice_opt_out.SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES == 3
 
 
 def test_a_targeted_sweep_touches_only_its_tenant(monkeypatch, valkey, be):

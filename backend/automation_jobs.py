@@ -492,6 +492,12 @@ async def complete_job(
     )
 
 
+def is_final_attempt(job: Mapping[str, Any]) -> bool:
+    """Whether a retryable failure of this attempt is dead-lettered rather
+    than retried: the same rule fail_job applies (attempt >= max_attempts)."""
+    return int(job.get("attempt_count") or 1) >= int(job.get("max_attempts") or 1)
+
+
 async def fail_job(
     job: Mapping[str, Any],
     worker_id: str,
@@ -501,8 +507,7 @@ async def fail_job(
     terminal: bool = False,
 ) -> None:
     attempt = int(job.get("attempt_count") or 1)
-    max_attempts = int(job.get("max_attempts") or 1)
-    terminal = terminal or attempt >= max_attempts
+    terminal = terminal or is_final_attempt(job)
     # An error may say how long retrying is pointless for (job_retry_after_
     # seconds, e.g. outreach_compliance.OutreachDeferred while Valkey cannot
     # be read): the backoff never retries sooner than that.

@@ -539,10 +539,30 @@ class OutreachDeferred(RuntimeError):
         self.code = decision.transient
 
 
-def raise_if_deferred(decision: "OutreachDecision") -> None:
+class OutreachUndecided(RuntimeError):
+    """The LAST attempt of an unattended send whose gate still could not
+    decide: not sent, and no retry is left. Raised instead of OutreachDeferred
+    so what the record keeps says so — never "Not sent yet, retrying" on a
+    send that the job worker then dead-letters (review of PR #173)."""
+
+    job_terminal = True
+    job_error_code = "OUTREACH_UNDECIDED"
+
+    def __init__(self, decision: "OutreachDecision"):
+        super().__init__("Not sent: " + "; ".join(decision.blockers)
+                         + ". Still unavailable at the last retry, so this was not sent and will not be "
+                           "retried; stage it again if it should still go out.")
+        self.code = decision.transient
+
+
+def raise_if_deferred(decision: "OutreachDecision", *, final_attempt: bool = False) -> None:
     """For unattended senders: a temporary denial raises OutreachDeferred (a
-    retry), so it is never recorded as a final refusal."""
+    retry), so it is never recorded as a final refusal — or, on the job's
+    final attempt (automation_jobs.is_final_attempt), OutreachUndecided, so
+    the dead-lettered send does not read as still retrying."""
     if not decision.allowed and getattr(decision, "transient", None):
+        if final_attempt:
+            raise OutreachUndecided(decision)
         raise OutreachDeferred(decision)
 
 
