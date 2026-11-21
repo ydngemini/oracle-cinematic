@@ -164,8 +164,20 @@ async def test_enqueue_priority_beats_ordinary_automation(monkeypatch):
     # Poller sorts priority ASC. Client-AI reconcile is 45; latency is the whole
     # value of this job, so it must not queue behind that.
     assert captured["priority"] < 45
-    assert captured["max_attempts"] == 1
+    assert captured["max_attempts"] == speed_to_lead.JOB_MAX_ATTEMPTS
     assert captured.get("scheduled_at") is None
+
+
+def test_the_attempt_budget_lets_a_deferral_retry_within_minutes():
+    """Review of PR #176: with one attempt, every attempt was the last, so a
+    lead that arrived during a Valkey blip never got a first-response draft.
+    Enough attempts to outlast a failover, few enough that the last retry
+    still lands within about five minutes of the first."""
+    import outreach_compliance as oc
+
+    assert speed_to_lead.JOB_MAX_ATTEMPTS == 3
+    retries = speed_to_lead.JOB_MAX_ATTEMPTS - 1
+    assert retries * oc.TRANSIENT_RETRY_SECONDS <= 300
 
 
 @sync
@@ -256,12 +268,14 @@ async def test_an_undecidable_gate_retries_the_job_instead_of_withholding_for_go
 
 
 @sync
-async def test_an_undecidable_gate_on_the_last_attempt_says_not_sent_not_retrying(monkeypatch):
-    """Review of PR #175: the job called raise_if_deferred without
-    final_attempt, so on its last attempt — every attempt, with
-    JOB_MAX_ATTEMPTS = 1 — the dead-lettered job read "Not sent yet,
-    retrying". Now it is OutreachUndecided: terminal, and its words say it
-    was not sent and will not be retried. Still nothing recorded as blocked."""
+async def test_an_undecidable_gate_on_the_last_attempt_says_not_sent_and_records_the_lead_failed(monkeypatch):
+    """Review of PR #175: on its last attempt the dead-lettered job read "Not
+    sent yet, retrying"; it is OutreachUndecided: terminal, and its words say
+    it was not sent and will not be retried. Review of PR #176: it also left
+    no ledger row, so the lead vanished from the first-response metric. Now
+    the lead is recorded 'failed' — never 'blocked' (no compliance outcome
+    was reached), and with no reason: 0067 allows one on a blocked row only;
+    the job keeps the cause (OUTREACH_UNDECIDED)."""
     import pytest
 
     import automation_jobs
@@ -269,14 +283,201 @@ async def test_an_undecidable_gate_on_the_last_attempt_says_not_sent_not_retryin
 
     recorded: list[dict] = []
     _undecidable_gate(monkeypatch, recorded)
-    job = {"attempt_count": 1, "max_attempts": speed_to_lead.JOB_MAX_ATTEMPTS}
+    job = {"attempt_count": speed_to_lead.JOB_MAX_ATTEMPTS, "max_attempts": speed_to_lead.JOB_MAX_ATTEMPTS}
     assert automation_jobs.is_final_attempt(job)
     with pytest.raises(oc.OutreachUndecided, match="will not be retried") as err:
         await speed_to_lead._speed_to_lead_job(_payload(), _reporter(**job))
     assert err.value.job_terminal is True
     assert err.value.job_error_code == "OUTREACH_UNDECIDED"
     assert "retrying" not in str(err.value).lower()
-    assert recorded == []
+    assert [(r["disposition"], r["channel"], r.get("blocked_reason"), r.get("command_id"),
+             r["intake_event_id"]) for r in recorded] == [("failed", "sms", None, None, "evt-1")]
+
+
+# ── Through the job worker: only a deferral is retried ──────────────────────
+
+def _through_the_worker(monkeypatch, attempt_count: int) -> dict:
+    """One claim of the speed-to-lead job by the real DurableJobWorkers._loop,
+    with the real fail_job / complete_job deciding the job's next state.
+    Returns what the worker wrote: the state ('failed' = retried later,
+    'dead_letter', 'succeeded'), the retry delay, the error code."""
+    import automation_jobs
+
+    job = {"id": "job-1", "job_type": speed_to_lead.JOB_TYPE, "payload": _payload(),
+           "attempt_count": attempt_count, "max_attempts": speed_to_lead.JOB_MAX_ATTEMPTS,
+           "tenant_id": TENANT_ID, "lease_token": "lease-1"}
+    workers = automation_jobs.DurableJobWorkers(worker_count=0, interactive_count=0)
+    claims = {"n": 0}
+    wrote: dict = {}
+
+    async def claim(worker_id, queue_name="default"):
+        claims["n"] += 1
+        if claims["n"] > 1:
+            workers._running = False
+            return None
+        return job
+
+    async def lease_update(j, worker_id, sql, *args, finish=None):
+        if "last_error_code=$6" in sql:              # fail_job
+            wrote.update(state=args[0], error_code=args[2], error=args[3], retry_seconds=int(args[4]))
+        elif "result=$5::jsonb" in sql:              # complete_job
+            wrote.update(state=args[0], result=args[1])
+        return {"id": j["id"]}
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(automation_jobs, "claim_next_job", claim)
+    monkeypatch.setattr(automation_jobs, "_lease_update", lease_update)
+    monkeypatch.setattr(automation_jobs, "mark_running", noop)
+    monkeypatch.setattr(automation_jobs, "_keep_lease", noop)
+    monkeypatch.setattr(automation_jobs.JobReporter, "progress", noop)
+    monkeypatch.setattr(automation_jobs.asyncio, "sleep", noop)
+    assert automation_jobs._HANDLERS[speed_to_lead.JOB_TYPE] is speed_to_lead._speed_to_lead_job
+    workers._running = True
+    asyncio.run(workers._loop("w-1", poll_seconds=0))
+    return wrote
+
+
+def test_a_deferral_before_the_last_attempt_is_retried_after_the_hint(monkeypatch):
+    """Not terminal: the job goes back to 'failed' with next_retry_at the
+    deferral's hint away (a failover takes tens of seconds), and nothing is
+    recorded for the lead."""
+    import outreach_compliance as oc
+
+    assert speed_to_lead.JOB_MAX_ATTEMPTS > 1               # else every attempt is the last
+    for attempt in range(1, speed_to_lead.JOB_MAX_ATTEMPTS):
+        recorded: list[dict] = []
+        _undecidable_gate(monkeypatch, recorded)
+        wrote = _through_the_worker(monkeypatch, attempt)
+        assert wrote["state"] == "failed", attempt
+        assert wrote["retry_seconds"] == oc.TRANSIENT_RETRY_SECONDS
+        assert wrote["error"].startswith("Not sent yet, retrying")
+        assert recorded == []
+
+
+def test_a_deferral_on_the_last_attempt_is_dead_lettered_and_the_lead_recorded_failed(monkeypatch):
+    recorded: list[dict] = []
+    _undecidable_gate(monkeypatch, recorded)
+    wrote = _through_the_worker(monkeypatch, speed_to_lead.JOB_MAX_ATTEMPTS)
+    assert wrote["state"] == "dead_letter"
+    assert wrote["error_code"] == "OUTREACH_UNDECIDED"
+    assert "will not be retried" in wrote["error"]
+    assert [r["disposition"] for r in recorded] == ["failed"]
+
+
+def _gate_raises(exc: Exception):
+    async def gate(ctx, **kwargs):
+        raise exc
+
+    return gate
+
+
+def test_any_other_failure_is_dead_lettered_on_its_first_attempt(monkeypatch):
+    """Only a deferral earns a retry. A database error, a crash in the gate,
+    anything else ends the job on the attempt that raised it — as when the
+    job had one attempt — keeping the error's text, and its code when it
+    names one; a recovery-mode refusal keeps the worker's own handling."""
+    import recovery_mode
+
+    class Unreadable(RuntimeError):
+        job_terminal = False
+        job_error_code = "AI_SPEND_UNAVAILABLE"
+
+    cases = [
+        (RuntimeError("database is down"), "JOB_HANDLER_ERROR", "database is down"),
+        (ConnectionResetError("reset by peer"), "JOB_HANDLER_ERROR", "ConnectionResetError"),
+        (Unreadable("budget unreadable"), "AI_SPEND_UNAVAILABLE", "budget unreadable"),
+        (recovery_mode.RecoveryModeBlocked("recovery mode"), "RECOVERY_MODE_BLOCKED", "recovery mode"),
+    ]
+    for exc, code, words in cases:
+        recorded: list[dict] = []
+        monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+        _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
+        monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
+        monkeypatch.setattr(speed_to_lead, "guard_outreach", _gate_raises(exc))
+        wrote = _through_the_worker(monkeypatch, 1)
+        assert wrote["state"] == "dead_letter", type(exc).__name__
+        assert wrote["error_code"] == code
+        assert words in wrote["error"]
+        assert recorded == []
+
+
+def test_a_compliance_block_is_a_successful_job_even_with_attempts_left(monkeypatch):
+    recorded: list[dict] = []
+    monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+    _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
+    monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
+
+    async def _blocked(ctx, **kwargs):
+        return OutreachDecision(allowed=False, channel="sms", contact="+13025550100", state_code="DE",
+                                blockers=("outside_calling_window",))
+
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _blocked)
+    wrote = _through_the_worker(monkeypatch, 1)
+    assert wrote["state"] == "succeeded"                   # never 'failed': never retried
+    assert '"state":"blocked"' in wrote["result"]
+    assert [r["disposition"] for r in recorded] == ["blocked"]
+
+
+def test_a_retry_after_a_deferral_stages_exactly_one_draft(monkeypatch):
+    """Attempt 1: the gate cannot decide — nothing staged, nothing recorded.
+    Attempt 2: the gate allows — one draft, one 'staged' row. And if the
+    worker stopped after that before marking the job done, the re-run finds
+    the row and stops: no second draft, no second row, no second gate."""
+    import commands_api
+
+    recorded: list[dict] = []
+    _undecidable_gate(monkeypatch, recorded)
+    staged: list[str] = []
+
+    async def _create_command(body, ctx):
+        staged.append(body.idempotency_key)
+        return {"command": {"id": "cmd-1"}, "created": len(staged) == 1}
+
+    async def on_record(ctx, *, intake_event_id, lead_id, contact_id, client_id):
+        # 0067's unique index by intake event: the row a new write collides with.
+        rows = [r for r in recorded if r["intake_event_id"] == intake_event_id]
+        return rows[0]["disposition"] if rows else None
+
+    monkeypatch.setattr(commands_api, "create_command", _create_command)
+    monkeypatch.setattr(speed_to_lead, "_first_response_on_record", on_record)
+    assert _through_the_worker(monkeypatch, 1)["state"] == "failed"
+    assert staged == [] and recorded == []
+
+    gates: list[str] = []
+
+    async def _allowed(ctx, **kwargs):
+        gates.append(kwargs["contact"])
+        return OutreachDecision(allowed=True, channel="sms", contact="+13025550100", state_code="DE")
+
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
+    wrote = _through_the_worker(monkeypatch, 2)
+    assert wrote["state"] == "succeeded" and '"state":"staged"' in wrote["result"]
+    assert staged == ["speed-to-lead:evt-1"]
+    assert [(r["disposition"], r["command_id"]) for r in recorded] == [("staged", "cmd-1")]
+
+    wrote = _through_the_worker(monkeypatch, 3)            # a re-run after a worker stopped
+    assert wrote["state"] == "succeeded" and '"state":"already_recorded"' in wrote["result"]
+    assert staged == ["speed-to-lead:evt-1"] and len(recorded) == 1 and len(gates) == 1
+
+
+@sync
+async def test_the_first_attempt_never_pays_for_the_ledger_lookup(monkeypatch):
+    async def never(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("looked up the ledger on a first attempt")
+
+    monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
+    _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
+    monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder([]))
+    monkeypatch.setattr(speed_to_lead, "_first_response_on_record", never)
+
+    async def _allowed(ctx, **kwargs):
+        return OutreachDecision(allowed=True, channel="sms", contact="+13025550100", state_code="DE")
+
+    monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
+    result = await speed_to_lead._speed_to_lead_job(_payload(), _reporter(attempt_count=1, max_attempts=3))
+    assert result["state"] == "staged"
 
 
 @sync
@@ -457,6 +658,11 @@ def _stub_contact(monkeypatch, overrides: dict) -> None:
     class _Conn:
         async def fetchrow(self, *a, **k):
             return contact
+
+        async def fetchval(self, sql, *a, **k):
+            # _first_response_on_record on a retry: no row for this lead yet.
+            assert "FROM lead_response_events" in sql, sql
+            return None
 
         async def execute(self, *a, **k):
             return None
