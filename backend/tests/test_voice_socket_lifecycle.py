@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException, WebSocketDisconnect
@@ -23,6 +24,15 @@ from tenancy import Role, TenantContext
 
 TENANT = "00000000-0000-0000-0000-0000000000c1"
 SESSION = "00000000-0000-0000-0000-00000000a001"
+# One event as the content loader returns it (transcript opened, amounts).
+CONTENT_ROW = {
+    "id": 41, "event_type": "counter_offer", "transcript_excerpt": "Pat Owner: 251357 is my number",
+    "counter_offer": 251357, "mao": 233911, "threshold": "AMBER",
+    "payload": {"speaker": "CLIENT", "guidance": {"objection_draft": "Pat Owner, the roof"},
+                "mao_unavailable_reason": "Pat Owner 302-555-0147", "consent_recorded": True},
+    "created_at": datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc),
+}
+CONTENT = ("Pat", "251357", "233911", "AMBER", "302-555", "roof")
 
 
 class FakeSocket:
@@ -66,6 +76,7 @@ class World:
         self.visibility_checks = 0
         self.registered: list = []
         self.unregistered: list = []
+        self.loaded: list = []  # which event loader the handshake used
 
 
 @pytest.fixture
@@ -111,13 +122,21 @@ def world(monkeypatch):
         yield Conn()
 
     async def events(*_a, **_k):
-        return []
+        w.loaded.append("content")
+        return [CONTENT_ROW]
+
+    async def event_metadata(*_a, **_k):
+        # Content-bearing on purpose: the metadata frame must drop it
+        # whatever the loader returns.
+        w.loaded.append("metadata")
+        return [CONTENT_ROW]
 
     monkeypatch.setattr(server, "verify_session_current", verify)   # the watchdog
     monkeypatch.setattr(tenancy, "verify_session_current", verify)  # admit_operator_stream
     monkeypatch.setattr(record_access, "may_read_call_content", may_read)
     monkeypatch.setattr(connection, "tenant_tx", tx)
     monkeypatch.setattr(voice_intel, "load_session_events", events)
+    monkeypatch.setattr(voice_intel, "load_session_event_metadata", event_metadata, raising=False)
     return w
 
 
@@ -247,10 +266,45 @@ def test_a_silent_client_is_closed_and_a_pinging_one_is_not(world, monkeypatch):
     asyncio.run(go())
 
 
-def test_a_platform_admin_stream_is_not_gated_on_record_visibility(world, monkeypatch):
+def test_a_platform_admin_outside_the_audience_gets_metadata_only(world, monkeypatch):
+    """L03-22: a platform admin is admitted to see that the call exists and
+    its state, but the hydrate carries no transcript, amounts, threshold,
+    guidance or reason text, and nothing is unsealed (the metadata loader,
+    not load_session_events). The stream is not closed by record visibility:
+    only the token ended it."""
     _identity(monkeypatch, role=Role.PLATFORM_ADMIN, expires_in=0.4)
     world.visible = False
     ws = FakeSocket(pings=True)
     _run(ws)
-    assert ws.closed_with == 4401  # only the token ended it
-    assert world.visibility_checks == 0
+    assert ws.closed_with == 4401
+    assert world.visibility_checks == 1, "the content rule is asked at the handshake, for admins too"
+    assert world.loaded == ["metadata"]
+    hydrate = ws.sent[0]
+    assert hydrate["type"] == "VOICE_SESSION_HYDRATED" and hydrate["content_withheld"] is True
+    assert hydrate["session_id"] == SESSION and hydrate["consent_recorded"] is True
+    assert hydrate["events"] == [{"id": 41, "event_type": "counter_offer", "created_at": "2026-11-21T10:00:00+00:00",
+                                  "content_withheld": True, "consent_recorded": True, "mao_unavailable": True}]
+    assert "transcript_status" not in hydrate, "'live' is not a transcript state: type-checked, dropped"
+    leaked = [c for c in CONTENT if c in repr(hydrate)]
+    assert not leaked, leaked
+
+
+def test_a_platform_admin_in_the_audience_reads_the_content(world, monkeypatch):
+    """By the normal rule (e.g. an admin whose account is a member of the
+    brokerage with access): the same full hydrate as any reader."""
+    _identity(monkeypatch, role=Role.PLATFORM_ADMIN, expires_in=0.4)
+    ws = FakeSocket(pings=True)
+    _run(ws)
+    assert world.loaded == ["content"]
+    hydrate = ws.sent[0]
+    assert "content_withheld" not in hydrate
+    assert hydrate["events"][0]["transcript_excerpt"] == "Pat Owner: 251357 is my number"
+    assert hydrate["events"][0]["counter_offer"] == 251357.0
+
+
+def test_a_member_outside_the_audience_is_refused_at_the_handshake(world, monkeypatch):
+    _identity(monkeypatch)
+    world.visible = False
+    ws = FakeSocket()
+    _run(ws)
+    assert (ws.accepted, ws.closed_with, ws.sent, world.loaded) == (False, 4404, [], [])

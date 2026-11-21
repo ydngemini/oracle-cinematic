@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useOracleDispatch, ACTIONS } from './OracleContext';
 import { getUserId, getTenantId } from './identity';
 import { jitteredBackoff } from '../lib/backoff.js';
+import { firehoseMetadataEntry } from './firehoseMetadata.js';
 
 // In prod the SPA is served over https on the same host as the API, and the ALB
 // routes /ws to the backend — so derive wss://<host>/ws from the page origin.
@@ -365,6 +366,12 @@ export function useOracleWebSocket() {
             text: msg.consent_recorded ? 'explicit transcription consent recorded' : 'transcription consent withdrawn',
             tag: 'CALL CONSENT',
           });
+          break;
+
+        case 'FIREHOSE_METADATA':
+          // Platform admins only: another brokerage's call activity, mirrored
+          // as metadata (type, brokerage, time, flags), never its content.
+          feed(firehoseMetadataEntry(msg));
           break;
 
         case 'PING':

@@ -870,3 +870,122 @@ def test_the_voice_producer_filters_its_stream_by_the_calls_audience(stream, mon
     assert socks["agent-b"].frames == [] and socks["anon"].frames == []
     _no_call_content(_assert_metadata_only(socks["firehose"].frames, tenant, "VOICE_TELEMETRY"))
 
+
+
+# ── L03-22: no other path reaches a record stream; sensitive means metadata ──
+
+
+class _RecordingPool:
+    """A pool whose NOTIFYs are recorded: whether a refused frame was also
+    published to the other replicas."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def acquire(self):
+        sent = self.sent
+
+        class Conn:
+            async def execute(self, _sql, _channel, envelope):
+                sent.append(envelope)
+
+        class Ctx:
+            async def __aenter__(self):
+                return Conn()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return Ctx()
+
+
+@pytest.mark.parametrize("path", ["deliver_local", "broadcast", "broadcast_user", "broadcast_users",
+                                  "v1_envelope_group", "v1_envelope_user"])
+@pytest.mark.parametrize("frame_name", ["VOICE_TELEMETRY", "ordinary"])
+def test_no_path_but_broadcast_record_reaches_a_record_stream(stream, monkeypatch, path, frame_name):
+    """A reviewer probe showed deliver_local("voice:T:s1", ...) reached every
+    socket of the call's group and the firehose got the full frame. Only
+    broadcast_record(stream=) — the members in the record's audience at push
+    time — may address a voice-session stream: every whole-group or
+    caller-named path is refused locally, published to no replica, and
+    mirrors nothing."""
+    tenant, socks, group, watchers = stream
+    pool = _RecordingPool()
+    monkeypatch.setattr(ws_hub, "_pool", pool)
+    monkeypatch.setattr(ws_hub, "_listener_started", True)
+    frame = CALL_FRAMES["VOICE_TELEMETRY"] if frame_name == "VOICE_TELEMETRY" else \
+        {"type": "DOSSIER_MOVED", "lead_id": "l-1", "status": "under_contract"}
+    if path == "deliver_local":
+        reached = asyncio.run(ws_hub.deliver_local(group, frame))
+    elif path == "broadcast":
+        reached = asyncio.run(ws_hub.broadcast(group, frame))
+    elif path == "broadcast_user":
+        reached = asyncio.run(ws_hub.broadcast_user(group, "agent-b@x.test", frame))
+    elif path == "broadcast_users":
+        reached = asyncio.run(ws_hub.broadcast_users(group, ["agent-a@x.test", "owner@x.test"], frame))
+    else:
+        envelope = {"origin": "other-replica", "tenant_id": group, "payload": frame,
+                    "user_id": "agent-b@x.test" if path == "v1_envelope_user" else None}
+        asyncio.run(ws_hub._receive_notification(json.dumps(envelope)))
+        reached = 0
+    assert reached == 0
+    assert _got(watchers) == set(), "no stream socket"
+    assert socks["firehose"].frames == [], "no firehose copy, full or metadata"
+    assert pool.sent == [], "not published to the other replicas either"
+    # The legitimate path still works on the same group.
+    _audience(monkeypatch, ["agent-a@x.test"])
+    _stream_push(tenant, group, actor="agent-a@x.test", creator="agent-a@x.test")
+    assert _got(watchers) == {"agent-a"}
+
+
+def test_a_stream_envelope_is_never_mirrored_whatever_it_says(stream):
+    """A scoped envelope for a stream group that claims mirror=true (a forged
+    or buggy replica) reaches its named members only: never the firehose, not
+    even a non-call frame's full copy."""
+    _tenant, socks, group, watchers = stream
+    frame = {"type": "DOSSIER_MOVED", "lead_id": "l-1", "status": "under_contract"}
+    for extra in ({"mirror": True}, {"mirror": False, "mirror_metadata": True}):
+        envelope = {"origin": "other-replica", "tenant_id": group, "user_ids": ["agent-a@x.test"],
+                    "scoped_payload": frame, **extra}
+        asyncio.run(ws_hub._receive_notification(json.dumps(envelope)))
+    assert _got(watchers) == {"agent-a"}
+    assert socks["firehose"].frames == []
+
+
+@pytest.mark.parametrize("frame", [
+    {"type": "CLIENT_NOTE_ADDED", "client_id": "c-1", "note": "Pat Owner, 302-555-0147, wants 251357"},
+    {"type": "DOSSIER_MOVED", "lead_id": LEAD_ID, "address": "12 Elm St", "status": "under_contract",
+     "created_at": "2026-11-20T10:00:00+00:00", "consent_recorded": False},
+])
+def test_a_sensitive_frame_of_any_type_reaches_the_firehose_as_metadata_only(hub, frame):
+    """broadcast_users(sensitive=True) passes `sensitive` to its local
+    delivery: a frame whose TYPE is not call content still reaches this
+    replica's firehose as metadata only (deleting the pass-through used to
+    leave every test green, review of #167). Members get the whole frame."""
+    tenant, socks = hub
+    reached = asyncio.run(ws_hub.broadcast_users(tenant, ["agent-a@x.test"], frame, sensitive=True))
+    assert reached == 1 and socks["agent-a"].frames == [frame]
+    meta = _assert_metadata_only(socks["firehose"].frames, tenant, frame["type"])
+    _no_call_content(meta)
+    assert "Pat" not in json.dumps(meta) and "12 Elm" not in json.dumps(meta)
+    # ... and from another replica (the mirror_metadata envelope).
+    socks["firehose"].frames.clear()
+    envelope = {"origin": "other-replica", "tenant_id": tenant, "user_ids": ["agent-a@x.test"],
+                "mirror": False, "mirror_metadata": True, "scoped_payload": frame}
+    asyncio.run(ws_hub._receive_notification(json.dumps(envelope)))
+    _no_call_content(_assert_metadata_only(socks["firehose"].frames, tenant, frame["type"]))
+
+
+def test_connection_counts_never_name_a_call(stream):
+    """/api/admin/system, /overview and /runtime-load list socket counts: the
+    voice-session streams are folded into one "voice" count, so no live
+    session id leaves the hub (L03-22)."""
+    tenant, _socks, group, _watchers = stream
+    second = FakeSocket()
+    ws_hub.register(f"voice:{tenant}:another-session", second, "owner@x.test")
+    counts = ws_hub.connection_counts()
+    assert counts["voice"] == 6  # five on the stream fixture's call + one on another call
+    assert counts[tenant] == 4 and counts[ws_hub.FIREHOSE_TENANT_ID] == 1
+    assert not any(key.startswith("voice:") or SESSION_ID in key for key in counts), counts
+    assert sum(counts.values()) == ws_hub.total_connections()
+    assert ws_hub.RECORD_STREAM_COUNT_KEYS == {"voice"}

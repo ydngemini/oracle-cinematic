@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ crmGet: vi.fn() }));
 vi.mock('../../state/useCrmApi', () => api);
-vi.mock('../../state', () => ({ useOracleState: () => ({ liveFeed: [] }) }));
+const feedState = vi.hoisted(() => ({ liveFeed: [] }));
+vi.mock('../../state', () => ({ useOracleState: () => feedState }));
 vi.mock('../HarvestControl', () => ({ HarvestControl: () => null }));
 vi.mock('../BillingUsagePanel', () => ({ default: () => null }));
 vi.mock('../DataSourceHealthPanel', () => ({ default: () => null }));
@@ -13,6 +14,7 @@ vi.mock('../RoleChangePanel', () => ({ default: () => null }));
 const { default: AdminOpsTab } = await import('../AdminOpsTab');
 
 beforeEach(() => {
+  feedState.liveFeed = [];
   api.crmGet.mockReset();
   api.crmGet.mockImplementation((path) => {
     if (path === '/api/admin/billing-summary') {
@@ -46,5 +48,34 @@ describe('AdminOpsTab', () => {
     await waitFor(() => expect(legacyCalls().length).toBe(3));
     expect(await screen.findByText(/Stripe did not answer/)).toBeTruthy();
     expect(screen.getByText('Live Feed')).toBeTruthy();
+  });
+
+  it('shows a mirrored call as a metadata card: type, brokerage, time, flags and nothing else', async () => {
+    feedState.liveFeed = [{
+      id: 'm1', kind: 'firehose_metadata', frameType: 'VOICE_TELEMETRY',
+      tenant: '11111111-2222-4333-8444-555555555555', flags: ['consent recorded', 'needs approval'],
+      timestamp: Date.now() - 5000,
+      // Never in a metadata entry; even if it were, the card does not show it.
+      text: 'Pat Owner: 251357 is my number', metric: '$233,911', actorName: 'Pat Owner',
+    }];
+    render(<AdminOpsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: /Platform detail/ }));
+    const card = (await screen.findByText('VOICE TELEMETRY')).closest('li');
+    expect(card.textContent).toContain('11111111');
+    expect(card.textContent).not.toContain('2222-4333');
+    expect(card.textContent).toContain('consent recorded');
+    expect(card.textContent).toContain('needs approval');
+    expect(card.textContent).toContain('content withheld');
+    expect(card.textContent).toMatch(/\ds ago/);
+    expect(card.textContent).not.toMatch(/Pat|251357|233,911/);
+  });
+
+  it('does not claim the firehose mirrors every tenant’s traffic', async () => {
+    render(<AdminOpsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: /Platform detail/ }));
+    const note = await screen.findByText(/Awaiting live frames/);
+    expect(note.textContent).not.toMatch(/every tenant/);
+    expect(note.textContent).toMatch(/private messages are not mirrored/);
+    expect(note.textContent).toMatch(/calls show only their type, brokerage, time and flags/);
   });
 });

@@ -1470,9 +1470,13 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
         # Call content follows the record, and a pool / erased-client call only
         # its creator (owner decision 2026-11-16). Checked BEFORE the caller's
         # transaction (no nested pool connections); a refusal looks exactly
-        # like a missing session, and no snapshot is ever sent.
-        if not ctx.is_platform_admin and not await record_access.may_read_call_content(
-                ctx.tenant_id, session_uuid, ctx.agent_id):
+        # like a missing session, and no snapshot is ever sent. A platform
+        # admin is held to the same rule for content: outside the record's
+        # audience they are admitted to operational metadata only (ledger
+        # L03-22; break-glass access is not built).
+        may_read_content = await record_access.may_read_call_content(
+            ctx.tenant_id, session_uuid, ctx.agent_id)
+        if not may_read_content and not ctx.is_platform_admin:
             await websocket.close(code=4404)
             return
         async with tenant_tx(ctx) as conn:
@@ -1487,10 +1491,14 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
             if session is None:
                 await websocket.close(code=4404)
                 return
-            # 0152 (A01): transcripts are sealed at rest; this opens both shapes.
-            from voice_intel import load_session_events
+            from voice_intel import hydrate_metadata_frame, load_session_event_metadata, load_session_events
 
-            events = await load_session_events(conn, session_uuid, limit=100)
+            if may_read_content:
+                # 0152 (A01): transcripts are sealed at rest; this opens both shapes.
+                events = await load_session_events(conn, session_uuid, limit=100)
+            else:
+                # Nothing is unsealed and no amount is read for a metadata view.
+                events = await load_session_event_metadata(conn, session_uuid, limit=100)
     except Exception:
         logger.exception("Voice telemetry WebSocket admission failed session=%s", session_uuid)
         await websocket.close(code=1011)
@@ -1505,6 +1513,7 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
     ws_hub.register(group, websocket, ctx.agent_id)
     try:
         await websocket.send_json(
+            hydrate_metadata_frame(session_uuid, session, events) if not may_read_content else
             {
                 "type": "VOICE_SESSION_HYDRATED",
                 "version": 1,
