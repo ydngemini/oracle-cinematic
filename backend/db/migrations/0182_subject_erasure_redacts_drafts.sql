@@ -1,19 +1,22 @@
 -- ---------------------------------------------------------------------------
 -- 0182 — a data-subject deletion redacts the person's outbound drafts and
--- approvals and keeps the record that an action happened (ledger L17-38,
--- external audit 29.8 follow-up; owner decision 2026-11-20).
+-- approvals, and every copy of them this database keeps, and keeps the
+-- record that an action happened (ledger L17-38, external audit 29.8
+-- follow-up; owner decision 2026-11-20).
 --
 -- Before: a deletion request deleted the person's clients and contacts, and
 -- their drafts (command_executions), the approvals of those drafts
--- (action_approvals) and the execute jobs that carry a copy of the approved
--- draft (automation_jobs, job_type 'command:execute') stayed in place with
--- the message, the recipient's address or number and every name in them,
--- merely unlinked (ON DELETE SET NULL). Unlinked, the 0142 policies treat
--- them as pool drafts: every agent of the brokerage could read them.
+-- (action_approvals), the execute jobs carrying a copy of the approved draft
+-- (automation_jobs, job_type 'command:execute', with their attempts' error
+-- text) and the AI decision traces holding the whole draft (ai_decision_traces,
+-- 0074) stayed in place with the message, the recipient's address or number
+-- and every name in them, merely unlinked (ON DELETE SET NULL). Unlinked, the
+-- 0142 policies treat drafts as pool drafts: every agent could read them.
 --
--- Now privacy_erase_subject_rows also accepts those three tables, for the
--- same running dsr_delete operation, tenant and legal-hold checks as before,
--- and for them it UPDATEs instead of deleting:
+-- Now privacy_erase_subject_rows also accepts command_executions,
+-- action_approvals and automation_jobs, for the same running dsr_delete
+-- operation, tenant and legal-hold checks as before, and for them it UPDATEs
+-- instead of deleting:
 --
 --   replaced by the marker {"redacted": "data_subject_erasure", "at": <time>}
 --     command_executions.target, .draft
@@ -21,32 +24,56 @@
 --     automation_jobs.payload  (keeps command_id and command_type beside the
 --                               marker: the worker reads them first)
 --     automation_jobs.result   (keeps provider, reference and status)
+--     ai_decision_traces.proposal, .final (final stays NULL when it was NULL)
+--       of the redacted approvals; the trace is also withdrawn from the
+--       training corpus (revoked_at, which dataset assembly filters on)
 --   replaced by a fixed sentence when not NULL (free text may quote the
 --   address or the message)
 --     command_executions.last_error, .reconciliation_reason
 --     action_approvals.reason
 --     automation_jobs.status_message, .last_error
+--     automation_job_attempts.error_detail (e.g. an SMTP refusal naming the address)
 --   replaced by 'redacted'
 --     action_approvals.target_id, unless target_type = 'command' (then it is
---     the command's own id, part of the record)
+--     the command's own id). Approvals that are not a command's carry no
+--     draft_payload.target, so they are never linked to a person and this
+--     branch does not run in practice.
 --   kept (the action skeleton)
 --     ids, tenant_id, command_type / action_type / job_type, classification,
 --     risk_class, target_type, state / status, approval_id, job_id,
 --     idempotency_key, provider, provider_reference, provider_submitted_at,
 --     scheduled_at, created_by, requested_by, decided_by, payload_hash, every
---     timestamp, reconcile_attempts / reconcile_checked_at, attempt counts.
---     payload_hash is kept: it is the integrity anchor of what was approved,
---     and because the redacted payload no longer matches it, no job can ever
---     be built from a redacted approval.
+--     timestamp, reconcile_attempts / reconcile_checked_at, attempt counts and
+--     error codes; for a trace: agent_id, surface, action_type, risk_class,
+--     model_version, source_table / source_id, signal, the two digests,
+--     decided_at, latency and outcome_*.
+--     payload_hash and the trace digests are kept: they are the integrity
+--     anchors of what was decided, and because the redacted payload no longer
+--     matches payload_hash, no job can ever be built from a redacted approval.
+--
+-- A command's execute jobs are found by the command's id inside the job
+-- payload under the command rows' locks, so a job queued between discovery and
+-- the deletion (a release in that window) is redacted and cancelled too.
 --
 -- A draft that was never sent cannot be sent from a redacted copy, so it is
 -- cancelled, like an offboarding (privacy_lifecycle._PENDING): a command in
 -- draft / awaiting_approval / approved / queued becomes 'cancelled'; a
 -- pending approval becomes 'revoked' by the person who asked for the
 -- deletion; an execute job in draft / awaiting_approval / queued / failed
--- becomes 'cancelled'. Sent, failed, executing and reconciliation_required
--- commands keep their state. client_id / contact_id are re-derived by the
--- 0142/0179 trigger from the redacted target, so they become NULL.
+-- becomes 'cancelled' (a leased or running job is left to its worker).
+-- Sent, failed, executing and reconciliation_required commands keep their
+-- state. client_id / contact_id are re-derived by the 0142/0179 trigger from
+-- the redacted target, so they become NULL.
+--
+-- ai_decision_traces is append-only by trigger for EVERY role (0074), so an
+-- UPDATE of its proposal was impossible. Deleting and re-inserting a trace
+-- would null the links that point at it (mission_actions.decision_trace_id,
+-- 0100; the outcome attribution in 0098: ON DELETE SET NULL). Instead the
+-- trigger now permits exactly one rewrite: proposal (and a non-NULL final) to
+-- the erasure marker, every other immutable column unchanged, and only when
+-- the writer is the table's owner — i.e. owner-privileged code such as this
+-- SECURITY DEFINER function, never oracle_app. Everything else is refused as
+-- before.
 --
 -- updated_at moves (set_updated_at trigger): it is the row's last-change
 -- time, and the redaction is a change. A row already carrying the marker is
@@ -54,14 +81,114 @@
 -- restore brought back).
 --
 -- The erasure_ledger row for these tables says 'anonymized' (the CHECK has
--- no 'redacted'), with detail {"mode": "redacted", "unsent_cancelled": n}.
+-- no 'redacted'), with detail {"mode": "redacted", ...counts by state}; the
+-- request's receipt is built from those counts.
 --
--- No function SET clause for app.* (managed PostgreSQL, 0134): set_config in
--- the body, as before. REVOKE/GRANT re-applied below.
+-- Not reached here: audit_ledger rows of approval decisions carry the
+-- approver's reason in metadata.reason, but audit_ledger is hash-chained
+-- (0148) and is never rewritten; the providers' own records; delivered
+-- messages.
 --
--- Rollback: re-run 0122's privacy_erase_subject_rows (and its REVOKE/GRANT).
--- Rows already redacted stay redacted.
+-- privacy_redact_execute_jobs is an internal helper: no EXECUTE for
+-- oracle_app (PUBLIC revoked), called only from the SECURITY DEFINER
+-- function as its owner. No function SET clause for app.* (managed
+-- PostgreSQL, 0134). REVOKE/GRANT re-applied below.
+--
+-- Rollback: re-run 0122's privacy_erase_subject_rows (and its REVOKE/GRANT)
+-- and 0074's ai_decision_traces_immutable; DROP FUNCTION
+-- privacy_redact_execute_jobs(uuid, uuid[], uuid[], jsonb). Rows already
+-- redacted stay redacted.
 -- ---------------------------------------------------------------------------
+
+-- ── the one rewrite an AI decision trace accepts ───────────────────────────
+CREATE OR REPLACE FUNCTION ai_decision_traces_immutable()
+RETURNS trigger AS $$
+DECLARE
+    v_erasure boolean;
+BEGIN
+    -- 0182: a data-subject erasure replaces the content with the marker. Only
+    -- the table owner (owner-privileged code, never the app role) may.
+    v_erasure := COALESCE(
+        (NEW.proposal ->> 'redacted') = 'data_subject_erasure'
+        AND (NEW.final IS NULL) = (OLD.final IS NULL)
+        AND (NEW.final IS NULL OR (NEW.final ->> 'redacted') = 'data_subject_erasure')
+        AND current_user = (SELECT pg_get_userbyid(c.relowner) FROM pg_class c WHERE c.oid = TG_RELID),
+        false);
+    IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.agent_id IS DISTINCT FROM OLD.agent_id
+       OR NEW.surface IS DISTINCT FROM OLD.surface
+       OR NEW.action_type IS DISTINCT FROM OLD.action_type
+       OR NEW.source_table IS DISTINCT FROM OLD.source_table
+       OR NEW.source_id IS DISTINCT FROM OLD.source_id
+       OR (NOT v_erasure AND NEW.proposal IS DISTINCT FROM OLD.proposal)
+       OR NEW.proposal_sha256 IS DISTINCT FROM OLD.proposal_sha256
+       OR (NOT v_erasure AND NEW.final IS DISTINCT FROM OLD.final)
+       OR NEW.final_sha256 IS DISTINCT FROM OLD.final_sha256
+       OR NEW.signal IS DISTINCT FROM OLD.signal
+       OR NEW.decided_at IS DISTINCT FROM OLD.decided_at
+    THEN
+        RAISE EXCEPTION
+            'ai_decision_traces is append-only; only outcome_* and revoked_at may change';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── execute jobs (a copy of the approved draft) and their attempts ─────────
+-- By job id and/or by the command id inside the payload. Returns
+-- {"jobs": redacted, "jobs_cancelled": n, "attempt_errors": n}.
+CREATE OR REPLACE FUNCTION privacy_redact_execute_jobs(p_tenant uuid, p_job_ids uuid[],
+                                                       p_command_ids uuid[], p_marker jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE
+    v_all       uuid[];
+    v_ids       uuid[];
+    v_cancel    bigint;
+    v_rows      bigint;
+    v_attempts  bigint;
+    v_cancelled CONSTANT text := 'Cancelled: the person it was for was deleted by a data-subject request. Nothing was sent.';
+    v_redacted  CONSTANT text := 'Redacted: the person it was for was deleted by a data-subject request.';
+BEGIN
+    SELECT COALESCE(array_agg(s.id), '{}'),
+           COALESCE(array_agg(s.id) FILTER (WHERE s.unredacted), '{}'),
+           count(*) FILTER (WHERE s.unredacted AND s.state IN ('draft','awaiting_approval','queued','failed'))
+      INTO v_all, v_ids, v_cancel
+      FROM (SELECT id, state,
+                   (payload ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure' AS unredacted
+              FROM automation_jobs
+             WHERE tenant_id = p_tenant AND job_type = 'command:execute'
+               AND (id = ANY (COALESCE(p_job_ids, '{}'))
+                    OR payload ->> 'command_id' = ANY (COALESCE(p_command_ids, '{}')::text[]))
+               FOR UPDATE) s;
+    UPDATE automation_jobs
+       SET payload = p_marker || jsonb_strip_nulls(jsonb_build_object(
+                         'command_id', payload -> 'command_id',
+                         'command_type', payload -> 'command_type')),
+           result = CASE WHEN result IS NULL THEN NULL
+                         ELSE p_marker || jsonb_strip_nulls(jsonb_build_object(
+                             'provider', result -> 'provider',
+                             'reference', result -> 'reference',
+                             'status', result -> 'status')) END,
+           state = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
+                        THEN 'cancelled' ELSE state END,
+           next_retry_at = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
+                                THEN NULL ELSE next_retry_at END,
+           status_message = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
+                                 THEN v_cancelled
+                                 WHEN status_message IS NOT NULL THEN v_redacted END,
+           last_error = CASE WHEN last_error IS NOT NULL THEN v_redacted END
+     WHERE tenant_id = p_tenant AND id = ANY (v_ids);
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    -- Every attempt of every matched job (a job redacted earlier may have run since).
+    UPDATE automation_job_attempts
+       SET error_detail = v_redacted
+     WHERE tenant_id = p_tenant AND job_id = ANY (v_all)
+       AND error_detail IS NOT NULL AND error_detail IS DISTINCT FROM v_redacted;
+    GET DIAGNOSTICS v_attempts = ROW_COUNT;
+    RETURN jsonb_build_object('jobs', v_rows, 'jobs_cancelled', v_cancel, 'attempt_errors', v_attempts);
+END $$;
+REVOKE ALL ON FUNCTION privacy_redact_execute_jobs(uuid, uuid[], uuid[], jsonb) FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION privacy_erase_subject_rows(p_operation uuid, p_table text, p_ids uuid[])
 RETURNS bigint
@@ -71,8 +198,11 @@ DECLARE
     v_subject   text;
     v_requester text;
     v_rows      bigint;
-    v_unsent    bigint := 0;
     v_marker    jsonb;
+    v_detail    jsonb;
+    v_jobs      jsonb;
+    v_traces    bigint;
+    v_counts    record;
     v_cancelled CONSTANT text := 'Cancelled: the person it was for was deleted by a data-subject request. Nothing was sent.';
     v_redacted  CONSTANT text := 'Redacted: the person it was for was deleted by a data-subject request.';
 BEGIN
@@ -94,12 +224,20 @@ BEGIN
         PERFORM set_config('app.privacy_operation', p_operation::text, true);
         v_marker := jsonb_build_object('redacted', 'data_subject_erasure', 'at', now());
         IF p_table = 'command_executions' THEN
-            SELECT count(*) FILTER (WHERE s.state IN ('draft','awaiting_approval','approved','queued'))
-              INTO v_unsent
+            -- Lock the commands first: a release holds the command row while
+            -- it queues a job, so after these locks no new job can appear.
+            SELECT count(*) FILTER (WHERE s.state IN ('draft','awaiting_approval','approved','queued')) AS unsent,
+                   count(*) FILTER (WHERE s.state = 'succeeded') AS sent,
+                   count(*) FILTER (WHERE s.state = 'executing') AS in_flight,
+                   count(*) FILTER (WHERE s.state = 'reconciliation_required') AS uncertain,
+                   count(*) FILTER (WHERE s.state IN ('failed','cancelled')) AS not_sent
+              INTO v_counts
               FROM (SELECT state FROM command_executions
                      WHERE tenant_id = v_tenant AND id = ANY (p_ids)
                        AND (draft ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure'
                        FOR UPDATE) s;
+            -- Their execute jobs, including one queued after discovery.
+            v_jobs := privacy_redact_execute_jobs(v_tenant, NULL, p_ids, v_marker);
             UPDATE command_executions
                SET target = v_marker,
                    draft = v_marker,
@@ -112,9 +250,12 @@ BEGIN
              WHERE tenant_id = v_tenant AND id = ANY (p_ids)
                AND (draft ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure';
             GET DIAGNOSTICS v_rows = ROW_COUNT;
+            v_detail := jsonb_build_object('unsent_cancelled', v_counts.unsent, 'sent', v_counts.sent,
+                                           'in_flight', v_counts.in_flight, 'uncertain', v_counts.uncertain,
+                                           'not_sent', v_counts.not_sent, 'jobs', v_jobs);
         ELSIF p_table = 'action_approvals' THEN
-            SELECT count(*) FILTER (WHERE s.status = 'pending')
-              INTO v_unsent
+            SELECT count(*) FILTER (WHERE s.status = 'pending') AS pending
+              INTO v_counts
               FROM (SELECT status FROM action_approvals
                      WHERE tenant_id = v_tenant AND id = ANY (p_ids)
                        AND (draft_payload ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure'
@@ -130,38 +271,24 @@ BEGIN
              WHERE tenant_id = v_tenant AND id = ANY (p_ids)
                AND (draft_payload ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure';
             GET DIAGNOSTICS v_rows = ROW_COUNT;
+            -- The AI decision trace of each approval holds the whole draft.
+            UPDATE ai_decision_traces
+               SET proposal = v_marker,
+                   final = CASE WHEN final IS NULL THEN NULL ELSE v_marker END,
+                   revoked_at = COALESCE(revoked_at, now())
+             WHERE tenant_id = v_tenant AND source_table = 'action_approvals' AND source_id = ANY (p_ids)
+               AND (proposal ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure';
+            GET DIAGNOSTICS v_traces = ROW_COUNT;
+            v_detail := jsonb_build_object('pending_revoked', v_counts.pending, 'decision_traces', v_traces);
         ELSE
-            -- Only the execute jobs of commands (a copy of the approved draft).
-            SELECT count(*) FILTER (WHERE s.state IN ('draft','awaiting_approval','queued','failed'))
-              INTO v_unsent
-              FROM (SELECT state FROM automation_jobs
-                     WHERE tenant_id = v_tenant AND id = ANY (p_ids) AND job_type = 'command:execute'
-                       AND (payload ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure'
-                       FOR UPDATE) s;
-            UPDATE automation_jobs
-               SET payload = v_marker || jsonb_strip_nulls(jsonb_build_object(
-                                 'command_id', payload -> 'command_id',
-                                 'command_type', payload -> 'command_type')),
-                   result = CASE WHEN result IS NULL THEN NULL
-                                 ELSE v_marker || jsonb_strip_nulls(jsonb_build_object(
-                                     'provider', result -> 'provider',
-                                     'reference', result -> 'reference',
-                                     'status', result -> 'status')) END,
-                   state = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
-                                THEN 'cancelled' ELSE state END,
-                   next_retry_at = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
-                                        THEN NULL ELSE next_retry_at END,
-                   status_message = CASE WHEN state IN ('draft','awaiting_approval','queued','failed')
-                                         THEN v_cancelled
-                                         WHEN status_message IS NOT NULL THEN v_redacted END,
-                   last_error = CASE WHEN last_error IS NOT NULL THEN v_redacted END
-             WHERE tenant_id = v_tenant AND id = ANY (p_ids) AND job_type = 'command:execute'
-               AND (payload ->> 'redacted') IS DISTINCT FROM 'data_subject_erasure';
-            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            v_jobs := privacy_redact_execute_jobs(v_tenant, p_ids, NULL, v_marker);
+            v_rows := (v_jobs ->> 'jobs')::bigint;
+            v_detail := jsonb_build_object('jobs_cancelled', v_jobs -> 'jobs_cancelled',
+                                           'attempt_errors', v_jobs -> 'attempt_errors');
         END IF;
         INSERT INTO erasure_ledger (operation_id, tenant_id, phase, target, action, rows_affected, detail)
         VALUES (p_operation, v_tenant, 'subject', p_table, 'anonymized', v_rows,
-                jsonb_build_object('mode', 'redacted', 'unsent_cancelled', v_unsent));
+                jsonb_build_object('mode', 'redacted') || v_detail);
         RETURN v_rows;
     END IF;
 
@@ -186,5 +313,6 @@ REVOKE ALL ON FUNCTION privacy_erase_subject_rows(uuid, text, uuid[]) FROM PUBLI
 GRANT EXECUTE ON FUNCTION privacy_erase_subject_rows(uuid, text, uuid[]) TO oracle_app;
 COMMENT ON FUNCTION privacy_erase_subject_rows(uuid, text, uuid[]) IS
     '0122/0182: one person''s rows for a running dsr_delete operation. Deletes from the allow-listed tables; '
-    'redacts command_executions / action_approvals / command:execute automation_jobs to the action skeleton '
+    'redacts command_executions / action_approvals / command:execute automation_jobs (+ their attempts'' '
+    'error text and the approvals'' ai_decision_traces) to the action skeleton '
     '(content replaced by {"redacted": "data_subject_erasure", "at": ...}; unsent ones cancelled).';

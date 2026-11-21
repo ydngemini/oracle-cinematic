@@ -145,6 +145,9 @@ async def _scenario():
         assert done["removed_with_client"]["client_notes"] == 1 and done["removed_with_client"]["showings"] == 1
         assert done["redacted"] == {"command_executions": 2, "action_approvals": 1}
         assert "kept_unlinked" not in done
+        # The note is built from counts: nothing here was sent, so it does not say so.
+        assert "2 drafts had not been sent and were cancelled" in done["redaction"]
+        assert "already been sent" not in done["redaction"] and "being sent" not in done["redaction"]
         assert done["contract_files"] == {"deleted": 1, "not_deleted": 0} and FakeVault.deleted == [vault_key]
         for table in ("client_notes", "client_tasks", "client_activities", "client_tags", "showings", "client_ai_state",
                       "interaction_logs", "buyer_profiles", "contract_synthesis_artifacts"):

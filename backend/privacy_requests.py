@@ -67,13 +67,90 @@ _CLIENT_CHILDREN = ("client_notes", "client_tasks", "client_activities", "client
 _REDACTED = {"command_executions": "draft", "action_approvals": "draft_payload",
              "automation_jobs": "payload"}
 _REDACTION_MARKER = "data_subject_erasure"   # {"redacted": <this>, "at": <time>}
-_REDACT_ORDER = ("automation_jobs", "command_executions", "action_approvals")
-REDACTION_NOTE = (
-    "Drafts, approvals and send jobs that named this person were redacted, not deleted: what remains is "
-    "the brokerage's record that an action happened (its type and channel, its status, its times, who "
-    "asked for it and who approved it, and the provider's message id). The message, the recipient and "
-    "every other detail about the person were removed. A draft not yet sent was cancelled and an approval "
-    "still waiting was revoked; nothing was sent.")
+# Commands first: their rows are locked before their jobs (a release locks the
+# command, then queues its job), so a job queued after discovery is caught.
+_REDACT_ORDER = ("command_executions", "automation_jobs", "action_approvals")
+
+
+def _n(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def redaction_note(redacted: dict[str, int], counts: dict[str, int]) -> str:
+    """What a deletion redacted and what it did not reach, from the counts
+    privacy_erase_subject_rows recorded (0182). Never a fixed claim: each
+    sentence is said only when its count is not zero."""
+    drafts, approvals = redacted.get("command_executions", 0), redacted.get("action_approvals", 0)
+    jobs, traces = redacted.get("automation_jobs", 0), counts.get("decision_traces", 0)
+    if not (drafts or approvals or jobs or traces):
+        return ""
+    where = [_n(drafts, "draft", "drafts"), _n(approvals, "approval", "approvals"),
+             _n(jobs, "send job", "send jobs")]
+    if counts.get("job_attempt_errors"):
+        where.append("the error text of " + _n(counts["job_attempt_errors"], "send attempt", "send attempts"))
+    if traces:
+        where.append(_n(traces, "AI decision record", "AI decision records")
+                     + " (also withdrawn from AI training data)")
+    out = [("Redacted, not deleted: the message, the recipient's address or number, names and free-text "
+            "notes and errors were removed from " + ", ".join(where) + ". Kept as the brokerage's record "
+            "that an action happened: its type and channel, status, times, who asked for it and who "
+            "decided, and the provider's message id.")]
+    for key, one, many in (
+            ("sent", "had already been sent: the message stays with its recipient.",
+             "had already been sent: those messages stay with their recipients."),
+            ("unsent_cancelled", "had not been sent and was cancelled; it will not be sent.",
+             "had not been sent and were cancelled; they will not be sent."),
+            ("in_flight", "was being sent at the moment of deletion: its content is redacted here, but that "
+                          "send may still go out and its delivery record may be written afterwards.",
+             "were being sent at the moment of deletion: their content is redacted here, but those sends "
+             "may still go out and their delivery records may be written afterwards."),
+            ("uncertain", "has an unconfirmed delivery (being checked with the provider) and may have "
+                          "reached the recipient.",
+             "have an unconfirmed delivery (being checked with the provider) and may have reached the "
+             "recipient."),
+            ("not_sent", "had failed or been cancelled earlier and was not sent.",
+             "had failed or been cancelled earlier and were not sent.")):
+        if counts.get(key):
+            out.append(f"{_n(counts[key], 'draft', 'drafts')} {one if counts[key] == 1 else many}")
+    if counts.get("approvals_revoked"):
+        out.append(f"{_n(counts['approvals_revoked'], 'approval', 'approvals')} still waiting "
+                   f"{'was' if counts['approvals_revoked'] == 1 else 'were'} revoked.")
+    if counts.get("jobs_cancelled"):
+        out.append(f"{_n(counts['jobs_cancelled'], 'waiting send job', 'waiting send jobs')} "
+                   f"{'was' if counts['jobs_cancelled'] == 1 else 'were'} cancelled.")
+    out.append("Not reached by this deletion: the providers' own records (email relay, text and call "
+               "providers), messages already delivered, the approver's reason in the brokerage's audit "
+               "log (append-only and hash-chained), and anything typed into notes or chats (see the caveat).")
+    return " ".join(out)
+
+
+async def _redaction_counts(conn, op_id: str) -> tuple[dict[str, int], dict[str, int]]:
+    """(rows redacted per table, counts by state) for one operation, read back
+    from the erasure_ledger rows privacy_erase_subject_rows wrote (0182)."""
+    redacted: dict[str, int] = {}
+    counts: dict[str, int] = {}
+
+    def add(target: dict, key: str, value) -> None:
+        if int(value or 0):
+            target[key] = target.get(key, 0) + int(value or 0)
+
+    for row in await conn.fetch(
+            "SELECT target, rows_affected, detail FROM erasure_ledger WHERE operation_id=$1::uuid "
+            "AND phase='subject' AND action='anonymized' ORDER BY id", op_id):
+        detail = row["detail"]
+        detail = json.loads(detail) if isinstance(detail, str) else dict(detail or {})
+        jobs = detail.get("jobs") if isinstance(detail.get("jobs"), dict) else {}
+        add(redacted, row["target"], row["rows_affected"])
+        add(redacted, "automation_jobs", jobs.get("jobs"))
+        for key in ("sent", "unsent_cancelled", "in_flight", "uncertain", "not_sent", "decision_traces"):
+            add(counts, key, detail.get(key))
+        add(counts, "approvals_revoked", detail.get("pending_revoked"))
+        add(counts, "jobs_cancelled", detail.get("jobs_cancelled"))
+        add(counts, "jobs_cancelled", jobs.get("jobs_cancelled"))
+        add(counts, "job_attempt_errors", detail.get("attempt_errors"))
+        add(counts, "job_attempt_errors", jobs.get("attempt_errors"))
+    return redacted, counts
+
 
 # Broker records that name the person and are never deleted by a request.
 _RETAINED = (
@@ -351,7 +428,7 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
             "Nothing was deleted: the record that re-applies this deletion after a backup restore "
             "could not be saved. Try again shortly.", status_code=503)
     try:
-        deleted, redacted = await _delete_subject(ctx, op_id, found)
+        deleted, redacted, redaction_counts = await _delete_subject(ctx, op_id, found)
     except Exception:
         # Nothing was deleted (one transaction): drop the directive so a later
         # restore does not delete what the brokerage still holds.
@@ -370,7 +447,8 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
                # Said, not hidden: drafts, approvals and execute jobs that
                # named the person are redacted, not deleted (0182).
                "redacted": redacted,
-               **({"redaction": REDACTION_NOTE} if redacted else {}),
+               **({"redaction_counts": redaction_counts,
+                   "redaction": redaction_note(redacted, redaction_counts)} if redacted else {}),
                **({"contract_files": {"deleted": files_deleted, "not_deleted": files_left,
                                       **({"note": "These encrypted contract files could not be removed from "
                                                   "the contract vault; Neoh support must delete them."}
@@ -389,7 +467,8 @@ async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Option
     return {"operation_id": op_id, "kind": kind, **receipt}
 
 
-async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> tuple[dict[str, int], dict[str, int]]:
+async def _delete_subject(ctx: TenantContext, op_id: str,
+                          found: dict) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     from privacy_lifecycle import contact_hmac
 
     async with tenant_tx(ctx) as conn:
@@ -399,13 +478,13 @@ async def _delete_subject(ctx: TenantContext, op_id: str, found: dict) -> tuple[
 
 
 async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, list],
-                              tombstones: list[str]) -> tuple[dict[str, int], dict[str, int]]:
+                              tombstones: list[str]) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """Delete one person's rows and redact their drafts, approvals and execute
     jobs (privacy_erase_subject_rows, under a running dsr_delete operation),
     and keep their opt-out as keyed hashes. Shared by the request and by
-    reapply_subject_erasures after a restore. Returns (deleted, redacted)."""
+    reapply_subject_erasures after a restore. Returns (deleted, redacted,
+    redaction counts by state)."""
     deleted: dict[str, int] = {}
-    redacted: dict[str, int] = {}
     # The opt-out outlives the person, as a keyed hash.
     for hmac_value in tombstones:
         await conn.execute(
@@ -413,11 +492,12 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
             "VALUES ($1,$2,'*','erased_by_request') ON CONFLICT DO NOTHING",
             tenant_id, hmac_value)
     # Redacted, not deleted (0182): content and free text replaced by the
-    # marker, an unsent draft cancelled, a pending approval revoked.
+    # marker, an unsent draft cancelled, a pending approval revoked. The
+    # counts come back from the erasure ledger rows the function wrote.
     for table in _REDACT_ORDER:
         if ids.get(table):
-            redacted[table] = int(await conn.fetchval(
-                "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
+            await conn.fetchval("SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table])
+    redacted, redaction_counts = await _redaction_counts(conn, op_id)
     order = [t for t, _ in _DEPENDENTS] + [
         "sms_messages", "inbound_voice_calls", "email_outbox",
         "outreach_attempt_log", "outreach_consent", "outreach_suppression"]
@@ -434,7 +514,7 @@ async def _erase_subject_rows(conn, tenant_id: str, op_id: str, ids: dict[str, l
         if ids.get(table):
             deleted[table] = int(await conn.fetchval(
                 "SELECT privacy_erase_subject_rows($1,$2,$3::uuid[])", op_id, table, ids[table]) or 0)
-    return deleted, redacted
+    return deleted, redacted, redaction_counts
 
 
 def _delete_vault_objects(keys: list[str]) -> tuple[int, int]:
@@ -606,7 +686,7 @@ async def _reapply_one(ctx, key: str, apply: bool) -> dict:
                 params={"reapply_of": d.get("operation_id")})
         op_id = str(op["id"])
         async with tenant_tx(ctx) as conn:
-            deleted, redacted = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
+            deleted, redacted, _counts = await _erase_subject_rows(conn, tenant, op_id, ids, tombstones)
             await _finish_operation(conn, op_id, state="succeeded",
                                     result={"deleted": deleted, "redacted": redacted,
                                             "reapply_of": d.get("operation_id")})

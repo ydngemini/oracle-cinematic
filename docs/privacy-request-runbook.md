@@ -46,19 +46,29 @@ Neoh's to answer as controller.
    - their messages, calls, emails and consent rows;
    - their dependent tasks, intake sessions and nurture jobs.
 
-   Their outbound drafts, the approvals of those drafts and the jobs that
-   would send them are **redacted, not deleted** (0182): the message, the
-   recipient and every free-text detail go; the record that an action
-   happened stays (type, channel, status, times, who asked and who approved,
-   the provider's message id). A draft not yet sent is cancelled and a
-   pending approval revoked. The receipt lists them under `redacted`.
+   Their outbound drafts, the approvals of those drafts, the jobs that
+   would send them (with their attempts' error text) and the AI decision
+   records of those approvals are **redacted, not deleted** (0182): the
+   message, the recipient's address or number, names and free-text notes
+   and errors go; the record that an action happened stays (type, channel,
+   status, times, who asked and who decided, the provider's message id). A
+   draft not yet sent is cancelled and a pending approval revoked. The
+   receipt lists the rows under `redacted`, the counts by state under
+   `redaction_counts` (sent, cancelled, in flight, unconfirmed, not sent)
+   and says in `redaction` what that means. A draft already sent stays
+   with its recipient; one being sent at that moment may still go out.
+
+   Not reached: the providers' own records (email relay, text and call
+   providers), messages already delivered, the approver's reason in the
+   audit log (append-only, hash-chained), and free text in notes or chats.
 
    Their opt-out is kept as a keyed hash, so a re-import of the same number
    or address stays blocked. The receipt lists counts per table.
 4. A legal hold on the tenant, or on that person, answers 423 and deletes
    nothing.
-5. Tell the brokerage what stays: copies in the 7-day backups, and messages
-   already delivered to phones and inboxes.
+5. Tell the brokerage what stays: copies in the 7-day backups, messages
+   already delivered to phones and inboxes, the providers' own records, and
+   the redacted action records described above.
 
 ## 3. Brokerage export
 

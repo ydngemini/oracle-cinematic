@@ -183,7 +183,8 @@ TABLES: dict[str, TableEntry] = {
     "user_interactions": TableEntry(C.AI_CHAT, E,
                                     "raw chat turns sealed in content_ciphertext since 0152; pre-0152 "
                                     "rows plaintext until backfill_sealed_text.py; tenant_id text"),
-    "ai_decision_traces": TableEntry(C.DERIVED, E),
+    "ai_decision_traces": TableEntry(C.DERIVED, E, "an approval's trace holds the whole draft; a data-subject "
+                                     "deletion redacts proposal/final and withdraws it (0182, L17-38)"),
     "agent_decisions": TableEntry(C.DERIVED, E),
     "beliefs": TableEntry(C.AI_MEMORY, E, "source_quote sealed in source_quote_ciphertext since 0154 (L17-22)"),
     "outcome_events": TableEntry(C.DERIVED, E),
@@ -219,7 +220,9 @@ TABLES: dict[str, TableEntry] = {
     "video_studio_jobs": TableEntry(C.MEDIA, E, "created_by is the requesting agent's sign-in email since 0166 (L03-13)"),
     "voice_walkthrough_jobs": TableEntry(C.CALL_AUDIO, E),
     # ── audit / security ─────────────────────────────────────────────────
-    "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure"),
+    "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure; an approval "
+                               "decision's metadata.reason (approver's free text) is not rewritten by a "
+                               "data-subject deletion"),
     "audit_anomaly_alerts": TableEntry(C.AUDIT_SECURITY, R),
     "audit_chain_checkpoints": TableEntry(C.AUDIT_SECURITY, G, "hash anchors of expired audit rows; no customer data"),
     "audit_chain_verification": TableEntry(C.AUDIT_SECURITY, G, "scheduled chain-verifier cursor (0148); seq numbers and hashes, no customer data"),
@@ -246,7 +249,8 @@ TABLES: dict[str, TableEntry] = {
     # ── operational ──────────────────────────────────────────────────────
     "automation_jobs": TableEntry(C.OPERATIONAL, E, "a command:execute payload copies the approved draft; "
                                   "a data-subject deletion redacts it (0182, L17-38)"),
-    "automation_job_attempts": TableEntry(C.OPERATIONAL, E),
+    "automation_job_attempts": TableEntry(C.OPERATIONAL, E, "error_detail may quote a recipient; redacted with "
+                                          "its execute job by a data-subject deletion (0182, L17-38)"),
     "harvest_sources": TableEntry(C.PUBLIC_DATA, E),
     "harvest_runs": TableEntry(C.PUBLIC_DATA, E),
     "source_records": TableEntry(C.PUBLIC_DATA, E),

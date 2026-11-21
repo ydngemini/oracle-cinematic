@@ -3916,6 +3916,14 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             superseded.job_terminal = True
             superseded.job_error_code = "APPROVAL_SUPERSEDED"
             raise superseded
+        if command["state"] == "cancelled":
+            # Cancelled (withdrawn, offboarded, or its person erased by a
+            # deletion request, 0182): retrying cannot make it sendable, and a
+            # retried job would sit in the dead-letter queue holding its payload.
+            cancelled = RuntimeError("command is not executable from state cancelled; not sent")
+            cancelled.job_terminal = True
+            cancelled.job_error_code = "COMMAND_CANCELLED"
+            raise cancelled
         if command["state"] not in {"queued", "failed"}:
             raise RuntimeError(f"command is not executable from state {command['state']}")
         await conn.execute(
