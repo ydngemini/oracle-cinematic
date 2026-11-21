@@ -140,7 +140,12 @@ def test_the_command_worker_sends_only_for_members_and_marked_pipelines(monkeypa
         "unknown system: name": (False, ["not_a_member"]),
         "deactivated, own former client": (False, ["not_a_member"]),
         "deactivated, email about no record": (False, ["not_a_member"]),
+        "edited by an active owner, created by the deactivated agent": (False, ["sender_not_a_member"]),
+        "worker: sender no longer a member": "refused: sender not an active member (terminal)",
         "pipeline, the pool client was assigned since": (False, ["no_record_access"]),
+        "legacy row, an account carries the old name": (False, ["not_a_member"]),
+        "marked pipeline row, an account carries the old name": (True, []),
+        "legacy row, old-name account removed": (True, []),
         "pipeline name carried by an account": (False, ["not_a_member"]),
         "worker: deactivated requester": "refused: not an active member (terminal)",
         "worker: pipeline requester": "passed the requester gate",
@@ -159,7 +164,7 @@ async def _worker_scenario(monkeypatch) -> dict:
     import auth
     import brokerage_onboarding
     import commands_api
-    from commands_api import CommandCreate, CommandType
+    from commands_api import CommandCreate, CommandEdit, CommandType
     from db import connection
     from tenancy import Role, TenantContext
 
@@ -235,6 +240,13 @@ async def _worker_scenario(monkeypatch) -> dict:
         lookalike = await stage("speed-to-lead-worker", email(
             client_pool, f"parse:{tag}", source="speed-to-lead", to=f"pool-{tag}@client.test"))
         stranger = await stage("system:other", email(client_pool, f"other-{tag}", to=f"pool-{tag}@client.test"))
+        # Agent A's draft about the pool client, edited by the owner: the owner
+        # is now the requester, but the email would still go out under A's
+        # identity (created_by: A's SMTP identity and Reply-To).
+        edited = await stage(agent["a"], email(client_pool, f"edited-{tag}", to=f"pool-{tag}@client.test"))
+        await commands_api.edit_command(edited, CommandEdit(
+            target={"email": f"pool-{tag}@client.test", "client_id": str(client_pool)},
+            draft={"subject": "Hello", "body": "Edited by the owner."}), ctx=ctx(agent["owner"], Role.BROKER_OWNER))
 
         out["member, own client"] = await check(own)
         out["member, email about no record"] = await check(loose)
@@ -248,6 +260,18 @@ async def _worker_scenario(monkeypatch) -> dict:
                             users["a"])
         out["deactivated, own former client"] = await check(own)
         out["deactivated, email about no record"] = await check(loose)
+        out["edited by an active owner, created by the deactivated agent"] = await check(edited)
+        try:
+            await run_worker(edited)
+            out["worker: sender no longer a member"] = "sent?"
+        except commands_api.RequesterMayNotContact as exc:
+            after = await admin.fetchrow("SELECT state, last_error, provider_reference FROM command_executions "
+                                         "WHERE id=$1", uuid.UUID(edited))
+            ok = (after["state"] == "failed" and after["provider_reference"] is None and exc.job_terminal
+                  and exc.job_error_code == "SENDER_NOT_A_MEMBER"
+                  and "this draft's sender is no longer an active member" in after["last_error"])
+            out["worker: sender no longer a member"] = ("refused: sender not an active member (terminal)" if ok
+                                                        else f"refused, but recorded {dict(after)}")
 
         try:
             await run_worker(own)
@@ -279,6 +303,16 @@ async def _worker_scenario(monkeypatch) -> dict:
         await admin.execute("UPDATE clients SET assignee_id=$2 WHERE id=$1", client_pool, agent["owner"])
         out["pipeline, the pool client was assigned since"] = await check(legacy)
         await admin.execute("UPDATE clients SET assignee_id=NULL WHERE id=$1", client_pool)
+        # An account (even an inactive one) carrying the OLD pipeline name: a
+        # pre-marker row is ambiguous, so not read as the pipeline.
+        await admin.execute(
+            "INSERT INTO users (tenant_id, agent_id, role, email, password_hash, full_name, is_active) "
+            "VALUES ($1,'Speed-To-Lead-Worker','agent',$2,'scrypt$x$y','Old name',false)",
+            tenant, f"oldname-{tag}@worker.test")
+        out["legacy row, an account carries the old name"] = await check(legacy)
+        out["marked pipeline row, an account carries the old name"] = await check(piped)
+        await admin.execute("DELETE FROM users WHERE tenant_id=$1 AND agent_id='Speed-To-Lead-Worker'", tenant)
+        out["legacy row, old-name account removed"] = await check(legacy)
         # An account (even an inactive one) carrying the pipeline's name: not the pipeline.
         await admin.execute(
             "INSERT INTO users (tenant_id, agent_id, role, email, password_hash, full_name, is_active) "

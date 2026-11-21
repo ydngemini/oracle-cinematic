@@ -299,6 +299,54 @@ def test_boot_stretches_the_credential_and_revokes_other_credentials_sessions(op
     asyncio.run(operator_sessions.boot())                      # never raises
 
 
+def test_every_process_that_runs_the_lifespan_starts_the_boot_revocation():
+    """A restart is how a rotated operator credential takes effect (0181):
+    server.lifespan must call operator_sessions.start_boot() whenever a pool
+    exists, in EVERY process role, not only where background work runs
+    (review of PR #168). Source-level: the lifespan cannot run here."""
+    import ast
+
+    import server
+
+    tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+    (lifespan,) = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "lifespan"]
+
+    def calls_start_boot(node) -> bool:
+        return any(isinstance(c, ast.Call) and ast.unparse(c.func) == "operator_sessions.start_boot"
+                   for c in ast.walk(node))
+
+    guards = [n for n in ast.walk(lifespan) if isinstance(n, ast.If) and calls_start_boot(n)]
+    assert guards, "server.lifespan no longer calls operator_sessions.start_boot()"
+    # The innermost guard is the pool check, and no guard on the way is a
+    # process-role switch (the api replicas, which take sign-ins, run it too).
+    assert ast.unparse(guards[-1].test) == "get_pool() is not None"
+    assert not [g for g in guards if "RUNS_BACKGROUND_WORK" in ast.unparse(g.test)
+                or "PROCESS_ROLE" in ast.unparse(g.test)]
+    assert any(isinstance(s, ast.Expr) and calls_start_boot(s) for s in guards[-1].body)
+
+
+def test_the_refusal_log_reference_is_keyed_with_the_server_secret(monkeypatch):
+    """Was keyed with ORACLE_SECRET_KEY or, unset, the public constant
+    'neoh-log-ip', so a dev or misconfigured process logged references anyone
+    could recompute from an address list (review of PR #168)."""
+    import hmac
+    import secrets
+
+    from rate_limit_middleware import _get_client_ip
+
+    scope = {"type": "http", "method": "GET", "path": "/api/thing", "headers": [],
+             "client": ("203.0.113.9", 4321), "query_string": b""}
+    monkeypatch.delenv("ORACLE_SECRET_KEY", raising=False)
+    monkeypatch.setattr(auth, "SECRET_KEY", secrets.token_hex(32))     # made at run time
+    ip = _get_client_ip(Request(scope))
+    expected = "ip:" + hmac.new(auth.SECRET_KEY.encode(), b"log-ip:v1:" + ip.encode(),
+                                hashlib.sha256).hexdigest()[:12]
+    assert operator_sessions._ip_ref(scope) == expected
+    monkeypatch.setattr(auth, "SECRET_KEY", secrets.token_hex(32))
+    assert operator_sessions._ip_ref(scope) != expected        # follows the secret, not a constant
+    assert "neoh-log-ip" not in Path(operator_sessions.__file__).read_text(encoding="utf-8")
+
+
 def test_a_demo_login_that_is_not_an_operator_registers_nothing(monkeypatch):
     registered = []
     _login_env(monkeypatch, registered)

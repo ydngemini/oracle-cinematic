@@ -363,7 +363,8 @@ class Conn:
 
 
 class Reporter:
-    job = {"tenant_id": T, "created_by": AGENT}
+    # A claimed job's first attempt (automation_jobs rows always carry both counts).
+    job = {"tenant_id": T, "created_by": AGENT, "attempt_count": 1, "max_attempts": 5}
 
     async def progress(self, *_a, **_k):
         return None
@@ -743,4 +744,33 @@ def test_an_undecidable_gate_is_retried_not_refused(monkeypatch, rail):
     assert getattr(err.value, "job_terminal", False) is False
     assert err.value.job_retry_after_seconds == oc.TRANSIENT_RETRY_SECONDS
     assert conn.failure_state() == "failed"
+    assert net.reached == []
+
+
+@pytest.mark.parametrize("rail", ["email", "sms_twilio", "sms_telnyx", "call_plivo", "call_twilio"])
+def test_an_undecidable_gate_on_the_last_attempt_is_recorded_as_not_sent(monkeypatch, rail):
+    """The job's final attempt: the job worker dead-letters it, so the
+    command must not keep "Not sent yet, retrying: ..." (review of PR #173).
+    It is recorded failed with the reason and that it was not sent, and
+    raised terminal under its own code."""
+    import outreach_compliance as oc
+
+    net = Network(monkeypatch)
+    conn, run = _worker(monkeypatch, rail)
+    monkeypatch.setattr(Reporter, "job", {**Reporter.job, "attempt_count": 5, "max_attempts": 5})
+
+    async def undecidable(*_a, **_k):
+        return oc.OutreachDecision(allowed=False, channel="sms", contact=TO, state_code="DE",
+                                   blockers=(oc.OPT_OUT_STATUS_UNAVAILABLE,),
+                                   transient=oc.OPT_OUT_STATUS_UNAVAILABLE_CODE)
+
+    monkeypatch.setattr(ca, "guard_outreach", undecidable)
+    with pytest.raises(oc.OutreachUndecided) as err:
+        asyncio.run(run())
+    assert err.value.job_terminal is True and err.value.job_error_code == "OUTREACH_UNDECIDED"
+    assert not isinstance(err.value, oc.OutreachDeferred)
+    assert conn.failure_state() == "failed"
+    (last_error,) = [args[1] for sql, args in conn.executed if "SET state=$3" in sql]
+    assert last_error.startswith("Not sent: " + oc.OPT_OUT_STATUS_UNAVAILABLE)
+    assert "retrying" not in last_error and "will not be retried" in last_error
     assert net.reached == []

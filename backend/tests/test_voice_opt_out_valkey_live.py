@@ -10,6 +10,7 @@ commits it and records whether the shared entry still existed at commit.
 The same file is the replica command line for a drill that kills the Valkey
 container itself (see the ledger entry):
     python tests/test_voice_opt_out_valkey_live.py honour|status|gate|replay_spool|replay_shared|health ...
+(replay_shared_rewritten_between is a test-only race, not part of the drill)
 with REDIS_URL, ORACLE_OPT_OUT_SPOOL, ORACLE_ENCRYPTION_MASTER_KEY, LIVE_DB=up|down and
 LIVE_DB_LOG set.
 """
@@ -81,6 +82,35 @@ def _replica_main(argv: list[str]) -> None:
             return await voice_opt_out.replay_spool()
         if action == "replay_shared":
             return await voice_opt_out.replay_shared(args[0] if args else None)
+        if action == "replay_shared_rewritten_between":
+            # The race the conditional clean-up exists for (review of PR #173):
+            # the sweep's GET finds the entry gone, then — before its clean-up —
+            # another replica hears the same STOP again and re-writes the entry
+            # (written by THIS process's own _mirror, on the same real Valkey).
+            key = (args[0], normalize_contact(args[1], Channel.VOICE))
+            real_client = voice_opt_out._shared_client
+            rewritten: list[str] = []
+
+            class RewriteAfterGet:
+                def __init__(self, client):
+                    self._client = client
+
+                def __getattr__(self, name):
+                    return getattr(self._client, name)
+
+                async def get(self, name):
+                    value = await self._client.get(name)
+                    if value is None and not rewritten:
+                        rewritten.append(name)
+                        await voice_opt_out._mirror(key)
+                    return value
+
+            async def racing_client():
+                return RewriteAfterGet(await real_client())
+
+            voice_opt_out._shared_client = racing_client
+            result = await voice_opt_out.replay_shared(args[0])
+            return {**result, "rewritten_between": len(rewritten)}
         if action == "health":
             import component_health
 
@@ -301,3 +331,43 @@ def test_the_worker_writes_a_stop_after_the_api_container_was_redeployed(world):
     assert world.entries(t) == [] and len(world.entries(other)) == 1
     assert world.replica("api-2", "status", t, CALLEE) == "clear"
     assert world.replica("api-2", "status", other, SECOND) == "pending"
+
+
+def test_a_stale_index_member_is_dropped_only_while_its_entry_is_absent(world):
+    """The sweep's clean-up of an index member whose entry is gone runs the
+    conditional script on REAL Valkey (the unit tests' FakeValkey imitates
+    it, so a plain-SREM mutant passed there): a member whose entry is absent
+    is dropped; one whose entry was re-written between the sweep's GET and
+    its clean-up is kept, so the next sweep still finds that STOP."""
+    import redis
+
+    t = world.tenants[0]
+    index = "voice:opt_out_pending:index"
+    direct = redis.Redis.from_url(LIVE_URL, socket_timeout=2, decode_responses=True)
+    try:
+        # 1. absent entry: the member is dropped
+        world.replica("api-1", "honour", t, CALLEE)
+        [name] = world.entries(t)
+        member = name[len("voice:opt_out_pending:"):]
+        direct.delete(name)                                            # lapsed / removed elsewhere
+        assert direct.sismember(index, member)
+        result = world.replica("worker", "replay_shared", t, db="up")
+        assert (result["gone"], result["replayed"], result["cleanup_failed"]) == (1, 0, 0)
+        assert not direct.sismember(index, member) and world.entries(t) == []
+        assert world.committed() == []                                # nothing written for a gone entry
+
+        # 2. re-written between the GET and the clean-up: the member is kept
+        world.replica("api-1", "honour", t, CALLEE)
+        direct.delete(name)
+        result = world.replica("worker", "replay_shared_rewritten_between", t, CALLEE, db="up")
+        assert result["rewritten_between"] == 1 and result["gone"] == 1 and result["cleanup_failed"] == 0
+        assert world.entries(t) == [name] and direct.sismember(index, member)
+        assert world.replica("api-2", "status", t, CALLEE) == "pending"
+
+        # 3. the next sweep finds it through the index and writes it
+        result = world.replica("worker", "replay_shared", t, db="up")
+        assert result["replayed"] == 1
+        assert world.entries(t) == [] and not direct.sismember(index, member)
+        assert [c["member"] for c in world.committed()] == [member]
+    finally:
+        direct.close()

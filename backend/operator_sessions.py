@@ -262,18 +262,20 @@ SELF_CHECKING_PATHS = frozenset({
 
 def _ip_ref(scope) -> str:
     """A stable, non-reversible reference for the caller's address (the
-    rate limiter's view of it), for the refusal log line."""
-    import os
-
+    rate limiter's view of it), for the refusal log line. Keyed with the
+    server secret auth resolved at import (never a public constant: with no
+    ORACLE_SECRET_KEY set, a dev process uses its ephemeral key, so the
+    reference cannot be recomputed from an address list)."""
     from starlette.requests import Request
 
+    import auth
     from rate_limit_middleware import _get_client_ip
 
     try:
         ip = _get_client_ip(Request(scope))
     except Exception:  # noqa: BLE001 - a log reference must never fail the request
         ip = "unknown"
-    key = (os.environ.get("ORACLE_SECRET_KEY", "") or "neoh-log-ip").encode()
+    key = auth.SECRET_KEY.encode()
     return "ip:" + hmac.new(key, b"log-ip:v1:" + ip.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:12]
 
 

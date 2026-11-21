@@ -51,7 +51,7 @@ from approval_service import (
     require_decider,
 )
 from audit_ledger import AuditCategory, ledger
-from automation_jobs import JobApprovalError, enqueue_job_in_tx, register_handler
+from automation_jobs import JobApprovalError, enqueue_job_in_tx, is_final_attempt, register_handler
 from command_providers import (
     ProviderConfigurationError,
     ProviderRefusedBeforeSend,
@@ -81,6 +81,7 @@ from tenancy import (
     SPEED_TO_LEAD_REQUESTER,
     Role,
     TenantContext,
+    is_reserved_pipeline_identity,
     require_context,
     require_role,
 )
@@ -1165,9 +1166,40 @@ class RequesterMayNotContact(RuntimeError):
     job_error_code = "REQUESTER_NOT_AUTHORIZED"
 
 
+class SenderNotAMember(RequesterMayNotContact):
+    """At execution: the person whose identity the message would go out under
+    (the command's created_by: their business number or verified caller ID,
+    their SMTP identity and Reply-To) is no longer an active member of the
+    brokerage, although the approval's requester may still be (an edit makes
+    the editor the requester; the draft still carries its creator). Terminal,
+    never a send under a departed person's name (L09-12)."""
+
+    job_error_code = "SENDER_NOT_A_MEMBER"
+
+
 #: Why requester_contact_refusal said no.
 NOT_A_MEMBER = "not_a_member"
 NO_RECORD_ACCESS = "no_record_access"
+#: Why _requester_may_contact said no when the requester passed: the sender
+#: identity (created_by) is a person who is no longer an active member.
+SENDER_NOT_A_MEMBER = "sender_not_a_member"
+SENDER_NOT_A_MEMBER_MESSAGE = ("Not sent: this draft's sender is no longer an active member; "
+                               "create it again from your own account.")
+#: The command types that go out under the creator's own identity: a text
+#: from their business number, a call showing their verified caller ID, an
+#: email from their SMTP identity with their Reply-To. (A calendar event is
+#: created on the approving job creator's Google account instead.)
+_SENDS_AS_CREATOR = frozenset({"EMAIL", "SMS", "CALL"})
+
+
+def _human_sender(created_by: Any) -> Optional[str]:
+    """The command's creator when that is a person: not a mission
+    ("mission:<id>"), not a reserved pipeline identity ("system:…", the
+    pre-marker "speed-to-lead-worker"), not empty."""
+    sender = str(created_by or "").strip()
+    if not sender or sender.lower().startswith("mission:") or is_reserved_pipeline_identity(sender):
+        return None
+    return sender
 
 
 def _legacy_pipeline_requester(requester: str, command: Any) -> Optional[str]:
@@ -1208,8 +1240,16 @@ async def _requester_may_contact(tenant_id: str, command: Any, *,
     whether or not the draft names a record — except a system pipeline that
     stages on its own authority (tenancy.OUTREACH_PIPELINE_REQUESTERS:
     speed-to-lead for an unassigned contact), which is judged by its own
-    rule: an agent with that id, the brokerage pool only. A refusal's cause
-    is appended to `reasons` when given (NOT_A_MEMBER / NO_RECORD_ACCESS)."""
+    rule: an agent with that id, the brokerage pool only. A pre-marker
+    speed-to-lead row is read as the pipeline only while no account of the
+    brokerage carries either name.
+
+    The SENDER is checked too: a text, call or email goes out under its
+    creator's identity (created_by), which an edit does not change. When that
+    creator is a person who is no longer an active member, the send is
+    refused (SENDER_NOT_A_MEMBER) even if the requester may still send. A
+    refusal's cause is appended to `reasons` when given (NOT_A_MEMBER /
+    NO_RECORD_ACCESS / SENDER_NOT_A_MEMBER)."""
     client_id, contact_id = command.get("client_id"), command.get("contact_id")
     # A lead the draft names is re-read now (26.3): its seller client today,
     # not only the client it was linked to when staged (0179).
@@ -1221,12 +1261,17 @@ async def _requester_may_contact(tenant_id: str, command: Any, *,
         lead = None
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     lead_client = None
+    sender = (_human_sender(command.get("created_by"))
+              if str(command.get("command_type") or "") in _SENDS_AS_CREATOR else None)
+    sender_is_member = True
     async with tenant_tx(platform) as conn:
         requested_by = None
         if command.get("approval_id") is not None:
             requested_by = await conn.fetchval(
                 "SELECT requested_by FROM action_approvals WHERE id=$1::uuid", command["approval_id"]
             )
+        if sender is not None:
+            sender_is_member = await record_access.find_member(conn, tenant_id, sender) is not None
         if lead is not None:
             lead_row = await conn.fetchrow(
                 "SELECT seller_client_id FROM leads WHERE id=$1::uuid AND tenant_id=$2::uuid", lead, tenant_id)
@@ -1237,18 +1282,26 @@ async def _requester_may_contact(tenant_id: str, command: Any, *,
                     reasons.append(NO_RECORD_ACCESS)
                 return False
             lead_client = lead_row["seller_client_id"]
-    requester = str(requested_by or command.get("created_by") or "")
-    requester = _legacy_pipeline_requester(requester, command) or requester
-    refusal = await requester_contact_refusal(tenant_id, requester, client_id, contact_id, allow_pipeline=True)
+    original = str(requested_by or command.get("created_by") or "")
+    requester = _legacy_pipeline_requester(original, command) or original
+    # A legacy row read as the pipeline: an account carrying the OLD name
+    # makes it ambiguous too, so that name must be unclaimed as well.
+    unclaimed = (original,) if requester != original else ()
+    refusal = await requester_contact_refusal(tenant_id, requester, client_id, contact_id, allow_pipeline=True,
+                                              also_unclaimed=unclaimed)
     if refusal is None and lead_client is not None and str(lead_client) != str(client_id):
-        refusal = await requester_contact_refusal(tenant_id, requester, lead_client, None, allow_pipeline=True)
+        refusal = await requester_contact_refusal(tenant_id, requester, lead_client, None, allow_pipeline=True,
+                                                  also_unclaimed=unclaimed)
+    if refusal is None and not sender_is_member:
+        refusal = SENDER_NOT_A_MEMBER
     if refusal is not None and reasons is not None:
         reasons.append(refusal)
     return refusal is None
 
 
 async def requester_contact_refusal(tenant_id: str, requested_by: str, client_id: Any,
-                                    contact_id: Any, *, allow_pipeline: bool = False) -> Optional[str]:
+                                    contact_id: Any, *, allow_pipeline: bool = False,
+                                    also_unclaimed: tuple[str, ...] = ()) -> Optional[str]:
     """None when `requested_by`, in their CURRENT role, may still reach this
     client or contact (checked as them, not as the platform-admin worker);
     otherwise why not: NOT_A_MEMBER or NO_RECORD_ACCESS.
@@ -1262,17 +1315,20 @@ async def requester_contact_refusal(tenant_id: str, requested_by: str, client_id
     (tenancy.OUTREACH_PIPELINE_REQUESTERS, exact spelling), judged by that
     pipeline's rule — an agent with that id, so the brokerage pool only — and
     only while no account of the brokerage, active or not, carries its name
-    (account creation refuses the "system:" namespace; this keeps a row
-    written some other way from passing as the pipeline)."""
+    or any name in `also_unclaimed` (a pre-marker row's original requester)
+    (account creation refuses the "system:" namespace and the old pipeline
+    name; this keeps a row written some other way from passing as the
+    pipeline)."""
     requested_by = str(requested_by or "")
     platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
     async with tenant_tx(platform) as conn:
         member = await record_access.find_member(conn, tenant_id, requested_by)
         pipeline = False
         if member is None and allow_pipeline and requested_by in OUTREACH_PIPELINE_REQUESTERS:
+            names = sorted({n.strip().lower() for n in (requested_by, *also_unclaimed) if n and n.strip()})
             pipeline = not await conn.fetchval(
-                "SELECT 1 FROM users WHERE tenant_id=$1::uuid AND lower(agent_id)=lower($2) LIMIT 1",
-                tenant_id, requested_by,
+                "SELECT 1 FROM users WHERE tenant_id=$1::uuid AND lower(agent_id) = ANY($2::text[]) LIMIT 1",
+                tenant_id, names,
             )
     if member is None and not pipeline:
         return NOT_A_MEMBER
@@ -4443,6 +4499,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     )
 
     await reporter.progress(15, "compliance check")
+    # A gate that cannot decide on the job's last attempt is recorded as not
+    # sent (OutreachUndecided), not as "retrying" on a dead-lettered job.
+    final_attempt = is_final_attempt(reporter.job)
     submission_started = False
     # Assigned only by a provider call that returned: every branch below sets
     # it from the adapter's result and nothing else. A failure after that point
@@ -4459,6 +4518,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
         if not await _requester_may_contact(tenant_id, command, reasons=reasons):
             # Terminal (L09-12): reactivating the account or handing the
             # record back later must not fire it unseen.
+            if SENDER_NOT_A_MEMBER in reasons:
+                # The requester may send, but the message would go out under
+                # a departed person's number, caller ID or mailbox.
+                raise SenderNotAMember(SENDER_NOT_A_MEMBER_MESSAGE)
             if NOT_A_MEMBER in reasons:
                 raise RequesterMayNotContact(
                     "Not sent: the person who asked for this is not an active member of this "
@@ -4486,7 +4549,8 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # the email gate does not read it (opt-out model, footer on every send).
                 purpose=Purpose.MARKETING,
             )
-            raise_if_deferred(decision)   # not decided yet: the job retries
+            # not decided yet: the job retries (the last attempt says it was not sent)
+            raise_if_deferred(decision, final_attempt=final_attempt)
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
             # Commercial email basics (CAN-SPAM, RFC 8058): the approved body
@@ -4554,7 +4618,8 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # or a mission / sequence / speed-to-lead text, is marketing (26.5).
                 purpose=sms_purpose,
             )
-            raise_if_deferred(decision)   # not decided yet: the job retries
+            # not decided yet: the job retries (the last attempt says it was not sent)
+            raise_if_deferred(decision, final_attempt=final_attempt)
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
             from messaging_provider import messaging_provider_name
@@ -4645,7 +4710,8 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # needs documented written consent whatever it says.
                 purpose=Purpose.MARKETING,
             )
-            raise_if_deferred(decision)   # not decided yet: the job retries
+            # not decided yet: the job retries (the last attempt says it was not sent)
+            raise_if_deferred(decision, final_attempt=final_attempt)
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))
             # Neoh places the call, but the client must see the agent's own

@@ -154,6 +154,22 @@ def test_an_edit_keeps_the_server_owned_context_and_cannot_add_it():
                                            "mission_id": "m-9"}) == {"client_id": "c-1"}
 
 
+def test_edit_command_applies_the_protected_context_before_storing_or_approving_it():
+    """_edited_context is only a rule until edit_command applies it: without
+    that line an edit could drop a campaign's source / mission_id and the
+    approver could then declare it informational (review of PR #170). Pinned
+    at source level so removing it fails without a database."""
+    import inspect
+
+    source = inspect.getsource(ca.edit_command)
+    applied = source.index("body.context = _edited_context(row, body.context)")
+    # after the stored row is read, before the approval payload and the stored draft use it
+    assert source.index('"SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE"') < applied
+    assert applied < source.index("_execution_payload(")
+    assert applied < source.index('json.dumps({"content": body.draft, "context": body.context})')
+    assert source.count("body.context =") == 1          # nothing re-assigns it afterwards
+
+
 def test_a_client_chosen_key_or_a_chat_request_is_one_to_one():
     assert ca._campaign_origin(_row(key="parse:abc")) is None
     assert ca._campaign_origin(_row(key="ai:msg:tool:anchor", context={"origin": "ai_chat"})) is None

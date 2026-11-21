@@ -460,24 +460,61 @@ async def replay_spool() -> dict[str, int]:
     return {"replayed": len(written), "still_pending": len(queued) - len(written)}
 
 
+#: replay_shared gives up on a sweep after this many store operations in a
+#: row failed (the store itself is down, not one entry): each is bounded at
+#: SHARED_TIMEOUT_SECONDS, so a dead store cannot hold the sweep for minutes.
+SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES = 3
+
+
 async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
     """The worker's sweep over the SHARED store: write every pending STOP —
     including one whose api container is gone — and remove each entry only
     after its row has committed. An entry it cannot write keeps (re-sets) its
     TTL; one it cannot read (another master key, a damaged value) is kept,
     never written as something else, and lapses at its TTL. Raises when the
-    store cannot be read (the caller reports it)."""
+    store cannot be read (the caller reports it).
+
+    One member's failure never ends the sweep (review of PR #173): a failed
+    read or re-assert is counted in 'errors' and the sweep moves on; a failed
+    clean-up of a stale index member (the conditional EVAL, e.g. where the
+    server refuses scripting) is counted in 'cleanup_failed' and never
+    counts toward giving up — the member only costs a GET on the next sweep.
+    Only SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES failed store operations in a
+    row (the store itself is gone) end it, raising SharedStoreUnavailable."""
     if not shared_store_configured():
         return {"configured": False}
     client = await _bounded(_shared_client())
     members = sorted(str(m) for m in await _bounded(client.smembers(SHARED_INDEX)))
-    replayed = still = unreadable = gone = 0
+    replayed = still = unreadable = gone = errors = cleanup_failed = 0
+    in_a_row = 0
+
+    def failed(step: str, exc: BaseException) -> None:
+        nonlocal errors, in_a_row
+        errors += 1
+        in_a_row += 1
+        logger.error("Shared pending spoken opt-out sweep: one entry skipped at %s (%s); the next sweep "
+                     "retries it", step, type(exc).__name__)
+        if in_a_row >= SHARED_SWEEP_MAX_CONSECUTIVE_FAILURES:
+            raise SharedStoreUnavailable(
+                f"{in_a_row} shared store operations failed in a row; sweep stopped "
+                f"(replayed={replayed}, errors={errors})") from exc
+
     for member in members:
         if only_tenant and not member.startswith(f"{only_tenant}:"):
             continue
-        raw = await _bounded(client.get(SHARED_PREFIX + member))
+        try:
+            raw = await _bounded(client.get(SHARED_PREFIX + member))
+        except Exception as exc:  # noqa: BLE001 — counted; the sweep goes on
+            failed("read", exc)
+            continue
+        in_a_row = 0
         if raw is None:  # written and removed meanwhile, or lapsed
-            await _bounded(client.eval(_SREM_IF_ABSENT, 2, SHARED_PREFIX + member, SHARED_INDEX, member))
+            try:
+                await _bounded(client.eval(_SREM_IF_ABSENT, 2, SHARED_PREFIX + member, SHARED_INDEX, member))
+            except Exception as exc:  # noqa: BLE001 — a stale member blocks nothing; kept for the next sweep
+                cleanup_failed += 1
+                logger.warning("Shared pending spoken opt-out sweep: a stale index member could not be "
+                               "cleaned up (%s); kept", type(exc).__name__)
             gone += 1
             continue
         key = _unseal(raw)
@@ -489,16 +526,26 @@ async def replay_shared(only_tenant: Optional[str] = None) -> dict[str, Any]:
             await record_outbound_opt_out({"tenant_id": key[0], "callee": key[1]})
         except OptOutNotRecorded:
             # Keep the entry AND its index reachable for another 30 days.
-            async with client.pipeline(transaction=True) as pipe:
-                pipe.expire(SHARED_PREFIX + member, SHARED_TTL_SECONDS)
-                pipe.sadd(SHARED_INDEX, member)
-                pipe.expire(SHARED_INDEX, SHARED_TTL_SECONDS)
-                await _bounded(pipe.execute())
+            try:
+                async with client.pipeline(transaction=True) as pipe:
+                    pipe.expire(SHARED_PREFIX + member, SHARED_TTL_SECONDS)
+                    pipe.sadd(SHARED_INDEX, member)
+                    pipe.expire(SHARED_INDEX, SHARED_TTL_SECONDS)
+                    await _bounded(pipe.execute())
+            except Exception as exc:  # noqa: BLE001 — the entry keeps its current TTL; retried next sweep
+                failed("re-assert", exc)
+                continue
             still += 1
+            continue
+        except Exception as exc:  # noqa: BLE001 — not the documented failure: counted, never fatal
+            errors += 1
+            logger.error("Shared pending spoken opt-out sweep: an entry's write raised %s; kept for the "
+                         "next sweep", type(exc).__name__)
             continue
         await _written({key}, "shared-sweep")
         replayed += 1
-    return {"replayed": replayed, "still_pending": still, "unreadable": unreadable, "gone": gone}
+    return {"replayed": replayed, "still_pending": still, "unreadable": unreadable, "gone": gone,
+            "errors": errors, "cleanup_failed": cleanup_failed}
 
 
 #: After the fast retries, the OWNING process keeps trying with capped

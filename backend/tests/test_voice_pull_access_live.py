@@ -64,6 +64,7 @@ def test_call_content_pull_paths_fail_closed_live():
 
         import record_access
         import voice_intel
+        import ws_hub
         from db import connection
         from tenancy import Role, TenantContext
 
@@ -77,6 +78,7 @@ def test_call_content_pull_paths_fail_closed_live():
         contact_a = uuid.uuid4()
 
         member_admin = f"padmin-{tag}@pull.test"
+        operator = f"operator-{tag}@platform.test"
 
         def ctx(k):
             if k == "ops":
@@ -173,6 +175,20 @@ def test_call_content_pull_paths_fail_closed_live():
                     session_id=pool, after_event_id=0, limit=100, ctx=ctx("member-admin")),
                 "member_admin_socket": await record_access.may_read_call_content(tenant, private, member_admin),
                 "ops_socket": await record_access.may_read_call_content(tenant, pool, f"ops-{tag}@platform.test"),
+                # The production operator: a platform admin whose token names the
+                # PLATFORM tenant (ws_hub.FIREHOSE_TENANT_ID), as server.py and
+                # voice_intel pass ctx.tenant_id (review of PR #174).
+                "operator_platform_socket": {
+                    name: await record_access.may_read_call_content(ws_hub.FIREHOSE_TENANT_ID, call, operator)
+                    for name, call in (("pool", pool), ("private", private), ("erased", erased),
+                                       ("contact_only", contact_only))},
+                "operator_platform_many": await record_access.may_read_call_content_many(
+                    ws_hub.FIREHOSE_TENANT_ID, [pool, private, erased, contact_only], operator),
+                # ... even when that operator's id is the call's creator or in its audience
+                "operator_as_creator": await record_access.may_read_call_content(
+                    ws_hub.FIREHOSE_TENANT_ID, pool, who["b"]),
+                "operator_as_audience_many": await record_access.may_read_call_content_many(
+                    ws_hub.FIREHOSE_TENANT_ID, [private, contact_only], who["a"]),
             }
             async with connection.tenant_tx(ctx("ops")) as conn:
                 rows = await voice_intel.load_session_event_metadata(conn, str(pool), limit=100)
@@ -246,3 +262,11 @@ def test_call_content_pull_paths_fail_closed_live():
     assert private_feed["events"][1]["transcript"]["text"] == "Pat Owner: 251357 is my number"
     # ... but not a pool call it did not create (metadata only).
     assert got["member_admin_pool_feed"]["content_withheld"] is True
+    # The production operator identity (platform tenant) reads no call's
+    # content: not a pool, private, erased-client or contact-only call, not
+    # in a batch, and not even under an id that is the creator's or in the
+    # audience — the brokerage-scope query runs in the PLATFORM tenant.
+    assert got["operator_platform_socket"] == {"pool": False, "private": False, "erased": False,
+                                               "contact_only": False}, got["operator_platform_socket"]
+    assert got["operator_platform_many"] == []
+    assert got["operator_as_creator"] is False and got["operator_as_audience_many"] == []

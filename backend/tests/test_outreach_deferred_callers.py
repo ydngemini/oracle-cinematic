@@ -122,3 +122,32 @@ def test_the_job_worker_spaces_a_deferred_retry_past_a_failover(monkeypatch):
     assert seen["retry_seconds"] == 5                       # unchanged for everything else
     asyncio.run(automation_jobs.fail_job({**job, "attempt_count": 5}, "w-1", deferred))
     assert seen["state"] == "dead_letter"                   # the attempt budget still ends it
+
+
+def test_the_last_attempt_is_undecided_not_retrying_and_matches_the_dead_letter_rule(monkeypatch):
+    """raise_if_deferred(final_attempt=True) raises a terminal OutreachUndecided
+    whose words say it was not sent; is_final_attempt is exactly fail_job's
+    dead-letter rule, so a retryable deferral is never what a dead-lettered
+    job is left saying (review of PR #173)."""
+    import automation_jobs
+
+    decision = asyncio.run(undecidable())
+    with pytest.raises(oc.OutreachUndecided) as err:
+        oc.raise_if_deferred(decision, final_attempt=True)
+    assert err.value.job_terminal is True and err.value.code == oc.OPT_OUT_STATUS_UNAVAILABLE_CODE
+    assert str(err.value).startswith("Not sent: ") and "retrying" not in str(err.value)
+    with pytest.raises(oc.OutreachDeferred):
+        oc.raise_if_deferred(decision, final_attempt=False)
+    oc.raise_if_deferred(asyncio.run(refused()), final_attempt=True)   # a refusal is the caller's to record
+
+    seen = {}
+
+    async def lease_update(job, worker_id, sql, *args, finish=None):
+        seen["state"] = args[0]
+        return {"id": job["id"]}
+
+    monkeypatch.setattr(automation_jobs, "_lease_update", lease_update)
+    for attempt, maximum in ((1, 5), (4, 5), (5, 5), (6, 5), (1, 1)):
+        job = {"id": "j-1", "attempt_count": attempt, "max_attempts": maximum}
+        asyncio.run(automation_jobs.fail_job(job, "w-1", RuntimeError("retryable")))
+        assert (seen["state"] == "dead_letter") is automation_jobs.is_final_attempt(job), (attempt, maximum)

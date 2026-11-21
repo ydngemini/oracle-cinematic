@@ -182,6 +182,34 @@ def test_a_component_without_the_jwt_pair_is_refused(tmp_path, monkeypatch):
         r.render("production", B, F)
 
 
+#: Settings that make auth.DEMO_TENANCY hold an operator (a registry identity,
+#: operator_sessions.is_registry_identity): ORACLE_ADMIN_* always; the demo
+#: login (auth._DEMO_*) when its role is platform_admin, so it is refused here
+#: too. ORACLE_DEMO_RECIPIENT_ALLOWLIST is not an identity.
+_OPERATOR_PREFIXES = ("ORACLE_ADMIN_", "ORACLE_DEMO_USER", "ORACLE_DEMO_PASS", "ORACLE_DEMO_ROLE",
+                      "ORACLE_DEMO_TENANT")
+
+
+def test_only_the_api_carries_operator_settings():
+    """Every process that runs the lifespan revokes, at boot, the operator
+    sessions another credential issued (operator_sessions.boot, 0181). A
+    worker given an operator ID with a different passphrase, second factor or
+    code address would revoke every live operator session at each restart.
+    So the operator settings live in the api service only; the worker (and
+    the migrate job) carry none of them (review of PR #168)."""
+    for env in ("production", "staging"):
+        spec = r.render(env, B, F)
+        for comp in list(spec.get("workers") or []) + list(spec.get("jobs") or []):
+            carried = [e.get("key") for e in comp.get("envs") or []
+                       if str(e.get("key", "")).startswith(_OPERATOR_PREFIXES)]
+            assert carried == [], (env, comp["name"], carried)
+        (api,) = [c for c in spec["services"] if c["name"] == "api"]
+        keys = {e.get("key") for e in api.get("envs") or []}
+        assert {"ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE"} <= keys, env
+        # Every backend service besides the api is a frontend; none runs the lifespan.
+        assert [c["name"] for c in r._backend_components(spec) if c in spec["services"]] == ["api"]
+
+
 def test_a_shared_jwt_issuer_is_caught(monkeypatch):
     """Same issuer AND same audience would let a staging token pass production's
     claim checks; either one shared is refused."""

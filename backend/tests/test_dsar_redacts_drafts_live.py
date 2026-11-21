@@ -384,6 +384,9 @@ async def _scenario(monkeypatch):
         for value, operation in (({**marker, "body": "FABRICATED"}, "op"),      # marker plus another key
                                  ({"body": "FABRICATED"}, "op"),                 # other content
                                  ({"redacted": "data_subject_erasure", "at": 1}, "op"),  # 'at' not a time
+                                 # 'at' a string that is not a timestamp (content smuggled in it)
+                                 ({"redacted": "data_subject_erasure", "at": "FABRICATED Pat Owner"}, "op"),
+                                 ({"redacted": "data_subject_erasure", "at": ""}, "op"),
                                  (marker, "")):                                  # outside a privacy operation
             async with admin.transaction():
                 with pytest.raises(asyncpg.PostgresError, match="append-only"):
