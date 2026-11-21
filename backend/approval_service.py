@@ -245,10 +245,12 @@ async def record_approval_decision(
     *,
     edited_payload: Optional[Mapping[str, Any]] = None,
     reason: Optional[str] = None,
+    extra_metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """After the decision has COMMITTED: audit it and capture it as training
     signal. Returns the approval as the API reports it. `reason` defaults to
-    the one stored on the decided row."""
+    the one stored on the decided row. `extra_metadata` adds facts the decider
+    declared with the decision (e.g. a text's purpose, 26.5) to its audit entry."""
     approval = approval_dict(row)
     await ledger.record(
         category=AuditCategory.ADMIN_ACTION
@@ -258,7 +260,8 @@ async def record_approval_decision(
         tenant_id=ctx.tenant_id,
         user_id=ctx.agent_id,
         target_id=approval_id,
-        metadata={"reason": reason if reason is not None else row["reason"],
+        metadata={**dict(extra_metadata or {}),
+                  "reason": reason if reason is not None else row["reason"],
                   "risk_class": existing["risk_class"]},
     )
 

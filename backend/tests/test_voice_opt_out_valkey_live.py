@@ -101,7 +101,7 @@ async def _gate(tenant: str, contact: str, channel) -> dict:
         yield None
 
     async def clean_row(*_a, **_kw):   # nothing in PostgreSQL blocks this number
-        return {"suppressed": False, "has_consent": True, "has_written_consent": True,
+        return {"suppressed": False, "has_consent": True, "has_prior_business": False, "has_written_consent": True,
                 "vp_consent": True, "recent_voice": 0}
 
     outreach_compliance._conn_or_tx = no_db

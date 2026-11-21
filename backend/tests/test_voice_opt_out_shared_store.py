@@ -246,7 +246,7 @@ def gate(monkeypatch, channel, contact=STATE["callee"]):
         yield None
 
     async def clean_row(_conn, _norm, _channel, _tomb, **_kw):
-        return {"suppressed": False, "has_consent": True, "has_written_consent": True,
+        return {"suppressed": False, "has_consent": True, "has_prior_business": False, "has_written_consent": True,
                 "vp_consent": True, "recent_voice": 0}
 
     monkeypatch.setattr(outreach_compliance, "_conn_or_tx", no_db)
@@ -625,7 +625,7 @@ def test_an_undecidable_gate_is_transient_only_when_nothing_else_blocks(monkeypa
     assert decision.as_dict()["transient"] == outreach_compliance.OPT_OUT_STATUS_UNAVAILABLE_CODE
 
     async def no_consent(_conn, _norm, _channel, _tomb, **_kw):
-        return {"suppressed": False, "has_consent": False, "has_written_consent": False,
+        return {"suppressed": False, "has_consent": False, "has_prior_business": False, "has_written_consent": False,
                 "vp_consent": False, "recent_voice": 0}
 
     monkeypatch.setattr(outreach_compliance.ConsentLedger, "gather_state", no_consent)

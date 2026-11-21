@@ -20,6 +20,9 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 RACERS = 6
+# Since 0183 only documented written consent / voiceprint releases count (26.6).
+DOCUMENTED = ("evidence_status, proof_source, proof_text, evidence_ref",
+              "'documented', 'e_signature', 'I agree to AI calls and recording.', 'env-live-1'")
 # A Monday, 12:00 in Delaware: inside the calling window.
 IN_WINDOW = datetime(2026, 11, 16, 17, 0, tzinfo=timezone.utc)
 
@@ -37,6 +40,7 @@ def test_a_voiceprint_release_counts_only_on_voice_and_until_it_expires():
         "voice, expired": False,
         "recorded on sms": False,
         "voice, revoked": False,
+        "voice, attested without evidence": False,
     }
 
 
@@ -68,8 +72,8 @@ async def _cross_brokerage() -> dict:
     try:
         for consent_type in ("express_written", "biometric_voiceprint"):
             await admin.execute(
-                "INSERT INTO outreach_consent (tenant_id, contact, channel, consent_type) "
-                "VALUES ($1,$2,'voice',$3)", b, contact, consent_type)
+                f"INSERT INTO outreach_consent (tenant_id, contact, channel, consent_type, {DOCUMENTED[0]}) "
+                f"VALUES ($1,$2,'voice',$3, {DOCUMENTED[1]})", b, contact, consent_type)
         agent_b = TenantContext(agent_id="agent@xb.test", tenant_id=b, role=Role.AGENT)
         async with connection.tenant_tx(agent_b) as conn:
             row = await ConsentLedger.gather_state(conn, contact, Channel.VOICE, tenant_id=b)
@@ -164,15 +168,17 @@ async def _voiceprint() -> dict[str, bool]:
         "voice, expired": ("voice", timedelta(days=-1), False),
         "recorded on sms": ("sms", None, False),
         "voice, revoked": ("voice", None, True),
+        "voice, attested without evidence": ("voice", None, False),
     }
     out: dict[str, bool] = {}
     try:
         for n, (label, (channel, expires, revoked)) in enumerate(cases.items()):
             contact = f"+1302555{n:04d}"
+            cols, values = DOCUMENTED if "attested" not in label else ("evidence_status", "'attested_unverified'")
             await admin.execute(
-                "INSERT INTO outreach_consent (tenant_id, contact, channel, consent_type, expires_at, revoked_at) "
+                f"INSERT INTO outreach_consent (tenant_id, contact, channel, consent_type, expires_at, revoked_at, {cols}) "
                 "VALUES ($1,$2,$3,'biometric_voiceprint', now() + $4::interval, "
-                "CASE WHEN $5 THEN now() END)",
+                f"CASE WHEN $5 THEN now() END, {values})",
                 tenant, contact, channel, expires, revoked)
             async with connection.tenant_tx(ctx) as conn:
                 row = await ConsentLedger.gather_state(conn, contact, Channel.VOICE, tenant_id=tenant)

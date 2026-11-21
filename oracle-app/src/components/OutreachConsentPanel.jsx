@@ -18,6 +18,13 @@ import { friendlyError } from '../lib/errorMessages';
  * Opt-out defaults to every channel. TCPA requires a STOP to be honoured across
  * the board within ten business days, so a per-channel default here would be
  * the wrong side to err on.
+ *
+ * Evidence (external audit 26.6, 0183): written consent and a voiceprint
+ * release are stored as "documented" only when the server sees a capture
+ * method, the disclosure text the person agreed to and an evidence reference.
+ * The server decides — this panel only shows what came back. An unverified
+ * claim is kept but authorises no AI call, voiceprint recording or marketing
+ * text, and the panel says so in plain words.
  */
 
 const CHANNELS = [['sms', 'SMS'], ['voice', 'Voice'], ['email', 'Email']];
@@ -28,6 +35,27 @@ const CONSENT_TYPES = [
   ['prior_business', 'Prior business relationship'],
   ['biometric_voiceprint', 'Biometric voiceprint'],
 ];
+
+// The capture methods whose evidence can be retrieved later (mirrors the
+// server's DOCUMENTED_PROOF_SOURCES). "Not documented" sends none.
+const CAPTURE_METHODS = [
+  ['', 'Not documented'],
+  ['web_form', 'Web form'],
+  ['e_signature', 'E-signature'],
+  ['signed_document', 'Signed document'],
+  ['recorded_call', 'Recorded call'],
+  ['sms_keyword_reply', 'Text keyword reply'],
+  ['ivr_keypress', 'Phone keypress (IVR)'],
+];
+
+// Written consent and voiceprint releases are the types the gate reads only
+// when documented, so they are the ones that ask for evidence.
+const EVIDENCE_TYPES = new Set(['express_written', 'biometric_voiceprint']);
+
+const PURPOSES = [['marketing', 'Marketing'], ['informational', 'Informational']];
+
+const UNVERIFIED_PLAIN = 'Recorded as an unverified claim. Until it is documented it authorises no AI call, '
+  + 'no voiceprint recording and no marketing text.';
 
 const OPT_OUT_REASONS = [
   ['manual_dnc', 'Asked not to be contacted'],
@@ -42,6 +70,12 @@ export default function OutreachConsentPanel() {
   const [stateCode, setStateCode] = useState('');
   const [consentType, setConsentType] = useState('express_written');
   const [proof, setProof] = useState('');
+  const [captureMethod, setCaptureMethod] = useState('');
+  const [evidenceRef, setEvidenceRef] = useState('');
+  // When the person agreed, as the recorder states it; empty = now (server default).
+  const [capturedAt, setCapturedAt] = useState('');
+  const [purpose, setPurpose] = useState('marketing');
+  const [recorded, setRecorded] = useState(null);
   const [optOutReason, setOptOutReason] = useState('manual_dnc');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -54,6 +88,7 @@ export default function OutreachConsentPanel() {
     setError('');
     setNotice('');
     setResult(null);
+    setRecorded(null);
     try {
       await run();
     } catch (reason) {
@@ -68,6 +103,7 @@ export default function OutreachConsentPanel() {
       contact: contact.trim(),
       channel,
       state_code: stateCode.trim().toUpperCase() || null,
+      purpose,
     });
     setResult(decision || null);
   });
@@ -80,8 +116,24 @@ export default function OutreachConsentPanel() {
     };
     if (stateCode.trim()) payload.state_code = stateCode.trim().toUpperCase();
     if (proof.trim()) payload.proof_text = proof.trim();
-    await crmPost('/api/compliance/outreach/consent', payload);
-    setNotice('Consent recorded.');
+    if (needsEvidence && captureMethod) payload.proof_source = captureMethod;
+    if (needsEvidence && evidenceRef.trim()) payload.evidence_ref = evidenceRef.trim();
+    if (capturedAt) {
+      // datetime-local is the recorder's local clock; the server stores UTC.
+      const when = new Date(capturedAt);
+      if (!Number.isNaN(when.getTime())) payload.captured_at = when.toISOString();
+    }
+    const saved = await crmPost('/api/compliance/outreach/consent', payload);
+    if (needsEvidence) {
+      // Whatever the server stored, never what was hoped for: no status back
+      // means it is not known to be documented.
+      setRecorded({
+        documented: saved?.evidence_status === 'documented',
+        detail: saved?.evidence_notice || '',
+      });
+    } else {
+      setNotice('Consent recorded.');
+    }
   });
 
   const recordOptOut = () => act('optout', async () => {
@@ -95,9 +147,11 @@ export default function OutreachConsentPanel() {
   });
 
   const allowed = result?.allowed ?? result?.permitted;
+  const blockers = Array.isArray(result?.blockers) ? result.blockers : [];
   // A voiceprint release only counts on the voice channel, so the picker
   // shows (and sends) voice while that consent type is chosen.
   const voiceprint = consentType === 'biometric_voiceprint';
+  const needsEvidence = EVIDENCE_TYPES.has(consentType);
 
   return (
     <section className={styles.panel} aria-labelledby="consent-title">
@@ -113,6 +167,15 @@ export default function OutreachConsentPanel() {
 
         {error ? <div className={styles.error} role="alert">{error}</div> : null}
         {notice ? <div className={styles.success} role="status">{notice}</div> : null}
+        {recorded?.documented ? (
+          <div className={styles.success} role="status">Consent recorded with evidence details (not verified by Neoh).</div>
+        ) : null}
+        {recorded && !recorded.documented ? (
+          <div className={styles.notice} role="status">
+            <strong>{UNVERIFIED_PLAIN}</strong>
+            {recorded.detail ? ` ${recorded.detail}` : ''}
+          </div>
+        ) : null}
 
         <label>
           <span>Contact (phone or email)</span>
@@ -133,6 +196,13 @@ export default function OutreachConsentPanel() {
           <input value={stateCode} onChange={(event) => setStateCode(event.target.value)} maxLength={2} placeholder="DE" />
         </label>
 
+        <label>
+          <span>Message type (for the check)</span>
+          <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
+            {PURPOSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+
         <button
           type="button"
           className={styles.secondaryButton}
@@ -147,6 +217,7 @@ export default function OutreachConsentPanel() {
             {allowed ? 'Contactable on this channel.' : 'Blocked.'}
             {result.reason ? ` ${result.reason}` : ''}
             {result.detail ? ` ${result.detail}` : ''}
+            {!allowed && blockers.length ? ` ${blockers.join('; ')}` : ''}
           </div>
         ) : null}
 
@@ -156,14 +227,51 @@ export default function OutreachConsentPanel() {
             {CONSENT_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
+        {needsEvidence ? (
+          <label>
+            <span>How it was captured</span>
+            <select value={captureMethod} onChange={(event) => setCaptureMethod(event.target.value)}>
+              {CAPTURE_METHODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+        ) : null}
         <label>
-          <span>Proof / source text</span>
+          <span>{needsEvidence ? 'Disclosure text the person agreed to' : 'Proof / source text'}</span>
           <input
             value={proof}
             onChange={(event) => setProof(event.target.value)}
-            placeholder="Where this consent or opt-out came from"
+            placeholder={needsEvidence
+              ? 'The exact wording they agreed to'
+              : 'Where this consent or opt-out came from'}
           />
         </label>
+        {needsEvidence ? (
+          <label>
+            <span>Evidence reference</span>
+            <input
+              value={evidenceRef}
+              onChange={(event) => setEvidenceRef(event.target.value)}
+              maxLength={500}
+              placeholder="Signed-event, envelope, document, message or recording ID"
+            />
+          </label>
+        ) : null}
+        <label>
+          <span>When they agreed (optional, defaults to now)</span>
+          <input
+            type="datetime-local"
+            value={capturedAt}
+            onChange={(event) => setCapturedAt(event.target.value)}
+          />
+        </label>
+        {needsEvidence ? (
+          <p>
+            Written consent and voiceprint releases count only when documented: a capture method,
+            the disclosure text and an evidence reference. Without them the claim is kept, but it
+            authorises no AI call, voiceprint recording or marketing text. Neoh records the details
+            you give; it does not check them or keep the evidence itself.
+          </p>
+        ) : null}
 
         <button
           type="button"

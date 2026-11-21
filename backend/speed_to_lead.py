@@ -45,7 +45,7 @@ from typing import Any, Optional
 
 from automation_jobs import ActionRisk, enqueue_job, register_handler
 from db.connection import tenant_tx
-from outreach_compliance import Channel, VoiceMode, guard_outreach, raise_if_deferred
+from outreach_compliance import Channel, Purpose, VoiceMode, guard_outreach, raise_if_deferred
 from platform_policy import Feature, feature_enabled
 from tenancy import Role, TenantContext
 
@@ -320,6 +320,8 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
         # off — this stages a message, it does not open a recorded call.
         voice_mode=VoiceMode.AI,
         recording_enabled=False,
+        # Purpose: a first touch to a new lead promotes the agent's services (26.5).
+        purpose=Purpose.MARKETING,
     )
     # The gate could not decide yet (a Valkey outage hides pending spoken
     # STOPs): NOT a compliance outcome. Raise a retryable error so the job runs
