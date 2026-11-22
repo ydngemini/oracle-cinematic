@@ -40,8 +40,9 @@ def _events(caplog, name):
 # ── request_closure / withdraw_closure: the job joins the transaction ──────
 
 class _ClosureConn:
-    def __init__(self, lifecycle):
+    def __init__(self, lifecycle, running="op-1", latest="op-1"):
         self.lifecycle, self.executed = lifecycle, []
+        self.running, self.latest = running, latest
 
     async def fetchrow(self, sql, *args):
         if "FROM tenants" in sql:
@@ -49,10 +50,14 @@ class _ClosureConn:
         if "INSERT INTO privacy_operations" in sql:
             return {"id": "op-1"}
         if "FROM privacy_operations" in sql:      # withdraw: the running closure
-            return {"id": "op-1", "progress": json.dumps({"freeze": {}})}
+            assert "state='running'" in sql
+            return {"id": self.running, "progress": json.dumps({"freeze": {}})} if self.running else None
         raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
+        if "FROM privacy_operations" in sql:      # withdraw: the latest closure, any state
+            assert "state" not in sql.split("WHERE", 1)[1]
+            return self.latest
         return self.lifecycle
 
     async def fetch(self, sql, *args):
@@ -63,8 +68,8 @@ class _ClosureConn:
         return "UPDATE 0"
 
 
-def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fast_error=None):
-    conn, state = _ClosureConn(lifecycle), {"in_tx": False}
+def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fast_error=None, conn=None):
+    conn, state = conn or _ClosureConn(lifecycle), {"in_tx": False}
 
     @asynccontextmanager
     async def tx(_ctx):
@@ -142,8 +147,23 @@ def test_withdrawal_queues_its_own_job_and_records_renew_pending(monkeypatch):
     assert out["state"] == "active" and out["billing"] == "pending"
     [job] = queued
     assert job["in_tx"] and job["idempotency_key"] == "privacy:billing:op-1:withdraw"
-    marked = next(json.loads(a[1]) for sql, a in conn.executed if "jsonb_set(progress, '{billing}'" in sql)
-    assert marked == {"desired": "renew", "state": "pending"}
+    marked = next(a for sql, a in conn.executed if "jsonb_set(progress, '{billing}'" in sql)
+    assert marked[0] == "op-1" and json.loads(marked[1]) == {"desired": "renew", "state": "pending"}
+
+
+def test_withdrawing_a_closure_blocked_by_a_legal_hold_records_on_that_closure(monkeypatch):
+    """No running closure (an erasure left it 'blocked_legal_hold'): the
+    pending mark and the job key go to the latest closure operation, the one
+    being withdrawn and the one tenant_lifecycle reads (review of 22.1)."""
+    conn = _ClosureConn("closing", running=None, latest="op-blocked")
+    out, conn, queued, _ = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                                billing={"state": "confirmed"})
+    assert out["billing"] == "confirmed"
+    [job] = queued
+    assert job["idempotency_key"] == "privacy:billing:op-blocked:withdraw"
+    assert job["payload"] == {"operation_id": "op-blocked"}
+    marked = next(a for sql, a in conn.executed if "jsonb_set(progress, '{billing}'" in sql)
+    assert marked[0] == "op-blocked"
 
 
 # ── the convergence itself, against a Stripe stub ───────────────────────────
@@ -175,19 +195,24 @@ class _Db:
         self.lifecycle, self.sub = lifecycle, sub
         self.billing: dict[str, dict] = {}
         self.superseded = 0
+        self.superseded_states: list[list[str]] = []
+        self.ctxs: list = []
 
     async def fetchval(self, sql, *args):
         if "lifecycle_state FROM tenants" in sql:
             return self.lifecycle
         if "FROM subscriptions" in sql:
             return self.sub
-        if "SELECT id FROM privacy_operations" in sql:
-            return "op-latest"
         raise AssertionError(sql)
+
+    async def fetchrow(self, sql, *args):
+        assert "FROM privacy_operations" in sql and "kind='closure'" in sql
+        return {"id": "op-latest", "desired": (self.billing.get("op-latest") or {}).get("desired")}
 
     async def execute(self, sql, *args):
         if "'\"superseded\"'" in sql:
             self.superseded += 1
+            self.superseded_states.append(list(args[2]))
         elif "jsonb_set(progress, '{billing}'" in sql:
             self.billing[args[0]] = json.loads(args[1])
         return "UPDATE 1"
@@ -198,7 +223,8 @@ def world(monkeypatch):
     db, fake = _Db("closing"), _Stripe()
 
     @asynccontextmanager
-    async def tx(_ctx):
+    async def tx(ctx):
+        db.ctxs.append(ctx)
         yield db
 
     monkeypatch.setattr(pl, "tenant_tx", tx)
@@ -321,11 +347,66 @@ def test_a_suspended_brokerage_is_left_alone(world):
 def test_a_confirmation_settles_an_older_closures_divergence(world):
     db, _fake = world
     _run_job()
-    assert db.superseded == 1
-    db.superseded = 0
+    assert db.superseded_states == [["pending", "divergent"]]
+    db.superseded_states = []
     db.sub = None
     _run_job()                      # no_subscription settles too
-    assert db.superseded == 1
+    assert db.superseded_states == [["pending", "divergent"]]
+
+
+def test_an_older_closures_pending_is_superseded_even_while_the_latest_retries(world):
+    """Review of 22.1: close (Stripe down), withdraw (Stripe down), close
+    again — every later job writes the newest closure, so the older
+    'pending' could never be confirmed and paged forever once 6 h old."""
+    db, fake = world
+    fake.up = False
+    with pytest.raises(pl.BillingRenewalPending):
+        _run_job()
+    assert db.billing["op-latest"]["state"] == "pending"
+    assert db.superseded_states == [["pending"]]          # an older divergence stays until confirmed
+
+
+def test_billing_reads_and_writes_bound_to_the_brokerage(world):
+    """The tenants and subscriptions reads run under platform power bound to
+    the brokerage (as the revoke job and _phase_providers do), so the row is
+    readable even on the request pool."""
+    db, _fake = world
+    _run_job()
+    assert db.ctxs and all(c.tenant_id == T and c.is_platform_admin for c in db.ctxs)
+
+
+def test_an_unreadable_tenant_row_is_pending_never_success(world):
+    db, fake = world
+    db.lifecycle = None
+    with pytest.raises(pl.BillingRenewalPending, match="tenant_unreadable"):
+        _run_job(attempt=1)
+    assert fake.calls == [] and db.billing["op-latest"]["state"] == "pending"
+    out = _run_job(attempt=12)
+    assert out["state"] == "divergent" and out["_terminal_state"] == "partial"
+
+
+def test_a_final_attempt_that_raises_keeps_which_way_it_diverges(world, monkeypatch):
+    """Review of 22.1: it recorded desired None, so the owner's banner
+    (shown for stop_renewal) said nothing."""
+    db, fake = world
+    fake.up = False
+    with pytest.raises(pl.BillingRenewalPending):
+        _run_job(attempt=1)                               # records {stop_renewal, pending}
+
+    async def boom(*_a, **_k):
+        raise ConnectionError("db")
+
+    monkeypatch.setattr(pl, "_converge_subscription", boom)
+    with pytest.raises(ConnectionError):
+        _run_job(attempt=12)
+    assert db.billing["op-latest"]["state"] == "divergent"
+    assert db.billing["op-latest"]["desired"] == "stop_renewal"   # from the previous record
+    # with no previous record, from the brokerage's state
+    db.billing.clear()
+    db.lifecycle = "active"
+    with pytest.raises(ConnectionError):
+        _run_job(attempt=12)
+    assert db.billing["op-latest"]["desired"] == "renew"
 
 
 def test_the_handler_is_registered_as_a_privacy_job():

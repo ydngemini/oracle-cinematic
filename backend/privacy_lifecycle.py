@@ -501,8 +501,8 @@ async def settle_offboard_revocation(ctx: TenantContext, operation_id: str, cred
                                                  credential_ids=ids)
     async with tenant_tx(ctx) as conn:
         op = await conn.fetchrow(
-            "SELECT state, result FROM privacy_operations WHERE id=$1 AND kind='offboard' FOR UPDATE",
-            operation_id)
+            "SELECT state, result FROM privacy_operations WHERE id=$1 AND tenant_id=$2 AND kind='offboard' "
+            "FOR UPDATE", operation_id, ctx.tenant_id)
         if op is None:
             raise LifecycleError("unknown offboarding operation", status_code=404)
         stored = op["result"] if isinstance(op["result"], dict) else json.loads(op["result"] or "{}")
@@ -535,8 +535,9 @@ async def settle_offboard_revocation(ctx: TenantContext, operation_id: str, cred
             # record what this one did, never reopen or re-close it.
             external = stored.get("external_revocation") or ("complete" if state == "succeeded" else "failed")
             await conn.execute(
-                "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() WHERE id=$1",
-                operation_id, json.dumps({"credential_revocation": list(merged.values())}))
+                "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() "
+                "WHERE id=$1 AND tenant_id=$3", operation_id,
+                json.dumps({"credential_revocation": list(merged.values())}), ctx.tenant_id)
     if failed_now:
         emit_event("offboarding.external_cleanup_pending", operation_id=operation_id, tenant_id=ctx.tenant_id,
                    credential_revocations_failed=len(remaining))
@@ -560,9 +561,10 @@ async def _fail_offboard_revocation(ctx: TenantContext, operation_id: str, crede
             failed = await conn.fetchval(
                 "UPDATE privacy_operations SET state='failed', completed_at=now(), updated_at=now(), "
                 "error=$2, result = result || $3::jsonb "
-                "WHERE id=$1 AND kind='offboard' AND state='running' RETURNING id",
+                "WHERE id=$1 AND tenant_id=$4 AND kind='offboard' AND state='running' RETURNING id",
                 operation_id, error + ": " + MANUAL_REVOKE_NOTE,
-                json.dumps({"external_revocation": "failed", "cleanup_pending": ["credential_revocation"]}))
+                json.dumps({"external_revocation": "failed", "cleanup_pending": ["credential_revocation"]}),
+                ctx.tenant_id)
             if failed is not None:
                 await conn.execute(
                     "UPDATE provider_credentials SET validation_error=$3, updated_at=now() "
@@ -778,23 +780,25 @@ async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
                AND ($3::uuid[] IS NULL OR id = ANY($3::uuid[]))
                AND ($4::boolean IS FALSE OR disabled_at IS NOT NULL)
             """, tenant_id, agent_id, ids, scoped)
-        secrets: list[tuple[Any, str, Optional[str], Optional[str]]] = []
+        # (id, provider, token, why unreadable, token is only the access token)
+        secrets: list[tuple[Any, str, Optional[str], Optional[str], bool]] = []
         for row in rows:
             if row["provider"] != "google":
-                secrets.append((row["id"], row["provider"], None, None))
+                secrets.append((row["id"], row["provider"], None, None, False))
                 continue
             if key is None:
-                secrets.append((row["id"], "google", None, "key_unavailable"))
+                secrets.append((row["id"], "google", None, "key_unavailable", False))
                 continue
+            access_only = not row["refresh_ciphertext"]
             cipher = row["refresh_ciphertext"] or row["token_ciphertext"]
             try:
                 async with conn.transaction():  # savepoint: a failed decrypt leaves the rest readable
                     token = await decrypt_pii(conn, cipher, key)
             except Exception:  # noqa: BLE001 - unreadable: kept and reported, never "revoked"
-                secrets.append((row["id"], "google", None, "undecryptable"))
+                secrets.append((row["id"], "google", None, "undecryptable", access_only))
                 continue
-            secrets.append((row["id"], "google", token, None))
-    for cred_id, provider, token, unreadable in secrets:
+            secrets.append((row["id"], "google", token, None, access_only))
+    for cred_id, provider, token, unreadable, access_only in secrets:
         if unreadable:
             outcomes.append({"credential_id": str(cred_id), "provider": provider,
                              "status": "revocation_unverified", "detail": unreadable})
@@ -806,6 +810,13 @@ async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
             except Exception as exc:  # noqa: BLE001 - recorded and retried, never hidden
                 outcomes.append({"credential_id": str(cred_id), "provider": provider,
                                  "status": "revoke_failed", "detail": type(exc).__name__})
+                continue
+            if status == "already_invalid" and access_only:
+                # Google answers invalid_token for an access token that has
+                # merely expired: with no refresh token held, that proves
+                # nothing about the grant, which can still be live. Kept.
+                outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                                 "status": "revocation_unverified", "detail": "access_token_rejected"})
                 continue
         async with tenant_tx(ctx) as conn:
             await conn.execute(
@@ -929,13 +940,18 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         if op:
             await _finish_operation(conn, str(op["id"]), state="cancelled",
                                     result={"withdrawn_by": ctx.agent_id, "withdraw_reason": reason})
+        # The renewal record lives on the LATEST closure operation whatever its
+        # state (as _record_billing writes it): the running one, or one an
+        # erasure left 'blocked_legal_hold', which is the closure withdrawn.
+        latest = await conn.fetchval(
+            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        if latest:
             await conn.execute(
                 "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb) WHERE id=$1",
-                op["id"], json.dumps({"desired": "renew", "state": "pending"}))
-        # A closure without a running operation (one blocked by a legal hold)
-        # still gets its own job: the key only has to be unique per action.
-        await _enqueue_billing_renewal(conn, ctx, f"{op['id'] if op else uuid.uuid4()}:withdraw",
-                                       str(op["id"]) if op else None)
+                latest, json.dumps({"desired": "renew", "state": "pending"}))
+        await _enqueue_billing_renewal(conn, ctx, f"{latest or uuid.uuid4()}:withdraw",
+                                       str(latest) if latest else None)
     billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
                  metadata={"reason": reason, "billing": billing})
@@ -970,6 +986,19 @@ _RENEWAL_BY_LIFECYCLE = {"active": False, "closing": True, "erasing": True, "era
 _BILLING_SETTLED = ("confirmed", "no_subscription")
 
 
+def _billing_ctx(tenant_id: str) -> TenantContext:
+    """Platform power bound to the brokerage (the revoke job's and
+    _phase_providers' pattern): its tenants, subscriptions and closure rows
+    stay readable even on the request pool, so a row that cannot be read is
+    never mistaken for 'no subscription' or 'nothing to do'."""
+    return TenantContext(agent_id="privacy-billing", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+
+
+def _desired_for(lifecycle: Optional[str]) -> Optional[str]:
+    cancel = _RENEWAL_BY_LIFECYCLE.get(lifecycle or "")
+    return None if cancel is None else ("stop_renewal" if cancel else "renew")
+
+
 class BillingRenewalPending(RuntimeError):
     """Stripe has not confirmed the renewal the brokerage's state calls for: the job retries."""
 
@@ -998,19 +1027,24 @@ async def reconcile_billing_renewal(tenant_id: str, *, final_attempt: bool = Fal
                                     timeout: Optional[float] = None) -> dict:
     """Make Stripe's renewal match the brokerage's state now, confirm it, and
     record the result on the latest closure operation (progress.billing)."""
-    async with tenant_tx(_platform_ctx("privacy-billing")) as conn:
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
         lifecycle = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant_id)
-    cancel = _RENEWAL_BY_LIFECYCLE.get(lifecycle)
-    if cancel is None:
-        # Suspended (or unknown): renewal follows the platform's suspension,
-        # not a closure the owner withdrew; nothing to set here.
+    unsettled = "divergent" if final_attempt else "pending"
+    if lifecycle is None:
+        # Unreadable (or no such row): nothing is known, so nothing is done
+        # and nothing is claimed; retried like any other unconfirmed change.
+        billing = {"desired": None, "state": unsettled, "detail": "tenant_unreadable"}
+    elif lifecycle not in _RENEWAL_BY_LIFECYCLE:
+        # Suspended: renewal follows the platform's suspension, not a closure
+        # the owner withdrew; nothing to set here.
         billing = {"desired": None, "state": "skipped", "detail": f"lifecycle {lifecycle}"}
     else:
+        cancel = _RENEWAL_BY_LIFECYCLE[lifecycle]
         status = await _converge_subscription(tenant_id, cancel, timeout=timeout)
-        state = status if status in _BILLING_SETTLED else ("divergent" if final_attempt else "pending")
-        billing = {"desired": "stop_renewal" if cancel else "renew", "state": state, "detail": status}
+        state = status if status in _BILLING_SETTLED else unsettled
+        billing = {"desired": _desired_for(lifecycle), "state": state, "detail": status}
     billing["checked_at"] = datetime.now(timezone.utc).isoformat()
-    await _record_billing(tenant_id, billing)
+    billing = await _record_billing(tenant_id, billing)
     if billing["state"] == "divergent":
         emit_event("closure.billing_divergent", tenant_id=tenant_id, kind=billing["desired"])
         log.error("subscription renewal for %s not confirmed after the last retry (%s)",
@@ -1018,24 +1052,37 @@ async def reconcile_billing_renewal(tenant_id: str, *, final_attempt: bool = Fal
     return billing
 
 
-async def _record_billing(tenant_id: str, billing: dict) -> None:
-    """progress.billing on the latest closure operation (the one
-    tenant_lifecycle reads). A settled result also settles an older
-    closure's divergence: Stripe now matches the brokerage's current state."""
-    async with tenant_tx(_platform_ctx("privacy-billing")) as conn:
-        latest = await conn.fetchval(
-            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
-            "ORDER BY requested_at DESC LIMIT 1", tenant_id)
+async def _record_billing(tenant_id: str, billing: dict) -> dict:
+    """progress.billing on the latest closure operation, whatever its state
+    (the one tenant_lifecycle reads and the external_cleanup alert counts).
+    Returns what was recorded.
+
+    An unsettled result that does not know what it wanted (the attempt
+    raised, or the tenant row was unreadable) keeps the previous record's
+    `desired`, else the one the brokerage's state implies, so the owner is
+    still told which way it diverges. Older closures are history: their
+    `pending` can never be confirmed (every later job writes the latest), so
+    it is superseded at once; an older `divergent` once Stripe is confirmed
+    to match the current state."""
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
+        latest = await conn.fetchrow(
+            "SELECT id, progress->'billing'->>'desired' AS desired FROM privacy_operations "
+            "WHERE tenant_id=$1 AND kind='closure' ORDER BY requested_at DESC LIMIT 1", tenant_id)
         if latest is None:
-            return
+            return billing
+        if billing.get("desired") is None and billing["state"] in ("pending", "divergent"):
+            desired = latest["desired"] or _desired_for(
+                await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant_id))
+            billing = {**billing, "desired": desired}
         await conn.execute(
             "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb), "
-            "updated_at=now() WHERE id=$1", latest, json.dumps(billing))
-        if billing["state"] in (*_BILLING_SETTLED, "skipped"):
-            await conn.execute(
-                "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing,state}', "
-                "'\"superseded\"'::jsonb), updated_at=now() WHERE tenant_id=$1 AND kind='closure' "
-                "AND id <> $2 AND progress->'billing'->>'state' = 'divergent'", tenant_id, latest)
+            "updated_at=now() WHERE id=$1", latest["id"], json.dumps(billing))
+        older = ["pending", "divergent"] if billing["state"] in (*_BILLING_SETTLED, "skipped") else ["pending"]
+        await conn.execute(
+            "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing,state}', "
+            "'\"superseded\"'::jsonb), updated_at=now() WHERE tenant_id=$1 AND kind='closure' "
+            "AND id <> $2 AND progress->'billing'->>'state' = ANY($3::text[])", tenant_id, latest["id"], older)
+    return billing
 
 
 async def _billing_renewal_job(payload: dict, reporter) -> dict:
@@ -1051,10 +1098,10 @@ async def _billing_renewal_job(payload: dict, reporter) -> dict:
     except Exception as exc:
         if final:
             try:
-                await _record_billing(tenant_id, {"desired": None, "state": "divergent",
-                                                  "detail": f"failed:{type(exc).__name__}",
-                                                  "checked_at": datetime.now(timezone.utc).isoformat()})
-                emit_event("closure.billing_divergent", tenant_id=tenant_id)
+                recorded = await _record_billing(tenant_id, {"desired": None, "state": "divergent",
+                                                             "detail": f"failed:{type(exc).__name__}",
+                                                             "checked_at": datetime.now(timezone.utc).isoformat()})
+                emit_event("closure.billing_divergent", tenant_id=tenant_id, kind=recorded.get("desired"))
             except Exception:  # noqa: BLE001 - the worker records the job's own failure
                 log.exception("could not record the divergent renewal for %s", tenant_id)
         raise
@@ -1080,7 +1127,7 @@ _SUBSCRIPTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def _active_subscription_id(tenant_id: str) -> Optional[str]:
-    async with tenant_tx(_platform_ctx()) as conn:
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
         return await conn.fetchval(
             "SELECT stripe_subscription_id FROM subscriptions WHERE tenant_id=$1 "
             "AND status IN ('active','trialing','past_due') AND stripe_subscription_id IS NOT NULL "

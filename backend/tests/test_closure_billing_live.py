@@ -146,6 +146,47 @@ async def _scenario(fake):
         assert await admin.fetchval(
             "SELECT count(*) FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
             "AND progress->'billing'->>'state' = 'divergent'", T) == 0
+
+        # ── review of 22.1: withdraw and close again before anything confirms
+        # The older closure's 'pending' can never be confirmed (every later
+        # job writes the newest closure): it is superseded at once, and only
+        # each brokerage's latest closure counts towards the alert.
+        fake.up = False
+        await pl.withdraw_closure(octx, reason="changed mind again")          # again: {renew, pending}
+        assert (await billing_of(again["operation_id"]))["state"] == "pending"
+        third_close = await pl.request_closure(octx, confirm_name=name, reason="closing, final answer")
+        assert (await billing_of(again["operation_id"]))["state"] == "superseded"
+        assert (await billing_of(third_close["operation_id"]))["state"] == "pending"
+
+        async def stuck():
+            return (await component_health._db_components())["external_cleanup"]["detail"]["stuck_pending"]
+
+        base = await stuck()
+        await admin.execute(
+            "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing,state}', '\"pending\"'), "
+            "updated_at = now() - interval '7 hours' WHERE id=$1", again["operation_id"])
+        assert await stuck() == base                       # an older closure is history
+        await admin.execute("UPDATE privacy_operations SET updated_at = now() - interval '7 hours' WHERE id=$1",
+                            third_close["operation_id"])
+        assert await stuck() == base + 1                   # the latest one, stuck, does page
+
+        # ── review of 22.1: a closure blocked by a legal hold, then withdrawn
+        # No running closure operation: the record goes to the latest one
+        # (the blocked closure being withdrawn), which tenant_lifecycle reads.
+        await admin.execute("INSERT INTO legal_holds (tenant_id, scope, reason, placed_by) "
+                            "VALUES ($1,'tenant','litigation','counsel')", T)
+        assert await pl.begin_erasure(T, requested_by="test") is None
+        assert await admin.fetchval("SELECT state FROM privacy_operations WHERE id=$1",
+                                    third_close["operation_id"]) == "blocked_legal_hold"
+        fake.up = True
+        withdrawn = await pl.withdraw_closure(octx, reason="settled")
+        assert withdrawn["billing"] == "confirmed" and fake.cancel is False
+        assert await billing_of(third_close["operation_id"]) == {
+            **await billing_of(third_close["operation_id"]), "desired": "renew", "state": "confirmed"}
+        lifecycle = await pl.tenant_lifecycle(octx)
+        assert lifecycle["billing_renewal"]["desired"] == "renew"
+        assert lifecycle["billing_renewal"]["state"] == "confirmed"
+        assert (await jobs())[-1]["idempotency_key"] == f"privacy:billing:{third_close['operation_id']}:withdraw"
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

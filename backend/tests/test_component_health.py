@@ -473,7 +473,7 @@ def test_a_subscription_renewal_stripe_never_confirmed_alerts():
     both = ch._external_cleanup({"credentials_unrevoked": 2, "billing_divergent": 1})
     assert "Google" in both["summary"] and "subscription" in both["summary"]
     assert ch._external_cleanup({"credentials_unrevoked": 0, "billing_divergent": 0})["state"] == ch.HEALTHY
-    assert "progress->'billing'->>'state' = 'divergent'" in ch._SQL_EXTERNAL_CLEANUP
+    assert "billing = 'divergent'" in ch._SQL_EXTERNAL_CLEANUP
 
 
 def test_external_cleanup_left_pending_with_nothing_retrying_alerts():
@@ -486,5 +486,7 @@ def test_external_cleanup_left_pending_with_nothing_retrying_alerts():
     assert stuck["state"] == ch.DEGRADED and "pending for over 6 hours" in stuck["summary"]
     assert stuck["detail"]["stuck_pending"] == 2
     sql = ch._SQL_EXTERNAL_CLEANUP
-    assert "kind = 'offboard'" in sql and "progress->'billing'->>'state' = 'pending'" in sql
+    assert "kind = 'offboard'" in sql and "billing = 'pending'" in sql
+    # only each brokerage's latest closure counts: an older record is history
+    assert "DISTINCT ON (tenant_id)" in sql and "ORDER BY tenant_id, requested_at DESC" in sql
     assert sql.count("interval '6 hours'") == 2

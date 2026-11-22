@@ -39,9 +39,14 @@ const RENEWAL_TEXT = {
   },
 };
 
+// A divergence recorded without its direction (older records) still reaches
+// the owner.
+const RENEWAL_DIVERGENT_UNKNOWN = 'Neoh could not confirm your subscription\u2019s renewal with Stripe. Neoh support has been alerted.';
+
 function renewalText(desired, state) {
   const texts = RENEWAL_TEXT[desired];
-  if (!texts || state === 'skipped') return '';
+  if (!texts) return state === 'divergent' ? RENEWAL_DIVERGENT_UNKNOWN : '';
+  if (state === 'skipped') return '';
   return texts[state] ?? texts.pending;
 }
 
@@ -114,7 +119,7 @@ export function AccountDataPanel() {
           erased on <strong>{fmtDate(state.erase_after)}</strong>
           {state.legal_hold ? ' — erasure is paused by a legal hold' : ''}. Until then you can
           export your data or keep the brokerage.
-          {renewal?.desired === 'stop_renewal' && renewalStatus && (
+          {renewal && renewal.desired !== 'renew' && renewalStatus && (
             <> <span data-testid="renewal-status">{renewalStatus}</span></>
           )}
         </div>
@@ -224,7 +229,7 @@ export function AccountDataPanel() {
           </>
         ) : !closing ? (
           <>
-          {renewal?.desired === 'renew' && ['pending', 'divergent'].includes(renewal.state) && (
+          {renewal && renewal.desired !== 'stop_renewal' && ['pending', 'divergent'].includes(renewal.state) && renewalStatus && (
             <p className={styles.text} role="status" data-testid="renewal-status">{renewalStatus}</p>
           )}
           <button

@@ -255,3 +255,31 @@ def test_the_erasure_provider_phase_fails_on_an_unreadable_token_and_unconfigure
     unverified = next(s for s in out["steps"] if s["status"] == "revocation_unverified")
     assert "third-party apps" in unverified["note"]          # what a person does instead
     assert "note" not in next(s for s in out["steps"] if s["status"] == "revoked")
+
+
+def test_an_expired_access_token_alone_never_proves_the_grant_gone(monkeypatch):
+    """No refresh token held: Google answers invalid_token for an access token
+    that has merely expired, which says nothing about the grant (review of
+    22.6). Kept and unverified, not deleted as already_invalid."""
+    async def invalid(_token):
+        return "already_invalid"
+
+    rows = [_row("access-only", cipher=b""), _row("with-refresh")]
+    out, conn = _run(monkeypatch, invalid, rows=rows)
+    statuses = {o["credential_id"]: (o["status"], o.get("detail")) for o in out}
+    assert statuses == {"access-only": ("revocation_unverified", "access_token_rejected"),
+                        "with-refresh": ("already_invalid", None)}
+    assert conn.deleted == ["with-refresh"]
+    # a live access token Google accepts does end the grant
+    out, conn = _run(monkeypatch, _revoked, rows=[_row("access-only", cipher=b"")])
+    assert out[0]["status"] == "revoked" and conn.deleted == ["access-only"]
+
+
+def test_a_scoped_run_selects_only_rows_still_disabled():
+    """The SQL filter itself (review: removing it survived every fake-based
+    test); test_offboarding_revocation_live proves a listed id that was
+    re-enabled is never revoked against PostgreSQL."""
+    import inspect
+
+    src = inspect.getsource(pl.revoke_personal_credentials)
+    assert "AND ($4::boolean IS FALSE OR disabled_at IS NOT NULL)" in src

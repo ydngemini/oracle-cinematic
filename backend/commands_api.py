@@ -2288,6 +2288,19 @@ async def start_google_oauth(
     }
 
 
+async def _label_member_active(conn: Any, tenant_id: str, account_label: str) -> Optional[bool]:
+    """Whether the brokerage member this credential label names is still
+    active: None when no member carries the label (a shared label such as
+    'default'). FOR SHARE: an offboarding (which locks the user FOR UPDATE)
+    either commits first, and the upsert sees the member inactive, or waits
+    for the upsert, and then disables and marks the row it wrote (review of
+    22.7: a callback finishing after the offboarding inserted an ACTIVE
+    credential for the departed agent)."""
+    return await conn.fetchval(
+        "SELECT is_active FROM users WHERE tenant_id=$1::uuid AND lower(agent_id)=lower($2) FOR SHARE",
+        tenant_id, account_label)
+
+
 @router.get("/providers/google/oauth/callback", include_in_schema=False)
 async def finish_google_oauth(
     request: Request,
@@ -2377,9 +2390,11 @@ async def finish_google_oauth(
         encrypted_refresh = (
             await encrypt_pii(conn, refresh_token, key) if refresh_token else None
         )
+        # A member offboarded since the flow started connects nothing.
+        member_active = await _label_member_active(conn, tenant_id, str(row["account_label"]))
         # A row offboarding marked for revocation is never overwritten: its
         # token is the only handle on the old grant (external audit 22.7).
-        credential = await conn.fetchrow(
+        credential = None if member_active is False else await conn.fetchrow(
             """
             INSERT INTO provider_credentials (
                 tenant_id,provider,account_label,token_ciphertext,
@@ -2413,13 +2428,14 @@ async def finish_google_oauth(
         # The new tokens are stored nowhere, so the grant they belong to is
         # revoked now rather than left at Google with nobody holding it (for
         # the same Google account this also ends the old grant).
-        logger.warning("google connect refused: this account's earlier grant is still being revoked")
+        outcome = "member_inactive" if member_active is False else "revocation_pending"
+        logger.warning("google connect refused: %s", outcome)
         try:
             await revoke_google_token(refresh_token or access_token)
         except Exception as exc:  # noqa: BLE001 - best effort; the refusal stands either way
             logger.warning("revoking the refused Google grant failed: %s", type(exc).__name__)
         return RedirectResponse(
-            _oauth_return_url(row["return_path"], "revocation_pending"),
+            _oauth_return_url(row["return_path"], outcome),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     await ledger.record(
@@ -2453,6 +2469,11 @@ async def store_provider_credential(
     async with tenant_tx(ctx) as conn:
         encrypted = await encrypt_pii(conn, body.token, key)
         refresh = await encrypt_pii(conn, body.refresh_token, key) if body.refresh_token else None
+        if await _label_member_active(conn, ctx.tenant_id, body.account_label) is False:
+            raise HTTPException(
+                status_code=409,
+                detail="That member is no longer active in this brokerage.",
+            )
         # Never overwrite a row offboarding marked for revocation (22.7).
         row = await conn.fetchrow(
             """

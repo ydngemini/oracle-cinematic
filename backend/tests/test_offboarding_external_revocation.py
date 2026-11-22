@@ -204,6 +204,7 @@ class _OpConn:
 
     async def fetchrow(self, sql, *args):
         assert "FROM privacy_operations" in sql and "FOR UPDATE" in sql
+        assert "tenant_id=$2" in sql and args == ("op-1", T)    # the job's own tenant only
         return self.op
 
     async def fetch(self, sql, *args):
@@ -216,6 +217,7 @@ class _OpConn:
         elif "SET state=$2" in sql:
             self.finished = {"state": args[1], "result": json.loads(args[2]), "error": args[4]}
         else:
+            assert "tenant_id=$3" in sql and args[2] == T
             self.appended = json.loads(args[1])
         return "UPDATE 1"
 
@@ -366,8 +368,13 @@ def test_the_handler_is_registered_as_a_privacy_job():
 # ── a reconnect never overwrites a row waiting for revocation ──────────────
 
 class _CallbackConn:
-    def __init__(self, upserted):
-        self.upserted, self.upsert_args = upserted, None
+    def __init__(self, upserted, member_active=True):
+        self.upserted, self.upsert_args, self.member_active = upserted, None, member_active
+        self.member_sql = None
+
+    async def fetchval(self, sql, *args):
+        self.member_sql = (sql, args)
+        return self.member_active
 
     async def fetchrow(self, sql, *args):
         if "oauth_authorization_states" in sql:
@@ -379,10 +386,10 @@ class _CallbackConn:
         return self.upserted
 
 
-def _callback(monkeypatch, upserted):
+def _callback(monkeypatch, upserted, member_active=True):
     import commands_api
 
-    conn = _CallbackConn(upserted)
+    conn = _CallbackConn(upserted, member_active)
 
     @asynccontextmanager
     async def tx(_ctx):
@@ -432,6 +439,24 @@ def test_a_reconnect_while_revocation_is_pending_is_refused_and_its_new_grant_re
     assert recorded == []                        # nothing was connected
 
 
+def test_a_callback_finishing_after_the_agent_was_offboarded_connects_nothing(monkeypatch):
+    """Review of 22.7: the state is consumed in one transaction and the
+    upsert runs in another; an offboarding committed in between left no row
+    to mark, so the callback inserted an ACTIVE credential for the departed
+    agent. The upsert now locks the member row and refuses."""
+    response, conn, revoked, recorded = _callback(monkeypatch, upserted={"id": "never"}, member_active=False)
+    assert "google=member_inactive" in response.headers["location"]
+    assert conn.upsert_args is None                      # nothing written
+    assert revoked == ["new-refresh-rrrr"] and recorded == []
+    sql, args = conn.member_sql
+    assert "FOR SHARE" in sql and "is_active" in sql and args == (T, "a@x.test")
+
+
+def test_a_shared_label_with_no_member_behind_it_still_connects(monkeypatch):
+    response, conn, revoked, _ = _callback(monkeypatch, upserted={"id": "cred-1"}, member_active=None)
+    assert "google=connected" in response.headers["location"] and revoked == []
+
+
 def test_an_ordinary_reconnect_still_connects(monkeypatch):
     response, _conn, revoked, recorded = _callback(monkeypatch, upserted={"id": "cred-1"})
     assert "google=connected" in response.headers["location"]
@@ -442,6 +467,9 @@ def test_storing_a_credential_over_a_row_waiting_for_revocation_is_refused(monke
     import commands_api
 
     class Conn:
+        async def fetchval(self, sql, *args):
+            return True                  # the member is active
+
         async def fetchrow(self, sql, *args):
             assert "<> ALL($9::text[])" in sql and args[-1] == list(pl.REVOCATION_MARKS)
             return None
@@ -493,3 +521,34 @@ def test_offboarding_disables_and_marks_the_rows_and_returns_their_ids():
     assert "disabled_at=COALESCE(disabled_at, now())" in sql and "validation_error=$3" in sql
     assert args == (T, "a@x.test", pl.REVOCATION_PENDING_MARK)
     assert pl.REVOCATION_MARKS == ("revocation_pending", "revocation_failed")
+
+
+def test_storing_a_credential_for_an_inactive_member_is_refused(monkeypatch):
+    import commands_api
+
+    written = []
+
+    class Conn:
+        async def fetchval(self, sql, *args):
+            assert "FOR SHARE" in sql and args == (T, "gone@x.test")
+            return False
+
+        async def fetchrow(self, sql, *args):
+            written.append(sql)
+            return {"id": "x"}
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    async def encrypt(_c, value, _k):
+        return b"enc"
+
+    monkeypatch.setattr(commands_api, "tenant_tx", tx)
+    monkeypatch.setattr(commands_api, "encrypt_pii", encrypt)
+    monkeypatch.setattr(commands_api, "_provider_key", lambda _t: "k")
+    monkeypatch.setattr(commands_api, "require_feature", lambda *_a: None)
+    body = commands_api.ProviderCredentialInput(account_label="gone@x.test", token="t" * 12)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(commands_api.store_provider_credential("google", body, OWNER))
+    assert exc.value.status_code == 409 and "no longer active" in exc.value.detail and written == []

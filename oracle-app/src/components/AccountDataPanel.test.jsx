@@ -151,6 +151,13 @@ describe('AccountDataPanel', () => {
     expect((await screen.findByTestId('renewal-status')).textContent).toMatch('will not renew');
   });
 
+  it('still shows a divergence whose direction was not recorded', async () => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z',
+      billing_renewal: { desired: null, state: 'divergent' } });
+    render(<AccountDataPanel />);
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('support has been alerted');
+  });
+
   it('after keeping the brokerage, says when restarting the renewal is still pending', async () => {
     api.crmGet.mockResolvedValue({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z' });
     api.crmPost.mockResolvedValue({ state: 'active', billing: 'pending' });

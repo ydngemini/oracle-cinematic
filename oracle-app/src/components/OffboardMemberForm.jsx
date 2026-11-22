@@ -17,6 +17,18 @@ const LABELS = {
   client_segments: 'segments', lead_routing_rules: 'routing rules',
 };
 
+// Which connection is still waiting, from the server's per-credential
+// outcomes: only a Google grant has a provider-side removal to confirm.
+const PENDING_STATUSES = ['revoke_failed', 'revocation_unverified'];
+function pendingSentence(result) {
+  const providers = new Set((result?.credential_revocation || [])
+    .filter((r) => PENDING_STATUSES.includes(r.status)).map((r) => r.provider));
+  if (providers.size === 1 && providers.has('google')) {
+    return 'Their Google connection is switched off in Neoh, but Google has not yet confirmed it is removed.';
+  }
+  return 'Their connected accounts are switched off in Neoh, but removing them is not confirmed yet.';
+}
+
 const summarise = (counts) => Object.entries(counts || {})
   .filter(([, n]) => n > 0)
   .map(([k, n]) => `${n} ${LABELS[k] || k.replace(/_/g, ' ')}`)
@@ -57,9 +69,8 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
       <div className={styles.block} aria-label={`Offboard ${member.full_name || member.email}`} role="group">
         <h3 className={styles.heading}>Offboarded {member.full_name || member.email}</h3>
         <p className={styles.text} role="status" data-testid="offboard-pending">
-          They are signed out and their open work has moved. Their Google connection is switched off in
-          Neoh, but Google has not yet confirmed it is removed. Neoh keeps trying; if it still cannot,
-          Neoh support is alerted to finish it.
+          They are signed out and their open work has moved. {pendingSentence(pending)} Neoh keeps
+          trying; if it still cannot, Neoh support is alerted to finish it.
         </p>
         <div className={styles.actions}>
           <button type="button" className={styles.button} onClick={() => onDone(pending)}>Done</button>

@@ -46,7 +46,9 @@ operation `failed`, marks the rows `revocation_failed`, emits
 fires. To resolve it:
 1. Read the operation's `result.credential_revocation`: `revoke_failed`
    (Google refused or was unreachable) or `revocation_unverified` (the token
-   could not be decrypted, or the encryption key was missing).
+   could not be decrypted, the encryption key was missing, or Google rejected
+   the only token held, an access token, as `invalid_token`: an expired
+   access token proves nothing about the grant).
 2. Ask the departed agent to remove Neoh under Google Account > Security >
    *Your connections to third-party apps & services*, or confirm the Google
    account is closed.
@@ -57,7 +59,10 @@ There is no operator button for this yet.
 While a row waits for revocation the same account cannot reconnect Google: the
 OAuth callback refuses (`?google=revocation_pending`) and revokes the grant it
 was just given, and storing a credential over it answers 409. Overwriting the
-row would lose the only handle on the old grant.
+row would lose the only handle on the old grant. A connect that finishes, or a
+credential stored, for a member who is no longer active is refused the same
+way (`?google=member_inactive`, 409), so a Google flow that started before the
+offboarding cannot leave the departed agent an active credential.
 
 **Things to tell the owner:**
 - Calendar events the agent created live in the agent's own Google
@@ -161,11 +166,18 @@ jobs run in. It sets `cancel_at_period_end` and reads it back with
 same from `billing_renewal` (on `GET /api/privacy/lifecycle`), never an
 unconditional "will not renew". A Stripe outage, recovery mode or a worker
 without `STRIPE_SECRET_KEY` (`stripe_not_configured` with a live
-subscription) is retried for about 2.4 hours (12 attempts). The last attempt
-records `progress.billing.state = 'divergent'` on the closure operation, emits
-`closure.billing_divergent`, and the `external_cleanup` alert fires. To
-resolve it:
-1. Read the closure operation's `progress.billing` (`desired`, `detail`).
+subscription) is retried for about 2.4 hours (12 attempts). The result is
+recorded on the brokerage's **latest** closure operation, whatever its state
+(for a closure an erasure left `blocked_legal_hold` and the owner then
+withdrew, that blocked operation), and only that record counts for the alert:
+an older closure's `pending` is marked `superseded` as soon as a newer result
+is recorded, and an older `divergent` once Stripe is confirmed to match. The
+last attempt records `progress.billing.state = 'divergent'` (with the
+`desired` direction kept even when the attempt itself raised), emits
+`closure.billing_divergent`, and the `external_cleanup` alert fires. An
+unreadable `tenants` row is retried like any unconfirmed change, never
+counted as done. To resolve it:
+1. Read the latest closure operation's `progress.billing` (`desired`, `detail`).
 2. Set the subscription in the Stripe dashboard: *Cancel at period end* for
    `stop_renewal`, or resume it for `renew`.
 3. The divergence clears when a later billing job confirms Stripe matches

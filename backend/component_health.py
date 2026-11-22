@@ -147,21 +147,23 @@ _SQL_EXPORT_CLEANUP = (
 # External cleanup the durable retries gave up on (audits 22.1, 22.6, 22.7):
 # an offboarded agent's credential whose revocation at Google was never
 # confirmed is kept disabled and marked 'revocation_failed'
-# (privacy_lifecycle.REVOCATION_FAILED_MARK) until a person resolves it; a
-# closure operation whose subscription renewal Stripe never confirmed carries
+# (privacy_lifecycle.REVOCATION_FAILED_MARK) until a person resolves it. For
+# renewal only each brokerage's LATEST closure operation counts (it holds
+# where renewal stands now; older records are history and get superseded):
 # progress.billing.state 'divergent' until a later confirmation settles it.
 # Also stuck: still pending 6 hours on (the retries take ~2.4 h), which means
 # the job is gone without its final attempt recording anything (a lease
 # reaped after a crash, or a worker without the handler during a deploy).
 _SQL_EXTERNAL_CLEANUP = (
+    "WITH latest_closure AS (SELECT DISTINCT ON (tenant_id) progress->'billing'->>'state' AS billing, "
+    "                               updated_at FROM privacy_operations WHERE kind = 'closure' "
+    "                         ORDER BY tenant_id, requested_at DESC) "
     "SELECT (SELECT count(*) FROM provider_credentials "
     "        WHERE validation_error = 'revocation_failed') AS credentials_unrevoked, "
-    "       (SELECT count(*) FROM privacy_operations WHERE kind = 'closure' "
-    "        AND progress->'billing'->>'state' = 'divergent') AS billing_divergent, "
+    "       (SELECT count(*) FROM latest_closure WHERE billing = 'divergent') AS billing_divergent, "
     "       (SELECT count(*) FROM privacy_operations WHERE state = 'running' AND kind = 'offboard' "
     "        AND updated_at < now() - interval '6 hours') "
-    "     + (SELECT count(*) FROM privacy_operations WHERE kind = 'closure' "
-    "        AND progress->'billing'->>'state' = 'pending' "
+    "     + (SELECT count(*) FROM latest_closure WHERE billing = 'pending' "
     "        AND updated_at < now() - interval '6 hours') AS stuck_pending")
 
 
