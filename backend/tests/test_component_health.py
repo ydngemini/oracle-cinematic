@@ -444,3 +444,49 @@ def test_an_export_archive_kept_past_expiry_for_a_day_alerts():
     assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING and bad["detail"]["overdue"] == 2
     assert "export_cleanup" in ch._DB_KEYS and ch.role_of("export_cleanup") == "important"
     assert "interval '1 day'" in ch._SQL_EXPORT_CLEANUP and "artifact_key IS NOT NULL" in ch._SQL_EXPORT_CLEANUP
+
+
+def test_a_credential_offboarding_could_not_revoke_alerts():
+    """Audits 22.6, 22.7: when the revocation retries are spent the rows stay
+    disabled, marked revocation_failed, and someone is paged until a person
+    resolves them."""
+    import component_health as ch
+    import privacy_lifecycle as pl
+
+    assert ch._external_cleanup({"credentials_unrevoked": 0})["state"] == ch.HEALTHY
+    bad = ch._external_cleanup({"credentials_unrevoked": 3})
+    assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING
+    assert bad["detail"]["credentials_unrevoked"] == 3
+    assert "external_cleanup" in ch._DB_KEYS and ch.role_of("external_cleanup") == "important"
+    assert f"validation_error = '{pl.REVOCATION_FAILED_MARK}'" in ch._SQL_EXTERNAL_CLEANUP
+
+
+def test_a_subscription_renewal_stripe_never_confirmed_alerts():
+    """Audit 22.1: the closure's billing job spent its retries; the closure
+    operation says 'divergent' and someone is paged, from the same
+    external_cleanup component as an unrevoked grant."""
+    import component_health as ch
+
+    bad = ch._external_cleanup({"credentials_unrevoked": 0, "billing_divergent": 1})
+    assert bad["state"] == ch.DEGRADED and "Stripe not confirmed" in bad["summary"]
+    assert bad["detail"] == {"credentials_unrevoked": 0, "billing_divergent": 1, "stuck_pending": 0}
+    both = ch._external_cleanup({"credentials_unrevoked": 2, "billing_divergent": 1})
+    assert "Google" in both["summary"] and "subscription" in both["summary"]
+    assert ch._external_cleanup({"credentials_unrevoked": 0, "billing_divergent": 0})["state"] == ch.HEALTHY
+    assert "billing = 'divergent'" in ch._SQL_EXTERNAL_CLEANUP
+
+
+def test_external_cleanup_left_pending_with_nothing_retrying_alerts():
+    """A job reaped after a crash, or dead-lettered by a worker without the
+    handler, never runs its final attempt: the operation would sit pending
+    forever. Six hours (the retries take ~2.4 h) is stuck."""
+    import component_health as ch
+
+    stuck = ch._external_cleanup({"credentials_unrevoked": 0, "billing_divergent": 0, "stuck_pending": 2})
+    assert stuck["state"] == ch.DEGRADED and "pending for over 6 hours" in stuck["summary"]
+    assert stuck["detail"]["stuck_pending"] == 2
+    sql = ch._SQL_EXTERNAL_CLEANUP
+    assert "kind = 'offboard'" in sql and "billing = 'pending'" in sql
+    # only each brokerage's latest closure counts: an older record is history
+    assert "DISTINCT ON (tenant_id)" in sql and "ORDER BY tenant_id, requested_at DESC" in sql
+    assert sql.count("interval '6 hours'") == 2

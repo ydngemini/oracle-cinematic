@@ -11,12 +11,17 @@ function human(value) {
   return String(value || 'not started').replaceAll('_', ' ');
 }
 
+// Why a connect was refused (commands_api.finish_google_oauth, audit 22.7).
+const GOOGLE_OUTCOMES = {
+  connected: 'Google Calendar connected.',
+  revocation_pending: 'Google Calendar was not connected: your earlier Google connection is still being removed. Try again in a few minutes.',
+  member_inactive: 'Google Calendar was not connected: this account is no longer an active member of the brokerage.',
+};
+
 function initialGoogleNotice() {
   const outcome = new URLSearchParams(window.location.search).get('google');
   if (!outcome) return '';
-  return outcome === 'connected'
-    ? 'Google Calendar connected.'
-    : 'Google Calendar connection was not completed.';
+  return GOOGLE_OUTCOMES[outcome] || 'Google Calendar connection was not completed.';
 }
 
 export function BrokerageOnboardingPanel() {

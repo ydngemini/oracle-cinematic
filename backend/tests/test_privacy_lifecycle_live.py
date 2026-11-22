@@ -121,6 +121,13 @@ async def _scenario(monkeypatch, media_root):
         assert await admin.fetchval("SELECT state FROM automation_jobs WHERE id=$1", ids["job"]) == "cancelled"
         assert await admin.fetchval("SELECT count(*) FROM provider_credentials WHERE id=$1", ids["cred_a"]) == 0
         assert done["credential_revocation"][0]["status"] == "revoked"   # A's Google grant revoked at Google
+        # confirmed at Google, so the offboarding is finished (22.7); the
+        # durable revocation job queued with it finds nothing left to do
+        assert done["external_revocation"] == "complete" and done["state"] == "succeeded"
+        assert await admin.fetchval("SELECT state FROM privacy_operations WHERE id=$1",
+                                    done["operation_id"]) == "succeeded"
+        assert await admin.fetchval("SELECT count(*) FROM automation_jobs WHERE tenant_id=$1 "
+                                    "AND job_type='privacy:revoke_credentials'", T) == 1
         assert await admin.fetchval(
             "SELECT accepting_leads FROM agent_routing_state WHERE tenant_id=$1 AND agent_id=$2", T, agent_a) is False
 
