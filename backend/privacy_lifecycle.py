@@ -12,7 +12,9 @@ Three flows:
   (who wrote a note, who sent a message, who approved what) is never
   rewritten. Pending side effects the agent authored are cancelled, their
   phone line stops forwarding to their personal phone, and their personal
-  Google/SMTP credentials are revoked and deleted.
+  Google/SMTP credentials are disabled at once, then revoked at the provider
+  and deleted; the operation stays 'running' until that is confirmed, with a
+  durable job retrying it (external audit 22.7).
 
 * **Closing a brokerage** (`request_closure` / `withdraw_closure`) — the
   owner asks to close. The tenant stops doing anything (no jobs, no outbound,
@@ -39,7 +41,8 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
@@ -52,6 +55,12 @@ log = logging.getLogger("oracle.privacy_lifecycle")
 PLATFORM_TENANT_ID = os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000")
 JOB_ERASE = "privacy:erase"
 JOB_EXPORT = "privacy:export"
+# Durable external cleanup (external audits 22.7, 22.1). The privacy: prefix
+# matters twice: claim_next_job runs privacy jobs for a tenant that is not
+# active (automation_jobs.claim_next_job), and cancel_pending_side_effects
+# never cancels them (_PENDING below), so a closure cannot strand them.
+JOB_REVOKE_CREDENTIALS = "privacy:revoke_credentials"
+JOB_BILLING_RENEWAL = "privacy:billing_renewal"
 ERASE_BATCH = 5000
 
 
@@ -365,6 +374,7 @@ class OffboardPlan:
     telephony: str
     credentials: int
     warnings: list[str]
+    credential_ids: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -409,29 +419,191 @@ async def offboard_agent(ctx: TenantContext, *, departing_agent_id: str, success
             plan = await _offboard_in_tx(conn, ctx, departing, successor, reason)
             if preview:
                 raise _Preview(plan)
+            # External audit 22.7: the operation is 'running' until every
+            # personal credential is confirmed revoked at the provider. Local
+            # access ends in this transaction; the durable revocation job is
+            # queued in it too, so a crash after commit still revokes.
+            external = bool(plan.credential_ids)
             op = await _create_operation(
                 conn, tenant_id=ctx.tenant_id, kind="offboard", requested_by=ctx.agent_id,
                 reason=reason, subject_kind="user", subject_ref=str(plan.departing["id"]),
-                params={"successor": plan.successor["agent_id"]}, state="succeeded")
-            await _finish_operation(conn, str(op["id"]), state="succeeded", result=plan.as_dict())
+                params={"successor": plan.successor["agent_id"]},
+                state="running" if external else "succeeded")
+            op_id = str(op["id"])
+            await _finish_operation(
+                conn, op_id, state="running" if external else "succeeded",
+                result={**plan.as_dict(), "access_disabled": True,
+                        "external_revocation": "pending" if external else "complete",
+                        "cleanup_pending": ["credential_revocation"] if external else []})
+            if external:
+                await _enqueue_credential_revocation(conn, ctx, op_id, plan.credential_ids)
     except _Preview as dry:
         return {"preview": True, **dry.plan.as_dict()}
 
-    revocations = await revoke_personal_credentials(ctx, tenant_id=ctx.tenant_id,
-                                                    agent_id=plan.departing["agent_id"])
-    async with tenant_tx(ctx) as conn:
-        await conn.execute(
-            "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() WHERE id=$1",
-            op["id"], json.dumps({"credential_revocation": revocations}))
-    emit_event("offboarding.completed", operation_id=str(op["id"]), tenant_id=ctx.tenant_id,
+    settled = {"state": "succeeded", "external_revocation": "complete", "credential_revocation": []}
+    if plan.credential_ids:
+        try:
+            settled = await settle_offboard_revocation(ctx, op_id, plan.credential_ids)
+        except Exception as exc:  # noqa: BLE001 - the queued job retries; the owner is told it is pending
+            log.warning("inline credential revocation for offboarding %s failed (%s); the job retries",
+                        op_id, type(exc).__name__)
+            settled = {"state": "running", "external_revocation": "pending", "credential_revocation": []}
+    revocations = settled["credential_revocation"]
+    emit_event("offboarding.completed", operation_id=op_id, tenant_id=ctx.tenant_id, state=settled["state"],
                reassigned=sum(plan.reassign.values()), cancelled=sum(plan.pending.values()),
-               credential_revocations_failed=sum(1 for r in revocations if r["status"] == "revoke_failed"))
+               credential_revocations_failed=sum(1 for r in revocations if r["status"] in REVOCATION_FAILED),
+               external_revocation_pending=settled["external_revocation"] != "complete")
     await _audit(ctx, "team.member.offboarded", target=str(plan.departing["id"]),
                  metadata={"successor": plan.successor["agent_id"], "reason": reason,
                            "reassigned": plan.reassign, "cancelled": plan.pending,
-                           "operation_id": str(op["id"])})
-    return {"preview": False, "operation_id": str(op["id"]), **plan.as_dict(),
-            "credential_revocation": revocations}
+                           "operation_id": op_id, "external_revocation": settled["external_revocation"]})
+    return {"preview": False, "operation_id": op_id, **plan.as_dict(), "state": settled["state"],
+            "credential_revocation": revocations, "external_revocation": settled["external_revocation"]}
+
+
+#: Revocation retries after the inline attempt: ~2.4 h of backoff
+#: (automation_jobs.fail_job: 5 s doubling, capped at an hour) before the
+#: operation fails and the external_cleanup alert is raised.
+REVOKE_MAX_ATTEMPTS = 12
+#: The job first runs after the inline attempt has had its chance (a Google
+#: revoke waits at most 15 s per credential), so the two rarely overlap. They
+#: may: a second revoke of the same grant answers already_invalid.
+REVOKE_JOB_DELAY = timedelta(minutes=2)
+
+
+async def _enqueue_credential_revocation(conn, ctx: TenantContext, op_id: str,
+                                         credential_ids: list[str]) -> None:
+    from automation_jobs import enqueue_job_in_tx
+
+    await enqueue_job_in_tx(
+        conn, ctx, job_type=JOB_REVOKE_CREDENTIALS,
+        payload={"operation_id": op_id, "credential_ids": list(credential_ids)},
+        idempotency_key=f"privacy:revoke-credentials:{op_id}", created_by=ctx.agent_id,
+        max_attempts=REVOKE_MAX_ATTEMPTS, scheduled_at=datetime.now(timezone.utc) + REVOKE_JOB_DELAY)
+
+
+async def settle_offboard_revocation(ctx: TenantContext, operation_id: str, credential_ids: Iterable[str],
+                                     *, final_attempt: bool = False) -> dict:
+    """Revoke the offboarded agent's credentials that are still disabled and
+    record where the offboarding stands (external audit 22.7).
+
+    Every row among `credential_ids` still disabled is pending: revoked and
+    deleted rows are done, and a row a reconnect re-enabled (which the marker
+    refuses, commands_api) would be a new grant that is never revoked. None
+    pending → 'succeeded'. Some pending → still 'running' for the job to
+    retry, or, on the final attempt, 'failed': the rows stay disabled and are
+    marked `revocation_failed` (the external_cleanup alert counts them), and
+    offboarding.external_cleanup_pending is emitted. Returns {state,
+    external_revocation: complete|pending|failed, credential_revocation,
+    credentials_pending}."""
+    ids = [str(i) for i in credential_ids]
+    outcomes = await revoke_personal_credentials(ctx, tenant_id=ctx.tenant_id, agent_id=None,
+                                                 credential_ids=ids)
+    async with tenant_tx(ctx) as conn:
+        op = await conn.fetchrow(
+            "SELECT state, result FROM privacy_operations WHERE id=$1 AND tenant_id=$2 AND kind='offboard' "
+            "FOR UPDATE", operation_id, ctx.tenant_id)
+        if op is None:
+            raise LifecycleError("unknown offboarding operation", status_code=404)
+        stored = op["result"] if isinstance(op["result"], dict) else json.loads(op["result"] or "{}")
+        merged = {o["credential_id"]: o for o in stored.get("credential_revocation") or []}
+        merged.update({o["credential_id"]: o for o in outcomes})
+        remaining = [r[0] for r in await conn.fetch(
+            "SELECT id::text FROM provider_credentials WHERE tenant_id=$1 AND id = ANY($2::uuid[]) "
+            "AND disabled_at IS NOT NULL", ctx.tenant_id, ids)]
+        state, failed_now = op["state"], False
+        if state == "running":
+            if not remaining:
+                state, external = "succeeded", "complete"
+            elif final_attempt:
+                state, external, failed_now = "failed", "failed", True
+                await conn.execute(
+                    "UPDATE provider_credentials SET validation_error=$3, updated_at=now() "
+                    "WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                    ctx.tenant_id, remaining, REVOCATION_FAILED_MARK)
+            else:
+                external = "pending"
+            await _finish_operation(
+                conn, operation_id, state=state,
+                result={"credential_revocation": list(merged.values()), "external_revocation": external,
+                        "cleanup_pending": ["credential_revocation"] if remaining else [],
+                        "credentials_pending": len(remaining)},
+                error=(f"credential revocation not confirmed for {len(remaining)} credential(s): "
+                       + MANUAL_REVOKE_NOTE) if failed_now else None)
+        else:
+            # Finished by another attempt (the inline one, or an earlier run):
+            # record what this one did, never reopen or re-close it.
+            external = stored.get("external_revocation") or ("complete" if state == "succeeded" else "failed")
+            await conn.execute(
+                "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() "
+                "WHERE id=$1 AND tenant_id=$3", operation_id,
+                json.dumps({"credential_revocation": list(merged.values())}), ctx.tenant_id)
+    if failed_now:
+        emit_event("offboarding.external_cleanup_pending", operation_id=operation_id, tenant_id=ctx.tenant_id,
+                   credential_revocations_failed=len(remaining))
+        log.error("offboarding %s: %d credential(s) not confirmed revoked after the last retry",
+                  operation_id, len(remaining))
+    return {"state": state, "external_revocation": external, "credential_revocation": outcomes,
+            "credentials_pending": len(remaining)}
+
+
+class CredentialRevocationPending(RuntimeError):
+    """An offboarded agent's credential is not confirmed revoked yet: the job retries."""
+
+
+async def _fail_offboard_revocation(ctx: TenantContext, operation_id: str, credential_ids: Iterable[str],
+                                    error: str) -> None:
+    """The final attempt raised before it could record anything: end the
+    operation 'failed' (and mark its rows) rather than leave it running with
+    the job gone. Best effort: the database may be why it raised."""
+    try:
+        async with tenant_tx(ctx) as conn:
+            failed = await conn.fetchval(
+                "UPDATE privacy_operations SET state='failed', completed_at=now(), updated_at=now(), "
+                "error=$2, result = result || $3::jsonb "
+                "WHERE id=$1 AND tenant_id=$4 AND kind='offboard' AND state='running' RETURNING id",
+                operation_id, error + ": " + MANUAL_REVOKE_NOTE,
+                json.dumps({"external_revocation": "failed", "cleanup_pending": ["credential_revocation"]}),
+                ctx.tenant_id)
+            if failed is not None:
+                await conn.execute(
+                    "UPDATE provider_credentials SET validation_error=$3, updated_at=now() "
+                    "WHERE tenant_id=$1 AND id = ANY($2::uuid[]) AND disabled_at IS NOT NULL",
+                    ctx.tenant_id, [str(i) for i in credential_ids], REVOCATION_FAILED_MARK)
+    except Exception:  # noqa: BLE001 - the job's own failure is still recorded by the worker
+        log.exception("could not record the failed offboarding revocation %s", operation_id)
+        return
+    if failed is not None:
+        emit_event("offboarding.external_cleanup_pending", operation_id=operation_id, tenant_id=ctx.tenant_id)
+        log.error("offboarding %s: credential revocation stopped on its final attempt", operation_id)
+
+
+async def _revoke_credentials_job(payload: dict, reporter) -> dict:
+    """`privacy:revoke_credentials`: retry an offboarding's revocations until
+    every credential is confirmed revoked, then succeed; the final attempt
+    fails the operation instead of retrying forever (22.7)."""
+    from automation_jobs import is_final_attempt
+
+    job = getattr(reporter, "job", None) or {}
+    final = is_final_attempt(job)
+    ctx = TenantContext(agent_id="privacy-offboarding", tenant_id=str(job.get("tenant_id") or ""),
+                        role=Role.PLATFORM_ADMIN)
+    op_id = str(payload["operation_id"])
+    try:
+        out = await settle_offboard_revocation(ctx, op_id, payload.get("credential_ids") or [],
+                                               final_attempt=final)
+    except Exception as exc:
+        if final:
+            await _fail_offboard_revocation(
+                ctx, op_id, payload.get("credential_ids") or [],
+                f"credential revocation stopped on its final attempt: {type(exc).__name__}")
+        raise
+    if out["external_revocation"] == "pending":
+        raise CredentialRevocationPending(f"{out['credentials_pending']} credential(s) not confirmed revoked")
+    result = {"operation_id": op_id, "state": out["state"], "external_revocation": out["external_revocation"]}
+    if out["state"] == "failed":
+        result["_terminal_state"] = "partial"
+    return result
 
 
 async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: str,
@@ -502,11 +674,13 @@ async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: s
     #    clients, so it keeps working — but never again forwards to the
     #    departing agent's personal phone.
     telephony = await _hand_over_routes(conn, ctx.tenant_id, a["agent_id"], b["agent_id"])
-    # 6. personal credentials: disabled now, revoked at the provider after commit
-    creds = _rowcount(await conn.execute(
-        "UPDATE provider_credentials SET disabled_at=COALESCE(disabled_at, now()), updated_at=now() "
-        "WHERE tenant_id=$1 AND lower(account_label)=lower($2)", ctx.tenant_id, a["agent_id"]))
-    return OffboardPlan(a, b, reassign, pending, telephony, creds, warnings)
+    # 6. personal credentials: disabled now and marked pending revocation (a
+    #    reconnect cannot overwrite them), revoked at the provider after commit
+    creds = [r[0] for r in await conn.fetch(
+        "UPDATE provider_credentials SET disabled_at=COALESCE(disabled_at, now()), validation_error=$3, "
+        "updated_at=now() WHERE tenant_id=$1 AND lower(account_label)=lower($2) RETURNING id::text",
+        ctx.tenant_id, a["agent_id"], REVOCATION_PENDING_MARK)]
+    return OffboardPlan(a, b, reassign, pending, telephony, len(creds), warnings, creds)
 
 
 async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str) -> str:
@@ -545,18 +719,57 @@ async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str
     return "parked_successor_has_own_route"
 
 
-async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
-                                      agent_id: Optional[str]) -> list[dict]:
-    """Revoke disabled Google grants at Google, then delete the rows.
+#: Outcomes of revoke_personal_credentials that leave nothing behind: the
+#: grant is gone at Google (or there never was a remote grant) and the row is
+#: deleted.
+REVOCATION_DONE = frozenset({"revoked", "already_invalid", "deleted_no_remote_grant"})
+#: Outcomes that keep the row (disabled, still revocable) and count as a
+#: failure everywhere they are reported (external audit 22.6): `revoke_failed`
+#: when Google refused or could not be reached, `revocation_unverified` when
+#: the stored token could not be read (no encryption key, or a ciphertext that
+#: does not decrypt), so nobody can say the grant was revoked.
+REVOCATION_FAILED = frozenset({"revoke_failed", "revocation_unverified"})
+#: provider_credentials.validation_error markers (no new column: 22.6/22.7).
+#: Set on every row offboarding disables, until its revocation is confirmed
+#: and the row deleted; `revocation_failed` once the retries are spent (the
+#: external_cleanup alert counts those). A reconnect never overwrites a
+#: marked row (commands_api), so the old grant's only handle is never lost.
+REVOCATION_PENDING_MARK = "revocation_pending"
+REVOCATION_FAILED_MARK = "revocation_failed"
+REVOCATION_MARKS = (REVOCATION_PENDING_MARK, REVOCATION_FAILED_MARK)
+#: What a person does when Neoh could not revoke a Google grant itself.
+MANUAL_REVOKE_NOTE = ("not confirmed revoked: the account holder removes Neoh under Google Account > "
+                      "Security > Your connections to third-party apps & services")
 
-    With agent_id: that agent's own (offboarding). Without: every Google
-    credential of the tenant (erasure). A row whose revoke failed (Google
-    down, recovery mode) is kept disabled — unusable, but still revocable on
-    a retry — and reported, never silently dropped.
+
+async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
+                                      agent_id: Optional[str],
+                                      credential_ids: Optional[Iterable[str]] = None) -> list[dict]:
+    """Revoke Google grants at Google, then delete the rows.
+
+    With agent_id or credential_ids: only those rows, and only while they are
+    still disabled (offboarding; a row a reconnect re-enabled is a new grant
+    and is never revoked). With neither: every credential of the tenant
+    (erasure). A row whose revoke failed (Google down, recovery mode) is kept
+    disabled — unusable, but still revocable on a retry — and reported as
+    `revoke_failed`, never silently dropped.
+
+    External audit 22.6: a token that cannot be read is never deleted as if
+    it were revoked. The encryption key is derived once; without it nothing
+    Google holds is touched and every Google row is `revocation_unverified`.
+    Each decrypt runs in its own savepoint: pgp_sym_decrypt runs in the
+    database, and one corrupt row used to abort the shared transaction so
+    every later row failed to decrypt and was deleted unrevoked.
     """
     from commands_api import _provider_key, revoke_google_token
     from crypto import decrypt_pii
 
+    ids = [str(i) for i in credential_ids] if credential_ids is not None else None
+    scoped = agent_id is not None or ids is not None
+    try:
+        key: Optional[str] = _provider_key(tenant_id)
+    except Exception:  # noqa: BLE001 - HTTPException(503) when the master key is not configured
+        key = None
     outcomes: list[dict] = []
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
@@ -564,32 +777,51 @@ async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
             SELECT id, provider, account_label, token_ciphertext, refresh_ciphertext
               FROM provider_credentials
              WHERE tenant_id=$1 AND ($2::text IS NULL OR lower(account_label)=lower($2))
-               AND ($2::text IS NULL OR disabled_at IS NOT NULL)
-            """, tenant_id, agent_id)
-        secrets = []
+               AND ($3::uuid[] IS NULL OR id = ANY($3::uuid[]))
+               AND ($4::boolean IS FALSE OR disabled_at IS NOT NULL)
+            """, tenant_id, agent_id, ids, scoped)
+        # (id, provider, token, why unreadable, token is only the access token)
+        secrets: list[tuple[Any, str, Optional[str], Optional[str], bool]] = []
         for row in rows:
-            token = None
-            if row["provider"] == "google":
-                cipher = row["refresh_ciphertext"] or row["token_ciphertext"]
-                try:
-                    token = await decrypt_pii(conn, cipher, _provider_key(tenant_id)) if cipher else None
-                except Exception:  # noqa: BLE001 - unreadable token cannot be revoked; say so
-                    token = None
-            secrets.append((row["id"], row["provider"], token))
-    for cred_id, provider, token in secrets:
+            if row["provider"] != "google":
+                secrets.append((row["id"], row["provider"], None, None, False))
+                continue
+            if key is None:
+                secrets.append((row["id"], "google", None, "key_unavailable", False))
+                continue
+            access_only = not row["refresh_ciphertext"]
+            cipher = row["refresh_ciphertext"] or row["token_ciphertext"]
+            try:
+                async with conn.transaction():  # savepoint: a failed decrypt leaves the rest readable
+                    token = await decrypt_pii(conn, cipher, key)
+            except Exception:  # noqa: BLE001 - unreadable: kept and reported, never "revoked"
+                secrets.append((row["id"], "google", None, "undecryptable", access_only))
+                continue
+            secrets.append((row["id"], "google", token, None, access_only))
+    for cred_id, provider, token, unreadable, access_only in secrets:
+        if unreadable:
+            outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                             "status": "revocation_unverified", "detail": unreadable})
+            continue
         status = "deleted_no_remote_grant"
         if provider == "google":
-            if token is None:
-                status = "deleted_token_unreadable"
-            else:
-                try:
-                    status = await revoke_google_token(token)
-                except Exception as exc:  # noqa: BLE001 - recorded and retried, never hidden
-                    outcomes.append({"credential_id": str(cred_id), "provider": provider,
-                                     "status": "revoke_failed", "detail": type(exc).__name__})
-                    continue
+            try:
+                status = await revoke_google_token(token)
+            except Exception as exc:  # noqa: BLE001 - recorded and retried, never hidden
+                outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                                 "status": "revoke_failed", "detail": type(exc).__name__})
+                continue
+            if status == "already_invalid" and access_only:
+                # Google answers invalid_token for an access token that has
+                # merely expired: with no refresh token held, that proves
+                # nothing about the grant, which can still be live. Kept.
+                outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                                 "status": "revocation_unverified", "detail": "access_token_rejected"})
+                continue
         async with tenant_tx(ctx) as conn:
-            await conn.execute("DELETE FROM provider_credentials WHERE id=$1", cred_id)
+            await conn.execute(
+                "DELETE FROM provider_credentials WHERE id=$1 AND ($2::boolean IS FALSE OR disabled_at IS NOT NULL)",
+                cred_id, scoped)
         outcomes.append({"credential_id": str(cred_id), "provider": provider, "status": status})
     return outcomes
 
@@ -604,6 +836,9 @@ async def tenant_lifecycle(ctx: TenantContext) -> dict:
             "SELECT id, name, lifecycle_state, closure_requested_at, closure_requested_by, "
             "erase_after, erased_at FROM tenants WHERE id=$1", ctx.tenant_id)
         hold = await active_legal_hold(conn, ctx.tenant_id)
+        billing = await conn.fetchval(
+            "SELECT progress->'billing' FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
     if row is None:
         raise LifecycleError("Unknown brokerage.", status_code=404)
     out = dict(row)
@@ -611,11 +846,23 @@ async def tenant_lifecycle(ctx: TenantContext) -> dict:
     out["legal_hold"] = bool(hold)
     out["grace_days"] = closure_grace_days()
     out["backup_days"] = BACKUP_DAYS
+    # Where the subscription's renewal stands after the latest closure or
+    # withdrawal (external audit 22.1): {desired: stop_renewal|renew, state:
+    # confirmed|pending|divergent|no_subscription|skipped}, or None when the
+    # brokerage never asked to close. Never an unconditional "will not renew".
+    billing = json.loads(billing) if isinstance(billing, str) else billing
+    out["billing_renewal"] = ({k: billing.get(k) for k in ("desired", "state", "checked_at")}
+                              if isinstance(billing, dict) else None)
     return out
 
 
 async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str) -> dict:
-    """Owner asks to close. Nothing is deleted until the grace period ends."""
+    """Owner asks to close. Nothing is deleted until the grace period ends.
+
+    Stopping the subscription's renewal is queued as a durable
+    privacy:billing_renewal job in the same transaction (external audit
+    22.1); the inline attempt after commit is only a fast path, and the
+    response says `billing: confirmed | pending | no_subscription`."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can close the brokerage.", status_code=403)
     if ctx.tenant_id == PLATFORM_TENANT_ID:
@@ -647,9 +894,12 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
         await conn.execute(
             "UPDATE privacy_operations SET progress=$2::jsonb WHERE id=$1", op["id"],
             json.dumps({"freeze": {"cancelled": cancelled, "revoked": revoked, "routes": routes,
-                                   "signed_out_user_ids": signed_out}}))
-    billing = await _cancel_billing_at_period_end(ctx.tenant_id)
-    emit_event("deletion.scheduled", operation_id=str(op["id"]), tenant_id=ctx.tenant_id, grace_days=grace)
+                                   "signed_out_user_ids": signed_out},
+                        "billing": {"desired": "stop_renewal", "state": "pending"}}))
+        await _enqueue_billing_renewal(conn, ctx, f"{op['id']}:close", str(op["id"]))
+    billing = await _billing_fast_path(ctx.tenant_id)
+    emit_event("deletion.scheduled", operation_id=str(op["id"]), tenant_id=ctx.tenant_id, grace_days=grace,
+               billing_pending=billing == "pending")
     await _audit(ctx, "brokerage.closure.requested", target=ctx.tenant_id,
                  metadata={"erase_after": erase_after.isoformat(), "operation_id": str(op["id"]),
                            "billing": billing})
@@ -659,7 +909,8 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
 
 
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
-    """Change of mind during the grace period: back to exactly how it was."""
+    """Change of mind during the grace period: back to exactly how it was.
+    Resuming renewal is queued durably in the same transaction (22.1)."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can reopen the brokerage.", status_code=403)
     async with tenant_tx(ctx) as conn:
@@ -689,20 +940,178 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         if op:
             await _finish_operation(conn, str(op["id"]), state="cancelled",
                                     result={"withdrawn_by": ctx.agent_id, "withdraw_reason": reason})
-    billing = await _resume_billing(ctx.tenant_id)
+        # The renewal record lives on the LATEST closure operation whatever its
+        # state (as _record_billing writes it): the running one, or one an
+        # erasure left 'blocked_legal_hold', which is the closure withdrawn.
+        latest = await conn.fetchval(
+            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        if latest:
+            await conn.execute(
+                "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb) WHERE id=$1",
+                latest, json.dumps({"desired": "renew", "state": "pending"}))
+        await _enqueue_billing_renewal(conn, ctx, f"{latest or uuid.uuid4()}:withdraw",
+                                       str(latest) if latest else None)
+    billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
                  metadata={"reason": reason, "billing": billing})
     return {"state": "active", "restored_users": restored_users, "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 
-async def _cancel_billing_at_period_end(tenant_id: str) -> str:
-    """Stop renewal; access already paid for runs out on its own."""
-    return await _set_cancel_at_period_end(tenant_id, True)
+# ── Subscription renewal: durable, confirmed, convergent (external audit 22.1)
+#
+# Closure committed `closing` and then asked Stripe once: a timeout, recovery
+# mode, a worker without STRIPE_SECRET_KEY or a crash between the commit and
+# the call left the subscription renewing while the owner was told it would
+# not (and a failed withdrawal left an active brokerage cancelling at period
+# end). Now every closure and withdrawal queues privacy:billing_renewal in its
+# own transaction. The job derives what Stripe should say from
+# tenants.lifecycle_state when it RUNS (closing/erasing/erased: stop renewal;
+# active: renew), so close-then-withdraw converges on the owner's last word
+# whatever order the jobs run in, sets it, and confirms it with
+# Subscription.retrieve. Not confirmed → retried (12 attempts, ~2.4 h); the
+# final attempt records `divergent` on the closure operation and the
+# external_cleanup alert pages someone.
+
+BILLING_MAX_ATTEMPTS = 12
+#: The job starts after any inline Stripe call of the same action has ended
+#: (the SDK's own request timeout is 80 s), so a slow inline call can never
+#: land after the job has confirmed the other value.
+BILLING_JOB_DELAY = timedelta(minutes=3)
+#: The request path's budget per Stripe call (set, then confirm); the job
+#: uses STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS.
+INLINE_STRIPE_TIMEOUT_SECONDS = 15
+_RENEWAL_BY_LIFECYCLE = {"active": False, "closing": True, "erasing": True, "erased": True}
+_BILLING_SETTLED = ("confirmed", "no_subscription")
 
 
-async def _resume_billing(tenant_id: str) -> str:
-    return await _set_cancel_at_period_end(tenant_id, False)
+def _billing_ctx(tenant_id: str) -> TenantContext:
+    """Platform power bound to the brokerage (the revoke job's and
+    _phase_providers' pattern): its tenants, subscriptions and closure rows
+    stay readable even on the request pool, so a row that cannot be read is
+    never mistaken for 'no subscription' or 'nothing to do'."""
+    return TenantContext(agent_id="privacy-billing", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+
+
+def _desired_for(lifecycle: Optional[str]) -> Optional[str]:
+    cancel = _RENEWAL_BY_LIFECYCLE.get(lifecycle or "")
+    return None if cancel is None else ("stop_renewal" if cancel else "renew")
+
+
+class BillingRenewalPending(RuntimeError):
+    """Stripe has not confirmed the renewal the brokerage's state calls for: the job retries."""
+
+
+async def _enqueue_billing_renewal(conn, ctx: TenantContext, key: str, op_id: Optional[str]) -> None:
+    from automation_jobs import enqueue_job_in_tx
+
+    await enqueue_job_in_tx(
+        conn, ctx, job_type=JOB_BILLING_RENEWAL, payload={"operation_id": op_id},
+        idempotency_key=f"privacy:billing:{key}", created_by=ctx.agent_id,
+        max_attempts=BILLING_MAX_ATTEMPTS, scheduled_at=datetime.now(timezone.utc) + BILLING_JOB_DELAY)
+
+
+async def _billing_fast_path(tenant_id: str) -> str:
+    """The inline attempt: confirmed | no_subscription | pending. Never raises:
+    the queued job owns the outcome."""
+    try:
+        billing = await reconcile_billing_renewal(tenant_id, timeout=INLINE_STRIPE_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - the job retries
+        log.warning("inline subscription update failed (%s); the job retries", type(exc).__name__)
+        return "pending"
+    return billing["state"] if billing["state"] in _BILLING_SETTLED else "pending"
+
+
+async def reconcile_billing_renewal(tenant_id: str, *, final_attempt: bool = False,
+                                    timeout: Optional[float] = None) -> dict:
+    """Make Stripe's renewal match the brokerage's state now, confirm it, and
+    record the result on the latest closure operation (progress.billing)."""
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
+        lifecycle = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant_id)
+    unsettled = "divergent" if final_attempt else "pending"
+    if lifecycle is None:
+        # Unreadable (or no such row): nothing is known, so nothing is done
+        # and nothing is claimed; retried like any other unconfirmed change.
+        billing = {"desired": None, "state": unsettled, "detail": "tenant_unreadable"}
+    elif lifecycle not in _RENEWAL_BY_LIFECYCLE:
+        # Suspended: renewal follows the platform's suspension, not a closure
+        # the owner withdrew; nothing to set here.
+        billing = {"desired": None, "state": "skipped", "detail": f"lifecycle {lifecycle}"}
+    else:
+        cancel = _RENEWAL_BY_LIFECYCLE[lifecycle]
+        status = await _converge_subscription(tenant_id, cancel, timeout=timeout)
+        state = status if status in _BILLING_SETTLED else unsettled
+        billing = {"desired": _desired_for(lifecycle), "state": state, "detail": status}
+    billing["checked_at"] = datetime.now(timezone.utc).isoformat()
+    billing = await _record_billing(tenant_id, billing)
+    if billing["state"] == "divergent":
+        emit_event("closure.billing_divergent", tenant_id=tenant_id, kind=billing["desired"])
+        log.error("subscription renewal for %s not confirmed after the last retry (%s)",
+                  tenant_id, billing["detail"])
+    return billing
+
+
+async def _record_billing(tenant_id: str, billing: dict) -> dict:
+    """progress.billing on the latest closure operation, whatever its state
+    (the one tenant_lifecycle reads and the external_cleanup alert counts).
+    Returns what was recorded.
+
+    An unsettled result that does not know what it wanted (the attempt
+    raised, or the tenant row was unreadable) keeps the previous record's
+    `desired`, else the one the brokerage's state implies, so the owner is
+    still told which way it diverges. Older closures are history: their
+    `pending` can never be confirmed (every later job writes the latest), so
+    it is superseded at once; an older `divergent` once Stripe is confirmed
+    to match the current state."""
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
+        latest = await conn.fetchrow(
+            "SELECT id, progress->'billing'->>'desired' AS desired FROM privacy_operations "
+            "WHERE tenant_id=$1 AND kind='closure' ORDER BY requested_at DESC LIMIT 1", tenant_id)
+        if latest is None:
+            return billing
+        if billing.get("desired") is None and billing["state"] in ("pending", "divergent"):
+            desired = latest["desired"] or _desired_for(
+                await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant_id))
+            billing = {**billing, "desired": desired}
+        await conn.execute(
+            "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb), "
+            "updated_at=now() WHERE id=$1", latest["id"], json.dumps(billing))
+        older = ["pending", "divergent"] if billing["state"] in (*_BILLING_SETTLED, "skipped") else ["pending"]
+        await conn.execute(
+            "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing,state}', "
+            "'\"superseded\"'::jsonb), updated_at=now() WHERE tenant_id=$1 AND kind='closure' "
+            "AND id <> $2 AND progress->'billing'->>'state' = ANY($3::text[])", tenant_id, latest["id"], older)
+    return billing
+
+
+async def _billing_renewal_job(payload: dict, reporter) -> dict:
+    """`privacy:billing_renewal`: converge, confirm, retry; the final attempt
+    records `divergent` (and pages) instead of retrying forever."""
+    from automation_jobs import is_final_attempt
+
+    job = getattr(reporter, "job", None) or {}
+    tenant_id = str(job.get("tenant_id") or "")
+    final = is_final_attempt(job)
+    try:
+        billing = await reconcile_billing_renewal(tenant_id, final_attempt=final)
+    except Exception as exc:
+        if final:
+            try:
+                recorded = await _record_billing(tenant_id, {"desired": None, "state": "divergent",
+                                                             "detail": f"failed:{type(exc).__name__}",
+                                                             "checked_at": datetime.now(timezone.utc).isoformat()})
+                emit_event("closure.billing_divergent", tenant_id=tenant_id, kind=recorded.get("desired"))
+            except Exception:  # noqa: BLE001 - the worker records the job's own failure
+                log.exception("could not record the divergent renewal for %s", tenant_id)
+        raise
+    if billing["state"] == "pending":
+        raise BillingRenewalPending(f"subscription renewal not confirmed: {billing['detail']}")
+    out = {"state": billing["state"], "desired": billing.get("desired"),
+           "operation_id": payload.get("operation_id")}
+    if billing["state"] == "divergent":
+        out["_terminal_state"] = "partial"
+    return out
 
 
 #: How long the closure path waits for Stripe to change a subscription (24.7).
@@ -712,18 +1121,53 @@ STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS = 30
 # withdraw) must not be overtaken by it — the order the owner acted in is the
 # order Stripe sees. Held until the thread finishes, not until the wait ends.
 # Bound to the process's one event loop; a handful of entries per closure, not
-# pruned. A withdrawal waits out an earlier change (one HTTP attempt).
+# pruned. A withdrawal waits out an earlier change (one HTTP attempt). Across
+# processes the durable job (above) converges instead.
 _SUBSCRIPTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
-async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
-    import recovery_mode
-
-    async with tenant_tx(_platform_ctx()) as conn:
-        sub = await conn.fetchval(
+async def _active_subscription_id(tenant_id: str) -> Optional[str]:
+    async with tenant_tx(_billing_ctx(tenant_id)) as conn:
+        return await conn.fetchval(
             "SELECT stripe_subscription_id FROM subscriptions WHERE tenant_id=$1 "
             "AND status IN ('active','trialing','past_due') AND stripe_subscription_id IS NOT NULL "
             "ORDER BY created_at DESC LIMIT 1", tenant_id)
+
+
+def _stripe_field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+async def _converge_subscription(tenant_id: str, cancel: bool, *, timeout: Optional[float] = None) -> str:
+    """Set cancel_at_period_end, then read it back from Stripe. Returns
+    confirmed | no_subscription | stripe_not_configured | failed:<reason>;
+    only the first two mean the subscription does what it should."""
+    sub = await _active_subscription_id(tenant_id)
+    if not sub:
+        return "no_subscription"
+    status = await _set_cancel_at_period_end(tenant_id, cancel, sub=sub, timeout=timeout)
+    if status not in ("renewal_cancelled", "renewal_resumed"):
+        return status
+    try:
+        import stripe
+
+        current = await asyncio.wait_for(
+            asyncio.to_thread(stripe.Subscription.retrieve, sub, max_network_retries=0),
+            timeout=timeout or STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - unconfirmed is retried, never assumed
+        log.warning("subscription read-back failed: %s", type(exc).__name__)
+        return f"failed:{type(exc).__name__}"
+    if bool(_stripe_field(current, "cancel_at_period_end")) is not cancel:
+        return "failed:unconfirmed"
+    return "confirmed"
+
+
+async def _set_cancel_at_period_end(tenant_id: str, value: bool, *, sub: Optional[str] = None,
+                                    timeout: Optional[float] = None) -> str:
+    import recovery_mode
+
+    if sub is None:
+        sub = await _active_subscription_id(tenant_id)
     if not sub:
         return "no_subscription"
     try:
@@ -752,7 +1196,7 @@ async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
                 log.warning("subscription change finished with %s", type(t.exception()).__name__)
 
         task.add_done_callback(_done)
-        await asyncio.wait_for(asyncio.shield(task), timeout=STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout or STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
         return "renewal_cancelled" if value else "renewal_resumed"
     except Exception as exc:  # noqa: BLE001 - reported to the owner and the runbook
         log.warning("subscription update for closure failed: %s", type(exc).__name__)
@@ -988,12 +1432,28 @@ async def _phase_providers(ctx, op_id, tenant_id, progress) -> dict:
             steps.append({"provider": provider, "action": "disconnect_hosted_sms", "status": "failed",
                           "detail": type(exc).__name__})
     for outcome in await revoke_personal_credentials(tctx, tenant_id=tenant_id, agent_id=None):
-        steps.append({"provider": outcome["provider"], "action": "revoke_credential", "status": outcome["status"]})
-    billing = await _set_cancel_at_period_end(tenant_id, True)
-    steps.append({"provider": "stripe", "action": "stop_renewal", "status": billing,
+        step = {"provider": outcome["provider"], "action": "revoke_credential", "status": outcome["status"]}
+        if outcome["status"] in REVOCATION_FAILED:
+            step["note"] = MANUAL_REVOKE_NOTE
+        steps.append(step)
+    # Set and read back (22.1): a renewal left on, or Stripe not configured
+    # in this worker, is a failed step, never "done".
+    billing = await _converge_subscription(tenant_id, True)
+    steps.append({"provider": "stripe", "action": "stop_renewal",
+                  "status": "renewal_cancelled" if billing == "confirmed" else billing,
                   "note": "billing records are retained by Neoh as controller (7 years)"})
-    failed = [s for s in steps if s["status"] in ("failed", "revoke_failed") or str(s["status"]).startswith("failed:")]
+    failed = [s for s in steps if _provider_step_failed(s["status"])]
     return {"steps": steps, "failed": len(failed)}
+
+
+def _provider_step_failed(status: Any) -> bool:
+    """A provider step that did not happen (external audit 22.6): a revoke
+    Google refused or that could not be attempted because the token is
+    unreadable, and a Stripe subscription left renewing because Stripe is
+    not configured in this process — each was once counted as done."""
+    text = str(status)
+    return (text in ("failed", "stripe_not_configured") or text in REVOCATION_FAILED
+            or text.startswith("failed:"))
 
 
 async def _provider_credentials(tctx: TenantContext, provider: str) -> dict:
@@ -1583,3 +2043,5 @@ def register() -> None:
     from automation_jobs import register_handler
 
     register_handler(JOB_ERASE, _erase_job)
+    register_handler(JOB_REVOKE_CREDENTIALS, _revoke_credentials_job)
+    register_handler(JOB_BILLING_RENEWAL, _billing_renewal_job)

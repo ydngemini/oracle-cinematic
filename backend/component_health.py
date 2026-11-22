@@ -56,6 +56,10 @@ ROLE = {
     "media_jobs": "important",
     # Expired data-export archives whose delete keeps failing (audit 29.6).
     "export_cleanup": "important",
+    # Provider-side cleanup the retries could not finish (audits 22.1, 22.6,
+    # 22.7): a departed agent's Google grant still live, or a closed (or
+    # reopened) brokerage's Stripe renewal not what it was told.
+    "external_cleanup": "important",
 }
 
 # Launch readiness reads these same states (external audit 30.2): it used to
@@ -111,7 +115,7 @@ _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
     "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
     "inbound_calls", "billing_meter", "usage_reporting", "messaging_registration", "media_jobs",
-    "export_cleanup",
+    "export_cleanup", "external_cleanup",
 )
 
 # Audit 30.9 thresholds. Voice: 2 worker loops, a walkthrough takes minutes;
@@ -138,6 +142,29 @@ _SQL_MEDIA_JOBS = (
 _SQL_EXPORT_CLEANUP = (
     "SELECT count(*) AS overdue FROM privacy_operations WHERE kind = 'export' "
     "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '1 day'")
+
+
+# External cleanup the durable retries gave up on (audits 22.1, 22.6, 22.7):
+# an offboarded agent's credential whose revocation at Google was never
+# confirmed is kept disabled and marked 'revocation_failed'
+# (privacy_lifecycle.REVOCATION_FAILED_MARK) until a person resolves it. For
+# renewal only each brokerage's LATEST closure operation counts (it holds
+# where renewal stands now; older records are history and get superseded):
+# progress.billing.state 'divergent' until a later confirmation settles it.
+# Also stuck: still pending 6 hours on (the retries take ~2.4 h), which means
+# the job is gone without its final attempt recording anything (a lease
+# reaped after a crash, or a worker without the handler during a deploy).
+_SQL_EXTERNAL_CLEANUP = (
+    "WITH latest_closure AS (SELECT DISTINCT ON (tenant_id) progress->'billing'->>'state' AS billing, "
+    "                               updated_at FROM privacy_operations WHERE kind = 'closure' "
+    "                         ORDER BY tenant_id, requested_at DESC) "
+    "SELECT (SELECT count(*) FROM provider_credentials "
+    "        WHERE validation_error = 'revocation_failed') AS credentials_unrevoked, "
+    "       (SELECT count(*) FROM latest_closure WHERE billing = 'divergent') AS billing_divergent, "
+    "       (SELECT count(*) FROM privacy_operations WHERE state = 'running' AND kind = 'offboard' "
+    "        AND updated_at < now() - interval '6 hours') "
+    "     + (SELECT count(*) FROM latest_closure WHERE billing = 'pending' "
+    "        AND updated_at < now() - interval '6 hours') AS stuck_pending")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -258,6 +285,7 @@ async def _db_components() -> dict[str, dict]:
             "WHERE transcript_status='active' AND (ended_at < now() - interval '10 minutes' "
             "OR started_at < now() - interval '2 hours')")
         exports = await conn.fetchrow(_SQL_EXPORT_CLEANUP)
+        external = dict(await conn.fetchrow(_SQL_EXTERNAL_CLEANUP))
         # BILL-001: delivered speed-to-lead engagements still unmetered an hour
         # on — the sweep re-meters every 15 minutes, so these are ones it
         # could not fix.
@@ -371,6 +399,7 @@ async def _db_components() -> dict[str, dict]:
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["inbound_calls"] = _inbound_calls(int(inbound["unfinalized"] or 0))
     out["export_cleanup"] = _export_cleanup(int(exports["overdue"] or 0))
+    out["external_cleanup"] = _external_cleanup(external)
     out["billing_meter"] = _billing_meter(int(meter["unmetered"] or 0))
     out["usage_reporting"] = _usage_reporting(usage_rep)
     out["messaging_registration"] = _messaging_registration(dict(registration))
@@ -448,6 +477,29 @@ def _export_cleanup(overdue: int) -> dict:
         return _c(DEGRADED, "expired data exports could not be deleted for over a day "
                   "(the archives still hold personal data)", overdue=overdue)
     return _c(HEALTHY, "expired data exports deleted")
+
+
+def _external_cleanup(row: dict) -> dict:
+    """Audits 22.1, 22.6, 22.7: the retries are spent and a provider does not
+    do what the customer was told: a departed agent's Google grant may still
+    be live, or a brokerage's subscription renews (or stops) against its
+    closure state. Stays until resolved (docs/account-offboarding-runbook.md)."""
+    unrevoked = int(row.get("credentials_unrevoked") or 0)
+    divergent = int(row.get("billing_divergent") or 0)
+    stuck = int(row.get("stuck_pending") or 0)
+    problems = []
+    if divergent:
+        problems.append("subscription renewal does not match a closure or reopening (Stripe not confirmed)")
+    if unrevoked:
+        problems.append("offboarded agents' Google connections could not be revoked "
+                        "(the grants may still be live at Google)")
+    if stuck:
+        problems.append("a credential revocation or renewal change has been pending for over 6 hours "
+                        "with nothing retrying it")
+    detail = {"credentials_unrevoked": unrevoked, "billing_divergent": divergent, "stuck_pending": stuck}
+    if problems:
+        return _c(DEGRADED, "; ".join(problems), **detail)
+    return _c(HEALTHY, "provider cleanup confirmed", **detail)
 
 
 async def _outbound_opt_outs() -> dict:

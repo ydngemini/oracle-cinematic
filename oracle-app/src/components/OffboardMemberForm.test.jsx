@@ -44,6 +44,52 @@ describe('OffboardMemberForm', () => {
       preview: false, password: 'pw-pw-pw-pw' });
   });
 
+  it('says removing their Google connection is pending when Google has not confirmed it (audit 22.7)', async () => {
+    const onDone = vi.fn();
+    const result = { preview: false, state: 'running', external_revocation: 'pending',
+      credential_revocation: [{ credential_id: 'c1', provider: 'google', status: 'revoke_failed' }] };
+    api.crmPost.mockResolvedValueOnce(PLAN).mockResolvedValueOnce(result);
+    render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={onDone} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'left the brokerage' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await screen.findByTestId('offboard-plan');
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'pw-pw-pw-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Offboard' }));
+    const pending = await screen.findByTestId('offboard-pending');
+    expect(pending.textContent).toMatch('Google has not yet confirmed it is removed');
+    expect(pending.textContent).not.toMatch('access is gone');
+    expect(onDone).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onDone).toHaveBeenCalledWith(result);
+  });
+
+  it('does not blame Google when it is not a Google connection that is pending', async () => {
+    const result = { preview: false, state: 'running', external_revocation: 'pending', credential_revocation: [] };
+    api.crmPost.mockResolvedValueOnce(PLAN).mockResolvedValueOnce(result);
+    render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'left the brokerage' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await screen.findByTestId('offboard-plan');
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'pw-pw-pw-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Offboard' }));
+    const pending = await screen.findByTestId('offboard-pending');
+    expect(pending.textContent).toMatch('connected accounts are switched off');
+    expect(pending.textContent).not.toMatch('Google');
+  });
+
+  it('closes at once when the revocation is confirmed', async () => {
+    const onDone = vi.fn();
+    api.crmPost.mockResolvedValueOnce(PLAN).mockResolvedValueOnce({ preview: false, external_revocation: 'complete' });
+    render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={onDone} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'left the brokerage' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await screen.findByTestId('offboard-plan');
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'pw-pw-pw-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Offboard' }));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(screen.queryByTestId('offboard-pending')).toBeNull();
+  });
+
   it('says the number is parked when the successor already has one (audit 22.5)', async () => {
     api.crmPost.mockResolvedValueOnce({ ...PLAN, telephony: 'parked_successor_has_own_route' });
     render(<OffboardMemberForm member={MEMBERS[1]} members={MEMBERS} onDone={() => {}} onCancel={() => {}} />);

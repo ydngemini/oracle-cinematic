@@ -107,6 +107,71 @@ describe('AccountDataPanel', () => {
       { password: 'hunter22hunter22', reason: 'changed my mind' }));
   });
 
+  it('says what Stripe confirmed after closing, never an unconditional "will not renew" (22.1)', async () => {
+    api.crmGet.mockResolvedValue(ACTIVE);
+    api.crmPost.mockResolvedValue({ state: 'closing', billing: 'pending' });
+    render(<AccountDataPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Close this brokerage/ }));
+    expect(screen.queryByText('Your subscription will not renew.')).toBeNull();
+    expect(screen.getByText(/shows here once Stripe confirms it/)).toBeTruthy();
+    typePassword();
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'retiring' } });
+    fireEvent.change(screen.getByLabelText(/Type the brokerage name/), { target: { value: 'Lockwood Realty' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close brokerage' }));
+    const notice = await screen.findByText(/Closure scheduled/);
+    expect(notice.textContent).toMatch('not confirmed by Stripe yet');
+    expect(notice.textContent).not.toMatch('will not renew');
+  });
+
+  it('says confirmed only when the server says Stripe confirmed it', async () => {
+    api.crmPost.mockResolvedValue({ state: 'closing', billing: 'confirmed' });
+    render(<AccountDataPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Close this brokerage/ }));
+    typePassword();
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'retiring' } });
+    fireEvent.change(screen.getByLabelText(/Type the brokerage name/), { target: { value: 'Lockwood Realty' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close brokerage' }));
+    expect((await screen.findByText(/Closure scheduled/)).textContent)
+      .toMatch('Stripe has confirmed your subscription will not renew.');
+  });
+
+  it('while closing, shows whether stopping the renewal is confirmed, pending or not confirmable', async () => {
+    const closing = (state) => ({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z',
+      billing_renewal: { desired: 'stop_renewal', state } });
+    api.crmGet.mockResolvedValue(closing('pending'));
+    render(<AccountDataPanel />);
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('not confirmed by Stripe yet');
+    cleanup();
+    api.crmGet.mockResolvedValue(closing('divergent'));
+    render(<AccountDataPanel />);
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('support has been alerted');
+    cleanup();
+    api.crmGet.mockResolvedValue(closing('confirmed'));
+    render(<AccountDataPanel />);
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('will not renew');
+  });
+
+  it('still shows a divergence whose direction was not recorded', async () => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z',
+      billing_renewal: { desired: null, state: 'divergent' } });
+    render(<AccountDataPanel />);
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('support has been alerted');
+  });
+
+  it('after keeping the brokerage, says when restarting the renewal is still pending', async () => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z' });
+    api.crmPost.mockResolvedValue({ state: 'active', billing: 'pending' });
+    render(<AccountDataPanel />);
+    await screen.findByText(/This brokerage is closing/);
+    typePassword();
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'changed my mind' } });
+    api.crmGet.mockResolvedValue({ ...ACTIVE, billing_renewal: { desired: 'renew', state: 'pending' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the brokerage' }));
+    const notice = await screen.findByText(/Closure withdrawn/);
+    expect(notice.textContent).toMatch('Restarting your subscription\u2019s renewal is not confirmed');
+    expect((await screen.findByTestId('renewal-status')).textContent).toMatch('not confirmed by Stripe yet');
+  });
+
   it('shows the server refusal and changes nothing', async () => {
     api.crmPost.mockRejectedValue(new Error('Password is incorrect.'));
     render(<AccountDataPanel />);

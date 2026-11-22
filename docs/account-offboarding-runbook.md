@@ -25,7 +25,7 @@ API: `POST /api/privacy/offboard {agent_id, successor_agent_id, reason, preview,
 | Cancel unsent work they authored | commands (draft → queued), pending approvals (`revoked`), queued/failed jobs, missions (paused), smart-plan enrollments and steps (paused), queued emails, prepared calls, OAuth flows in progress |
 | Move open responsibility to the successor | contacts, clients, open tasks, handoff tasks, open milestones, smart plans, sites (published copy still shows the old agent until republished — a warning says so), record attachments, segments, routing-rule pools; site collaborator rows removed |
 | Phone & text | If the successor has no line: the route moves to them, with forwarding to the departing agent's phone cleared. Otherwise the line stays (it is the brokerage's clients' number) but stops forwarding to the departing agent. **Numbers are never released here.** |
-| Personal credentials | their Google/SMTP rows disabled in the transaction, then (after commit) the Google grant is revoked at Google and the rows deleted; a failed revoke keeps the row disabled and is reported |
+| Personal credentials | their Google/SMTP rows disabled in the transaction and marked `revocation_pending` (`validation_error`); a `privacy:revoke_credentials` job is queued in the same transaction. After commit the Google grant is revoked at Google and the rows deleted. A row whose revoke failed, or whose token cannot be read, is kept disabled and never deleted as revoked (external audit 22.6) |
 
 **Never rewritten:** every `created_by` and `updated_by`, `audit_ledger`,
 note authors, `sms_messages.agent_id`, approval requesters and deciders,
@@ -34,6 +34,35 @@ autonomy preferences, profile, licences, or writing-style model.
 
 A `privacy_operations` row (`kind='offboard'`) records the counts, and the
 audit ledger records `team.member.offboarded`.
+
+**Google revocation is confirmed, not assumed (external audit 22.7).** The
+operation is `running` until every disabled credential is confirmed revoked
+(`result.external_revocation`: `pending` → `complete`); the API response and
+the Offboard form say "pending" until then. Local access ends at once either
+way. The `privacy:revoke_credentials` job retries for about 2.4 hours (12
+attempts, revoking only rows still disabled). On its last attempt it marks the
+operation `failed`, marks the rows `revocation_failed`, emits
+`offboarding.external_cleanup_pending`, and the `external_cleanup` alert
+fires. To resolve it:
+1. Read the operation's `result.credential_revocation`: `revoke_failed`
+   (Google refused or was unreachable) or `revocation_unverified` (the token
+   could not be decrypted, the encryption key was missing, or Google rejected
+   the only token held, an access token, as `invalid_token`: an expired
+   access token proves nothing about the grant).
+2. Ask the departed agent to remove Neoh under Google Account > Security >
+   *Your connections to third-party apps & services*, or confirm the Google
+   account is closed.
+3. Delete the kept row (`provider_credentials`, `validation_error =
+   'revocation_failed'`) on the platform login. The alert closes on its own.
+There is no operator button for this yet.
+
+While a row waits for revocation the same account cannot reconnect Google: the
+OAuth callback refuses (`?google=revocation_pending`) and revokes the grant it
+was just given, and storing a credential over it answers 409. Overwriting the
+row would lose the only handle on the old grant. A connect that finishes, or a
+credential stored, for a member who is no longer active is refused the same
+way (`?google=member_inactive`, 409), so a Google flow that started before the
+offboarding cannot leave the departed agent an active credential.
 
 **Things to tell the owner:**
 - Calendar events the agent created live in the agent's own Google
@@ -117,13 +146,56 @@ API: `POST /api/privacy/closure`.
 - phone and text routes off (STOP texts are still recorded);
 - background work stops (`claim_next_job` skips non-active tenants);
 - spend and outreach routes refused with 423;
-- the Stripe subscription set to not renew.
+- the Stripe subscription set to not renew, through a durable job (below).
 
 **During the grace period** (`ORACLE_CLOSURE_GRACE_DAYS`, default 30):
 - the owner can export;
 - the owner can **Keep the brokerage** (`POST /api/privacy/closure/withdraw`).
   This restores the users and routes the closure switched off. Cancelled
-  jobs and revoked links are not restored.
+  jobs and revoked links are not restored. Renewal is turned back on through
+  the same durable job.
+
+**Subscription renewal is confirmed, not assumed (external audit 22.1).**
+Closing and withdrawing each queue a `privacy:billing_renewal` job in their
+own transaction. The job reads `tenants.lifecycle_state` when it runs
+(`closing`/`erasing`/`erased`: stop renewal; `active`: renew), so a close
+followed by a withdrawal ends on the owner's last action whatever order the
+jobs run in. It sets `cancel_at_period_end` and reads it back with
+`Subscription.retrieve`. The request tries once inline; the response says
+`billing: confirmed | pending | no_subscription`, and Account & data shows the
+same from `billing_renewal` (on `GET /api/privacy/lifecycle`), never an
+unconditional "will not renew". A Stripe outage, recovery mode or a worker
+without `STRIPE_SECRET_KEY` (`stripe_not_configured` with a live
+subscription) is retried for about 2.4 hours (12 attempts). The result is
+recorded on the brokerage's **latest** closure operation, whatever its state
+(for a closure an erasure left `blocked_legal_hold` and the owner then
+withdrew, that blocked operation), and only that record counts for the alert:
+an older closure's `pending` is marked `superseded` as soon as a newer result
+is recorded, and an older `divergent` once Stripe is confirmed to match. The
+last attempt records `progress.billing.state = 'divergent'` (with the
+`desired` direction kept even when the attempt itself raised), emits
+`closure.billing_divergent`, and the `external_cleanup` alert fires. An
+unreadable `tenants` row is retried like any unconfirmed change, never
+counted as done. To resolve it:
+1. Read the latest closure operation's `progress.billing` (`desired`, `detail`).
+2. Set the subscription in the Stripe dashboard: *Cancel at period end* for
+   `stop_renewal`, or resume it for `renew`.
+3. The divergence clears when a later billing job confirms Stripe matches
+   (the owner closing or reopening again queues one). Otherwise set
+   `progress.billing.state` to `superseded` on that operation (platform
+   login); the alert closes on its own.
+Erasure's provider phase sets and reads back the renewal too: anything but a
+confirmed stop (or no subscription) fails that step.
+
+**Pending with nothing retrying it.** `external_cleanup` also fires
+(`detail.stuck_pending`) when an offboarding is still `running`, or a closure's
+`progress.billing.state` still `pending`, 6 hours on: its job ended without
+its final attempt recording anything (a lease reaped after a crash, or a
+worker without the handler during a deploy, `NO_JOB_HANDLER`). Find the job
+(`automation_jobs`, `job_type` `privacy:revoke_credentials` with the
+operation id in its payload, or `privacy:billing_renewal` for the
+brokerage), and queue it again on the platform login (`state='queued'`,
+`attempt_count=0`, `next_retry_at=NULL`).
 
 **After it**, erasure runs (`docs/privacy-request-runbook.md` §4), and the
 owner receives the receipt. The receipt states:
