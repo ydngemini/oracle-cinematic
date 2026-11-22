@@ -373,6 +373,25 @@ updated: 2026-11-19
 ### L03
 Brokerage tenancy and hybrid access.
 
+#### L02-14 A public deep link shows an accessible loading state while its page code loads, never a blank screen (external audit 33.6; fixed by PR #98, ledgered 2026-11-22)
+```yaml
+id: L02-14
+status: tests_pass
+env: local
+evidence_shas: [04d43da1, 29ccd86]   # 04d43da1 = merge of PR #98 (NQ-17); 29ccd86 = main where its test last ran in CI
+files: [oracle-app/src/App.jsx, oracle-app/src/components/RouteFallback.jsx, oracle-app/src/components/RouteFallback.module.css, oracle-app/src/components/RouteFallback.test.jsx]
+tests_run:
+  - {cmd: "git show --stat 04d43da1 (PR #98, NQ-17, 'an accessible loading state on lazy routes', audit 33.6)", result: "App.jsx's lazy public routes render RouteFallback (a status region with visible loading text) as their Suspense fallback instead of null; RouteFallback.test.jsx added. The PR touched no ledger row, so 33.6 had none until this row", date: 2026-11-22}
+  - {cmd: "GitHub Actions CI run 44970413731 on main 29ccd86, job 'frontend lint and build', step 'Unit tests' (log read with gh run view --log)", result: "src/components/RouteFallback.test.jsx: 1 test passed; Test Files 113 passed (113). The run's only failure is 'build release -> staging' at doctl auth (the expired DigitalOcean token, L18-05)", date: 2026-11-22}
+authz_checked: n/a (a loading placeholder; no data, no access change)
+blockers:
+  - "Checked by a unit test and CI only: not re-crawled on staging (staging deploys are blocked, L18-05), and no real-device check of the loading state."
+audit_refs: [33.6]
+decision_refs: []
+next_task: "Include the lazy public routes in the next staging crawl (L02-05) once staging deploys again."
+updated: 2026-11-22
+```
+
 #### L03-01 Tenancy and assignment model baseline
 ```yaml
 id: L03-01
@@ -6198,18 +6217,18 @@ id: L19-32
 status: tests_pass
 env: local
 evidence_shas: [29ccd86]   # base; fix in the commit that adds this row
-files: [scripts/callback-requirements.py, infra/digitalocean/smoke-test.sh, .github/workflows/ci.yml, backend/tests/test_callback_requirements.py, backend/tests/test_callback_routes.py, docs/staging-setup.md, docs/launch-state.md]
+files: [scripts/callback-requirements.py, scripts/rollback.sh, backend/tests/test_release_immutability.py, infra/digitalocean/smoke-test.sh, .github/workflows/ci.yml, backend/tests/test_callback_requirements.py, backend/tests/test_callback_routes.py, docs/staging-setup.md, docs/launch-state.md]
 tests_run:
   - {cmd: "read .github/workflows/ci.yml promote 'Smoke test (production)' (:999-1005) and infra/digitalocean/smoke-test.sh section 2c (:122-156) at 29ccd86; gh variable list (read-only)", result: "confirmed 30.4: the promote step passed REQUIRE_CALLBACK_PROVIDERS from the repository variable only, and the variable is not set (gh lists STAGING_ENABLED only). A 504 + x-do-orig-status: 503 on /billing/webhook (Stripe signing secret not configured) was therefore a WARN and the release passed. scripts/neoh-launch-readiness.py blocks a charging production without STRIPE_WEBHOOK_SECRET in the spec (L19-18), but that is operator-run, not the release gate", date: 2026-11-22}
   - {cmd: "pytest tests/test_callback_requirements.py tests/test_callback_routes.py with the new tests on 29ccd86's scripts and ci.yml", result: "red: 35 failed / 29 passed. The derivation script did not exist; smoke-test.sh against the local stub (every callback answering 504 + x-do-orig-status: 503) exited 0 'All checks passed.' for SMOKE_ENV=production with an empty or absent requirement set; a malformed waiver, a provider name callback-routes.txt does not list and SMOKE_ENV=prod were not refused; the promote step handed the smoke test no derived list. The 29 that passed are regression guards (staging WARN, a listed provider already FAILs, the stub is otherwise a clean deploy)", date: 2026-11-22}
   - {cmd: "after: pytest tests/test_callback_requirements.py tests/test_callback_routes.py tests/test_launch_state_doc.py", result: "73 passed. callback-requirements.py on the real rendered production spec prints 'plivo stripe telnyx'; billing off (0/false/no/off) drops stripe, an unreadable (SECRET) switch keeps it, ORACLE_ENV=dev drops it unless enforcement is switched on; a webhook secret only on the worker does not count, an app-level one does; the variable is unioned; a spec with no api or unreadable YAML exits 2 with nothing on stdout; secret values never printed. smoke-test.sh: production with an empty or absent list FAILs; a 'who: why' waiver turns it into a WARN naming the waiver, a malformed one is refused, and no waiver excuses a listed provider; staging (SMOKE_ENV unset or staging) keeps WARN; an unknown provider and SMOKE_ENV=prod FAIL. The promote step, executed with a stand-in smoke script: SMOKE_ENV=production and a list containing stripe reach it, the variable still adds providers, and an unreadable spec stops the step before the smoke test runs", date: 2026-11-22}
   - {cmd: "pytest tests/test_callback_routes.py tests/test_callback_requirements.py tests/test_ci_build_contexts.py tests/test_ci_deploy_wiring.py tests/test_ci_security_gates.py tests/test_ci_lists_every_live_test.py tests/test_cross_version_wiring.py tests/test_process_heartbeat.py tests/test_spec_drift.py tests/test_release_immutability.py tests/test_storage_readiness.py tests/test_carry_secrets.py tests/test_launch_readiness.py", result: "310 passed", date: 2026-11-22}
   - {cmd: "full backend suite: pytest tests compliance_engine/tests (both L19-32 and L19-33 changes in place)", result: "7768 passed, 180 skipped, 1 failed: test_static_gate (B905, a zip() without strict= in the new tests/test_launch_state_doc.py). Fixed (strict=True; the lengths are asserted equal first); ruff check . clean; test_static_gate, test_launch_state_doc and test_launch_backlog re-run: 17 passed", date: 2026-11-22}
+  - {cmd: "scripts/rollback.sh Verify step: derive the required callbacks from the rollback spec it deployed (scripts/callback-requirements.py --spec $SPEC_OUT --also $REQUIRE_CALLBACK_PROVIDERS) and run the smoke test with SMOKE_ENV=production; pytest tests/test_release_immutability.py tests/test_callback_requirements.py tests/test_callback_routes.py tests/test_launch_state_doc.py tests/test_static_gate.py; then the same release-immutability file against the previous rollback.sh", result: "148 passed. Red on the previous rollback.sh: 2 failed (the verified rollback now asserts its smoke ran with SMOKE_ENV=production and stripe in the derived list; a rollback whose callbacks cannot be derived exits 4, ROLLED_BACK_BUT_UNVERIFIED, without running the smoke test). A production rollback was checked by the staging WARN rules before", date: 2026-11-22}
 authz_checked: "No access change. The waiver is read only from the repository variable ALLOW_UNBILLED_PRODUCTION (not set; no GitHub variable or setting was changed), must read 'who: why', and is printed in the smoke output. The derivation prints provider names only, never an env value of a secret."
 blockers:
   - {type: owner, note: "The signed Stripe test-mode webhook proof on staging (L18-06, AC18.03) still needs the owner's Stripe test keys. Not attempted."}
   - "Telnyx and Plivo are now required in production because the committed spec declares their secrets on the api, although app.yaml calls Telnyx optional. A production launched without any Telnyx signing key (platform or brokerage) will fail its smoke test until one is set or TELNYX_* leaves the spec, which also removes it from staging. Plivo's two probes answer 200/204 to an unsigned request whatever the configuration, so requiring it changes nothing today. Twilio is declared too but not derived; the repository variable can add it."
-  - "scripts/rollback.sh runs the smoke test without SMOKE_ENV, so a post-rollback check keeps the staging WARN rules."
   - "Exercised only locally, against a stub server: the next production promote is the first real run. Not deployed (C4.4); there is no production app (L19-02)."
 audit_refs: [30.4]
 decision_refs: []

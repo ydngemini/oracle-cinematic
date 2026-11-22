@@ -356,7 +356,18 @@ if [ -z "${APP_URL:-}" ]; then
   exit 4
 fi
 SMOKE="${ORACLE_ROLLBACK_SMOKE:-$REPO/infra/digitalocean/smoke-test.sh}"
-if ! APP_URL="$APP_URL" EXPECTED_GIT_SHA="$TARGET_SHA" bash "$SMOKE"; then
+# Audit 30.4: this is a PRODUCTION rollback, so it is checked by production's
+# rules — the webhooks that must answer are derived from the spec it deployed
+# (scripts/callback-requirements.py), as the promote job does, not the staging
+# WARN-only default.
+if ! REQUIRED_CALLBACKS="$(python3 "$REPO/scripts/callback-requirements.py" --spec "$SPEC_OUT" \
+      --also "${REQUIRE_CALLBACK_PROVIDERS:-}")"; then
+  say "ROLLED_BACK_BUT_UNVERIFIED: the required callbacks could not be derived from $SPEC_OUT."
+  echo
+  exit 4
+fi
+if ! SMOKE_ENV=production REQUIRE_CALLBACK_PROVIDERS="$REQUIRED_CALLBACKS" \
+     APP_URL="$APP_URL" EXPECTED_GIT_SHA="$TARGET_SHA" bash "$SMOKE"; then
   say "ROLLED_BACK_BUT_UNVERIFIED: the smoke test failed against $APP_URL (expected release $TARGET_SHA)."
   echo
   exit 4

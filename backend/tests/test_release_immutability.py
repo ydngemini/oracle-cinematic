@@ -445,7 +445,8 @@ def _run_rollback(tmp_path, target_head: str, current_head: str, *,
                                    "migration_count": _count_through(current_head)}))
 
     smoke = tmp_path / "smoke.sh"   # stands in for infra/digitalocean/smoke-test.sh (DEP-06)
-    smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; exit {smoke_exit}\n')
+    smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; '
+                     f'echo "$SMOKE_ENV|$REQUIRE_CALLBACK_PROVIDERS" > "{tmp_path}/smoke_env"; exit {smoke_exit}\n')
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
            "DIGITALOCEAN_APP_ID": "app-123",
            "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml"),
@@ -508,6 +509,30 @@ def test_a_verified_rollback_exits_0_and_checked_the_target_release(tmp_path):
         tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
     assert proc.returncode == 0 and "rolled back and verified" in proc.stdout, proc.stdout + proc.stderr
     assert (work / "smoked").read_text().split() == ["https://app.neoh.example", "goodsha"]
+    # Audit 30.4: a production rollback is checked by production's rules, with
+    # the callbacks derived from the spec it deployed (Stripe while billing is on).
+    smoke_env, required = (work / "smoke_env").read_text().strip().split("|", 1)
+    assert smoke_env == "production"
+    assert "stripe" in required.split(), required
+
+
+def test_a_rollback_whose_required_callbacks_cannot_be_derived_is_unverified(tmp_path, monkeypatch):
+    """An unreadable spec must not degrade to 'nothing required': exit 4, no smoke run."""
+    import os
+    import subprocess
+
+    broken = tmp_path / "pyshim"
+    broken.mkdir()
+    real_python = subprocess.run(["bash", "-c", "command -v python3"], capture_output=True, text=True).stdout.strip()
+    # python3 shim: the callback-requirements step fails, every other python3 call runs normally.
+    (broken / "python3").write_text(
+        '#!/bin/bash\ncase "$1" in *callback-requirements.py) exit 2;; esac\nexec ' + real_python + ' "$@"\n')
+    (broken / "python3").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{broken}:{os.environ['PATH']}")
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
+    assert proc.returncode == 4 and "required callbacks could not be derived" in proc.stdout, proc.stdout + proc.stderr
+    assert not (work / "smoked").exists()
 
 
 def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):
