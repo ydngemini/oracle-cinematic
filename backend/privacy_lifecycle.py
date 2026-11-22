@@ -928,7 +928,7 @@ _CURRENT_CLOSURE = ("running", "blocked_legal_hold")
 #   offboarded: an offboard operation for the member since the closure, or
 #               the latest such audit event is team.member.offboarded
 _SWITCHED_OFF_SINCE_SQL = """
-SELECT u.id::text AS id, u.agent_id,
+SELECT u.id::text AS id, u.agent_id, u.full_name, u.email,
        CASE WHEN off.id IS NOT NULL OR ev.action = 'team.member.offboarded'
             THEN 'offboarded' ELSE 'suspended' END AS reason
   FROM users u
@@ -951,8 +951,9 @@ SELECT u.id::text AS id, u.agent_id,
 
 
 async def _switched_off_since(conn, tenant_id: str, user_ids: list, since) -> list[dict]:
-    """[{id, agent_id, reason: suspended|offboarded}] for the freeze-list
-    members the brokerage switched off itself after `since` (still off)."""
+    """[{id, agent_id, full_name, email, reason: suspended|offboarded}] for
+    the freeze-list members the brokerage switched off itself after `since`
+    (still off)."""
     if not user_ids:
         return []
     return [dict(r) for r in await conn.fetch(_SWITCHED_OFF_SINCE_SQL, tenant_id, list(user_ids), since)]
@@ -1030,6 +1031,8 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         if withdrawn:
             result = {"withdrawn_by": ctx.agent_id, "withdraw_reason": reason}
             if skipped_users or skipped_routes:
+                # Ids and reasons only: the operation's record outlives the
+                # people in it (no names on it).
                 result.update(skipped_users=skipped_users, skipped_routes=skipped_routes)
             blocked = withdrawn["state"] == "blocked_legal_hold"
             if blocked:
@@ -1053,8 +1056,13 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
                  metadata={"reason": reason, "billing": billing, "skipped_users": len(skipped_users),
                            "skipped_routes": len(skipped_routes)})
+    # The owner's answer names who was left off, as Team shows them (full
+    # name, else email or login): read in the owner's own tenant context, and
+    # only in the response, never on the operation or the audit event.
+    named = [{"id": h["id"], "reason": h["reason"],
+              "name": h.get("full_name") or h.get("email") or h.get("agent_id")} for h in held]
     return {"state": "active", "restored_users": restored_users, "restored_routes": restored_routes,
-            "skipped_users": skipped_users, "skipped_routes": skipped_routes, "billing": billing,
+            "skipped_users": named, "skipped_routes": skipped_routes, "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 

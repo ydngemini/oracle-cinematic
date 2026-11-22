@@ -50,6 +50,64 @@ function renewalText(desired, state) {
   return texts[state] ?? texts.pending;
 }
 
+// After a withdrawal, members the owner suspended or offboarded after closing
+// stay signed out, and the numbers they hold stay off (L17-58). The server
+// lists them (skipped_users: id, reason and, from newer servers, the name Team
+// shows; skipped_routes: ids). Only what it says is shown: a member without a
+// name in the answer is counted, never named or guessed.
+const LEFT_OFF_REASON = {
+  suspended: 'suspended after you closed',
+  offboarded: 'offboarded after you closed',
+};
+
+function leftOffFrom(result) {
+  const users = Array.isArray(result?.skipped_users) ? result.skipped_users : [];
+  const routes = Array.isArray(result?.skipped_routes) ? result.skipped_routes.length : 0;
+  return users.length || routes ? { users, routes } : null;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function LeftOffNotice({ users, routes }) {
+  const named = users.filter((u) => typeof u?.name === 'string' && u.name.trim());
+  const unnamed = users.length - named.length;
+  return (
+    <div className={styles.leftOff} role="status" data-testid="withdraw-left-off">
+      {users.length > 0 ? (
+        <p className={styles.text}>
+          <strong>Not everyone is back.</strong>{' '}
+          {plural(users.length, 'member', 'members')} you suspended or offboarded after closing
+          {users.length === 1 ? ' stays' : ' stay'} signed out
+          {routes ? ', and the numbers they hold stay off' : ''}{named.length ? ':' : '.'}
+        </p>
+      ) : (
+        <p className={styles.text}>
+          <strong>Not everything is back.</strong> Numbers held by members you suspended or
+          offboarded after closing stay off.
+        </p>
+      )}
+      {named.length > 0 && (
+        <ul className={styles.leftOffList}>
+          {named.map((u) => (
+            <li key={u.id}>
+              {u.name.trim()}
+              {LEFT_OFF_REASON[u.reason] ? ` \u2014 ${LEFT_OFF_REASON[u.reason]}` : ''}
+            </li>
+          ))}
+          {unnamed > 0 && <li>{plural(unnamed, 'other member', 'other members')}</li>}
+        </ul>
+      )}
+      {routes > 0 && (
+        <p className={styles.dim}>Numbers left off: {plural(routes, 'call or text route', 'call and text routes')}.</p>
+      )}
+      <p className={styles.text}>
+        To bring someone back, reinstate them under Team. That gives them their sign-in back, not
+        their numbers: contact Neoh support to switch those on again.
+      </p>
+    </div>
+  );
+}
+
 function retentionLabel(days) {
   if (days === null || days === undefined) return 'Kept until you delete it';
   if (days >= 365) return `${Math.round(days / 365)} years`;
@@ -67,6 +125,7 @@ export function AccountDataPanel() {
   const [confirmName, setConfirmName] = useState('');
   const [reason, setReason] = useState('');
   const [preview, setPreview] = useState(null);
+  const [leftOff, setLeftOff] = useState(null);
 
   const load = useCallback(() => (
     crmGet('/api/privacy/lifecycle')
@@ -80,6 +139,7 @@ export function AccountDataPanel() {
     setBusy(true);
     setError('');
     setNotice('');
+    setLeftOff(null);
     try {
       const result = await fn();
       setNotice(typeof done === 'function' ? done(result) : done);
@@ -127,6 +187,7 @@ export function AccountDataPanel() {
 
       {error && <p className={styles.error} role="alert">{error}</p>}
       {notice && <p className={styles.notice} role="status">{notice}</p>}
+      {leftOff && <LeftOffNotice users={leftOff.users} routes={leftOff.routes} />}
 
       <label className={styles.field}>
         <span className={styles.micro}>Password (required for each action below)</span>
@@ -220,8 +281,14 @@ export function AccountDataPanel() {
               <button
                 type="button" className={styles.button} disabled={busy || !password || reason.trim().length < 3}
                 onClick={() => act(() => crmPost('/api/privacy/closure/withdraw', { password, reason }),
-                  (r) => ['Closure withdrawn. Your agents can sign in again; reconnect anything you need.',
-                    renewalText('renew', r?.billing)].filter(Boolean).join(' '))}
+                  (r) => {
+                    const left = leftOffFrom(r);
+                    setLeftOff(left);
+                    return [left?.users.length
+                      ? 'Closure withdrawn. Your other agents can sign in again; reconnect anything you need.'
+                      : 'Closure withdrawn. Your agents can sign in again; reconnect anything you need.',
+                    renewalText('renew', r?.billing)].filter(Boolean).join(' ');
+                  })}
               >
                 Keep the brokerage
               </button>
