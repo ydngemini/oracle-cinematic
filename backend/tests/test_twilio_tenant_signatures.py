@@ -733,6 +733,66 @@ def test_a_reference_already_bound_cannot_be_paired_with_a_stateless_foreign_cal
 
 
 
+def test_a_pairing_made_before_the_worker_binds_is_replaced_by_the_worker(world):
+    """PR #182 review r2: before A's worker writes its state, brokerage B signs,
+    with its own token, B's fresh reference paired with A's CallSid. That writes
+    a state for A's call under B's reference. The worker, which holds Twilio's
+    own CallSid -> reference pairing, replaces it, so A's webhooks for its own
+    call are accepted and not refused as crossed."""
+    ref_a = _prebound(TENANT_A, ACCOUNT_A)
+    ref_b = _prebound(TENANT_B, ACCOUNT_B)
+    planted = {"CallSid": SID_A, "AccountSid": ACCOUNT_B, "To": "+1"}
+    asyncio.run(ca.twilio_webhook(_signed(ANSWER, planted, TOKEN["b"], query=f"neoh_ref={ref_b}")))
+    assert json.loads(world.redis.values[f"twilio:call_state:{SID_A}"])["tenant_id"] == TENANT_B   # planted
+    kept = asyncio.run(tch.initialize_twilio_call_state(
+        SID_A, "+1", tenant_id=TENANT_A, account_sid=ACCOUNT_A, correlation=ref_a, keep_existing=True))
+    assert kept["tenant_id"] == TENANT_A and kept["correlation"] == ref_a
+    stored = json.loads(world.redis.values[f"twilio:call_state:{SID_A}"])
+    assert stored["tenant_id"] == TENANT_A and stored["account_sid"] == ACCOUNT_A
+    own = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, own, TOKEN["a"], query=f"neoh_ref={ref_a}"))).status_code == 204
+
+
+def test_the_worker_replaces_its_own_brokerages_state_under_another_reference(world):
+    """Same brokerage and account, other reference (a brokerage pairing its own
+    second reference with this call): still not this call's state — replaced."""
+    ref_a = _prebound(TENANT_A, ACCOUNT_A)
+    other_a = _prebound(TENANT_A, ACCOUNT_A)
+    planted = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "To": "+1"}
+    asyncio.run(ca.twilio_webhook(_signed(ANSWER, planted, TOKEN["a"], query=f"neoh_ref={other_a}")))
+    kept = asyncio.run(tch.initialize_twilio_call_state(
+        SID_A, "+1", tenant_id=TENANT_A, account_sid=ACCOUNT_A, correlation=ref_a, keep_existing=True))
+    assert kept["correlation"] == ref_a
+    assert json.loads(world.redis.values[f"twilio:call_state:{SID_A}"])["correlation"] == ref_a
+
+
+def test_the_comparison_reads_uuids_in_their_canonical_spelling():
+    """An early state whose reference or brokerage is spelled in upper case is
+    still this call's own (kept), never mistaken for a planted one."""
+    ref, tenant = str(uuid.uuid4()), str(uuid.uuid4())
+    early = {"correlation": ref.upper(), "tenant_id": "{" + tenant.upper() + "}", "account_sid": ACCOUNT_A}
+    worker = {"correlation": ref, "tenant_id": tenant, "account_sid": ACCOUNT_A}
+    assert tch._state_is_this_calls(early, worker)
+    assert not tch._state_is_this_calls({**early, "account_sid": ACCOUNT_B}, worker)
+    assert not tch._state_is_this_calls({**early, "correlation": str(uuid.uuid4())}, worker)
+
+
+def test_the_worker_keeps_a_state_its_own_reference_wrote(world):
+    """The 24.2 early answer bound from the call's own reference is kept
+    (it may already be streaming), never reset."""
+    ref_a = _prebound(TENANT_A, ACCOUNT_A)
+    early = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "To": "+1"}
+    asyncio.run(ca.twilio_webhook(_signed(ANSWER, early, TOKEN["a"], query=f"neoh_ref={ref_a}")))
+    key = f"twilio:call_state:{SID_A}"
+    streaming = json.loads(world.redis.values[key])
+    streaming["stage"] = "qwen_streaming"
+    world.redis.values[key] = json.dumps(streaming)
+    kept = asyncio.run(tch.initialize_twilio_call_state(
+        SID_A, "+1", tenant_id=TENANT_A, account_sid=ACCOUNT_A, correlation=ref_a, keep_existing=True))
+    assert kept["stage"] == "qwen_streaming"
+    assert json.loads(world.redis.values[key])["stage"] == "qwen_streaming"
+
+
 def test_a_reference_bound_elsewhere_is_refused_before_any_credential_is_read(world):
     """The pairing is refused from Redis alone: no brokerage credential is
     decrypted and no signature is checked for it."""
