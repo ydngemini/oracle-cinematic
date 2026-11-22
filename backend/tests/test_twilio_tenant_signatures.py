@@ -21,6 +21,7 @@ credential of the account their state names.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -122,10 +123,37 @@ def world(monkeypatch):
         accepted.append((call_sid, status, tenant_id))
         return 1
 
+    # The durable rows (live_call_sessions by provider_call_id), read as the
+    # platform: CallSid -> brokerage, or an exception for an unreadable read.
+    sessions: dict = {}
+    session_reads: list = []
+
+    class _Conn:
+        async def fetchval(self, sql, *args):
+            session_reads.append((sql, args))
+            if isinstance(sessions.get("error"), Exception):
+                raise sessions["error"]
+            return sessions.get(args[0]) if "live_call_sessions" in sql else None
+
+        async def execute(self, *_a):
+            return "UPDATE 0"
+
+    class _Tx:
+        def __init__(self, _ctx):
+            pass
+
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ca, "tenant_tx", _Tx)
     monkeypatch.setattr(ca, "_load_provider_credential", load_credential)
     monkeypatch.setattr(ca, "_spoken", spoken)
     monkeypatch.setattr(ca, "accept_call_outcome", accept)
-    return SimpleNamespace(redis=redis, stored=stored, loads=loads, accepted=accepted)
+    return SimpleNamespace(redis=redis, stored=stored, loads=loads, accepted=accepted, sessions=sessions,
+                           session_reads=session_reads)
 
 
 def _prebound(tenant_id, account_sid):
@@ -211,7 +239,8 @@ def test_a_missing_signature_is_refused_before_any_state_or_credential_is_read(w
     async def no_lookup(*_a, **_k):
         raise AssertionError("a request with no signature reached the state")
 
-    monkeypatch.setattr(tch, "find_outbound_twilio_call_state", no_lookup)
+    monkeypatch.setattr(tch, "outbound_twilio_signing_state", no_lookup)
+    monkeypatch.setattr(ca, "_durable_twilio_call_state", no_lookup)
     for route, path in ((ca.twilio_webhook, ANSWER), (ca.twilio_status_webhook, STATUS),
                         (ca.twilio_speech, SPEECH)):
         request = _Request({"CallSid": SID_A, "CallStatus": "completed"}, f"neoh_ref={ref}")
@@ -579,6 +608,397 @@ def test_the_plivo_refusal_is_unchanged(world, monkeypatch):
     asyncio.run(ca._say_refused_and_end("plivo", "uuid-1"))
     assert moved == [("uuid-1", None)]
 
+
+
+# ── PR #182 review: when Redis no longer names the call ──────────────────
+
+
+def _redis_down(monkeypatch):
+    async def down():
+        raise tch.TwilioCallStateUnavailable("redis down")
+
+    monkeypatch.setattr(tch, "_get_redis", down)
+
+
+@pytest.mark.parametrize("redis_state", ["expired", "down"])
+@pytest.mark.parametrize("token", ["platform", "previous"])
+def test_a_platform_calls_final_outcome_survives_its_redis_state(world, monkeypatch, redis_state, token):
+    """The call's Redis state is gone (an hour-long Gather call, an eviction)
+    or Redis is down: its brokerage comes from the session row the worker
+    wrote, its account by the rail's own rule (no credential: the platform's)
+    — and the final outcome is recorded instead of being refused into
+    oblivion (#rc=3 retries only)."""
+    world.sessions[SID_P] = TENANT_P
+    if redis_state == "down":
+        _redis_down(monkeypatch)
+    form = {"CallSid": SID_P, "AccountSid": PLATFORM, "CallStatus": "completed", "CallDuration": "3700"}
+    stale = f"neoh_ref={uuid.uuid4()}"         # its reference, long expired
+    response = asyncio.run(ca.twilio_status_webhook(_signed(STATUS, form, TOKEN[token], query=stale)))
+    assert response.status_code == 204
+    assert world.accepted == [(SID_P, "completed", TENANT_P)]
+    assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, TOKEN["a"], query=stale))) == 400
+
+
+@pytest.mark.parametrize("redis_state", ["expired", "down"])
+def test_a_byo_call_without_redis_state_is_checked_only_under_its_own_account(world, monkeypatch, redis_state):
+    world.sessions[SID_A] = TENANT_A
+    if redis_state == "down":
+        _redis_down(monkeypatch)
+    form = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    for token in (TOKEN["platform"], TOKEN["previous"], TOKEN["b"]):
+        assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, token))) == 400
+    assert world.accepted == []
+    assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, form, TOKEN["a"]))).status_code == 204
+    assert world.accepted == [(SID_A, "completed", TENANT_A)]
+
+
+@pytest.mark.parametrize("claim", [PLATFORM, ACCOUNT_B, None])
+def test_without_redis_the_signed_account_must_be_the_brokerages_own(world, claim):
+    """TENANT_A dials from its own account A: a request naming the platform's
+    account (signed by the platform), another brokerage's (signed by it), or
+    no account is refused."""
+    world.sessions[SID_A] = TENANT_A
+    form = {"CallSid": SID_A, "CallStatus": "completed"}
+    if claim:
+        form["AccountSid"] = claim
+    token = {PLATFORM: TOKEN["platform"], ACCOUNT_B: TOKEN["b"], None: TOKEN["a"]}[claim]
+    assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, token))) == 400
+    assert world.accepted == []
+
+
+def test_without_redis_a_credential_now_for_another_account_is_refused(world):
+    """The brokerage's stored credential no longer names the account in the
+    request: the request is not that brokerage's, whoever signed it."""
+    world.sessions[SID_A] = TENANT_A
+    world.stored[TENANT_A] = {"account_sid": ACCOUNT_B, "auth_token": TOKEN["b"]}
+    form = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    for token in (TOKEN["a"], TOKEN["b"], TOKEN["platform"]):
+        assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, token))) == 400
+    assert world.accepted == []
+
+
+@pytest.mark.parametrize("problem", ["no_session", "session_unreadable", "credential_unreadable"])
+def test_without_redis_an_unknown_or_unreadable_call_is_refused(world, problem):
+    if problem != "no_session":
+        world.sessions[SID_A] = TENANT_A
+    if problem == "session_unreadable":
+        world.sessions["error"] = ConnectionError("database down")
+    if problem == "credential_unreadable":
+        world.stored[TENANT_A] = RuntimeError("decrypt failed")
+    form = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    for token in (TOKEN["a"], TOKEN["platform"]):
+        assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, token))) == 503
+    assert world.accepted == []
+
+
+def test_a_crossed_reference_never_falls_through_to_the_session_rows(world):
+    """Redis names the CallSid under another reference: refused outright,
+    even though a session row would name a brokerage."""
+    _bound(SID_A, TENANT_A, ACCOUNT_A)
+    world.sessions[SID_A] = TENANT_A
+    form = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    other = f"neoh_ref={_prebound(TENANT_A, ACCOUNT_A)}"
+    assert _refused(ca.twilio_status_webhook(_signed(STATUS, form, TOKEN["a"], query=other))) == 503
+    assert world.accepted == [] and world.session_reads == []
+
+
+# ── PR #182 review: one reference serves one call ────────────────────────
+
+
+SID_X = "CA" + "e" * 32          # someone else's call, with no state here
+
+
+@pytest.mark.parametrize("bound_by", ["worker", "answer"])
+def test_a_reference_already_bound_cannot_be_paired_with_a_stateless_foreign_call(world, bound_by):
+    """Brokerage A signs, with its own token, its own reference paired with
+    another call's CallSid that has no state here. The reference already
+    serves A's call: refused on every route — the foreign CallSid is never
+    bound to A's state, and no outcome is recorded for it under A."""
+    if bound_by == "worker":
+        correlation = _bound(SID_A, TENANT_A, ACCOUNT_A)
+    else:
+        correlation = _prebound(TENANT_A, ACCOUNT_A)
+        asyncio.run(ca.twilio_webhook(_signed(ANSWER, {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "To": "+1"},
+                                              TOKEN["a"], query=f"neoh_ref={correlation}")))
+    ref = f"neoh_ref={correlation}"
+    foreign = {"CallSid": SID_X, "AccountSid": ACCOUNT_A, "CallStatus": "completed", "To": "+1"}
+    assert _refused(ca.twilio_webhook(_signed(ANSWER, foreign, TOKEN["a"], query=ref))) == 503
+    assert _refused(ca.twilio_status_webhook(_signed(STATUS, foreign, TOKEN["a"], query=ref))) == 503
+    assert f"twilio:call_state:{SID_X}" not in world.redis.values
+    assert world.accepted == []
+    assert asyncio.run(tch.twilio_correlation_call_sid(correlation)) == SID_A
+    # A's own call still works under the reference.
+    own = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, own, TOKEN["a"], query=ref))).status_code == 204
+
+
+
+def test_a_reference_bound_elsewhere_is_refused_before_any_credential_is_read(world):
+    """The pairing is refused from Redis alone: no brokerage credential is
+    decrypted and no signature is checked for it."""
+    correlation = _bound(SID_A, TENANT_A, ACCOUNT_A)
+    foreign = {"CallSid": SID_X, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    request = _Request(foreign, f"neoh_ref={correlation}", signature="junk")
+    assert _refused(ca.twilio_status_webhook(request)) == 503        # crossed, not "bad signature"
+    assert world.loads == [] and world.session_reads == []
+
+
+def test_resolving_never_binds_a_reference_that_serves_another_call(world):
+    """resolve_outbound_twilio_call_state's own contract, whoever calls it:
+    a reference already bound to one CallSid is never bound to another."""
+    correlation = _bound(SID_A, TENANT_A, ACCOUNT_A)
+    assert asyncio.run(tch.resolve_outbound_twilio_call_state(SID_X, correlation)) is None
+    assert f"twilio:call_state:{SID_X}" not in world.redis.values
+    assert asyncio.run(tch.resolve_outbound_twilio_call_state(SID_A, correlation))["tenant_id"] == TENANT_A
+
+
+def test_the_session_read_names_exactly_one_brokerage(world):
+    """Two brokerages' sessions naming one CallSid would make the account
+    ambiguous: the read answers only when exactly one brokerage is named (the
+    in-memory store cannot evaluate SQL, so the predicate is pinned here)."""
+    world.sessions[SID_P] = TENANT_P
+    form = {"CallSid": SID_P, "AccountSid": PLATFORM, "CallStatus": "completed"}
+    assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, form, TOKEN["platform"]))).status_code == 204
+    sql, args = world.session_reads[0]
+    assert "count(DISTINCT tenant_id) = 1" in sql and "live_call_sessions" in sql and args == (SID_P,)
+
+def test_the_first_verified_webhook_binds_an_unbound_reference(world):
+    """An early status (before the worker and the answer) binds the
+    reference, so a later pairing with another CallSid is refused; the
+    worker, which has Twilio's own CallSid, corrects a wrong early binding."""
+    correlation = _prebound(TENANT_A, ACCOUNT_A)
+    ref = f"neoh_ref={correlation}"
+    early = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "CallStatus": "ringing"}
+    assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, early, TOKEN["a"], query=ref))).status_code == 204
+    assert asyncio.run(tch.twilio_correlation_call_sid(correlation)) == SID_A
+    late = {"CallSid": SID_X, "AccountSid": ACCOUNT_A, "CallStatus": "completed"}
+    assert _refused(ca.twilio_status_webhook(_signed(STATUS, late, TOKEN["a"], query=ref))) == 503
+
+    other = _prebound(TENANT_A, ACCOUNT_A)
+    assert asyncio.run(tch.bind_twilio_correlation(other, SID_X)) is True       # a wrong early binding
+    asyncio.run(tch.initialize_twilio_call_state(
+        SID_B, "+1", tenant_id=TENANT_A, account_sid=ACCOUNT_A, correlation=other, keep_existing=True))
+    assert asyncio.run(tch.twilio_correlation_call_sid(other)) == SID_B
+
+
+# ── PR #182 review: nothing is waited for before the signature ───────────
+
+
+def _counting(world, monkeypatch):
+    reads = []
+    real_get = world.redis.get
+
+    async def get(key):
+        reads.append(key)
+        return await real_get(key)
+
+    world.redis.get = get
+    monkeypatch.setattr(tch, "_STATE_WAIT_SECONDS", 5.0)    # any wait would show
+    return reads
+
+
+def test_a_bad_signature_on_a_known_call_is_400_without_waiting(world, monkeypatch):
+    correlation = _prebound(TENANT_A, ACCOUNT_A)
+    reads = _counting(world, monkeypatch)
+    request = _Request({"CallSid": SID_A, "AccountSid": ACCOUNT_A}, f"neoh_ref={correlation}", signature="junk")
+    started = time.monotonic()
+    assert _refused(ca.twilio_webhook(request)) == 400
+    assert time.monotonic() - started < 1.0 and len(reads) <= 3
+
+
+def test_a_junk_request_for_an_unknown_call_is_refused_without_waiting(world, monkeypatch):
+    reads = _counting(world, monkeypatch)
+    started = time.monotonic()
+    assert _refused(ca.twilio_webhook(_Request({"CallSid": SID_X}, "", signature="junk"))) == 503
+    assert time.monotonic() - started < 1.0 and len(reads) <= 2
+
+
+# ── PR #182 review: a brokerage's credential is used whole everywhere ────
+
+
+@pytest.fixture()
+def platform_key(monkeypatch):
+    """The platform authenticates with an API key pair (as production may)."""
+    key = "SK" + "7" * 32
+    monkeypatch.setenv("TWILIO_API_KEY", key)
+    return key
+
+
+@pytest.fixture()
+def built(monkeypatch):
+    """Every Twilio REST client built: the credential it was built from."""
+    seen = []
+
+    class _Stop(Exception):
+        pass
+
+    def client(account_sid, auth_token, api_key, api_secret):
+        seen.append((account_sid, auth_token, api_key, api_secret))
+        raise _Stop()
+
+    monkeypatch.setattr(command_providers, "_twilio_client", client)
+    return SimpleNamespace(seen=seen, Stop=_Stop)
+
+
+BYO = {"account_sid": ACCOUNT_A}
+
+
+def _byo():
+    return {**BYO, "auth_token": TOKEN["a"]}
+
+
+def test_a_byo_call_is_placed_with_the_brokerages_own_credential_only(world, built, platform_key, monkeypatch):
+    monkeypatch.setenv("ORACLE_TWILIO_ACCOUNT_TIER", "full")
+    draft = {"target": {"phone": "+15555550101"}}
+    with pytest.raises(built.Stop):
+        asyncio.run(command_providers.place_twilio_call(draft, credentials={**_byo(), "from_number": "+15555550100"}))
+    assert built.seen == [(ACCOUNT_A, TOKEN["a"], "", "")]
+    built.seen.clear()
+    with pytest.raises(built.Stop):
+        asyncio.run(command_providers.place_twilio_call(draft, credentials={"from_number": "+15555550100"}))
+    assert built.seen == [(PLATFORM, TOKEN["platform"], platform_key, os.environ["TWILIO_API_SECRET"])]
+
+
+def test_the_workers_abort_uses_the_brokerages_own_credential_only(world, built, platform_key):
+    asyncio.run(command_providers.abort_twilio_call(SID_A, credentials={**_byo(), "from_number": "+1"}))
+    assert built.seen == [(ACCOUNT_A, TOKEN["a"], "", "")]
+
+
+
+@pytest.mark.parametrize("stored", ["byo", "none", "no_account"])
+def test_the_worker_writes_the_account_it_then_dials_from(monkeypatch, platform_key, stored):
+    """The approved-call worker records, before placing the call, the account
+    place_twilio_call then dials with (whole_twilio_credential): the
+    brokerage's own for a BYO credential, else the platform's — so the
+    webhooks' account is the call's."""
+    import twilio_call_handler
+    from tests.test_provider_refused_before_send import Network, _twilio_env, _worker
+
+    _twilio_env(monkeypatch)
+    monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", BASE)
+    _conn, run = _worker(monkeypatch, "call_twilio")
+    written = []
+
+    async def correlation(_ref, _callee, *, tenant_id, account_sid, command_id=""):
+        written.append(account_sid)
+
+    async def credential(_ctx, provider, **_k):
+        if provider != "twilio" or stored == "none":
+            return None
+        return json.dumps(_byo() if stored == "byo" else {"auth_token": TOKEN["a"]})
+
+    class _Stop(Exception):
+        pass
+
+    dialled = []
+
+    def client(account_sid, auth_token, api_key, api_secret):
+        dialled.append((account_sid, auth_token, api_key))
+        raise _Stop()
+
+    monkeypatch.setattr(twilio_call_handler, "initialize_outbound_twilio_correlation", correlation)
+    monkeypatch.setattr(ca, "_load_provider_credential", credential)
+    Network(monkeypatch, twilio=client)
+    with contextlib.suppress(Exception):
+        asyncio.run(run())
+    if stored == "byo":
+        assert written == [ACCOUNT_A] and dialled == [(ACCOUNT_A, TOKEN["a"], "")]
+    elif stored == "no_account":
+        # A stored credential without its account is not the platform's:
+        # nothing is written for, or dialled from, the platform account.
+        assert written == [""] and dialled == []
+    else:
+        platform = os.environ["TWILIO_ACCOUNT_SID"]
+        assert written == [platform] and dialled == [(platform, os.environ["TWILIO_AUTH_TOKEN"], platform_key)]
+
+@pytest.mark.parametrize("call", [
+    lambda c: command_providers.send_twilio_sms(
+        {"target": {"phone": "+15555550101"}, "body": "hi"},
+        credentials={**c, "sms_sender": "+15555550100", "sms_sender_type": "twilio_registered"}),
+    lambda c: command_providers.start_twilio_caller_id_verification("+15555550101", credentials=c),
+    lambda c: command_providers.check_twilio_caller_id_verified("+15555550101", credentials=c),
+    lambda c: command_providers.provision_twilio_forwarding_number(credentials=c),
+    lambda c: command_providers.release_twilio_number("PN" + "1" * 32, credentials=c),
+    lambda c: command_providers.configure_twilio_number_webhook("PN" + "1" * 32, voice_url=f"{BASE}/v",
+                                                                credentials=c),
+], ids=["sms", "verify_start", "verify_check", "provision", "release", "configure"])
+def test_every_twilio_request_uses_a_byo_credential_whole(world, built, platform_key, call):
+    with pytest.raises(built.Stop):
+        asyncio.run(call(_byo()))
+    assert built.seen == [(ACCOUNT_A, TOKEN["a"], "", "")]
+
+
+def test_the_tenant_credential_resolver_never_fills_a_byo_credential_from_env(world, platform_key, monkeypatch):
+    import telephony_api
+    from tenancy import Role, TenantContext
+
+    monkeypatch.setenv("TWILIO_TWIML_APP_SID", "AP" + "3" * 32)
+
+    async def load(ctx, provider, **_k):
+        return world.stored.get(ctx.tenant_id) and json.dumps(world.stored[ctx.tenant_id])
+
+    monkeypatch.setattr(telephony_api, "_load_provider_credential", load)
+    byo = asyncio.run(telephony_api._twilio_credentials(
+        TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT)))
+    assert (byo["account_sid"], byo["auth_token"], byo["api_key"], byo["api_secret"], byo["twiml_app_sid"]) == \
+        (ACCOUNT_A, TOKEN["a"], "", "", "")
+    platform = asyncio.run(telephony_api._twilio_credentials(
+        TenantContext(agent_id="a@x.test", tenant_id=TENANT_P, role=Role.AGENT)))
+    assert (platform["account_sid"], platform["api_key"], platform["twiml_app_sid"]) == \
+        (PLATFORM, platform_key, "AP" + "3" * 32)
+
+
+@pytest.mark.parametrize("credential", ["matching", "other_account"])
+def test_the_turn_limit_hang_up_uses_the_calls_own_credential(world, monkeypatch, bridge, rest, caplog, credential):
+    url, ref = _mint(SID_A, TENANT_A, ACCOUNT_A, monkeypatch)
+
+    class _LimitedBridge:
+        def __init__(self, *_a):
+            pass
+
+        async def run(self):
+            raise qwen_omni_realtime.QwenCallLimitReached("turn limit")
+
+    monkeypatch.setattr(qwen_omni_realtime, "TwilioQwenRealtimeBridge", _LimitedBridge)
+    token = tch.create_twilio_bridge_token(SID_A)
+    socket = _Socket(_ws_sig(url, TOKEN["a"]), [_start(SID_A, ACCOUNT_A, token)])
+    if credential == "other_account":
+        # The handshake has passed; the credential changes before the hang-up.
+        real = tch.authenticate_twilio_media_handshake
+
+        async def handshake(media_ref, signature):
+            sid = await real(media_ref, signature)
+            world.stored[TENANT_A] = {"account_sid": ACCOUNT_B, "auth_token": TOKEN["b"]}
+            return sid
+
+        monkeypatch.setattr(tch, "authenticate_twilio_media_handshake", handshake)
+    caplog.set_level(logging.WARNING)
+    asyncio.run(ca.twilio_qwen_media(socket, ref))
+    if credential == "matching":
+        assert [b["credential"] for b in rest] == [(ACCOUNT_A, TOKEN["a"], "", "")]
+        assert rest[0]["updates"] == [(SID_A, {"status": "completed"})]
+    else:
+        assert rest == [] and "transfer_credentials_unavailable" in caplog.text
+
+
+def test_an_outbound_stream_that_cannot_be_bound_ends_politely(world, monkeypatch):
+    monkeypatch.setenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "true")
+    correlation = _bound(SID_A, TENANT_A, ACCOUNT_A)
+
+    async def unbindable(_sid):
+        raise tch.TwilioCallStateUnavailable("Twilio media binding could not be stored.")
+
+    monkeypatch.setattr(tch, "create_twilio_media_stream_url", unbindable)
+    response = asyncio.run(ca.twilio_webhook(_signed(
+        ANSWER, {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "To": "+1"}, TOKEN["a"], query=f"neoh_ref={correlation}")))
+    body = response.body.decode()
+    assert response.status_code == 200 and "<Hangup/>" in body and "<Stream" not in body
+    assert "unavailable" in body
+
+
+def test_no_voice_provider_advertises_the_removed_bare_media_route():
+    assert not any(hasattr(cls, "media_websocket_path") for cls in (
+        voice_provider.VoiceProvider, voice_provider.TwilioVoiceProvider, voice_provider.PlivoVoiceProvider))
 
 def test_no_migration_allows_a_plivo_provider_credential():
     """Plivo REST actions read a brokerage credential (commands_api, the

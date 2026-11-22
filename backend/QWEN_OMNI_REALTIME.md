@@ -108,10 +108,15 @@ Reusable query-string secrets are not accepted by the media endpoint.
 The Twilio media endpoint likewise rejects reusable URL secrets and accepts
 only a valid Twilio signature plus a live call-bound token. The outbound
 webhooks (`/webhooks/twilio`, `/status`, `/speech`) choose their signing
-tokens the same way, from the `neoh_ref` correlation or the CallSid's state,
-and answer 503 when no credential for the call's account can be found.
-Transfers and refusals move a call only with the whole credential of the
-account its state names (23.3).
+tokens the same way, before anything is waited for: from the `neoh_ref`
+correlation or the CallSid's state, or, when Redis no longer has either, the
+call's `live_call_sessions` row and the account the brokerage dials from (the
+request's AccountSid must match it). They answer 503 when no credential for
+the call's account can be found. A reference serves only the first CallSid it
+is verified for. Transfers, refusals and the turn-limit hang-up move a call
+only with the whole credential of the account its state names (23.3), and
+every Twilio request uses a brokerage's credential whole, never mixed with
+the platform's environment.
 
 Useful checks:
 

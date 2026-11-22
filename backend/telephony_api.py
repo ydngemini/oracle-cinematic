@@ -365,6 +365,13 @@ def _agent_identity(ctx: TenantContext) -> str:
 
 
 async def _twilio_credentials(ctx: TenantContext) -> dict[str, str]:
+    """The tenant's Twilio credential, whole: its own stored one (any account
+    SID, auth token or API key field set) exactly as stored, else the
+    platform's environment credential. A stored credential is never filled in
+    field by field from the environment, which paired a brokerage's account
+    SID with the platform's API key or TwiML app (PR #182 review)."""
+    from command_providers import whole_twilio_credential
+
     credentials: dict[str, Any] = {}
     raw = await _load_provider_credential(ctx, "twilio")
     if raw:
@@ -375,14 +382,9 @@ async def _twilio_credentials(ctx: TenantContext) -> dict[str, str]:
         if not isinstance(decoded, dict):
             raise HTTPException(status_code=503, detail="Stored Twilio credential is invalid.")
         credentials.update(decoded)
-    for key, env_name in (
-        ("account_sid", "TWILIO_ACCOUNT_SID"),
-        ("auth_token", "TWILIO_AUTH_TOKEN"),
-        ("api_key", "TWILIO_API_KEY"),
-        ("api_secret", "TWILIO_API_SECRET"),
-        ("twiml_app_sid", "TWILIO_TWIML_APP_SID"),
-    ):
-        credentials.setdefault(key, os.getenv(env_name, ""))
+    whole, platform = whole_twilio_credential(credentials)
+    credentials.update(whole)
+    credentials.setdefault("twiml_app_sid", os.getenv("TWILIO_TWIML_APP_SID", "") if platform else "")
     return {key: str(value or "").strip() for key, value in credentials.items()}
 
 
