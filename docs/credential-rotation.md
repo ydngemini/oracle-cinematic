@@ -111,6 +111,12 @@ deploy, then revoke the old token.
    as `*_PREVIOUS`; redeploy. Webhook signatures under either now verify.
 3. After the provider retires the old token, unset `*_PREVIOUS`.
 
+A call on a brokerage's own Twilio account (PUT `/api/commands/providers/twilio`)
+is checked against that brokerage's stored token only, never the platform's,
+and there is no previous token for it: the brokerage updates its stored
+credential when it promotes its new token at Twilio, and webhooks for its calls
+still signed with the old one are then refused.
+
 ## Telnyx
 
 API key: issue new, deploy, revoke old. The webhook public key

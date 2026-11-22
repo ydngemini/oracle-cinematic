@@ -65,10 +65,16 @@ def test_the_outbound_twilio_call_opens_with_the_disclosure(monkeypatch, qwen):
     async def no_tts(*a, **k):
         return None
 
-    monkeypatch.setattr(commands_api, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    async def signed(*a, **k):
+        return None
+
+    async def stream_url(_sid):
+        return STREAM
+
+    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", signed)
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", state)
     monkeypatch.setattr(twilio_call_handler, "twilio_qwen_enabled", lambda s: qwen)
-    monkeypatch.setattr(twilio_call_handler, "twilio_media_websocket_url", lambda: STREAM)
+    monkeypatch.setattr(twilio_call_handler, "create_twilio_media_stream_url", stream_url)
     monkeypatch.setattr(twilio_call_handler, "create_twilio_bridge_token", lambda sid: "tok")
     monkeypatch.setattr(voice_tts, "play_url", no_tts)
     response = asyncio.run(commands_api.twilio_webhook(_Request()))

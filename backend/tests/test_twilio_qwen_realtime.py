@@ -157,16 +157,28 @@ def test_twilio_bridge_rejects_wrong_media_format():
 
 
 def test_twilio_websocket_signature_uses_canonical_wss_url(monkeypatch):
+    """The handshake is signed over the exact per-call URL (the reference in
+    the path); tests/test_twilio_tenant_signatures.py covers whose token."""
     auth_token = "twilio-auth-token-for-tests"
+    redis = _MemoryRedis()
+    monkeypatch.setattr(twilio_call_handler, "_get_redis", lambda: _async_value(redis))
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", ACCOUNT_SID)
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", auth_token)
     monkeypatch.setenv("ORACLE_ENV", "production")
     monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://api.example.test")
-    url = "wss://api.example.test/api/commands/media/twilio"
+    asyncio.run(twilio_call_handler.initialize_twilio_call_state(
+        CALL_SID, "+15555550101", tenant_id="tenant-test", account_sid=ACCOUNT_SID))
+    url = asyncio.run(twilio_call_handler.create_twilio_media_stream_url(CALL_SID))
+    ref = url.rsplit("/", 1)[1]
     signature = RequestValidator(auth_token).compute_signature(url, {})
 
-    assert twilio_call_handler.twilio_media_websocket_url() == url
-    assert twilio_call_handler.verify_twilio_websocket_signature(signature)
-    assert not twilio_call_handler.verify_twilio_websocket_signature("invalid")
+    assert url == f"wss://api.example.test/api/commands/media/twilio/{ref}" and len(ref) == 43
+    assert twilio_call_handler.twilio_media_websocket_url(ref) == url
+    handshake = twilio_call_handler.authenticate_twilio_media_handshake
+    assert asyncio.run(handshake(ref, signature)) == CALL_SID
+    assert asyncio.run(handshake(ref, "invalid")) is None
+    bare = RequestValidator(auth_token).compute_signature("wss://api.example.test/api/commands/media/twilio", {})
+    assert asyncio.run(handshake(ref, bare)) is None
 
 
 def test_twilio_bridge_token_is_call_bound_and_expires(monkeypatch):
@@ -278,43 +290,45 @@ def test_twiml_switches_approved_call_to_bidirectional_stream(monkeypatch):
         "To": "+15555550101",
     }
     signature = RequestValidator(auth_token).compute_signature(webhook_url, form)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", ACCOUNT_SID)    # a platform-account call
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", auth_token)
     monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", public_base)
     monkeypatch.setenv("ORACLE_ENV", "production")
     monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "master-key-for-tests")
     monkeypatch.setenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "true")
+    redis = _MemoryRedis()
+    monkeypatch.setattr(twilio_call_handler, "_get_redis", lambda: _async_value(redis))
+    asyncio.run(twilio_call_handler.initialize_twilio_call_state(
+        CALL_SID, "+15555550101", tenant_id="tenant-test", account_sid=ACCOUNT_SID))
 
-    async def _load_state(_call_sid, *, wait_for_initialization=False):
-        assert wait_for_initialization
-        return {
-            "account_sid": ACCOUNT_SID,
-            "qwen_realtime_enabled": True,
-        }
+    async def spoken(text, **_k):
+        return f"<Say>{text}</Say>"
 
-    monkeypatch.setattr(
-        twilio_call_handler,
-        "load_twilio_call_state",
-        _load_state,
-    )
+    monkeypatch.setattr(commands_api, "_spoken", spoken)
     response = asyncio.run(commands_api.twilio_webhook(_FakeRequest(form, signature)))
     body = response.body.decode("utf-8")
 
     assert response.status_code == 200
     assert "<Connect>" in body
-    assert '<Stream url="wss://api.example.test/api/commands/media/twilio">' in body
+    ref = json.loads(redis.values[f"twilio:call_state:{CALL_SID}"])["media_ref"]
+    assert f'<Stream url="wss://api.example.test/api/commands/media/twilio/{ref}">' in body
+    assert redis.values[f"twilio:media_ref:{ref}"] == CALL_SID
     assert '<Parameter name="bridge_token"' in body
-    assert "TWILIO_AUTH_TOKEN" not in body
+    assert "TWILIO_AUTH_TOKEN" not in body and auth_token not in body
+
+
+MEDIA_REF = "r" * 43
 
 
 def test_twilio_media_endpoint_rejects_bad_handshake_signature(monkeypatch):
     websocket = _EndpointWebSocket([], signature="invalid")
-    monkeypatch.setattr(
-        twilio_call_handler,
-        "verify_twilio_websocket_signature",
-        lambda _signature: False,
-    )
 
-    asyncio.run(commands_api.twilio_qwen_media(websocket))
+    async def refused(_ref, _signature):
+        return None
+
+    monkeypatch.setattr(twilio_call_handler, "authenticate_twilio_media_handshake", refused)
+
+    asyncio.run(commands_api.twilio_qwen_media(websocket, MEDIA_REF))
 
     assert not websocket.accepted
     assert websocket.closed_code == 4403
@@ -329,11 +343,10 @@ def test_twilio_media_endpoint_binds_start_frame_to_live_call(monkeypatch):
             json.dumps(_start_event(bridge_token="bound-token")),
         ]
     )
-    monkeypatch.setattr(
-        twilio_call_handler,
-        "verify_twilio_websocket_signature",
-        lambda _signature: True,
-    )
+    async def bound(ref, _signature):
+        return CALL_SID if ref == MEDIA_REF else None
+
+    monkeypatch.setattr(twilio_call_handler, "authenticate_twilio_media_handshake", bound)
 
     async def _authorize(call_sid, account_sid, bridge_token):
         return (
@@ -368,7 +381,7 @@ def test_twilio_media_endpoint_binds_start_frame_to_live_call(monkeypatch):
 
     monkeypatch.setattr(commands_api, "_realtime_refusal", admitted)
 
-    asyncio.run(commands_api.twilio_qwen_media(websocket))
+    asyncio.run(commands_api.twilio_qwen_media(websocket, MEDIA_REF))
 
     assert websocket.accepted
     assert websocket.closed_code is None

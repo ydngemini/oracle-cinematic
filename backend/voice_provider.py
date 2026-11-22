@@ -348,7 +348,9 @@ class TwilioVoiceProvider(VoiceProvider):
         recovery_mode.guard("transfer_call via TwilioVoiceProvider")
         from twilio_call_handler import twilio_redirect_call
 
-        await twilio_redirect_call(provider_call_id, redirect_url)
+        # Whole or not at all; without them the call's own account is
+        # resolved, never assumed to be the platform's (23.3).
+        await twilio_redirect_call(provider_call_id, redirect_url, credentials=credentials)
 
     async def abort_call(
         self,

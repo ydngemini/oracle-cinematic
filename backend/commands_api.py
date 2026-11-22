@@ -216,11 +216,6 @@ def _twilio_correlation(request: Request) -> str:
     return str(request.query_params.get(TWILIO_CORRELATION_PARAM) or "")
 
 
-def _twilio_tokens() -> list[str]:
-    token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-    return [token] if token else []
-
-
 def _normalize_twilio_form(form: Any) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for key, value in form.multi_items():
@@ -235,12 +230,16 @@ def _validate_twilio_webhook_signature(
     request: Request,
     form: Any,
     suffix: str,
+    *,
+    tokens: Sequence[str],
 ) -> None:
+    """`tokens` are required: those of the account that carries the call
+    (_verify_outbound_twilio_signature) — there is no default trust set."""
     signature = request.headers.get("X-Twilio-Signature", "")
     if not signature:
         raise HTTPException(status_code=400, detail="Missing X-Twilio-Signature header.")
 
-    tokens = _twilio_tokens()
+    tokens = [token for token in dict.fromkeys(tokens or ()) if token]
     if not tokens:
         raise HTTPException(
             status_code=503,
@@ -268,6 +267,57 @@ def _validate_twilio_webhook_signature(
         suffix,
     )
     raise HTTPException(status_code=400, detail="Invalid Twilio signature.")
+
+
+async def _verify_outbound_twilio_signature(
+    request: Request,
+    form: Any,
+    path: str,
+    *,
+    wait_for_initialization: bool = False,
+) -> None:
+    """Check an outbound call's webhook against the tokens of the account
+    that carries the call (external audit 23.2), chosen from Neoh's own
+    state — the pre-submission correlation (neoh_ref) or the CallSid's state:
+    tenant + account → the platform's current and previous token for the
+    platform's account, else that brokerage's stored token, whose account
+    must match. Bring-your-own Twilio is supported: PUT
+    /providers/twilio stores the credential the outbound rail dials with.
+
+    Nothing is acted on before this returns. A call no state names, an
+    account with no matching credential, or a state that cannot be read is
+    refused with 503, as telephony_api._route_twilio_tokens refuses: never
+    checked against some other account's token.
+    """
+    if not request.headers.get("X-Twilio-Signature", ""):
+        raise HTTPException(status_code=400, detail="Missing X-Twilio-Signature header.")
+    from twilio_call_handler import (
+        TwilioCallStateUnavailable,
+        find_outbound_twilio_call_state,
+        twilio_signing_tokens,
+    )
+
+    call_sid = str(form.get("CallSid") or "")
+    try:
+        state = await find_outbound_twilio_call_state(
+            call_sid, _twilio_correlation(request), wait_for_initialization=wait_for_initialization)
+        if state is None:
+            raise TwilioCallStateUnavailable("no outbound call state names this call")
+        tokens = await twilio_signing_tokens(state)
+    except Exception as exc:  # noqa: BLE001 - unresolvable is refused, never another account's token
+        reason = str(exc) if isinstance(exc, TwilioCallStateUnavailable) else type(exc).__name__
+        logger.warning("twilio webhook refused: no signing account for the call path=%s sid=%s reason=%s",
+                       path, call_sid, reason)
+        raise HTTPException(
+            status_code=503,
+            detail="Twilio webhook cannot be validated for this call's account.",
+        ) from exc
+    claimed = str(form.get("AccountSid") or "")
+    if claimed and claimed != str(state.get("account_sid") or ""):
+        logger.warning("twilio webhook refused: AccountSid is not the call's account path=%s sid=%s",
+                       path, call_sid)
+        raise HTTPException(status_code=400, detail="Invalid Twilio signature.")
+    _validate_twilio_webhook_signature(request, form, _twilio_signed_suffix(request, path), tokens=tokens)
 
 
 class ClassificationRequest(BaseModel):
@@ -3281,8 +3331,16 @@ async def _say_refused_and_end(provider_name: str, call_id: str) -> None:
     try:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise RuntimeError("ORACLE_PUBLIC_BASE_URL is not an absolute HTTP(S) URL")
+        credentials = None
+        if provider_name == "twilio":
+            # The account the call's own state names, whole — never the
+            # platform's for a call on a brokerage's account (23.3).
+            from twilio_call_handler import credentials_for_call
+
+            credentials = await credentials_for_call(call_id)
         await get_voice_provider(provider_name).transfer_call(
-            call_id, redirect_url=f"{base}/api/commands/webhooks/{provider_name}/refused")
+            call_id, redirect_url=f"{base}/api/commands/webhooks/{provider_name}/refused",
+            credentials=credentials)
     except Exception as exc:  # noqa: BLE001 — the call still ends with its stream
         logger.warning("Realtime refusal line not said on %s (%s); the stream's goodbye ends the call",
                        provider_name, type(exc).__name__)
@@ -5107,14 +5165,14 @@ async def twilio_webhook(request: Request):
     from outreach_compliance import AI_VOICE_DISCLOSURE
     from twilio_call_handler import (
         create_twilio_bridge_token,
+        create_twilio_media_stream_url,
         resolve_outbound_twilio_call_state,
-        twilio_media_websocket_url,
         twilio_qwen_enabled,
     )
 
     form = await request.form()
-    _validate_twilio_webhook_signature(
-        request, form, _twilio_signed_suffix(request, "/api/commands/webhooks/twilio"))
+    await _verify_outbound_twilio_signature(
+        request, form, "/api/commands/webhooks/twilio", wait_for_initialization=True)
     call_sid = str(form.get("CallSid") or "")
     # By CallSid, else by the signed pre-submission correlation (24.2).
     state = await resolve_outbound_twilio_call_state(
@@ -5143,7 +5201,9 @@ async def twilio_webhook(request: Request):
     to_number = str(form.get("To") or "")
     greeting_speech = await _spoken(greeting, to_number=to_number)
     if twilio_qwen_enabled(state):
-        stream_url = twilio_media_websocket_url()
+        # The call's own reference in the path: the handshake is resolved to
+        # this call, and its account's tokens, before it is accepted (23.2).
+        stream_url = await create_twilio_media_stream_url(call_sid)
         bridge_token = create_twilio_bridge_token(call_sid)
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -5158,8 +5218,8 @@ async def twilio_webhook(request: Request):
         logger.info("Twilio Qwen Media Stream authorized in TwiML: sid=%s", call_sid)
         return Response(content=twiml, media_type="application/xml")
 
-    speech_url = f"{os.getenv('ORACLE_PUBLIC_BASE_URL', '').rstrip('/')}/api/commands/webhooks/twilio/speech"
-    gather_attribs = f'input="speech" action="{speech_url}" method="POST" timeout="5" speechTimeout="auto"'
+    gather_attribs = (f'input="speech" action="{_twilio_speech_action_url(state)}" method="POST" '
+                      'timeout="5" speechTimeout="auto"')
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -5170,6 +5230,19 @@ async def twilio_webhook(request: Request):
     <Say voice="Polly.Joanna">I didn't catch that. Goodbye.</Say>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+def _twilio_speech_action_url(state: Mapping[str, Any]) -> str:
+    """The <Gather> action URL, carrying the call's own reference (its
+    state's correlation) so /speech can choose the call's signing account
+    before anything else (23.2). Twilio signs it, query included."""
+    from twilio_call_handler import TWILIO_CORRELATION_PARAM
+
+    url = f"{os.getenv('ORACLE_PUBLIC_BASE_URL', '').rstrip('/')}/api/commands/webhooks/twilio/speech"
+    correlation = str((state or {}).get("correlation") or "")
+    if correlation:
+        url = f"{url}?{TWILIO_CORRELATION_PARAM}={urllib.parse.quote(correlation, safe='')}"
+    return _xml_escape(url)
 
 
 async def _spoken(text: str, *, to_number: str) -> str:
@@ -5280,11 +5353,7 @@ async def twilio_status_webhook(request: Request):
     from twilio_call_handler import cleanup_twilio_call, cleanup_twilio_correlation
 
     form = await request.form()
-    _validate_twilio_webhook_signature(
-        request,
-        form,
-        _twilio_signed_suffix(request, "/api/commands/webhooks/twilio/status"),
-    )
+    await _verify_outbound_twilio_signature(request, form, "/api/commands/webhooks/twilio/status")
     call_sid = str(form.get("CallSid") or "")
     correlation = _twilio_correlation(request)
     call_status = str(form.get("CallStatus") or "").strip().lower()
@@ -5324,28 +5393,36 @@ async def twilio_status_webhook(request: Request):
     return Response(status_code=204)
 
 
-@router.websocket("/media/twilio")
-async def twilio_qwen_media(websocket: WebSocket):
-    """Authenticate and bridge Twilio's 8 kHz mu-law stream to Qwen Omni."""
+@router.websocket("/media/twilio/{media_ref}")
+async def twilio_qwen_media(websocket: WebSocket, media_ref: str):
+    """Authenticate and bridge Twilio's 8 kHz mu-law stream to Qwen Omni.
+
+    The path carries the call's opaque reference (create_twilio_media_stream_url;
+    Twilio forbids a query string in <Stream url>). Before accept: reference →
+    the call's state → the tokens of the account that carries it → the
+    signature over this exact URL (23.2). An unknown or expired reference, or
+    a bad signature, is 4403. There is no bare /media/twilio route any more:
+    the realtime flag was off everywhere, so no call in flight needs it."""
     from qwen_omni_realtime import (
         QwenCallLimitReached,
         QwenRealtimeError,
         TwilioQwenRealtimeBridge,
     )
     from twilio_call_handler import (
+        authenticate_twilio_media_handshake,
         authorize_twilio_media,
         load_twilio_call_state,
         mark_twilio_streaming,
-        verify_twilio_websocket_signature,
     )
 
     signature = websocket.headers.get("x-twilio-signature", "")
-    is_authentic = await _run_sync_in_executor(
-        verify_twilio_websocket_signature,
-        signature,
-        timeout_seconds=5.0,
-    )
-    if not is_authentic:
+    try:
+        bound_call_sid = await asyncio.wait_for(
+            authenticate_twilio_media_handshake(media_ref, signature), timeout=5.0)
+    except Exception as exc:  # noqa: BLE001 - unknown is refused, never accepted
+        logger.warning("Twilio media handshake could not be checked (%s)", type(exc).__name__)
+        bound_call_sid = None
+    if not bound_call_sid:
         await websocket.close(code=4403)
         return
 
@@ -5385,7 +5462,9 @@ async def twilio_qwen_media(websocket: WebSocket):
         if isinstance(parameters, dict)
         else ""
     )
-    if not await authorize_twilio_media(call_sid, account_sid, bridge_token):
+    # The start frame must be for the call the handshake was resolved to: a
+    # crossed reference (another call's start frame) is refused.
+    if call_sid != bound_call_sid or not await authorize_twilio_media(call_sid, account_sid, bridge_token):
         await websocket.close(code=4403)
         return
 
@@ -5547,7 +5626,8 @@ async def plivo_qwen_media(websocket: WebSocket):
 async def twilio_speech(request: Request):
     """Handle speech recognized by Twilio Gather. Calls the AI, returns new TwiML."""
     form = await request.form()
-    _validate_twilio_webhook_signature(request, form, "/api/commands/webhooks/twilio/speech")
+    # Signed over the action URL, its call reference included (23.2).
+    await _verify_outbound_twilio_signature(request, form, "/api/commands/webhooks/twilio/speech")
     speech_text = (form.get("SpeechResult") or "").strip()
     call_sid = form.get("CallSid", "")
 
@@ -5597,8 +5677,8 @@ async def twilio_speech(request: Request):
         import logging
         logging.getLogger("oracle.twilio").exception("Twilio AI reply failed")
 
-    speech_url = f"{os.getenv('ORACLE_PUBLIC_BASE_URL', '').rstrip('/')}/api/commands/webhooks/twilio/speech"
-    gather_attribs = f'input="speech" action="{speech_url}" method="POST" timeout="5" speechTimeout="auto"'
+    gather_attribs = (f'input="speech" action="{_twilio_speech_action_url(state)}" method="POST" '
+                      'timeout="5" speechTimeout="auto"')
 
     # The reply is the line worth hearing in a voice demo — the greeting is
     # fixed text, this is the conversation. Synthesis happens after

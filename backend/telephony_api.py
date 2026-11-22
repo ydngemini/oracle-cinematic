@@ -48,8 +48,8 @@ from twilio_call_handler import (
     TwilioCallStateUnavailable,
     cleanup_twilio_call,
     create_twilio_bridge_token,
+    create_twilio_media_stream_url,
     initialize_inbound_twilio_call_state,
-    twilio_media_websocket_url,
     twilio_qwen_enabled,
 )
 # get_voice_provider is not imported at module level. The four Plivo webhook
@@ -1228,7 +1228,9 @@ async def twilio_inbound_webhook(endpoint_key: str, request: Request) -> Respons
         return await _ai_unavailable()
 
     try:
-        stream_url = twilio_media_websocket_url()
+        # The call's own reference in the path; the handshake is checked
+        # against its account's tokens before accept (23.2).
+        stream_url = await create_twilio_media_stream_url(call_sid)
         bridge_token = create_twilio_bridge_token(call_sid)
     except (ValueError, TwilioCallStateUnavailable):
         logger.exception("Inbound media binding is unavailable: sid=%s", call_sid)

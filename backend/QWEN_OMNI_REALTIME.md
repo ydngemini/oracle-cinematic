@@ -31,10 +31,18 @@ No call audio is written to disk by the bridge.
    cannot be written, the worker terminates the unmanaged call.
 3. Twilio requests signed TwiML from `/api/commands/webhooks/twilio`. The
    response plays the mandatory AI/recording disclosure before opening
-   `<Connect><Stream>` to `/api/commands/media/twilio`.
-4. The WebSocket endpoint validates Twilio's `X-Twilio-Signature`, then binds
-   the `start` frame's Account SID and Call SID to live Redis state and a
-   five-minute HMAC token carried in `customParameters`.
+   `<Connect><Stream>` to `/api/commands/media/twilio/{ref}`: an opaque
+   per-call reference in the path (Twilio forbids a query string there),
+   bound to the call's Redis state for five minutes.
+4. Before accepting the socket, the endpoint resolves the reference to the
+   call's state and validates Twilio's `X-Twilio-Signature` over that exact
+   URL with the tokens of the account carrying the call: the platform's
+   `TWILIO_AUTH_TOKEN` or `TWILIO_AUTH_TOKEN_PREVIOUS` for a platform-account
+   call, or only the brokerage's own stored token for a call on its account
+   (external audit 23.2). An unknown or expired reference is closed with
+   4403. It then binds the `start` frame's Account SID and Call SID to that
+   same call's state and a five-minute HMAC token carried in
+   `customParameters`.
 5. Caller G.711 mu-law audio is decoded and resampled from 8 kHz to Qwen's
    16 kHz PCM input. Qwen's 24 kHz PCM output is resampled and encoded back to
    Twilio's 8 kHz mu-law format.
@@ -98,7 +106,12 @@ the signed JWT in the WebSocket `Authorization` header against Microsoft's
 OIDC signing keys, issuer, expiry, and the exact ACS resource ID audience.
 Reusable query-string secrets are not accepted by the media endpoint.
 The Twilio media endpoint likewise rejects reusable URL secrets and accepts
-only a valid Twilio signature plus a live call-bound token.
+only a valid Twilio signature plus a live call-bound token. The outbound
+webhooks (`/webhooks/twilio`, `/status`, `/speech`) choose their signing
+tokens the same way, from the `neoh_ref` correlation or the CallSid's state,
+and answer 503 when no credential for the call's account can be found.
+Transfers and refusals move a call only with the whole credential of the
+account its state names (23.3).
 
 Useful checks:
 

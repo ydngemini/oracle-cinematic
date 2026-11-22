@@ -2823,6 +2823,33 @@ next_task: "34.8 (live carrier / 10DLC evidence: owner and provider account)."
 updated: 2026-11-19
 ```
 
+#### L10-21 Twilio calls on a brokerage's own account: webhooks and the media socket are checked against that account's token, live calls are moved with its whole credential (external audits 23.2, 23.3)
+```yaml
+id: L10-21
+status: tests_pass
+env: local
+evidence_shas: [29ccd86]   # base; fix in the commit that adds this row
+files: [backend/twilio_call_handler.py, backend/commands_api.py, backend/voice_provider.py, backend/qwen_omni_realtime.py, backend/telephony_api.py, backend/QWEN_OMNI_REALTIME.md, docs/credential-rotation.md, backend/tests/test_twilio_tenant_signatures.py, backend/tests/test_twilio_qwen_realtime.py, backend/tests/test_ai_budget_hosted_calls.py, backend/tests/test_inbound_voice.py, backend/tests/test_voice_rules.py, backend/tests/test_outbound_verified_caller_id.py, backend/tests/test_twilio_prebound_correlation.py, backend/tests/test_twilio_prebound_correlation_live.py, backend/tests/test_twilio_call_outcome.py, backend/tests/test_twilio_call_outcome_live.py, docs/claude-prompts/LEDGER.md, docs/claude-prompts/LAUNCH-BACKLOG.md]
+tests_run:
+  - {cmd: "read the outbound Twilio rail (correlation + CallSid state writes), the three outbound webhooks, the media socket, telephony_api._route_twilio_tokens, TwilioVoiceProvider.transfer_call, twilio_redirect_call and their callers at 29ccd86", result: "confirmed 23.2 (broader than the audit): /webhooks/twilio, /status, /speech and the media handshake validated against TWILIO_AUTH_TOKEN only (no previous token, no brokerage token) although PUT /providers/twilio stores a brokerage credential and the outbound rail dials with it; confirmed 23.3 Twilio half: transfer_call dropped the credentials it was given and twilio_redirect_call read the environment only. The correlation state (tenant + account) is written before calls.create on the one placement path (24.2); TwilioVoiceProvider.place_call has no production caller. Plivo half of 23.3: the 0104 CHECK allows no 'plivo' credential, so not a defect", date: 2026-11-21}
+  - {cmd: "probes (scratchpad, not in the repo) at 29ccd86, then after the fix", result: "3 passed (defects reproduced) -> 3 failed: the transfer now uses the passed brokerage account; the two 23.2 probes call the removed platform-only APIs (verify_twilio_websocket_signature; _validate_twilio_webhook_signature without tokens) — the behaviour they described is asserted the right way round in test_twilio_tenant_signatures", date: 2026-11-21}
+  - {cmd: "red: test_twilio_tenant_signatures against 29ccd86's production modules", result: "31 failed / 6 passed (the 6 are regression guards: platform current token, AccountSid and reference forgery refused, platform-account transfer, Plivo refusal, the 0104 guard)", date: 2026-11-21}
+  - {cmd: "mutants of the fix (7): brokerage call falls back to the platform credential; crossed reference unchecked; start frame not bound to the handshake's call; redirect fills missing fields from the environment; brokerage call also accepts platform tokens; AccountSid claim unchecked; a replaced media reference still live", result: "each killed by at least one test", date: 2026-11-21}
+  - {cmd: "after: test_twilio_tenant_signatures (37) + the updated Twilio/voice tests; voice/telephony selection; full backend suite", result: "37 pass; updated Twilio/voice files 253 pass (2 live skipped: no DSN here; CI runs them); full backend suite tests/ 7569 passed / 180 skipped + compliance_engine/tests 179 passed; ruff clean on changed files", date: 2026-11-21}
+authz_checked: "Outbound Twilio webhooks: a missing signature is 400 before any state is read; tokens are chosen from Neoh's own state (neoh_ref correlation, else the CallSid's state; a CallSid bound to another reference resolves to neither) — the platform's TWILIO_AUTH_TOKEN and TWILIO_AUTH_TOKEN_PREVIOUS when the call's account is the platform's, else only that brokerage's stored auth_token, whose account_sid must equal the state's; no state, no matching credential or an unreadable one is 503 (as _route_twilio_tokens), never checked against another account; an AccountSid that is not the call's is 400; nothing is bound or recorded before the signature verifies. Media socket: /api/commands/media/twilio/{ref}, ref -> CallSid (5 min) -> the state's latest media_ref -> the same token rule -> RequestValidator over the exact URL, else 4403 before accept; the start frame must name that CallSid and pass authorize_twilio_media (account + bridge token). Live-call moves (agent hand-off, refusal line) use only the whole credential of the account the call's state names (credentials_for_call), never the platform's for a brokerage-account call."
+blockers:
+  - "Decision: bring-your-own Twilio is supported, fail-closed — owner instruction 2026-11-20 ('continue all' on the open decisions); rule chosen by the Claude session."
+  - "No live Twilio: signatures are computed with twilio.request_validator against fakes. Live proof needs an upgraded Twilio account and, for BYO, a brokerage Twilio account (owner, money); the media path also needs ORACLE_TWILIO_QWEN_REALTIME_ENABLED, which is off everywhere."
+  - "Stricter than inbound: a brokerage-account call accepts only that brokerage's token (telephony_api._route_twilio_tokens also accepts the platform's for inbound routes; unchanged). A BYO credential stored without an auth_token (API key pair only) can place calls but none of their webhooks can be verified: they are refused (503); the rail does not refuse such a call before placing it."
+  - "Webhooks need the call's Redis state (TTL 1 h, cleared at the terminal status): a status callback after that (a call over an hour, a duplicate after cleanup) is refused 503 instead of being attributed from live_call_sessions. The media socket has no bare route any more (no call in flight used it: the flag is off)."
+  - "Not changed: the media socket's turn-limit hang-up (abort_twilio_call) still uses the environment's credential field by field, as does place_twilio_call/abort_twilio_call when a stored credential is partial; a brokerage-account call's hang-up there fails and the stream markup's goodbye ends the call."
+  - "Telephony/security change: independent review + owner approval before merge. Not deployed (C4.4)."
+audit_refs: [23.2, 23.3]
+decision_refs: []
+next_task: "23.7; BYO-Twilio follow-ups above (pre-placement auth_token check, all-or-nothing abort)."
+updated: 2026-11-21
+```
+
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 
