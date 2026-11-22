@@ -128,9 +128,20 @@ async def load_twilio_call_state(
 def _state_is_this_calls(existing: dict[str, Any], state: dict[str, Any]) -> bool:
     """An early answer bound from this call's own reference (24.2) wrote the
     same reference, brokerage and account: keep it (it may be streaming)."""
-    return (str(existing.get("correlation") or "") == str(state.get("correlation") or "")
-            and str(existing.get("tenant_id") or "") == str(state.get("tenant_id") or "")
+    return (_canonical_uuid(existing.get("correlation")) == _canonical_uuid(state.get("correlation"))
+            and _canonical_uuid(existing.get("tenant_id")) == _canonical_uuid(state.get("tenant_id"))
             and str(existing.get("account_sid") or "") == str(state.get("account_sid") or ""))
+
+
+def _canonical_uuid(value: Any) -> str:
+    """A uuid in its canonical spelling, so a future caller that writes one
+    in another case or form never makes a legitimate early state look foreign
+    (and lose its media ref). Anything that is not a uuid compares as itself."""
+    text = str(value or "")
+    try:
+        return str(uuid.UUID(text))
+    except (ValueError, AttributeError, TypeError):
+        return text
 
 
 async def initialize_twilio_call_state(

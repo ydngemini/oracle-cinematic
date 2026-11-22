@@ -753,6 +753,30 @@ def test_a_pairing_made_before_the_worker_binds_is_replaced_by_the_worker(world)
     assert asyncio.run(ca.twilio_status_webhook(_signed(STATUS, own, TOKEN["a"], query=f"neoh_ref={ref_a}"))).status_code == 204
 
 
+def test_the_worker_replaces_its_own_brokerages_state_under_another_reference(world):
+    """Same brokerage and account, other reference (a brokerage pairing its own
+    second reference with this call): still not this call's state — replaced."""
+    ref_a = _prebound(TENANT_A, ACCOUNT_A)
+    other_a = _prebound(TENANT_A, ACCOUNT_A)
+    planted = {"CallSid": SID_A, "AccountSid": ACCOUNT_A, "To": "+1"}
+    asyncio.run(ca.twilio_webhook(_signed(ANSWER, planted, TOKEN["a"], query=f"neoh_ref={other_a}")))
+    kept = asyncio.run(tch.initialize_twilio_call_state(
+        SID_A, "+1", tenant_id=TENANT_A, account_sid=ACCOUNT_A, correlation=ref_a, keep_existing=True))
+    assert kept["correlation"] == ref_a
+    assert json.loads(world.redis.values[f"twilio:call_state:{SID_A}"])["correlation"] == ref_a
+
+
+def test_the_comparison_reads_uuids_in_their_canonical_spelling():
+    """An early state whose reference or brokerage is spelled in upper case is
+    still this call's own (kept), never mistaken for a planted one."""
+    ref, tenant = str(uuid.uuid4()), str(uuid.uuid4())
+    early = {"correlation": ref.upper(), "tenant_id": "{" + tenant.upper() + "}", "account_sid": ACCOUNT_A}
+    worker = {"correlation": ref, "tenant_id": tenant, "account_sid": ACCOUNT_A}
+    assert tch._state_is_this_calls(early, worker)
+    assert not tch._state_is_this_calls({**early, "account_sid": ACCOUNT_B}, worker)
+    assert not tch._state_is_this_calls({**early, "correlation": str(uuid.uuid4())}, worker)
+
+
 def test_the_worker_keeps_a_state_its_own_reference_wrote(world):
     """The 24.2 early answer bound from the call's own reference is kept
     (it may already be streaming), never reset."""
