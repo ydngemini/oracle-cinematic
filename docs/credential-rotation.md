@@ -5,6 +5,20 @@ procedure. Values live as `type: SECRET` env vars on the App Platform app
 (`infra/digitalocean/app.yaml`), set through the DO console or
 `doctl apps update` — never in the repo, never in an image. After any change,
 redeploy both `api` and `worker` and run `infra/digitalocean/smoke-test.sh`.
+Against production, run it by production's rules, with the callbacks that must
+answer derived from the app's own spec (otherwise an unconfigured webhook is
+only a WARN, audit 30.4):
+
+```sh
+doctl apps spec get "$DIGITALOCEAN_APP_ID" --format yaml > /tmp/neoh.spec.yaml
+SMOKE_ENV=production \
+REQUIRE_CALLBACK_PROVIDERS="$(python3 scripts/callback-requirements.py --spec /tmp/neoh.spec.yaml)" \
+APP_URL="$NEOH_PUBLIC_API_BASE" infra/digitalocean/smoke-test.sh
+rm -f /tmp/neoh.spec.yaml   # holds the app's encrypted EV[...] values
+```
+
+The same named waivers as a promote apply (`ALLOW_MISSING_CALLBACK_PROVIDERS`,
+`ALLOW_UNBILLED_PRODUCTION`; see the header of `smoke-test.sh`).
 
 Do every rotation on **staging first**.
 

@@ -426,7 +426,20 @@ ready and will not deploy. Applying a digest-pinned spec reaches the same
 artifact and leaves the app deployable.
 
 Afterwards, re-run `smoke-test.sh` with `EXPECTED_GIT_SHA` set to the target
-release to confirm the reverted build is actually live.
+release to confirm the reverted build is actually live, by production's rules
+(`scripts/rollback.sh --apply` with `APP_URL` set does this itself, audit 30.4):
+
+```sh
+SMOKE_ENV=production \
+REQUIRE_CALLBACK_PROVIDERS="$(python3 scripts/callback-requirements.py --spec /tmp/app.rollback.yaml)" \
+APP_URL="$NEOH_PUBLIC_API_BASE" EXPECTED_GIT_SHA=<target sha> infra/digitalocean/smoke-test.sh
+```
+
+`/tmp/app.rollback.yaml` is the rendered spec `rollback.sh` deployed
+(`ORACLE_ROLLBACK_SPEC`); `doctl apps spec get` gives the running one. Without
+`SMOKE_ENV=production` an unconfigured Stripe webhook is only a WARN. A
+required provider production does without is waived by name
+(`ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'`).
 
 ## Tests
 

@@ -23,9 +23,25 @@
 #   EXPECTED_GIT_SHA  (optional — skip to only check that /version answers)
 #   SPACES_ENDPOINT   (default https://nyc3.digitaloceanspaces.com)
 #   SPACES_BUCKET     (default neoh-media; use neoh-media-staging for staging)
-#   REQUIRE_CALLBACK_PROVIDERS  space-separated providers (as named in
+#   REQUIRE_CALLBACK_PROVIDERS  space- or comma-separated providers (as named in
 #                     callback-routes.txt, e.g. "stripe") whose webhook MUST be
-#                     configured here; otherwise a not-configured one is a WARN
+#                     configured here; otherwise a not-configured one is a WARN.
+#                     The production release derives it from the deployed spec
+#                     (scripts/callback-requirements.py) plus the repo variable
+#   SMOKE_ENV         production | staging (default staging). In production an
+#                     EMPTY REQUIRE_CALLBACK_PROVIDERS is a FAIL (audit 30.4): a
+#                     release that lost STRIPE_WEBHOOK_SECRET must not pass
+#   ALLOW_UNBILLED_PRODUCTION  'who: why'. Production only: accepts an empty
+#                     requirement set (a production that neither bills nor uses a
+#                     carrier), reported as a WARN naming the waiver
+#   ALLOW_MISSING_CALLBACK_PROVIDERS  'provider: who: why', several separated by
+#                     ',' or ';' (so who and why cannot contain either).
+#                     Production only: a REQUIRED provider whose signing secret
+#                     is not configured becomes a WARN naming the waiver (e.g.
+#                     'telnyx: ops lead: production texts through Twilio'). A
+#                     malformed entry, an unknown provider, or stripe while it is
+#                     required (billing on) FAILs. An unmounted or broken route is
+#                     never waived
 #
 # Requires: curl, and (only for check 4) the aws CLI with Spaces keys set as
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — Spaces accepts the same CLI,
@@ -132,8 +148,73 @@ echo "== 2c. Provider callback URLs are still reachable =="
 # That means "provider not configured HERE": a WARN, unless the provider is
 # listed in REQUIRE_CALLBACK_PROVIDERS (e.g. "stripe" on a production that
 # bills), where it is a FAIL. Any other mismatch is a FAIL.
+#
+# Audit 30.4: production used to pass this section with the list empty (the
+# repository variable was never set), so a release that lost the Stripe
+# webhook secret passed. In production the list is now derived from the
+# deployed spec, and an empty one is a FAIL unless ALLOW_UNBILLED_PRODUCTION
+# names who decided it and why. A required provider this production really
+# does without (Telnyx when it texts through Twilio, or not at all) is waived
+# by name in ALLOW_MISSING_CALLBACK_PROVIDERS. Staging keeps WARN.
 CALLBACKS="$(dirname "${BASH_SOURCE[0]}")/callback-routes.txt"
 CB_HEADERS="$(mktemp)"
+SMOKE_ENV="${SMOKE_ENV:-staging}"
+listed() { [ -f "$CALLBACKS" ] && awk -v p="$1" '$1 !~ /^#/ && $4 == p {found=1} END {exit !found}' "$CALLBACKS"; }
+has_text() { [[ "$1" =~ [^[:space:]] ]]; }
+# Every line of the variable counts: commas, semicolons and newlines separate.
+_providers="$(printf '%s' "${REQUIRE_CALLBACK_PROVIDERS:-}" | tr ',;\r\n\t' '     ')"
+_required=()
+read -r -a _required <<< "$_providers"
+# ${a[*]+...}: an empty array is "unbound" to set -u on bash before 4.4 (macOS).
+REQUIRED_LIST="${_required[*]+${_required[*]}}"
+REQUIRED=" $REQUIRED_LIST "
+case "$SMOKE_ENV" in
+  production|staging) info "callbacks required on $SMOKE_ENV: ${REQUIRED_LIST:-none}" ;;
+  *) fail "SMOKE_ENV='$SMOKE_ENV' is neither production nor staging — refusing to guess which rules apply" ;;
+esac
+for p in ${_required[@]+"${_required[@]}"}; do
+  listed "$p" \
+    || fail "REQUIRE_CALLBACK_PROVIDERS names '$p', which callback-routes.txt does not list — it can never be checked"
+done
+if [ "$SMOKE_ENV" = "production" ] && [ -z "$REQUIRED_LIST" ]; then
+  waiver="${ALLOW_UNBILLED_PRODUCTION:-}"
+  who="${waiver%%:*}"
+  why="${waiver#*:}"
+  if [[ "$waiver" == *:* ]] && has_text "$who" && has_text "$why"; then
+    warn "no provider callback is required on this production — WAIVED: $waiver"
+  elif [ -n "$waiver" ]; then
+    fail "ALLOW_UNBILLED_PRODUCTION must read 'who: why' — the waiver is refused, and REQUIRE_CALLBACK_PROVIDERS is empty"
+  else
+    fail "REQUIRE_CALLBACK_PROVIDERS is empty in production: an unconfigured Stripe webhook would only warn. Derive it with scripts/callback-requirements.py, or set ALLOW_UNBILLED_PRODUCTION='who: why'"
+  fi
+fi
+# Per-provider waivers, production only. WAIVED holds "provider<TAB>who: why"
+# lines (no associative arrays: bash 3.2).
+WAIVED=""
+if [ -n "${ALLOW_MISSING_CALLBACK_PROVIDERS:-}" ] && [ "$SMOKE_ENV" != "production" ]; then
+  info "ALLOW_MISSING_CALLBACK_PROVIDERS ignored on $SMOKE_ENV (an unconfigured provider is only a WARN here)"
+elif [ -n "${ALLOW_MISSING_CALLBACK_PROVIDERS:-}" ]; then
+  while IFS= read -r entry; do
+    has_text "$entry" || continue
+    wp="$(printf '%s' "${entry%%:*}" | tr -d '[:space:]')"
+    rest="${entry#*:}"
+    wwho="${rest%%:*}"
+    wwhy="${rest#*:}"
+    if [[ "$entry" != *:*:* ]] || [ -z "$wp" ] || ! has_text "$wwho" || ! has_text "$wwhy"; then
+      fail "ALLOW_MISSING_CALLBACK_PROVIDERS entry '$entry' must read 'provider: who: why' (entries separated by ',' or ';') — refused"
+    elif ! listed "$wp"; then
+      fail "ALLOW_MISSING_CALLBACK_PROVIDERS names '$wp', which callback-routes.txt does not list — refused"
+    elif [ "$wp" = "stripe" ] && [[ "$REQUIRED" == *" stripe "* ]]; then
+      fail "stripe cannot be waived while it is required (billing is on): a production that does not bill derives no stripe requirement, and an empty list is ALLOW_UNBILLED_PRODUCTION's"
+    elif [[ "$REQUIRED" != *" $wp "* ]]; then
+      info "waiver for $wp not needed: $wp is not required here"
+    else
+      WAIVED="${WAIVED}${wp}	$(printf '%s' "$rest" | sed 's/^[[:space:]]*//')
+"
+    fi
+  done <<< "$(printf '%s\n' "$ALLOW_MISSING_CALLBACK_PROVIDERS" | tr ',;\r' '\n\n\n')"
+fi
+waiver_for() { printf '%s' "$WAIVED" | awk -F'\t' -v p="$1" '$1 == p {print $2; exit}'; }
 if [ -f "$CALLBACKS" ]; then
   while read -r method path want provider; do
     case "$method" in ''|'#'*) continue ;; esac
@@ -142,9 +223,15 @@ if [ -f "$CALLBACKS" ]; then
     if [ "$got" = "$want" ]; then
       pass "$provider callback $method $path -> $got"
     elif [ "$got" = "504" ] && [ "$orig" = "503" ]; then
-      case " ${REQUIRE_CALLBACK_PROVIDERS:-} " in
-        *" $provider "*) fail "$provider callback $method $path -> 503 (shown as 504 by DO's edge): its signing secret is not configured, but this environment requires $provider" ;;
-        *)               warn "$provider callback $method $path -> 503 (shown as 504 by DO's edge): $provider is not configured on this environment" ;;
+      case "$REQUIRED" in
+        *" $provider "*)
+          w="$(waiver_for "$provider")"
+          if [ -n "$w" ]; then
+            warn "$provider callback $method $path -> 503 (shown as 504 by DO's edge): $provider is required but not configured — WAIVED: $w"
+          else
+            fail "$provider callback $method $path -> 503 (shown as 504 by DO's edge): its signing secret is not configured, but this environment requires $provider"
+          fi ;;
+        *) warn "$provider callback $method $path -> 503 (shown as 504 by DO's edge): $provider is not configured on this environment" ;;
       esac
     else
       fail "$provider callback $method $path -> $got (expected $want) — the provider's deliveries are failing"
