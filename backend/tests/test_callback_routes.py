@@ -82,7 +82,8 @@ def _promote_step(name: str) -> dict:
     return next(s for s in steps if s.get("name") == name)
 
 
-def _run_production_smoke_step(tmp_path, variable: str = "", spec_text: str | None = None):
+def _run_production_smoke_step(tmp_path, variable: str = "", spec_text: str | None = None,
+                               variables: dict | None = None):
     """Execute the promote job's real smoke step with a stand-in smoke script
     that records what it was given. The derivation script and the rendered
     spec are the real ones; only the spec's path is redirected into tmp_path."""
@@ -116,7 +117,8 @@ def _run_production_smoke_step(tmp_path, variable: str = "", spec_text: str | No
     fake.write_text(
         "#!/bin/sh\n"
         f"{sys.executable} -c 'import json,os,sys; json.dump({{k: os.environ.get(k) for k in "
-        "(\"SMOKE_ENV\",\"REQUIRE_CALLBACK_PROVIDERS\",\"ALLOW_UNBILLED_PRODUCTION\",\"APP_URL\",\"EXPECTED_GIT_SHA\")}, "
+        "(\"SMOKE_ENV\",\"REQUIRE_CALLBACK_PROVIDERS\",\"ALLOW_UNBILLED_PRODUCTION\","
+        "\"ALLOW_MISSING_CALLBACK_PROVIDERS\",\"APP_URL\",\"EXPECTED_GIT_SHA\")}, "
         f"open(\"{seen}\",\"w\"))'\n")
     fake.chmod(0o755)
     bin_dir = tmp_path / "bin"
@@ -129,7 +131,8 @@ def _run_production_smoke_step(tmp_path, variable: str = "", spec_text: str | No
     for k, v in (step.get("env") or {}).items():
         m = re.fullmatch(r"\$\{\{\s*vars\.(\w+)\s*\}\}", str(v))
         assert m, f"step env {k} is not a plain repository variable: {v}"
-        env[k] = variable if m.group(1) == "REQUIRE_CALLBACK_PROVIDERS" else ""
+        given = {"REQUIRE_CALLBACK_PROVIDERS": variable, **(variables or {})}
+        env[k] = given.get(m.group(1), "")
     proc = subprocess.run(["bash", "-c", run], cwd=work, env=env, capture_output=True, text=True, timeout=120)
     got = json.loads(seen.read_text()) if seen.exists() else None
     return proc, got
@@ -155,6 +158,26 @@ def test_the_repository_variable_still_adds_providers(tmp_path):
     proc, got = _run_production_smoke_step(tmp_path, variable="twilio")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert {"stripe", "twilio"} <= set(got["REQUIRE_CALLBACK_PROVIDERS"].split())
+
+
+def test_the_named_waivers_reach_the_smoke_test(tmp_path):
+    """The per-provider waiver (and the unbilled one) come from repository
+    variables through the step's env, exactly like the requirement list."""
+    waiver = "telnyx: ops lead: production texts through Twilio"
+    proc, got = _run_production_smoke_step(
+        tmp_path, variables={"ALLOW_MISSING_CALLBACK_PROVIDERS": waiver, "ALLOW_UNBILLED_PRODUCTION": "a: b"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert got["ALLOW_MISSING_CALLBACK_PROVIDERS"] == waiver
+    assert got["ALLOW_UNBILLED_PRODUCTION"] == "a: b"
+
+
+def test_a_dash_leading_variable_is_passed_as_a_value_not_an_option(tmp_path):
+    """--also=VALUE: a variable starting with '-' reaches the smoke test (which
+    refuses the unknown name) instead of breaking the derivation's arguments."""
+    assert '--also="$REQUIRE_CALLBACK_PROVIDERS"' in _promote_step("Smoke test (production)")["run"]
+    proc, got = _run_production_smoke_step(tmp_path, variable="-x")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "-x" in got["REQUIRE_CALLBACK_PROVIDERS"].split()
 
 
 def test_a_derivation_that_cannot_read_the_spec_stops_before_the_smoke_test(tmp_path):

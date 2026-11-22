@@ -446,7 +446,9 @@ def _run_rollback(tmp_path, target_head: str, current_head: str, *,
 
     smoke = tmp_path / "smoke.sh"   # stands in for infra/digitalocean/smoke-test.sh (DEP-06)
     smoke.write_text(f'echo "$APP_URL $EXPECTED_GIT_SHA" > "{tmp_path}/smoked"; '
-                     f'echo "$SMOKE_ENV|$REQUIRE_CALLBACK_PROVIDERS" > "{tmp_path}/smoke_env"; exit {smoke_exit}\n')
+                     f'echo "$SMOKE_ENV|$REQUIRE_CALLBACK_PROVIDERS" > "{tmp_path}/smoke_env"; '
+                     f'echo "$ALLOW_MISSING_CALLBACK_PROVIDERS|$ALLOW_UNBILLED_PRODUCTION" > "{tmp_path}/smoke_waivers"; '
+                     f'exit {smoke_exit}\n')
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
            "DIGITALOCEAN_APP_ID": "app-123",
            "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml"),
@@ -514,6 +516,23 @@ def test_a_verified_rollback_exits_0_and_checked_the_target_release(tmp_path):
     smoke_env, required = (work / "smoke_env").read_text().strip().split("|", 1)
     assert smoke_env == "production"
     assert "stripe" in required.split(), required
+
+
+def test_a_rollback_hands_the_operators_named_waivers_to_the_smoke_test(tmp_path, monkeypatch):
+    """Same waivers as a promote (30.4 review): a production that does not text
+    through Telnyx is waived by name, and smoke-test.sh validates the waiver."""
+    waiver = "telnyx: ops lead: production texts through Twilio"
+    monkeypatch.setenv("ALLOW_MISSING_CALLBACK_PROVIDERS", waiver)
+    monkeypatch.setenv("ALLOW_UNBILLED_PRODUCTION", "")
+    proc, _, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (work / "smoke_waivers").read_text().strip() == waiver + "|"
+
+
+def test_rollback_passes_the_variable_as_a_value_not_an_option():
+    rb = (REPO / "scripts" / "rollback.sh").read_text(encoding="utf-8")
+    assert '--also="${REQUIRE_CALLBACK_PROVIDERS:-}"' in rb
 
 
 def test_a_rollback_whose_required_callbacks_cannot_be_derived_is_unverified(tmp_path, monkeypatch):

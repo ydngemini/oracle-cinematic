@@ -21,9 +21,10 @@ MIGRATIONS = REPO / "backend" / "db" / "migrations"
 
 BANNER = re.compile(r"Historical snapshot, \d{4}-\d{2}-\d{2}, not maintained", re.I)
 _HEAD_PHRASE = re.compile(r"migration[ _]head", re.I)
-# A migration file name (0124_job_claim_aging.sql) or a bare four-digit number
-# that is not the start of a date (2026-10-03).
-_MIGRATION_NO = re.compile(r"\b(\d{4})(?:_[a-z0-9_]+(?:\.sql)?)?\b(?!-\d)")
+# A migration file name (0124_job_claim_aging.sql), or a bare four-digit number
+# that is neither a year (19xx/20xx: "moved often during 2026") nor the start
+# of a date (2026-10-03).
+_MIGRATION_NO = re.compile(r"\b(\d{4})_[a-z0-9_]+(?:\.sql)?\b|\b(?!19|20)(\d{4})\b(?!-\d)")
 
 
 def newest_migration() -> str:
@@ -45,7 +46,8 @@ def problems(text: str, newest: str) -> list[str]:
             elif not re.search(r"\b(not|no longer|never)\b", line, re.I):
                 out.append(f":{n} claims authority: {line.strip()[:100]}")
         for m in _HEAD_PHRASE.finditer(line):
-            for num in _MIGRATION_NO.findall(line[m.end(): m.end() + 80]):
+            for named, bare in _MIGRATION_NO.findall(line[m.end(): m.end() + 80]):
+                num = named or bare
                 if num != newest:
                     out.append(f":{n} names migration head {num}, but the newest migration file is {newest}")
     return out
@@ -61,13 +63,17 @@ def test_the_banner_points_to_where_status_actually_lives():
     assert "neoh-launch-readiness.py" in head and "generated_at" in head
 
 
-def test_the_repository_readme_does_not_call_it_the_current_state():
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    for para in re.split(r"\n\s*\n", readme):
+@pytest.mark.parametrize("index", ["README.md", "docs/README.md"])
+def test_the_indexes_do_not_call_it_the_current_state(index):
+    readme = (REPO / index).read_text(encoding="utf-8")
+    pointers = 0
+    for para in re.split(r"\n\s*\n|\n(?=\|)", readme):
         if "launch-state.md" in para:
+            pointers += 1
             flat = " ".join(para.split())
             assert not re.search(r"\bcurrent state\b", flat, re.I), flat
             assert re.search(r"historical|snapshot", flat, re.I), flat
+    assert pointers, f"{index} no longer links launch-state.md; drop it from this test"
 
 
 # The checker itself, on the text the audit quoted and on its corrections.
@@ -91,6 +97,10 @@ This page is the one authoritative view of launch state.
     ("# T\n\n> Historical snapshot, 2026-10-03, not maintained.\n\nMigration head: `0999_last.sql`.\n", []),
     ("# T\n\n> Historical snapshot, 2026-10-03, not maintained.\n\nThe live migration_head is in GET /version.\n",
      []),
+    ("# T\n\n> Historical snapshot, 2026-10-03, not maintained.\n\nThe migration head moved often during 2026.\n",
+     []),
+    ("# T\n\n> Historical snapshot, 2026-10-03, not maintained.\n\nMigration head `0124_job_claim_aging.sql` in 2026.\n",
+     ["migration head 0124"]),
 ])
 def test_the_checker(text, expect):
     got = problems(text, "0999")

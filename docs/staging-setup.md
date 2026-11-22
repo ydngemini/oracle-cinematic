@@ -63,9 +63,13 @@ Two smoke-test lessons from the same app:
   callback as "provider not configured here" (WARN), unless the provider is in
   `REQUIRE_CALLBACK_PROVIDERS`. The production release derives that list from
   the spec it deploys (`scripts/callback-requirements.py`: Stripe while billing
-  is on, Telnyx and Plivo when declared, plus the repository variable) and
-  fails on an empty list unless `ALLOW_UNBILLED_PRODUCTION='who: why'` is set
-  (audit 30.4). Staging keeps the WARN.
+  is on, Telnyx when declared, plus the repository variable; never Plivo, whose
+  two probes answer 200/204 without reading `PLIVO_AUTH_*`) and fails on an
+  empty list unless `ALLOW_UNBILLED_PRODUCTION='who: why'` is set (audit 30.4).
+  A required provider production does without (Telnyx when it texts through
+  Twilio, or not at all) is waived by name:
+  `ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'`; Stripe cannot be
+  waived while billing is on. Staging keeps the WARN.
 - `/openapi.json` (like `/live`) is not routed to the api, so the SPA's
   fallback answers 200 `text/html`. Only a JSON API map is a leak.
 

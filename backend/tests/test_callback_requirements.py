@@ -8,12 +8,14 @@ STRIPE_WEBHOOK_SECRET therefore passed while every subscription event bounced.
 
 Two halves, both exercised here:
   * scripts/callback-requirements.py derives the set from the spec the release
-    deployed (Stripe while billing is on, Telnyx/Plivo when declared), unioned
-    with the variable;
+    deployed (Stripe while billing is on, Telnyx when declared; never Plivo,
+    whose probes check no configuration), unioned with the variable;
   * infra/digitalocean/smoke-test.sh, run against a local stub that answers
     every callback the way DigitalOcean shows an unconfigured one, FAILS in
     production on a required provider or on an empty requirement set (unless a
-    named waiver is given), and keeps WARN on staging.
+    named waiver is given), and keeps WARN on staging. A required provider can
+    be waived by name (ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'),
+    never stripe while it is required.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +43,9 @@ ROUTES = REPO / "infra" / "digitalocean" / "callback-routes.txt"
 _r = importlib.util.spec_from_file_location("render_app_spec_cbreq", REPO / "scripts" / "render-app-spec.py")
 render = importlib.util.module_from_spec(_r)
 _r.loader.exec_module(render)
+_c = importlib.util.spec_from_file_location("callback_requirements", SCRIPT)
+cbreq = importlib.util.module_from_spec(_c)
+_c.loader.exec_module(cbreq)
 
 D = "sha256:" + "a" * 64
 
@@ -89,12 +95,40 @@ def _drop(spec: dict, *keys: str, components=("api", "worker")) -> dict:
 
 # ── scripts/callback-requirements.py ────────────────────────────────────────
 
-def test_the_committed_production_spec_requires_stripe_and_the_declared_carriers(tmp_path):
+def test_the_committed_production_spec_requires_stripe_and_telnyx(tmp_path):
     """Today's spec bills (ORACLE_ENV=prod, enforcement not turned off) and
-    declares the Telnyx and Plivo secrets, so all three must answer."""
+    declares the Telnyx secrets. It declares Plivo's too, which is not derived."""
     proc = _derive(tmp_path, _prod())
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split() == ["plivo", "stripe", "telnyx"]
+    assert proc.stdout.split() == ["stripe", "telnyx"]
+
+
+def test_plivo_is_never_derived_because_its_probes_check_no_configuration(tmp_path):
+    """Both Plivo probes answer 200/204 without reading PLIVO_AUTH_*, so
+    requiring plivo would check nothing (add it back with a real probe)."""
+    spec = _drop(_prod(), "TELNYX_API_KEY", "TELNYX_PUBLIC_KEY")
+    assert {"PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN"} <= {e["key"] for e in _api(spec)["envs"]}
+    assert _derive(tmp_path, spec).stdout.split() == ["stripe"]
+    assert "plivo" not in cbreq.CARRIERS
+
+
+def test_the_development_values_are_configs_own():
+    import config
+
+    assert cbreq.DEV_VALUES == config._DEV_VALUES
+
+
+@pytest.mark.parametrize("value, bills", [("DEV", False), ("Local", False), (" dev", True), ("dev ", True),
+                                          ("staging", True), ("", True)])
+def test_oracle_env_is_read_exactly_as_config_reads_it(tmp_path, value, bills):
+    """config.py: os.environ.get("ORACLE_ENV", "").lower() — lowercased, not
+    stripped, so ' dev' is not development there and must not be here."""
+    import config
+
+    assert (value.lower() in config._DEV_VALUES) is (not bills)
+    spec = _prod()
+    _set_env(_api(spec), "ORACLE_ENV", {"value": value})
+    assert ("stripe" in _derive(tmp_path, spec).stdout.split()) is bills
 
 
 def test_every_derived_provider_is_one_the_smoke_test_probes(tmp_path):
@@ -152,14 +186,10 @@ def test_an_app_level_declaration_counts_for_the_api(tmp_path):
     assert "stripe" in _derive(tmp_path, spec).stdout.split()
 
 
-@pytest.mark.parametrize("keep, provider", [
-    ("TELNYX_API_KEY", "telnyx"), ("TELNYX_PUBLIC_KEY", "telnyx"),
-    ("PLIVO_AUTH_ID", "plivo"), ("PLIVO_AUTH_TOKEN", "plivo"),
-])
-def test_a_carrier_is_required_when_any_of_its_secrets_is_declared(tmp_path, keep, provider):
-    carriers = {"TELNYX_API_KEY", "TELNYX_PUBLIC_KEY", "PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN"}
-    spec = _drop(_prod(), *(carriers - {keep}))
-    assert _derive(tmp_path, spec).stdout.split() == sorted({"stripe", provider})
+@pytest.mark.parametrize("keep", ["TELNYX_API_KEY", "TELNYX_PUBLIC_KEY"])
+def test_telnyx_is_required_when_either_of_its_secrets_is_declared(tmp_path, keep):
+    spec = _drop(_prod(), *({"TELNYX_API_KEY", "TELNYX_PUBLIC_KEY"} - {keep}))
+    assert _derive(tmp_path, spec).stdout.split() == ["stripe", "telnyx"]
 
 
 def test_undeclared_carriers_are_not_required(tmp_path):
@@ -175,8 +205,18 @@ def test_a_production_that_neither_bills_nor_declares_a_carrier_derives_nothing(
 
 
 def test_the_repository_variable_is_unioned_not_replaced(tmp_path):
-    proc = _derive(tmp_path, _prod(), also=" twilio, stripe  twilio ")
-    assert proc.stdout.split() == ["plivo", "stripe", "telnyx", "twilio"]
+    proc = _derive(tmp_path, _prod(), also=" twilio, stripe\n twilio ")
+    assert proc.stdout.split() == ["stripe", "telnyx", "twilio"]
+
+
+def test_an_also_value_starting_with_a_dash_is_taken_as_a_value_in_equals_form(tmp_path):
+    """ci.yml and rollback.sh pass --also=VALUE, so a variable such as '-x'
+    is read as a provider name (which smoke-test.sh then refuses), not an option."""
+    p = tmp_path / "spec.yaml"
+    p.write_text(yaml.safe_dump(_prod()), encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--spec", str(p), "--also=-x"],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0 and "-x" in proc.stdout.split(), proc.stderr
 
 
 @pytest.mark.parametrize("spec", ["", "services: []\n", "services:\n  - name: web\n", "{not: [valid"])
@@ -221,6 +261,7 @@ class _Stub(http.server.BaseHTTPRequestHandler):
     `configured` names providers whose probe gets its expected status."""
 
     configured: set = set()
+    broken: set = set()
 
     def log_message(self, *a):  # keep pytest output clean
         pass
@@ -240,6 +281,8 @@ class _Stub(http.server.BaseHTTPRequestHandler):
             if m == method and p == path:
                 if provider in self.configured:
                     return self._reply(want)
+                if provider in self.broken:
+                    return self._reply(404, b"", "text/html")
                 return self._reply(504, b"<html>504</html>", "text/html", {"x-do-orig-status": "503"})
         if method == "GET" and path == "/health":
             return self._reply(200, b'{"status":"ok"}')
@@ -271,6 +314,7 @@ def stub():
         yield srv
     finally:
         _Stub.configured = set()
+        _Stub.broken = set()
         srv.shutdown()
         srv.server_close()
 
@@ -390,3 +434,126 @@ def test_a_comma_separated_variable_is_read_like_a_spaced_one(stub, tmp_path):
     assert code != 0
     assert any("requires stripe" in ln for ln in _lines(out, "FAIL")), out
     assert any("requires telnyx" in ln for ln in _lines(out, "FAIL")), out
+
+
+# ── Per-provider waivers: ALLOW_MISSING_CALLBACK_PROVIDERS (production) ──────
+
+_WAIVER = "telnyx: ops lead: production texts through Twilio until the pilot"
+
+
+@needs_tools
+def test_a_named_per_provider_waiver_turns_a_required_provider_into_a_warning(stub, tmp_path):
+    """Telnyx is declared in the committed spec whether or not production texts
+    through it; a production that does not can say so by name."""
+    _Stub.configured = {"stripe"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe telnyx",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS=_WAIVER)
+    assert code == 0, out
+    assert any("telnyx callback" in ln and "WAIVED" in ln and "ops lead" in ln for ln in _lines(out, "WARN")), out
+
+
+@needs_tools
+def test_without_the_waiver_the_same_production_fails(stub, tmp_path):
+    _Stub.configured = {"stripe"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe telnyx")
+    assert code != 0
+    assert any("requires telnyx" in ln for ln in _lines(out, "FAIL")), out
+
+
+@needs_tools
+@pytest.mark.parametrize("waiver", ["telnyx", "telnyx: ops lead", "telnyx: : why", "telnyx: who:   ",
+                                    ": who: why", "telnyx ops lead why"])
+def test_a_malformed_per_provider_waiver_fails(stub, tmp_path, waiver):
+    _Stub.configured = {"stripe"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe telnyx",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS=waiver)
+    assert code != 0, out
+    assert any("ALLOW_MISSING_CALLBACK_PROVIDERS" in ln for ln in _lines(out, "FAIL")), out
+
+
+@needs_tools
+def test_stripe_cannot_be_waived_while_it_is_required(stub, tmp_path):
+    """Billing on means stripe is required; a production that does not bill
+    derives no stripe requirement, and an empty list is ALLOW_UNBILLED_PRODUCTION's."""
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS="stripe: ops lead: billing comes later")
+    assert code != 0, out
+    assert any("stripe cannot be waived" in ln for ln in _lines(out, "FAIL")), out
+    assert any("requires stripe" in ln for ln in _lines(out, "FAIL")), out
+
+
+@needs_tools
+def test_a_waiver_naming_an_unknown_provider_fails(stub, tmp_path):
+    _Stub.configured = {e[3] for e in _route_entries()}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS="telnix: ops lead: typo")
+    assert code != 0, out
+    assert any("telnix" in ln for ln in _lines(out, "FAIL")), out
+
+
+@needs_tools
+def test_a_waiver_never_excuses_a_broken_route(stub, tmp_path):
+    """Only 'signing secret not configured' is waivable; an unmounted route is a defect."""
+    _Stub.configured = {"stripe"}
+    _Stub.broken = {"telnyx"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe telnyx",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS=_WAIVER)
+    assert code != 0, out
+    assert any("telnyx callback" in ln and "-> 404" in ln for ln in _lines(out, "FAIL")), out
+
+
+@needs_tools
+@pytest.mark.parametrize("sep", ["; ", ", ", "\n"])
+def test_several_waivers_are_separated_by_semicolons_commas_or_newlines(stub, tmp_path, sep):
+    _Stub.configured = {"stripe"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production",
+                       REQUIRE_CALLBACK_PROVIDERS="stripe telnyx twilio",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS=f"{_WAIVER}{sep}twilio: ops lead: legacy carrier off")
+    assert code == 0, out
+    assert len([ln for ln in _lines(out, "WARN") if "WAIVED" in ln]) == 3, out   # telnyx 1 + twilio 2 routes
+
+
+@needs_tools
+def test_a_waiver_for_a_provider_that_is_not_required_is_only_noted(stub, tmp_path):
+    _Stub.configured = {"stripe"}
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe",
+                       ALLOW_MISSING_CALLBACK_PROVIDERS=_WAIVER)
+    assert code == 0, out
+    assert "waiver for telnyx not needed" in out
+
+
+@needs_tools
+def test_staging_ignores_per_provider_waivers(stub, tmp_path):
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="staging", ALLOW_MISSING_CALLBACK_PROVIDERS="nonsense")
+    assert code == 0, out
+    assert "ignored on staging" in out
+
+
+@needs_tools
+def test_every_line_of_a_multi_line_requirement_counts(stub, tmp_path):
+    code, out = _smoke(stub, tmp_path, SMOKE_ENV="production", REQUIRE_CALLBACK_PROVIDERS="stripe\ntelnyx")
+    assert code != 0
+    assert any("requires stripe" in ln for ln in _lines(out, "FAIL")), out
+    assert any("requires telnyx" in ln for ln in _lines(out, "FAIL")), out
+
+
+# ── Manual production runs are told they are production (docs) ──────────────
+
+_FENCE = re.compile(r"```[a-z]*\n(.*?)```", re.S)
+
+
+@pytest.mark.parametrize("doc", ["docs/credential-rotation.md", "docs/deploy-digitalocean.md"])
+def test_every_documented_production_smoke_command_uses_production_rules(doc):
+    """Run by hand without SMOKE_ENV=production, an unconfigured Stripe webhook
+    is only a WARN. The docs that send an operator to production say so."""
+    text = (REPO / doc).read_text(encoding="utf-8")
+    blocks = [b for b in _FENCE.findall(text) if "smoke-test.sh" in b]
+    assert blocks, f"{doc} shows no smoke-test.sh command"
+    for b in blocks:
+        assert "SMOKE_ENV=production" in b and "callback-requirements.py" in b, b
+
+
+def test_rollbacks_manual_hint_uses_production_rules():
+    rb = (REPO / "scripts" / "rollback.sh").read_text(encoding="utf-8")
+    hint = [ln for ln in rb.splitlines() if "say" in ln and "callback-requirements.py" in ln]
+    assert hint and "SMOKE_ENV=production" in hint[0]

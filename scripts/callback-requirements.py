@@ -2,8 +2,8 @@
 """Which provider callbacks this release MUST have working (audit 30.4).
 
     python3 scripts/callback-requirements.py --spec /tmp/app.production.yaml \\
-        --also "$REQUIRE_CALLBACK_PROVIDERS"
-    -> plivo stripe telnyx
+        --also="$REQUIRE_CALLBACK_PROVIDERS"
+    -> stripe telnyx
 
 infra/digitalocean/smoke-test.sh probes every URL in callback-routes.txt. A
 webhook whose signing secret is not configured answers 503 (DigitalOcean's
@@ -14,24 +14,41 @@ variable which was never set, so a production release that lost
 STRIPE_WEBHOOK_SECRET passed its smoke test while every subscription event
 bounced.
 
-This derives the list from the spec the release deploys instead (the RENDERED
+This derives the list from an App Platform spec of the release (the RENDERED
 spec, scripts/render-app-spec.py output, which declares every secret without a
-value), and adds whatever `--also` names (the repository variable):
+value; the running app's spec from `doctl apps spec get` works too, since only
+key names are read), and adds whatever `--also` names (the repository
+variable). Pass it as `--also=VALUE` so a value starting with '-' is not read
+as an option.
 
   stripe  the api declares STRIPE_WEBHOOK_SECRET and billing is not turned off.
           Billing is on unless ORACLE_BILLING_ENFORCED is 0/false/no/off, or
           it is unset and ORACLE_ENV is a development value — the same rule as
-          billing.billing_enforced(). A switch whose value the spec does not
-          show (a SECRET) counts as on: fail closed.
-  telnyx  the api declares TELNYX_API_KEY or TELNYX_PUBLIC_KEY.
-  plivo   the api declares PLIVO_AUTH_ID or PLIVO_AUTH_TOKEN.
+          billing.billing_enforced() and config.IS_DEV. A switch whose value
+          the spec does not show (a SECRET) counts as on: fail closed.
+  telnyx  the api declares TELNYX_API_KEY or TELNYX_PUBLIC_KEY. Inbound STOP
+          replies arrive only through the signed Telnyx webhook, so a missing
+          signing key is a failure by default. The committed spec declares
+          Telnyx whether or not production texts through it (app.yaml calls it
+          optional; neoh-launch-readiness.py lists hosted SMS as an optional,
+          non-blocking provider and Twilio alone meets its messaging check), so
+          a production that does not text through Telnyx says so with a named
+          per-provider waiver in smoke-test.sh:
+          ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'.
+
+Deliberately NOT derived:
+
+  plivo   both Plivo probes in callback-routes.txt (the outbound answer and
+          status URLs) answer 200/204 to an unsigned request without reading
+          PLIVO_AUTH_* (telephony_api.plivo_outbound_answer /
+          plivo_outbound_status return before any signature check when there
+          is no call state), so requiring plivo would check nothing. Add it
+          back here once a Plivo probe actually verifies configuration.
+  twilio  declared in the spec, but not part of this rule; the repository
+          variable can add it.
 
 The api is the component that serves these webhooks, so only its envs (plus
-app-level envs, which App Platform applies to every component) count. A
-provider is declared in the committed spec only when it is used (see the
-"deliberately NOT listed here" note in infra/digitalocean/app.yaml), so a
-declared provider whose callback is unconfigured on production means its
-secret never reached the app, or was lost: a failed release.
+app-level envs, which App Platform applies to every component) count.
 
 Prints the providers, space-separated, sorted, on one line (possibly empty —
 smoke-test.sh refuses an empty set in production unless a named waiver is
@@ -52,12 +69,15 @@ import yaml
 
 COMPONENT_KINDS = ("services", "workers", "jobs", "static_sites")
 API = "api"
-# config._DEV_VALUES: the only environments where billing is off by default.
+# config._DEV_VALUES: the only environments where billing is off by default
+# (pinned by backend/tests/test_callback_requirements.py).
 DEV_VALUES = {"dev", "development", "local"}
 OFF_VALUES = {"0", "false", "no", "off"}
+# Carriers whose callback probe actually depends on configuration. Plivo is
+# left out on purpose: its probes answer 200/204 without reading PLIVO_AUTH_*
+# (see the module docstring); add it back once a probe verifies configuration.
 CARRIERS = {
     "telnyx": ("TELNYX_API_KEY", "TELNYX_PUBLIC_KEY"),
-    "plivo": ("PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN"),
 }
 
 
@@ -103,7 +123,8 @@ def billing_on(envs: dict) -> tuple[bool, str]:
         if raw.strip():
             on = raw.strip().lower() not in OFF_VALUES
             return on, f"ORACLE_BILLING_ENFORCED={raw.strip()!r}"
-    env = (_plain(envs.get("ORACLE_ENV")) or "").strip().lower()
+    # Exactly config.py: os.environ.get("ORACLE_ENV", "").lower(), no strip.
+    env = (_plain(envs.get("ORACLE_ENV")) or "").lower()
     if env in DEV_VALUES:
         return False, f"ORACLE_BILLING_ENFORCED unset and ORACLE_ENV={env!r} (development)"
     return True, f"ORACLE_BILLING_ENFORCED unset and ORACLE_ENV={env or 'unset'!r}"
@@ -129,6 +150,7 @@ def derive(spec) -> tuple[list[str], list[str]]:
             why.append(f"{provider}: the api declares {', '.join(declared)}")
         else:
             why.append(f"{provider}: not required, the api declares none of {', '.join(keys)}")
+    why.append("plivo: never derived, its probes answer 200/204 without reading PLIVO_AUTH_*")
     return sorted(need), why
 
 

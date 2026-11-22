@@ -370,9 +370,6 @@ next_task: "33.2 (CommsTab thread race, NQ-02) after its owner privacy review."
 updated: 2026-11-19
 ```
 
-### L03
-Brokerage tenancy and hybrid access.
-
 #### L02-14 A public deep link shows an accessible loading state while its page code loads, never a blank screen (external audit 33.6; fixed by PR #98, ledgered 2026-11-22)
 ```yaml
 id: L02-14
@@ -391,6 +388,9 @@ decision_refs: []
 next_task: "Include the lazy public routes in the next staging crawl (L02-05) once staging deploys again."
 updated: 2026-11-22
 ```
+
+### L03
+Brokerage tenancy and hybrid access.
 
 #### L03-01 Tenancy and assignment model baseline
 ```yaml
@@ -2431,6 +2431,27 @@ audit_refs: [23.7]
 decision_refs: []
 next_task: "Independent review; then the durable withdrawal retry still open on L09-18, and a real ElevenLabs call that hangs up during a note write once T09.18 is approved."
 updated: 2026-11-21
+```
+
+#### L09-20 A Qwen session whose setup fails closes the provider socket (external audit 23.1; fixed by PR #99, ledgered 2026-11-22)
+```yaml
+id: L09-20
+status: tests_pass
+env: local
+evidence_shas: [c56cf51e, 3a802bb]   # c56cf51e = merge of PR #99 (NQ-09, Noah commit c2784073); 3a802bb = main, whose qwen_omni_realtime.py the test ran against now
+files: [backend/qwen_omni_realtime.py, backend/tests/test_qwen_bridge_setup_failure_closes.py]
+tests_run:
+  - {cmd: "git show --stat c56cf51e (PR #99, NQ-09, 'close the Qwen provider socket when session setup fails', audit 23.1)", result: "QwenOmniRealtimeBridge.run() now closes the provider websocket when session.update or the readiness wait fails; before, either failure skipped the close and leaked the socket. test_qwen_bridge_setup_failure_closes.py added (websockets.connect patched to a fake, no network). The PR touched no ledger row, so 23.1 had none until this row", date: 2026-11-22}
+  - {cmd: "/media/ydn/SYPHER_CORE2/Oracle/venv/bin/python -m pytest -p no:cacheprovider --basetemp=/media/ydn/SYPHER_CORE2/oracle-worktrees/_pt-lt tests/test_qwen_bridge_setup_failure_closes.py (backend/, launch-truth worktree at d22bd742, which carries main 3a802bb's qwen_omni_realtime.py)", result: "2 passed", date: 2026-11-22}
+  - {cmd: "red: the same file with backend/qwen_omni_realtime.py replaced by c56cf51e^'s copy (current file backed up in a scratch dir outside the basetemp, restored after; git status clean)", result: "2 failed: test_a_failed_session_setup_closes_the_provider_socket_on_send_failure ('provider socket leaked after session.update failed', close_awaited 0 == 1) and ..._on_readiness_timeout", date: 2026-11-22}
+authz_checked: n/a (socket lifecycle when a provider session cannot be set up; no data or access change)
+blockers:
+  - "Dormant: the Qwen engine serves Twilio calls only with ORACLE_TWILIO_QWEN_REALTIME_ENABLED (default off), and the committed spec sets ORACLE_PLIVO_QWEN_REALTIME_ENABLED=0 with ElevenLabs as the Plivo realtime provider and no DASHSCOPE key. No live Qwen session was run; unit fake only."
+  - "Not checked on staging (staging deploys are blocked, L18-05)."
+audit_refs: [23.1]
+decision_refs: []
+next_task: "None while no Qwen engine is enabled; when one is, a live session whose setup fails, checked for a closed provider socket."
+updated: 2026-11-22
 ```
 
 ### L10
@@ -6245,8 +6266,8 @@ updated: 2026-11-20
 id: L19-32
 status: tests_pass
 env: local
-evidence_shas: [29ccd86]   # base; fix in the commit that adds this row
-files: [scripts/callback-requirements.py, scripts/rollback.sh, backend/tests/test_release_immutability.py, infra/digitalocean/smoke-test.sh, .github/workflows/ci.yml, backend/tests/test_callback_requirements.py, backend/tests/test_callback_routes.py, docs/staging-setup.md, docs/launch-state.md]
+evidence_shas: [29ccd86, d22bd74]   # 29ccd86 = base of the fix; d22bd74 = base of the PR #181 review-round fixes, in the commit that adds the review-round evidence
+files: [scripts/callback-requirements.py, scripts/rollback.sh, backend/tests/test_release_immutability.py, infra/digitalocean/smoke-test.sh, .github/workflows/ci.yml, backend/tests/test_callback_requirements.py, backend/tests/test_callback_routes.py, docs/staging-setup.md, docs/launch-state.md, docs/credential-rotation.md, docs/deploy-digitalocean.md]
 tests_run:
   - {cmd: "read .github/workflows/ci.yml promote 'Smoke test (production)' (:999-1005) and infra/digitalocean/smoke-test.sh section 2c (:122-156) at 29ccd86; gh variable list (read-only)", result: "confirmed 30.4: the promote step passed REQUIRE_CALLBACK_PROVIDERS from the repository variable only, and the variable is not set (gh lists STAGING_ENABLED only). A 504 + x-do-orig-status: 503 on /billing/webhook (Stripe signing secret not configured) was therefore a WARN and the release passed. scripts/neoh-launch-readiness.py blocks a charging production without STRIPE_WEBHOOK_SECRET in the spec (L19-18), but that is operator-run, not the release gate", date: 2026-11-22}
   - {cmd: "pytest tests/test_callback_requirements.py tests/test_callback_routes.py with the new tests on 29ccd86's scripts and ci.yml", result: "red: 35 failed / 29 passed. The derivation script did not exist; smoke-test.sh against the local stub (every callback answering 504 + x-do-orig-status: 503) exited 0 'All checks passed.' for SMOKE_ENV=production with an empty or absent requirement set; a malformed waiver, a provider name callback-routes.txt does not list and SMOKE_ENV=prod were not refused; the promote step handed the smoke test no derived list. The 29 that passed are regression guards (staging WARN, a listed provider already FAILs, the stub is otherwise a clean deploy)", date: 2026-11-22}
@@ -6254,14 +6275,20 @@ tests_run:
   - {cmd: "pytest tests/test_callback_routes.py tests/test_callback_requirements.py tests/test_ci_build_contexts.py tests/test_ci_deploy_wiring.py tests/test_ci_security_gates.py tests/test_ci_lists_every_live_test.py tests/test_cross_version_wiring.py tests/test_process_heartbeat.py tests/test_spec_drift.py tests/test_release_immutability.py tests/test_storage_readiness.py tests/test_carry_secrets.py tests/test_launch_readiness.py", result: "310 passed", date: 2026-11-22}
   - {cmd: "full backend suite: pytest tests compliance_engine/tests (both L19-32 and L19-33 changes in place)", result: "7768 passed, 180 skipped, 1 failed: test_static_gate (B905, a zip() without strict= in the new tests/test_launch_state_doc.py). Fixed (strict=True; the lengths are asserted equal first); ruff check . clean; test_static_gate, test_launch_state_doc and test_launch_backlog re-run: 17 passed", date: 2026-11-22}
   - {cmd: "scripts/rollback.sh Verify step: derive the required callbacks from the rollback spec it deployed (scripts/callback-requirements.py --spec $SPEC_OUT --also $REQUIRE_CALLBACK_PROVIDERS) and run the smoke test with SMOKE_ENV=production; pytest tests/test_release_immutability.py tests/test_callback_requirements.py tests/test_callback_routes.py tests/test_launch_state_doc.py tests/test_static_gate.py; then the same release-immutability file against the previous rollback.sh", result: "148 passed. Red on the previous rollback.sh: 2 failed (the verified rollback now asserts its smoke ran with SMOKE_ENV=production and stripe in the derived list; a rollback whose callbacks cannot be derived exits 4, ROLLED_BACK_BUT_UNVERIFIED, without running the smoke test). A production rollback was checked by the staging WARN rules before", date: 2026-11-22}
-authz_checked: "No access change. The waiver is read only from the repository variable ALLOW_UNBILLED_PRODUCTION (not set; no GitHub variable or setting was changed), must read 'who: why', and is printed in the smoke output. The derivation prints provider names only, never an env value of a secret."
+  - {cmd: "independent review of PR #181 (APPROVE with follow-ups); read app.yaml:270-272, scripts/neoh-launch-readiness.py:95-103, telephony_api.py:1673-1707 and :1751-1767 at d22bd74", result: "accepted: (1) requiring Telnyx because the spec declares it contradicted app.yaml ('Optional: blank means an approved text is refused') and the readiness tool (hosted SMS (Telnyx) and Plivo are OPTIONAL_PROVIDERS, non-blocking; MESSAGING_SETS is met by Twilio alone), so a production texting through Twilio was GO in readiness but red on every promote, and ALLOW_UNBILLED_PRODUCTION could not help (the set is never empty). The earlier docstring premise 'declared only when used' was false. (2) Both Plivo probes answer 200/204 without reading PLIVO_AUTH_* (no call state: hang-up markup / 204 before any signature check), so requiring plivo checked nothing. (3) docs/credential-rotation.md:7 and docs/deploy-digitalocean.md:428 sent operators to run the smoke test against production without SMOKE_ENV (staging rules)", date: 2026-11-22}
+  - {cmd: "review-round change", result: "Telnyx stays required when declared (fail closed: inbound STOP arrives only through the signed Telnyx webhook), with a named per-provider waiver: repository variable ALLOW_MISSING_CALLBACK_PROVIDERS, 'provider: who: why', several separated by ',' or ';' (so who/why cannot contain them), passed through the step env like the other vars and handed on by rollback.sh. Production only: a well-formed waiver turns a required provider's 'signing secret not configured' (504 + x-do-orig-status: 503) into a WARN naming the waiver; a malformed entry, a provider callback-routes.txt does not list, or stripe while it is required (billing on; an empty list stays ALLOW_UNBILLED_PRODUCTION's) FAILs; a broken or unmounted route is never waived; a waiver for a provider not required is only noted; staging ignores waivers. Plivo dropped from the derived set (comment says why and to add it back once a probe verifies configuration). ORACLE_ENV read exactly as config.py:33 (lowercased, not stripped); DEV_VALUES pinned to config._DEV_VALUES; ci.yml and rollback.sh pass --also=VALUE; every line of a multi-line REQUIRE_CALLBACK_PROVIDERS counts. Manual production runs documented with SMOKE_ENV=production and the derived list (credential rotation, the DigitalOcean guide's rollback section, rollback.sh's own hint)", date: 2026-11-22}
+  - {cmd: "red: the review-round tests (test_callback_requirements.py, test_callback_routes.py, test_release_immutability.py, test_launch_state_doc.py) against d22bd74's scripts, smoke-test.sh, ci.yml, rollback.sh and docs (git stash of those files only)", result: "28 failed / 149 passed. Failed: the derived set (stripe telnyx, no plivo), ' dev'/'dev ' read as development, every per-provider waiver case (works, 6 malformed forms, stripe refused, unknown provider, three separators, 'not needed', staging ignores), multi-line requirement, the --also=VALUE wiring in ci.yml and rollback.sh, the waivers reaching the promote step's smoke test, and the documented manual production commands. Passed at d22bd74 as guards: a broken route still FAILs, the unwaived production still FAILs, and rollback already inherited the operator's environment (now passed explicitly)", date: 2026-11-22}
+  - {cmd: "after: pytest tests/test_launch_state_doc.py tests/test_callback_requirements.py tests/test_callback_routes.py tests/test_release_immutability.py", result: "177 passed", date: 2026-11-22}
+  - {cmd: "review round: ruff check . (backend config) and scripts/callback-requirements.py; affected suites (the four above + test_qwen_bridge_setup_failure_closes, test_static_gate, test_launch_backlog, test_ci_build_contexts, test_ci_deploy_wiring, test_ci_security_gates, test_carry_secrets, test_launch_readiness, test_spec_drift)", result: "ruff clean; 307 passed", date: 2026-11-22}
+  - {cmd: "review round, full backend suite: pytest -p no:cacheprovider --basetemp=/media/ydn/SYPHER_CORE2/oracle-worktrees/_pt-lt tests compliance_engine/tests (backend/, every review-round change in place, incl. L02-14 move and L09-20)", result: "7816 passed, 180 skipped, 0 failed (exit 0, 485.9 s)", date: 2026-11-22}
+authz_checked: "No access change. Both waivers are read only from repository variables (ALLOW_UNBILLED_PRODUCTION, ALLOW_MISSING_CALLBACK_PROVIDERS; neither set, no GitHub variable or setting changed) or, for rollback.sh, the operator's environment; each must name who and why and is printed in the smoke output. Stripe cannot be waived while billing is on. The derivation prints provider names only, never an env value of a secret."
 blockers:
   - {type: owner, note: "The signed Stripe test-mode webhook proof on staging (L18-06, AC18.03) still needs the owner's Stripe test keys. Not attempted."}
-  - "Telnyx and Plivo are now required in production because the committed spec declares their secrets on the api, although app.yaml calls Telnyx optional. A production launched without any Telnyx signing key (platform or brokerage) will fail its smoke test until one is set or TELNYX_* leaves the spec, which also removes it from staging. Plivo's two probes answer 200/204 to an unsigned request whatever the configuration, so requiring it changes nothing today. Twilio is declared too but not derived; the repository variable can add it."
+  - "Telnyx is required in production while the spec declares it (app.yaml calls it optional; the readiness tool does not block on it). A production that does not text through Telnyx must set ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why' before its first promote, or the smoke test fails. Plivo is not derived (its probes check no configuration); Twilio is declared but not derived."
   - "Exercised only locally, against a stub server: the next production promote is the first real run. Not deployed (C4.4); there is no production app (L19-02)."
 audit_refs: [30.4]
 decision_refs: []
-next_task: "Owner: Stripe test keys on staging for the signed webhook proof (AC18.03). Decide whether production must have Telnyx before its first promote (it is required by the smoke test as the spec stands)."
+next_task: "Owner: Stripe test keys on staging for the signed webhook proof (AC18.03). Before the first production promote: Telnyx signing key on production, or ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'."
 updated: 2026-11-22
 ```
 
@@ -6277,6 +6304,7 @@ tests_run:
   - {cmd: "pytest tests/test_launch_state_doc.py on 29ccd86's docs", result: "red: 3 failed / 6 passed (no snapshot banner; 'authoritative' without a banner; migration head 0124 is not the newest file 0183; README called it the current state). The 6 are the checker's own cases on synthetic text", date: 2026-11-22}
   - {cmd: "after: pytest tests/test_launch_state_doc.py", result: "9 passed. The header is replaced by a 'Historical snapshot, 2026-10-03, not maintained' banner that points to LEDGER.md and to a fresh neoh-launch-readiness.py --json run read as of its generated_at. Struck and corrected in place: the hand-built staging image, the missing staging DigitalOcean token and STAGING_ENABLED unset, 'never run end to end', blocker 1's EV[...] proof and STAGING_ENABLED step (all overtaken by b24ec21 or gh), and the REQUIRE_CALLBACK_PROVIDERS decision (now derived, L19-32). The page no longer names a migration head (it points to /version and the migrations directory), so a new migration cannot make it stale again. The test fails on 'authoritative' without the banner or outside a negated sentence, and on any 'migration head' naming a number other than the newest file", date: 2026-11-22}
   - {cmd: "full backend suite (see L19-32)", result: "7768 passed, 180 skipped, 1 failed (this row's new test tripped the static gate on B905; fixed, re-run passed)", date: 2026-11-22}
+  - {cmd: "independent review of PR #181 follow-ups for this row; gh run view 44970413731 (read-only)", result: "(5) the page said in the present tense that staging runs CI-built releases and STAGING_ENABLED is true; it now adds that staging deploys have failed at doctl auth since 2026-11-08 ('Error: Unable to use supplied token to access API', step 'doctl auth' of 'build release -> staging' in CI run 44970413731 on 29ccd86, read 2026-11-22; L18-05 / DEP-01). (7) the doc checker read a year as a migration number ('The migration head moved often during 2026.' -> ':5 names migration head 2026', shown with the d22bd74 checker); it now matches a NNNN_name migration file, or a bare four-digit number that is not 19xx/20xx and not a date. docs/README.md is guarded like README.md (each link to launch-state.md must call it a snapshot, never the current state)", date: 2026-11-22}
 authz_checked: n/a (documentation and a doc test)
 blockers:
   - "Other pages still link launch-state.md for its blocker list: first-brokerage-launch.md:12 and :28, brokerage-go-live-checklist.md:23, runbooks/README.md:59, killer-demo-script.md:81, staging-setup.md:6, and line 10 of the DigitalOcean guide. The banner tells a reader it is a snapshot; those links were not reworded."

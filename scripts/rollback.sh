@@ -33,6 +33,12 @@
 #
 # Without --apply it prints exactly what it would do and changes nothing.
 # That is the default on purpose.
+#
+# With --apply and APP_URL set, the rolled-back release is smoke-tested by
+# production's rules (audit 30.4). Named waivers, exactly as for a promote:
+#   ALLOW_MISSING_CALLBACK_PROVIDERS='telnyx: who: why'  a required provider
+#       this production does without (never stripe while billing is on)
+#   ALLOW_UNBILLED_PRODUCTION='who: why'  a production with no required callback
 
 set -uo pipefail
 
@@ -351,7 +357,8 @@ head2 "Verify"
 # rolled back, but not verified — so automation and people can tell.
 if [ -z "${APP_URL:-}" ]; then
   say "ROLLED_BACK_BUT_UNVERIFIED: APP_URL is not set, so the release could not be checked."
-  say "    APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
+  say "    SMOKE_ENV=production REQUIRE_CALLBACK_PROVIDERS=\"\$(python3 scripts/callback-requirements.py --spec $SPEC_OUT)\" \\"
+  say "      APP_URL=<url> EXPECTED_GIT_SHA=$TARGET_SHA infra/digitalocean/smoke-test.sh"
   echo
   exit 4
 fi
@@ -359,14 +366,19 @@ SMOKE="${ORACLE_ROLLBACK_SMOKE:-$REPO/infra/digitalocean/smoke-test.sh}"
 # Audit 30.4: this is a PRODUCTION rollback, so it is checked by production's
 # rules — the webhooks that must answer are derived from the spec it deployed
 # (scripts/callback-requirements.py), as the promote job does, not the staging
-# WARN-only default.
+# WARN-only default. The same named waivers as the promote job apply, taken
+# from the operator's environment: ALLOW_UNBILLED_PRODUCTION ('who: why') and
+# ALLOW_MISSING_CALLBACK_PROVIDERS ('telnyx: who: why'; never stripe while
+# billing is on). smoke-test.sh validates both.
 if ! REQUIRED_CALLBACKS="$(python3 "$REPO/scripts/callback-requirements.py" --spec "$SPEC_OUT" \
-      --also "${REQUIRE_CALLBACK_PROVIDERS:-}")"; then
+      --also="${REQUIRE_CALLBACK_PROVIDERS:-}")"; then
   say "ROLLED_BACK_BUT_UNVERIFIED: the required callbacks could not be derived from $SPEC_OUT."
   echo
   exit 4
 fi
 if ! SMOKE_ENV=production REQUIRE_CALLBACK_PROVIDERS="$REQUIRED_CALLBACKS" \
+     ALLOW_UNBILLED_PRODUCTION="${ALLOW_UNBILLED_PRODUCTION:-}" \
+     ALLOW_MISSING_CALLBACK_PROVIDERS="${ALLOW_MISSING_CALLBACK_PROVIDERS:-}" \
      APP_URL="$APP_URL" EXPECTED_GIT_SHA="$TARGET_SHA" bash "$SMOKE"; then
   say "ROLLED_BACK_BUT_UNVERIFIED: the smoke test failed against $APP_URL (expected release $TARGET_SHA)."
   echo
