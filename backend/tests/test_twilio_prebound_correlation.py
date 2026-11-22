@@ -29,6 +29,12 @@ ACCOUNT = "AC" + "1" * 32
 TENANT = str(uuid.uuid4())
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 class _Redis:
     def __init__(self):
         self.values = {}
@@ -204,16 +210,18 @@ def test_the_signature_covers_the_reference(monkeypatch, path):
     ref = f"neoh_ref={uuid.uuid4()}"
     params = {"CallSid": SID, "CallStatus": "in-progress"}
     request = _signed(monkeypatch, path, ref, params)
-    ca._validate_twilio_webhook_signature(request, request._form, ca._twilio_signed_suffix(request, path))
+    ca._validate_twilio_webhook_signature(request, request._form, ca._twilio_signed_suffix(request, path),
+                                          tokens=["test-token"])
     forged = _signed(monkeypatch, path, f"neoh_ref={uuid.uuid4()}", params, signed_query=ref)
     with pytest.raises(HTTPException):          # someone else's reference swapped in
-        ca._validate_twilio_webhook_signature(forged, forged._form, ca._twilio_signed_suffix(forged, path))
+        ca._validate_twilio_webhook_signature(forged, forged._form, ca._twilio_signed_suffix(forged, path),
+                                              tokens=["test-token"])
 
 
 def test_the_answer_webhook_connects_an_early_call(redis, monkeypatch):
     correlation = str(uuid.uuid4())
     _prebound(correlation)
-    monkeypatch.setattr(ca, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
 
     async def spoken(text, **_k):
         return f"<Say>{text}</Say>"
@@ -249,7 +257,7 @@ def test_an_early_status_knows_its_brokerage_by_the_reference(redis, monkeypatch
 def test_the_status_route_stores_with_the_reference_and_cleans_it_up(redis, monkeypatch):
     correlation = str(uuid.uuid4())
     _prebound(correlation)
-    monkeypatch.setattr(ca, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
     stored = []
 
     async def accept(provider, call_sid, status, duration=None, *, tenant_id, aliases=()):

@@ -619,12 +619,15 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
 
     async def _redirect_to_agent(self, reason: str = "caller_request") -> None:
         from telephony_api import transfer_webhook_url
-        from twilio_call_handler import twilio_redirect_call
+        from twilio_call_handler import credentials_for_call, twilio_redirect_call
 
         url = await transfer_webhook_url(self.call_connection_id, reason=reason)
         if not url:
             raise QwenRealtimeError("No transfer URL is available for this call")
-        await twilio_redirect_call(self.call_connection_id, url)
+        # The account the call's own state names, whole: a call on a
+        # brokerage's Twilio account is never moved with the platform's (23.3).
+        credentials = await credentials_for_call(self.call_connection_id)
+        await twilio_redirect_call(self.call_connection_id, url, credentials=credentials)
 
     async def _acs_to_qwen(self) -> None:
         while True:
