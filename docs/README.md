@@ -6,7 +6,7 @@ One page to open first. Everything else is linked from it.
 |---|---|
 | **Respond to an alert or outage** | [`runbooks/README.md`](runbooks/README.md): alert → component → runbook → mitigation → verification |
 | Tell customers about an incident or maintenance | [`status-communication.md`](status-communication.md) |
-| Know whether Neoh is ready for customers | [`launch-state.md`](launch-state.md), then `python3 scripts/neoh-launch-readiness.py --env production` |
+| Know whether Neoh is ready for customers | `python3 scripts/neoh-launch-readiness.py --env production`, and the ledger ([`claude-prompts/LEDGER.md`](claude-prompts/LEDGER.md), the only status record). [`launch-state.md`](launch-state.md) is a 2026-10-03 snapshot, not maintained |
 | **Deploy Neoh** | [`deploy-digitalocean.md`](deploy-digitalocean.md) (the only deploy path); [`release-checklist.md`](release-checklist.md) |
 | Create or fix staging | [`staging-setup.md`](staging-setup.md) |
 | Know which infra files are live and which are legacy | [`infrastructure-status.md`](infrastructure-status.md) |
