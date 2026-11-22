@@ -269,11 +269,11 @@ def test_signed_inbound_webhook_resolves_before_stream_and_discloses_first(monke
     monkeypatch.setattr(
         telephony_api, "initialize_inbound_twilio_call_state", initialize
     )
-    monkeypatch.setattr(
-        telephony_api,
-        "twilio_media_websocket_url",
-        lambda: "wss://api.example.test/api/commands/media/twilio",
-    )
+    async def stream_url(call_sid):
+        assert call_sid == form["CallSid"]
+        return "wss://api.example.test/api/commands/media/twilio/" + "r" * 43
+
+    monkeypatch.setattr(telephony_api, "create_twilio_media_stream_url", stream_url)
     monkeypatch.setattr(
         telephony_api, "create_twilio_bridge_token", lambda _sid: "short-lived-token"
     )
@@ -287,7 +287,7 @@ def test_signed_inbound_webhook_resolves_before_stream_and_discloses_first(monke
     body = response.body.decode("utf-8")
     assert resolved == [(ENDPOINT_KEY, "+18662805386", ACCOUNT_SID)]
     assert body.index("automated AI assistant") < body.index("<Connect>")
-    assert "wss://api.example.test/api/commands/media/twilio" in body
+    assert "wss://api.example.test/api/commands/media/twilio/" + "r" * 43 in body
     assert "short-lived-token" in body
     assert auth_token not in body
 

@@ -31,6 +31,12 @@ pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN 
 ACCOUNT = "AC" + "2" * 32
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 class _Redis:
     def __init__(self):
         self.values = {}
@@ -108,7 +114,7 @@ async def _scenario(monkeypatch):
     monkeypatch.setattr(ca, "_requester_may_contact", yes)
     monkeypatch.setattr(ca, "guard_outreach", allowed)
     monkeypatch.setattr(ca, "_load_provider_credential", nothing)
-    monkeypatch.setattr(ca, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
     monkeypatch.setattr(ca, "_spoken", spoken)
     monkeypatch.setattr(inbound_voice, "get_verified_caller_id", caller_id)
     monkeypatch.setattr(inbound_voice, "get_telephony_route", route)

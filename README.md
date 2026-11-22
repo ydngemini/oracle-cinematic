@@ -35,8 +35,10 @@ unchanged to `neoh` by the `promote` job. The spec is
 
 Is it deployed right now, and is it ready for customers? Run
 `python3 scripts/neoh-launch-readiness.py --env production` (and
-`--env staging`). The current state is in
-[`docs/launch-state.md`](docs/launch-state.md).
+`--env staging`); its `--json` report is dated by `generated_at`. Status lives
+only in [`docs/claude-prompts/LEDGER.md`](docs/claude-prompts/LEDGER.md).
+[`docs/launch-state.md`](docs/launch-state.md) is a historical snapshot from
+2026-10-03 and is not maintained.
 
 Anything AWS, Azure or Terraform in this repository is **legacy** and does
 not deploy Neoh. [`docs/infrastructure-status.md`](docs/infrastructure-status.md)

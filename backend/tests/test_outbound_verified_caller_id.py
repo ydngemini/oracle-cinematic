@@ -42,6 +42,12 @@ CTX_A = TenantContext(agent_id=AGENT_A, tenant_id=TENANT_A, role=Role.BROKER_OWN
 CTX_B = TenantContext(agent_id=AGENT_B, tenant_id=TENANT_B, role=Role.BROKER_OWNER)
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 def _route_row(*, tenant_id, agent_id, number, verified=True):
     return {
         "tenant_id": tenant_id,
@@ -198,7 +204,7 @@ class FakeStatusRequest:
 
 @pytest.fixture()
 def patched_webhook(monkeypatch):
-    monkeypatch.setattr(ca, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
     updates: list[tuple[str, str]] = []
     cleanups: list[str] = []
 

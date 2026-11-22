@@ -217,6 +217,26 @@ async def send_smtp_email(
     return ProviderResult("smtp", reference, "submitted", {"recipient": recipient})
 
 
+TWILIO_CREDENTIAL_FIELDS = ("account_sid", "auth_token", "api_key", "api_secret")
+
+
+def whole_twilio_credential(credentials: Optional[Mapping[str, Any]]) -> tuple[dict[str, str], bool]:
+    """The Twilio credential a request is made with, whole, and whether it is
+    the platform's (PR #182 review).
+
+    A brokerage's own credential — any of its account SID, auth token or API
+    key fields given — is used exactly as stored: its API key pair when
+    complete, else its account SID + auth token (_twilio_client). It is never
+    filled in from the platform's environment, which paired a brokerage's
+    account SID with the platform's API key and broke every bring-your-own
+    request. With none given, the platform's environment credential, whole.
+    """
+    given = {key: str((credentials or {}).get(key) or "").strip() for key in TWILIO_CREDENTIAL_FIELDS}
+    if any(given.values()):
+        return given, False
+    return {key: os.getenv(f"TWILIO_{key.upper()}", "").strip() for key in TWILIO_CREDENTIAL_FIELDS}, True
+
+
 def _twilio_credential_error(
     account_sid: str, auth_token: str, api_key: str, api_secret: str
 ) -> Optional[str]:
@@ -334,16 +354,8 @@ async def send_twilio_sms(
         refusal=RecoveryModeRefusedBeforeSend,
     )
     credentials = dict(credentials or {})
-    account_sid = str(
-        credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
-    ).strip()
-    auth_token = str(
-        credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")
-    ).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(
-        credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")
-    ).strip()
+    whole, platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
     # 25.1: the sender must declare how it is registered for business texts,
     # and the declaration comes from the same place as the sender — the
     # platform's env never vouches for a brokerage's number, nor the reverse.
@@ -385,9 +397,8 @@ async def send_twilio_sms(
 
     import provider_health
 
-    # The platform account is whatever the environment supplies when the
-    # caller passed no account of the tenant's own.
-    platform = not credentials.get("account_sid")
+    # The platform account is the environment's, used when the caller passed
+    # no credential of the tenant's own (whole_twilio_credential).
     reference = await _twilio_request(provider_health.PLATFORM_TWILIO_SMS, platform, _send, 25.0)
     if not reference:
         raise ProviderRequestError("Twilio did not return a message SID")
@@ -456,13 +467,11 @@ async def place_twilio_call(
         refusal=RecoveryModeRefusedBeforeSend,
     )
     credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", ""))
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", ""))
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", ""))
-    auth_token = str(
-        credentials.get("auth_token")
-        or os.getenv("TWILIO_AUTH_TOKEN", "")
-    )
+    # Whole: a brokerage's own credential is never filled in from the
+    # environment (PR #182 review); its account is the one the call state
+    # was written for (commands_api uses the same whole_twilio_credential).
+    whole, platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
     from_number = str(
         credentials.get("from_number") or os.getenv("TWILIO_FROM_NUMBER", "")
     )
@@ -524,7 +533,6 @@ async def place_twilio_call(
 
     import provider_health
 
-    platform = not credentials.get("account_sid")
     reference = await _twilio_request(provider_health.PLATFORM_TWILIO_VOICE, platform, _call, 25.0)
     if not reference:
         raise ProviderRequestError("Twilio did not return a call SID")
@@ -538,17 +546,10 @@ async def abort_twilio_call(
 ) -> None:
     """Best-effort termination when durable Twilio state cannot be established."""
     recovery_mode.guard("change a live phone call")
-    credentials = dict(credentials or {})
-    account_sid = str(
-        credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
-    )
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", ""))
-    api_secret = str(
-        credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")
-    )
-    auth_token = str(
-        credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")
-    )
+    # Whole: the credential the call was placed with, never filled in from
+    # the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if cred_error:
         logger.error("Cannot terminate unmanaged Twilio call: %s", cred_error)
@@ -591,11 +592,9 @@ async def start_twilio_caller_id_verification(
     check_twilio_caller_id_verified for the only function that may.
     """
     recovery_mode.guard("start a caller-ID verification call")
-    credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
-    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    # Whole, never filled in from the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
 
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if cred_error:
@@ -639,11 +638,9 @@ async def check_twilio_caller_id_verified(
     """The only source of truth for "is phone_number verified" — asks Twilio's
     account state directly rather than trusting anything a caller supplies.
     """
-    credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
-    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    # Whole, never filled in from the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
 
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if cred_error:
@@ -677,11 +674,9 @@ async def provision_twilio_forwarding_number(
     telephony_routes.inbound_forwarding_provider_sid is empty.
     """
     recovery_mode.guard("buy a phone number")
-    credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
-    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    # Whole, never filled in from the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
 
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if cred_error:
@@ -732,11 +727,9 @@ async def release_twilio_number(
     already released, so the call is idempotent.
     """
     recovery_mode.guard("release a phone number")
-    credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
-    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    # Whole, never filled in from the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
     if not phone_number_sid or not phone_number_sid.startswith("PN"):
         raise ProviderRequestError("not a Twilio phone-number SID")
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
@@ -775,11 +768,9 @@ async def configure_twilio_number_webhook(
     step once both exist.
     """
     recovery_mode.guard("reconfigure a phone number")
-    credentials = dict(credentials or {})
-    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
-    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
-    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    # Whole, never filled in from the environment (PR #182 review).
+    whole, _platform = whole_twilio_credential(credentials)
+    account_sid, auth_token, api_key, api_secret = (whole[key] for key in TWILIO_CREDENTIAL_FIELDS)
 
     cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if cred_error:

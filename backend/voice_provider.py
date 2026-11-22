@@ -194,9 +194,6 @@ class VoiceProvider:
     ) -> None:
         raise NotImplementedError
 
-    def media_websocket_path(self) -> str:
-        raise NotImplementedError
-
     # ── Markup (TwiML / PlivoXML) ────────────────────────────────────────
 
     def safe_hangup_markup(self, message: str) -> str:
@@ -348,7 +345,9 @@ class TwilioVoiceProvider(VoiceProvider):
         recovery_mode.guard("transfer_call via TwilioVoiceProvider")
         from twilio_call_handler import twilio_redirect_call
 
-        await twilio_redirect_call(provider_call_id, redirect_url)
+        # Whole or not at all; without them the call's own account is
+        # resolved, never assumed to be the platform's (23.3).
+        await twilio_redirect_call(provider_call_id, redirect_url, credentials=credentials)
 
     async def abort_call(
         self,
@@ -360,9 +359,6 @@ class TwilioVoiceProvider(VoiceProvider):
         from command_providers import abort_twilio_call
 
         await abort_twilio_call(provider_call_id, credentials=credentials)
-
-    def media_websocket_path(self) -> str:
-        return "/api/commands/media/twilio"
 
     def safe_hangup_markup(self, message: str) -> str:
         return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -891,9 +887,6 @@ class PlivoVoiceProvider(VoiceProvider):
             logger.exception(
                 "Failed to terminate unmanaged Plivo call: uuid=%s", provider_call_id
             )
-
-    def media_websocket_path(self) -> str:
-        return "/api/commands/media/plivo"
 
     def safe_hangup_markup(self, message: str) -> str:
         return f"""<?xml version="1.0" encoding="UTF-8"?>

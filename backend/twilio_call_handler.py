@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import urllib.parse
 import uuid
@@ -28,6 +29,13 @@ _STATE_TTL_SECONDS = 3_600
 _STATE_WAIT_ATTEMPTS = 20
 _STATE_WAIT_SECONDS = 0.25
 _BRIDGE_TOKEN_TTL_SECONDS = 300
+#: The media socket's path carries an opaque per-call reference: Twilio
+#: forbids a query string in <Stream url> (errors 31920/31922), and the
+#: handshake has nothing else to name the call by before it is accepted.
+TWILIO_MEDIA_PATH = "/api/commands/media/twilio"
+_MEDIA_REF_KEY_PREFIX = "twilio:media_ref:"
+_MEDIA_REF_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")   # secrets.token_urlsafe(32)
+_TWILIO_CREDENTIAL_FIELDS = ("account_sid", "auth_token", "api_key", "api_secret")
 
 
 class TwilioCallStateUnavailable(RuntimeError):
@@ -142,6 +150,11 @@ async def initialize_twilio_call_state(
         "created_at": time.time(),
         "qwen_realtime_enabled": twilio_qwen_enabled(),
     }
+    if correlation:
+        # The worker knows the CallSid from Twilio's own create response: it
+        # binds the reference to it, so no webhook can pair the reference
+        # with another call (PR #182 review).
+        await bind_twilio_correlation(correlation, call_sid, authoritative=True)
     if keep_existing:
         redis = await _get_redis()
         state["updated_at"] = time.time()
@@ -167,6 +180,51 @@ def _correlation_key(correlation: str) -> Optional[str]:
         return f"{_CORRELATION_KEY_PREFIX}{uuid.UUID(str(correlation))}"
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+_CORRELATION_CALL_KEY_PREFIX = "twilio:call_ref_sid:"
+
+
+def _correlation_call_key(correlation: str) -> Optional[str]:
+    try:
+        return f"{_CORRELATION_CALL_KEY_PREFIX}{uuid.UUID(str(correlation))}"
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def twilio_correlation_call_sid(correlation: str) -> Optional[str]:
+    """The CallSid a reference is bound to, if any."""
+    key = _correlation_call_key(correlation)
+    if key is None:
+        return None
+    raw = await (await _get_redis()).get(key)
+    if raw is None:
+        return None
+    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+
+async def bind_twilio_correlation(correlation: str, call_sid: str, *, authoritative: bool = False) -> bool:
+    """Bind a reference to the one call it was issued for (first binder wins,
+    atomically). False when it is already bound to another call — the caller
+    refuses: one reference never serves two calls (PR #182 review).
+
+    `authoritative`: the worker, which has the CallSid from Twilio's create
+    response, corrects a different earlier binding (logged)."""
+    key = _correlation_call_key(correlation)
+    if key is None or not _CALL_SID_RE.fullmatch(call_sid or ""):
+        return False
+    redis = await _get_redis()
+    if await redis.set(key, call_sid, ex=_STATE_TTL_SECONDS, nx=True):
+        return True
+    bound = await twilio_correlation_call_sid(correlation)
+    if bound == call_sid:
+        return True
+    if authoritative:
+        logger.warning("Twilio reference was bound to another call before the worker: ref=%s sid=%s",
+                       correlation, call_sid)
+        await redis.set(key, call_sid, ex=_STATE_TTL_SECONDS)
+        return True
+    return False
 
 
 async def initialize_outbound_twilio_correlation(
@@ -246,6 +304,8 @@ async def resolve_outbound_twilio_call_state(
         # The reference is unknown here (expired, or a store that lost it):
         # fall back to the old bounded wait for the worker's own write.
         return await load_twilio_call_state(call_sid, wait_for_initialization=wait_for_initialization)
+    if not await bind_twilio_correlation(correlation, call_sid):
+        return None          # the reference already serves another call
     # SET NX: if the worker bound the CallSid meanwhile, keep its state.
     bound = {**pending, "stage": "queued", "via": "correlation", "updated_at": time.time()}
     redis = await _get_redis()
@@ -254,10 +314,50 @@ async def resolve_outbound_twilio_call_state(
     return await load_twilio_call_state(call_sid) or bound
 
 
+class TwilioCallReferenceCrossed(TwilioCallStateUnavailable):
+    """A webhook pairs a call with another call's reference (or names an
+    unusable call): refused outright, never resolved any other way."""
+
+
+async def outbound_twilio_signing_state(call_sid: str, correlation: str = "") -> Optional[dict[str, Any]]:
+    """The state whose account a webhook's signature is checked against —
+    read only and without waiting, so it runs BEFORE the signature is checked
+    and an unsigned request costs at most three reads (23.2; PR #182 review).
+
+    The CallSid's state, else the pre-submission correlation: the same order
+    resolve_outbound_twilio_call_state acts in, so the call whose account
+    checks the signature is the call the webhook then acts on. None when
+    Redis names neither (the caller may consult the durable rows). Raises
+    TwilioCallReferenceCrossed when the CallSid is bound to another
+    reference, the reference to another CallSid, or either is unusable.
+    Other errors (Redis unreachable) propagate.
+    """
+    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+        raise TwilioCallReferenceCrossed("the webhook names no valid CallSid")
+    has_ref = bool(correlation)
+    if has_ref and _correlation_key(correlation) is None:
+        raise TwilioCallReferenceCrossed("the call reference is malformed")
+    state = await load_twilio_call_state(call_sid)
+    if state is not None:
+        if state.get("direction") != "outbound":
+            raise TwilioCallReferenceCrossed("the CallSid is not an outbound call")
+        if has_ref and str(state.get("correlation") or "") != str(uuid.UUID(str(correlation))):
+            raise TwilioCallReferenceCrossed("the CallSid is bound to another reference")
+        return state
+    if not has_ref:
+        return None
+    bound = await twilio_correlation_call_sid(correlation)
+    if bound is not None and bound != call_sid:
+        raise TwilioCallReferenceCrossed("the reference is bound to another CallSid")
+    return await load_twilio_correlation(correlation)
+
+
 async def cleanup_twilio_correlation(correlation: str) -> None:
     key = _correlation_key(correlation)
     if key is not None:
-        await (await _get_redis()).delete(key)
+        redis = await _get_redis()
+        await redis.delete(key)
+        await redis.delete(_correlation_call_key(correlation))
 
 
 def _require_uuid(value: str, label: str) -> str:
@@ -329,12 +429,160 @@ async def mark_twilio_streaming(call_sid: str) -> None:
     await _save_call_state(call_sid, state)
 
 
-async def twilio_redirect_call(call_sid: str, twiml_url: str) -> None:
+def platform_twilio_account_sid() -> str:
+    return os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+
+
+def platform_twilio_auth_tokens() -> list[str]:
+    """The platform account's signing tokens: the current one and the one
+    being rotated out (TWILIO_AUTH_TOKEN_PREVIOUS, docs/credential-rotation.md)
+    — the set telephony_api._twilio_auth_tokens accepts for inbound calls."""
+    current = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+    previous = os.getenv("TWILIO_AUTH_TOKEN_PREVIOUS", "").strip()
+    return [token for token in dict.fromkeys((current, previous)) if token]
+
+
+async def _load_stored_twilio_credential(tenant_id: str) -> Optional[dict[str, str]]:
+    """A brokerage's own Twilio credential (PUT /api/commands/providers/twilio)
+    — the row the outbound rail places its calls with (_load_provider_credential,
+    no label) and telephony_api._route_twilio_tokens reads for inbound ones.
+    Only its own fields: never filled in from the platform's environment.
+    None when it has none; raises when it cannot be read."""
+    from commands_api import _load_provider_credential
+    from tenancy import Role, TenantContext
+
+    ctx = TenantContext(
+        agent_id="twilio-call-credential",
+        tenant_id=_require_uuid(tenant_id, "tenant_id"),
+        role=Role.AGENT,
+    )
+    raw = await _load_provider_credential(ctx, "twilio")
+    if not raw:
+        return None
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise TwilioCallStateUnavailable("the stored Twilio credential is invalid") from exc
+    if not isinstance(decoded, dict):
+        raise TwilioCallStateUnavailable("the stored Twilio credential is invalid")
+    return {key: str(decoded.get(key) or "").strip() for key in _TWILIO_CREDENTIAL_FIELDS}
+
+
+async def _stored_twilio_credential(tenant_id: str) -> dict[str, str]:
+    stored = await _load_stored_twilio_credential(tenant_id)
+    if stored is None:
+        raise TwilioCallStateUnavailable("the brokerage has no Twilio credential")
+    return stored
+
+
+async def tenant_twilio_account(tenant_id: str) -> str:
+    """The account the outbound rail dials a brokerage's calls from, by the
+    rail's own rule (command_providers.whole_twilio_credential): its stored
+    credential's account when it has one, else the platform's. Raises
+    TwilioCallStateUnavailable when that cannot be known (an unreadable
+    credential is never "use the platform's")."""
+    from command_providers import whole_twilio_credential
+
+    try:
+        stored = await _load_stored_twilio_credential(tenant_id)
+    except TwilioCallStateUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - unreadable is not "the platform's"
+        raise TwilioCallStateUnavailable(
+            f"the brokerage's Twilio credential is unreadable ({type(exc).__name__})") from exc
+    credential, _platform = whole_twilio_credential(stored)
+    if not _ACCOUNT_SID_RE.fullmatch(credential["account_sid"]):
+        raise TwilioCallStateUnavailable("no Twilio account carries this brokerage's calls")
+    return credential["account_sid"]
+
+
+async def _call_account_credentials(state: Mapping[str, Any]) -> tuple[dict[str, str], bool]:
+    """The credential of the Twilio account a call's own state names — state
+    Neoh wrote before the call was placed (or when it was bound) — and whether
+    that account is the platform's (external audit 23.2/23.3).
+
+    The platform account: the environment's credential. Any other account:
+    that brokerage's stored credential, which must be for the same account.
+    Nothing else: a brokerage-account call is never given the platform's
+    credential, nor one brokerage's call another's. Raises
+    TwilioCallStateUnavailable when no such credential exists.
+    """
+    account_sid = str(state.get("account_sid") or "")
+    if not _ACCOUNT_SID_RE.fullmatch(account_sid):
+        raise TwilioCallStateUnavailable("the call state names no Twilio account")
+    platform_sid = platform_twilio_account_sid()
+    if platform_sid and account_sid == platform_sid:
+        return {
+            "account_sid": platform_sid,
+            "auth_token": os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
+            "api_key": os.getenv("TWILIO_API_KEY", "").strip(),
+            "api_secret": os.getenv("TWILIO_API_SECRET", "").strip(),
+        }, True
+    tenant_id = str(state.get("tenant_id") or "")
+    if not tenant_id:
+        raise TwilioCallStateUnavailable("the call state names no brokerage")
+    try:
+        stored = await _stored_twilio_credential(tenant_id)
+    except TwilioCallStateUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - unreadable is not "use another account's"
+        raise TwilioCallStateUnavailable(
+            f"the brokerage's Twilio credential is unreadable ({type(exc).__name__})") from exc
+    if stored["account_sid"] != account_sid:
+        raise TwilioCallStateUnavailable(
+            "the brokerage's Twilio credential is not for the account that carries the call")
+    return stored, False
+
+
+async def twilio_signing_tokens(state: Mapping[str, Any]) -> list[str]:
+    """The tokens a webhook or media handshake for this call may be signed
+    with: the platform's current and previous token when the call's account
+    is the platform's, else only that brokerage's own token. Raises
+    TwilioCallStateUnavailable when none can be chosen (the caller refuses)."""
+    credentials, platform = await _call_account_credentials(state)
+    tokens = platform_twilio_auth_tokens() if platform else [credentials["auth_token"]]
+    tokens = [token for token in dict.fromkeys(tokens) if token]
+    if not tokens:
+        raise TwilioCallStateUnavailable("no auth token is configured for the call's Twilio account")
+    return tokens
+
+
+async def credentials_for_call(call_sid: str) -> dict[str, str]:
+    """The REST credential for acting on a live call (the agent hand-off, the
+    refusal line): the whole credential of the account the call's own state
+    names. Raises TwilioCallStateUnavailable — never falls back to the
+    platform's credential — when the state, or a credential for exactly that
+    account, is missing (external audit 23.3)."""
+    try:
+        state = await load_twilio_call_state(call_sid)
+        if state is None:
+            raise TwilioCallStateUnavailable("Twilio call state is missing.")
+        credentials, _platform = await _call_account_credentials(state)
+    except Exception as exc:  # noqa: BLE001 - logged, then refused
+        reason = str(exc) if isinstance(exc, TwilioCallStateUnavailable) else type(exc).__name__
+        logger.warning("transfer_credentials_unavailable: sid=%s reason=%s", call_sid, reason)
+        if isinstance(exc, TwilioCallStateUnavailable):
+            raise
+        raise TwilioCallStateUnavailable("Twilio call credentials are unavailable.") from exc
+    return credentials
+
+
+async def twilio_redirect_call(
+    call_sid: str,
+    twiml_url: str,
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> None:
     """Redirect a live Twilio call to new TwiML — the live agent hand-off.
 
     Passing a URL rather than inline TwiML keeps the destination number out of
     this process and the resulting request signature-validated like every other
     Twilio webhook.
+
+    `credentials` are used whole or not at all: never completed field by field
+    from the environment, which could pair a brokerage's account SID with the
+    platform's token (23.3). Without them, the call's own account is resolved
+    (credentials_for_call), never assumed to be the platform's.
     """
     if not _CALL_SID_RE.fullmatch(call_sid or ""):
         raise ValueError("Twilio call SID is invalid")
@@ -344,10 +592,11 @@ async def twilio_redirect_call(call_sid: str, twiml_url: str) -> None:
 
     from command_providers import _twilio_client, _twilio_credential_error
 
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-    api_key = os.getenv("TWILIO_API_KEY", "").strip()
-    api_secret = os.getenv("TWILIO_API_SECRET", "").strip()
+    if credentials is None:
+        credentials = await credentials_for_call(call_sid)
+    account_sid, auth_token, api_key, api_secret = (
+        str(credentials.get(key) or "").strip() for key in _TWILIO_CREDENTIAL_FIELDS
+    )
     error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
     if error:
         raise TwilioCallStateUnavailable(f"Cannot redirect call: {error}")
@@ -366,7 +615,17 @@ async def cleanup_twilio_call(call_sid: str) -> None:
     await redis.delete(_state_key(call_sid))
 
 
-def twilio_media_websocket_url() -> str:
+def _media_ref_key(media_ref: str) -> Optional[str]:
+    if not isinstance(media_ref, str) or not _MEDIA_REF_RE.fullmatch(media_ref):
+        return None
+    return f"{_MEDIA_REF_KEY_PREFIX}{media_ref}"
+
+
+def twilio_media_websocket_url(media_ref: str) -> str:
+    """The exact WSS URL Twilio is given for one call's media stream — and
+    signs the handshake over: the per-call reference rides in the path."""
+    if _media_ref_key(media_ref) is None:
+        raise ValueError("Twilio media reference is invalid")
     base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").strip().rstrip("/")
     parsed = urllib.parse.urlsplit(base)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -384,27 +643,70 @@ def twilio_media_websocket_url() -> str:
             "Twilio Media Streams require WSS outside development."
         )
     return urllib.parse.urlunsplit(
-        (scheme, parsed.netloc, "/api/commands/media/twilio", "", "")
+        (scheme, parsed.netloc, f"{TWILIO_MEDIA_PATH}/{media_ref}", "", "")
     )
 
 
-def verify_twilio_websocket_signature(signature: str) -> bool:
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-    if not auth_token or not signature:
-        return False
+async def create_twilio_media_stream_url(call_sid: str) -> str:
+    """The <Stream url> for one call: a fresh opaque reference, bound to the
+    call's state (and only the latest one is live), that the media socket's
+    handshake is resolved by before it is accepted. Expires with the bridge
+    token. Raises TwilioCallStateUnavailable when it cannot be stored."""
+    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+        raise ValueError("Twilio call SID is invalid")
+    media_ref = secrets.token_urlsafe(32)
+    url = twilio_media_websocket_url(media_ref)
     try:
-        from twilio.request_validator import RequestValidator
+        state = await load_twilio_call_state(call_sid)
+        if state is None:
+            raise TwilioCallStateUnavailable("Twilio call state is missing.")
+        redis = await _get_redis()
+        await redis.set(_media_ref_key(media_ref), call_sid, ex=_BRIDGE_TOKEN_TTL_SECONDS)
+        state["media_ref"] = media_ref
+        await _save_call_state(call_sid, state)
+    except TwilioCallStateUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the caller falls back, never streams unbound
+        raise TwilioCallStateUnavailable("Twilio media binding could not be stored.") from exc
+    return url
 
-        return bool(
-            RequestValidator(auth_token).validate(
-                twilio_media_websocket_url(),
-                {},
-                signature,
-            )
-        )
-    except Exception:
-        logger.exception("Twilio WebSocket signature validation failed")
-        return False
+
+async def authenticate_twilio_media_handshake(media_ref: str, signature: str) -> Optional[str]:
+    """Before a media socket is accepted: the CallSid it may serve, or None to
+    refuse it (4403).
+
+    The path's reference must be live and still the one its call's state
+    carries; the signature must verify over the exact URL Twilio was given,
+    under the tokens of the account that call's own state names — the
+    platform's current or previous token for a platform-account call, the
+    brokerage's own stored token for a call on its account (23.2). The start
+    frame is checked after this (authorize_twilio_media); it is never
+    authority on its own.
+    """
+    key = _media_ref_key(media_ref)
+    if key is None or not signature:
+        return None
+    raw = await (await _get_redis()).get(key)
+    if raw is None:
+        return None
+    call_sid = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    state = await load_twilio_call_state(call_sid)
+    if state is None or not hmac.compare_digest(
+        str(state.get("media_ref") or "").encode("utf-8"), media_ref.encode("utf-8")
+    ):
+        return None
+    try:
+        tokens = await twilio_signing_tokens(state)
+    except TwilioCallStateUnavailable as exc:
+        logger.warning("Twilio media handshake refused: sid=%s reason=%s", call_sid, exc)
+        return None
+    from twilio.request_validator import RequestValidator
+
+    url = twilio_media_websocket_url(media_ref)
+    if any(RequestValidator(token).validate(url, {}, signature) for token in tokens):
+        return call_sid
+    logger.warning("Twilio media handshake signature is invalid: sid=%s", call_sid)
+    return None
 
 
 def _bridge_signing_key() -> bytes:

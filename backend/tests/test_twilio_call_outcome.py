@@ -25,6 +25,12 @@ import commands_api as ca
 SID = "CA" + "e" * 32
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 class _Request:
     def __init__(self, form: dict[str, str]):
         self._form = FormData(form)
@@ -38,7 +44,7 @@ class _Request:
 
 @pytest.fixture()
 def hook(monkeypatch):
-    monkeypatch.setattr(ca, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
     seen = SimpleNamespace(accepted=[], cleaned=[], brokerage="brokerage-1", accept_error=None,
                            cleanup_error=None)
 
@@ -115,7 +121,7 @@ def test_a_failed_cleanup_does_not_unrecord_a_stored_outcome(hook):
 
 def test_the_signature_is_checked_before_anything_is_stored():
     src = inspect.getsource(ca.twilio_status_webhook)
-    assert src.index("_validate_twilio_webhook_signature(") < src.index("_twilio_call_brokerage(")
+    assert src.index("_verify_outbound_twilio_signature(") < src.index("_twilio_call_brokerage(")
     assert src.index("_twilio_call_brokerage(") < src.index("accept_call_outcome(")
 
 
@@ -147,11 +153,11 @@ def test_a_status_signed_for_the_url_without_its_fragment_is_accepted(monkeypatc
 
     request = _Request(params)
     request.headers["X-Twilio-Signature"] = signed
-    ca._validate_twilio_webhook_signature(request, request._form, suffix)   # accepted
+    ca._validate_twilio_webhook_signature(request, request._form, suffix, tokens=["test-token"])   # accepted
 
     request.headers["X-Twilio-Signature"] = RequestValidator("test-token").compute_signature(given, params)
     with pytest.raises(HTTPException):
-        ca._validate_twilio_webhook_signature(request, request._form, suffix)
+        ca._validate_twilio_webhook_signature(request, request._form, suffix, tokens=["test-token"])
 
 
 # ── whose call is it ──────────────────────────────────────────────────────

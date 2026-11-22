@@ -26,6 +26,12 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 class _Request:
     def __init__(self, form):
         from starlette.datastructures import FormData
@@ -75,7 +81,7 @@ async def _scenario(monkeypatch):
         answered.append(call_id)
         await real_answered(call_id)
 
-    monkeypatch.setattr(commands_api, "_validate_twilio_webhook_signature", lambda *a, **k: None)
+    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", _signature_checked)
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", load_state)
     monkeypatch.setattr(twilio_call_handler, "cleanup_twilio_call", cleanup)
     monkeypatch.setattr(commands_api, "_record_call_answered", spy_answered)

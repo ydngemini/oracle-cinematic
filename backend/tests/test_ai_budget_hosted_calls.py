@@ -47,6 +47,12 @@ CALLER = "+13025550100"
 BACKEND = Path(__file__).resolve().parents[1]
 
 
+async def _signature_checked(*_a, **_k):
+    """Stands in for _verify_outbound_twilio_signature (its own tests:
+    test_twilio_tenant_signatures.py)."""
+    return None
+
+
 class _Budget:
     """ai_budget's reserve/settle/release, in memory: a real SpendScope runs
     against it. `refuse` names the state the next reservation is refused with."""
@@ -571,7 +577,7 @@ def _twilio_speech(monkeypatch, *, state, reply):
     import twilio_call_handler
     import voice_tts
 
-    monkeypatch.setattr(commands_api, "_validate_twilio_webhook_signature", lambda *_a, **_k: None)
+    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", _signature_checked)
 
     async def load(_sid, **_kwargs):
         if isinstance(state, Exception):
@@ -875,6 +881,7 @@ async def _never_asked(_prompt, **_kwargs):
 
 _OPEN_CONTROLS = {"cap": None, "warn_pct": 80, "paused": False, "halted": False}
 TWILIO_SID = "CA" + "1" * 32
+TWILIO_PLATFORM_ACCOUNT = "AC" + "2" * 32
 PLIVO_UUID = "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 
 
@@ -995,21 +1002,28 @@ def _twilio_media(monkeypatch, state, opened):
     async def authorize(*_args):
         return True
 
+    async def handshake(_ref, _signature):
+        return TWILIO_SID
+
     async def load(_sid, **_kwargs):
         if isinstance(state, Exception):
             raise state
-        return None if state is None else dict(state)
+        # A platform-account call: the refusal moves it with the platform's
+        # credential (23.3; tests/test_twilio_tenant_signatures.py).
+        return None if state is None else {"account_sid": TWILIO_PLATFORM_ACCOUNT, **state}
 
     async def mark(_sid):
         return None
 
-    monkeypatch.setattr(twilio_call_handler, "verify_twilio_websocket_signature", lambda _s: True)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", TWILIO_PLATFORM_ACCOUNT)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "platform-token-for-tests")
+    monkeypatch.setattr(twilio_call_handler, "authenticate_twilio_media_handshake", handshake)
     monkeypatch.setattr(twilio_call_handler, "authorize_twilio_media", authorize)
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", load)
     monkeypatch.setattr(twilio_call_handler, "mark_twilio_streaming", mark)
     monkeypatch.setattr(qwen_omni_realtime, "TwilioQwenRealtimeBridge", _bridge_recorder(opened))
     moved = _provider_transfers(monkeypatch, voice_provider.TwilioVoiceProvider)
-    return commands_api.twilio_qwen_media(socket), socket, lambda: moved
+    return commands_api.twilio_qwen_media(socket, "r" * 43), socket, lambda: moved
 
 
 def _plivo_media(monkeypatch, state, opened, *, engine="qwen"):
@@ -1120,9 +1134,11 @@ def test_a_realtime_call_the_brokerage_cannot_spend_on_never_opens_its_model(
     run, socket, said = _MEDIA_ROUTES[route](monkeypatch, state, opened)
     asyncio.run(run)
     assert opened == [], "a hosted realtime model was opened for a call its brokerage cannot spend on"
-    if route == "acs" and stop == "state_unreadable":
-        # An ACS call is driven with the credentials its state carries: with
-        # none readable nothing can be played, only the socket closed.
+    if route in ("acs", "twilio") and stop == "state_unreadable":
+        # An ACS call is driven with the credentials its state carries, and a
+        # Twilio call is moved only with those of the account its state names
+        # (23.3): with none readable nothing can be played, only the socket
+        # closed — the stream markup's own goodbye ends a Twilio call.
         assert said() == []
     else:
         _refusal_was_said(route, said())
