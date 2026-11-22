@@ -34,6 +34,12 @@ AI must say out loud (external audit 34.4 / RUN-03). At call end
 commands_api.deliver_call_notes finds that note and writes no second one.
 Without a yes, save_note refuses, so the agent cannot claim to have noted what
 nothing kept.
+
+A hang-up never cancels a note or consent write that already started, and the
+call's close-out waits for it (at most _SETTLE_TIMEOUT) and counts what it did
+before delivering notes or replaying a withdrawal (external audit 23.7). A "no"
+is pending from the moment it is said until the database records it, so a
+hang-up during that write still withdraws the call's notes.
 """
 
 from __future__ import annotations
@@ -62,10 +68,19 @@ NOTE_NOT_SAVED = ("Not saved: the note could not be saved. Tell them you couldn'
 #: The answer once the call turns out to have nowhere to keep notes.
 NOTE_NOT_KEPT = ("Not saved: notes cannot be kept on this call. Tell them you couldn't save that "
                  "note, take no more notes, and suggest they tell their agent directly.")
+#: The answer whenever no note may be kept.
+_REFUSE = ("No notes can be kept. Do not take notes and do not say you have noted "
+           "anything; suggest they tell their agent directly.")
+#: How long the call's close-out waits for a note or consent write the hang-up
+#: interrupted (23.7). Each write is bounded in commands_api at 2 s of lock wait
+#: and 5 s per statement; one still running after this is counted as not
+#: confirmed (an unsaved note; a "no" replayed).
+_SETTLE_TIMEOUT = 10.0
 
 
-#: Note writes in flight, kept referenced: a hang-up cancels the bridge, never a
-#: note write that already started (nothing was said about it yet either way).
+#: Note and consent writes in flight, kept referenced: a hang-up cancels the
+#: bridge, never a write that already started (nothing was said about it yet
+#: either way).
 _NOTE_WRITES: set = set()
 
 
@@ -83,11 +98,12 @@ def _note_key(tool_call_id: Any, note: str) -> str:
     return f"{call_id}:{hashlib.sha256(note.encode()).hexdigest()[:24]}"
 
 
-async def _shielded_note_write(coro: Awaitable[Any]) -> Any:
-    task = asyncio.ensure_future(coro)
-    _NOTE_WRITES.add(task)
-    task.add_done_callback(_note_write_done)
-    return await asyncio.shield(task)
+def _write_result(write: "Optional[asyncio.Task]") -> Any:
+    """What a settled write returned; None when it raised, was cancelled or
+    had not finished (write is None)."""
+    if write is None or write.cancelled() or write.exception() is not None:
+        return None
+    return write.result()
 
 
 class ElevenLabsRealtimeError(RuntimeError):
@@ -261,8 +277,14 @@ class PlivoElevenLabsBridge:
         self.notes_unsaved: list[str] = []
         #: The call has nowhere to keep notes (a lead with no client record).
         self._notes_unavailable = False
-        #: The callee said no but the database did not record it: retried at hang-up.
+        #: The callee said no and the database has not (yet) recorded it:
+        #: set when the no is said, cleared only by a recorded answer, and
+        #: replayed at hang-up while still set (23.7).
         self._withdraw_pending = False
+        #: Shielded note / consent writes whose tool call a hang-up cancelled
+        #: before it could count the result: write -> how to count it. The
+        #: close-out waits for them before delivery or withdrawal (23.7).
+        self._unsettled: dict[asyncio.Task, Callable[[Optional[asyncio.Task]], Any]] = {}
         #: Card numbers/codes removed from save_note calls (counts only).
         self.pan_cards = 0
         self.pan_codes = 0
@@ -294,15 +316,27 @@ class PlivoElevenLabsBridge:
                 instructions, first_message = self._instructions()
                 await agent.send(json.dumps(initiation_message(instructions, first_message)))
                 logger.info("ElevenLabs conversation opened: uuid=%s", self.call_uuid)
-                to_agent = asyncio.create_task(self._plivo_to_agent(agent))
-                to_caller = asyncio.create_task(self._agent_to_plivo(agent))
-                done, pending = await asyncio.wait({to_agent, to_caller}, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                for task in done:
-                    exc = task.exception()
-                    if exc is not None:
-                        raise exc
+                to_agent = asyncio.create_task(self._plivo_to_agent(agent),
+                                               name=f"plivo-to-agent:{self.call_uuid}")
+                to_caller = asyncio.create_task(self._agent_to_plivo(agent),
+                                                name=f"agent-to-plivo:{self.call_uuid}")
+                # The agent side first: its exceptions carry the call's outcome
+                # (opt-out, hand-off, turn limit), Plivo's only a closed socket.
+                streams = (to_caller, to_agent)
+                done: set = set()
+                try:
+                    done, _ = await asyncio.wait(streams, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    # Joined here, inside the agent connection, as the Qwen
+                    # bridge does (23.7): the losing side is cancelled AND
+                    # awaited, so none of it runs after run() returns, and
+                    # every exception is retrieved.
+                    for task in streams:
+                        task.cancel()
+                    await asyncio.gather(*streams, return_exceptions=True)
+                for task in streams:
+                    if task in done and task.exception() is not None:
+                        raise task.exception()
         except ElevenLabsHandoffRequested:
             logger.info("ElevenLabs session ended for live agent hand-off: uuid=%s", self.call_uuid)
         except Exception as exc:
@@ -312,6 +346,9 @@ class PlivoElevenLabsBridge:
                 await self._hand_off_after_failure()
             raise
         finally:
+            # A write the hang-up interrupted is counted first: delivery and a
+            # replayed withdrawal must see what it did (23.7).
+            await self._settle_writes()
             if not inbound and self._withdraw_pending:
                 await self._withdraw_at_hang_up()
             elif not inbound and (self.notes_consent or self.notes or self.notes_unsaved):
@@ -397,40 +434,34 @@ class PlivoElevenLabsBridge:
 
     async def _on_tool_call(self, name: str, params: Any, tool_call_id: str = "") -> tuple[str, bool]:
         params = params if isinstance(params, dict) else {}
-        refuse = ("No notes can be kept. Do not take notes and do not say you have noted "
-                  "anything; suggest they tell their agent directly.")
         if self._call_state.get("direction") == "inbound":
             return "Notes are not used on this call.", True
         if name == TOOL_NOTE_CONSENT:
             from commands_api import record_call_note_consent
 
             granted = params.get("granted") is True
+            if not granted:
+                # Pending from the moment it is said (23.7), not only once its
+                # write failed: a hang-up that cancels this tool call mid-write
+                # bypasses `except Exception`, and the withdrawal must still be
+                # replayed at hang-up — notes saved before a no never outlive
+                # it. Only a recorded answer clears it (_consent_counted).
+                self._withdraw_pending = True
+            # Shielded like a note write: a hang-up right after "no" (the
+            # likeliest moment) lets the write already under way commit
+            # instead of tearing it down; the close-out waits for it and
+            # replays the no only if it did not record.
             try:
-                found = await record_call_note_consent(self._session_ref(), granted)
+                found = await self._shielded_write(
+                    record_call_note_consent(self._session_ref(), granted),
+                    lambda write: self._consent_settled(granted, write))
             except Exception:
                 logger.exception("Note consent not recorded: uuid=%s", self.call_uuid)
                 found = False
-                # A no that did not reach the database is tried again at
-                # hang-up: notes saved before it must not outlive it.
-                self._withdraw_pending = self._withdraw_pending or not granted
-            if found:
-                # The callee's latest answer is now recorded: an earlier no
-                # that failed is superseded, never replayed over a later yes.
-                self._withdraw_pending = False
-            if not found:
-                self.notes_consent = False
-                return refuse, True
-            self.notes_consent = granted
-            if granted:
-                return f"Consent recorded. Save each detail with {TOOL_SAVE_NOTE}.", False
-            # The database deleted any note saved earlier on this call.
-            self.notes.clear()
-            self.notes_unsaved.clear()
-            self._saved_tool_calls.clear()
-            return "Recorded that they declined. Nothing from this call is kept. " + refuse, False
+            return self._consent_counted(granted, bool(found))
         if name == TOOL_SAVE_NOTE:
             if self.notes_consent is not True:
-                return "The caller has not agreed to notes. " + refuse, True
+                return "The caller has not agreed to notes. " + _REFUSE, True
             if self._notes_unavailable:
                 return NOTE_NOT_KEPT, True
             from pan_redaction import CVV_PLACEHOLDER, PAN_PLACEHOLDER, redact, report
@@ -459,36 +490,108 @@ class PlivoElevenLabsBridge:
             # Written now, and acknowledged only once the write committed
             # (34.4 / RUN-03): a crash or hang-up cannot lose what the caller
             # heard was saved, and nothing is claimed for a failed write.
+            redacted = redaction.changed
             try:
-                outcome = await _shielded_note_write(self._save_note(note, str(tool_call_id or "").strip()))
+                outcome = await self._shielded_write(
+                    self._save_note(note, str(tool_call_id or "").strip()),
+                    lambda write: self._note_counted(key, note, redacted, _write_result(write)))
             except Exception:
-                self._mark_unsaved(key)
-                return NOTE_NOT_SAVED, True
-            if outcome.status == "refused":
-                self.notes_consent = False
-                return refuse, True
-            if outcome.status == "no_client":
-                self._notes_unavailable = True
-                return NOTE_NOT_KEPT, True
-            if outcome.status == "full":
-                return "The note limit for this call is reached; nothing more was saved.", True
-            if not outcome.saved:
-                logger.error("Call note NOT saved (%s); the caller is told: uuid=%s",
-                             outcome.status, self.call_uuid)
-                self._mark_unsaved(key)
-                return NOTE_NOT_SAVED, True
-            self.notes.append(note)
-            if key and key in self.notes_unsaved:
-                self.notes_unsaved.remove(key)
-            if redaction.changed:
-                result = ("Saved for their agent without the card details, which are never kept. "
-                          "Do not repeat them; any payment is made only through a secure payment link.")
-            else:
-                result = "Saved for their agent."
-            if key:
-                self._saved_tool_calls[key] = result
-            return result, False
+                outcome = None
+            return self._note_counted(key, note, redacted, outcome)
         return f"Unknown tool {name!r}.", True
+
+    # ── writes a hang-up cannot cancel (RUN-06, 23.7) ───────────────────
+    async def _shielded_write(self, coro: Awaitable[Any],
+                              settle: Callable[[Optional[asyncio.Task]], Any]) -> Any:
+        """Run a note or consent write that a hang-up cannot cancel. The tool
+        call awaiting it counts the result itself; if a hang-up cancels the
+        tool call first, `settle` counts it at call end (_settle_writes)."""
+        task = asyncio.ensure_future(coro)
+        _NOTE_WRITES.add(task)
+        task.add_done_callback(_note_write_done)
+        self._unsettled[task] = settle
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise  # left in _unsettled, even if the write just finished
+        except BaseException:
+            self._unsettled.pop(task, None)
+            raise
+        self._unsettled.pop(task, None)
+        return result
+
+    async def _settle_writes(self) -> None:
+        """Call end: wait (at most _SETTLE_TIMEOUT) for writes whose tool call
+        the hang-up cancelled, and count what each did — a note saved, a note
+        not saved, an answer recorded or not — before the close-out reads it."""
+        if not self._unsettled:
+            return
+        writes = dict(self._unsettled)
+        _, late = await asyncio.wait(set(writes), timeout=_SETTLE_TIMEOUT)
+        self._unsettled.clear()
+        for write, settle in writes.items():
+            if write in late:
+                logger.error("A note or consent write was still running %.0f s after the hang-up; "
+                             "counted as not confirmed: uuid=%s", _SETTLE_TIMEOUT, self.call_uuid)
+                settle(None)
+            else:
+                settle(write)
+
+    def _consent_settled(self, granted: bool, write: Optional[asyncio.Task]) -> None:
+        if write is not None and not write.cancelled() and write.exception() is not None:
+            logger.error("Note consent not recorded (write ended after the hang-up): uuid=%s",
+                         self.call_uuid, exc_info=write.exception())
+        self._consent_counted(granted, bool(_write_result(write)))
+
+    def _consent_counted(self, granted: bool, found: bool) -> tuple[str, bool]:
+        """Count one consent answer: `found` is whether the call's session row
+        recorded it (False also when the write failed)."""
+        if not found:
+            # A no stays pending (set when it was said): replayed at hang-up.
+            self.notes_consent = False
+            return _REFUSE, True
+        # The callee's latest answer is now recorded: an earlier no that
+        # failed is superseded, never replayed over a later yes (L09-18 r2).
+        self._withdraw_pending = False
+        self.notes_consent = granted
+        if granted:
+            return f"Consent recorded. Save each detail with {TOOL_SAVE_NOTE}.", False
+        # The database deleted any note saved earlier on this call.
+        self.notes.clear()
+        self.notes_unsaved.clear()
+        self._saved_tool_calls.clear()
+        return "Recorded that they declined. Nothing from this call is kept. " + _REFUSE, False
+
+    def _note_counted(self, key: str, note: str, redacted: bool, outcome: Any) -> tuple[str, bool]:
+        """Count one note write (`outcome` None: it raised, or at call end did
+        not finish) and give the answer the AI says, if it is still there."""
+        if outcome is None:
+            self._mark_unsaved(key)
+            return NOTE_NOT_SAVED, True
+        if outcome.status == "refused":
+            self.notes_consent = False
+            return _REFUSE, True
+        if outcome.status == "no_client":
+            self._notes_unavailable = True
+            return NOTE_NOT_KEPT, True
+        if outcome.status == "full":
+            return "The note limit for this call is reached; nothing more was saved.", True
+        if not outcome.saved:
+            logger.error("Call note NOT saved (%s); counted as unsaved: uuid=%s",
+                         outcome.status, self.call_uuid)
+            self._mark_unsaved(key)
+            return NOTE_NOT_SAVED, True
+        self.notes.append(note)
+        if key and key in self.notes_unsaved:
+            self.notes_unsaved.remove(key)
+        if redacted:
+            result = ("Saved for their agent without the card details, which are never kept. "
+                      "Do not repeat them; any payment is made only through a secure payment link.")
+        else:
+            result = "Saved for their agent."
+        if key:
+            self._saved_tool_calls[key] = result
+        return result, False
 
     def _mark_unsaved(self, key: str) -> None:
         """Count a note the caller was told was not saved — a retried tool
