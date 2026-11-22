@@ -59,10 +59,10 @@ def test_closure_billing_against_real_postgres(monkeypatch):
     monkeypatch.setattr(stripe, "api_key", "sk_test_" + "stub")
     monkeypatch.setattr(stripe.Subscription, "modify", fake.modify)
     monkeypatch.setattr(stripe.Subscription, "retrieve", fake.retrieve)
-    asyncio.run(_scenario(fake))
+    asyncio.run(_scenario(fake, monkeypatch))
 
 
-async def _scenario(fake):
+async def _scenario(fake, monkeypatch):
     import asyncpg
 
     import component_health
@@ -301,6 +301,74 @@ async def _scenario(fake):
             assert await admin.fetchval("SELECT count(*) FROM privacy_operations WHERE tenant_id=$1 "
                                         "AND kind='erasure'", T) == 0
             assert await admin.fetchval("SELECT released_at FROM legal_holds WHERE id=$1", hold) is None
+
+        # ── review of PR #185: members the owner switched off during the
+        # closure stay off, with their numbers. Three agents, frozen by this
+        # closure; each reinstated in Team, then:
+        #   K (membership row) suspended, the audit write failing after commit:
+        #     only the membership marks it;
+        #   N (no membership row) suspended: only the audit event marks it;
+        #   P (membership row) suspended and reinstated again, the second audit
+        #     write failing: the audit's last word says suspended, but P is on,
+        #     so P and P's numbers come back.
+        import audit_ledger
+        import brokerage_onboarding as bo
+
+        team = {}
+        for tag, membership in (("K", True), ("N", False), ("P", True)):
+            who = f"{tag.lower()}-{s}@live.test"
+            uid = await admin.fetchval(
+                "INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
+                "VALUES ($1,$2,'agent',$2,'scrypt$x$y') RETURNING id", T, who)
+            if membership:
+                await admin.execute("INSERT INTO team_memberships (tenant_id, user_id, team_name, status) "
+                                    "VALUES ($1,$2,'Team','active')", T, uid)
+            tr = await admin.fetchval(
+                "INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, agent_forward_e164, active, "
+                "provider, twilio_account_sid, provider_account_id) "
+                "VALUES ($1,$2,$3,'+13025550199',true,'twilio',$4,$5) RETURNING id::text",
+                T, who, "+1302" + str(secrets.randbelow(10**7)).zfill(7), "AC" + "0" * 32, "AC" + "0" * 32)
+            mr = await admin.fetchval("INSERT INTO messaging_routes (tenant_id, agent_id, active) "
+                                      "VALUES ($1,$2,true) RETURNING id::text", T, who)
+            team[tag] = {"user": uid, "telephony": tr, "messaging": mr}
+        kept = await pl.request_closure(octx, confirm_name=name, reason="closing (team changes)")
+        why = bo.MemberStatusChange(reason="owner decision")
+
+        async def audit_fails(*_a, **_k):
+            raise RuntimeError("audit store unavailable")
+
+        for tag in ("K", "N", "P"):
+            await bo._reinstate(octx, team[tag]["user"], why)
+        with monkeypatch.context() as m:
+            m.setattr(audit_ledger.ledger, "record", audit_fails)
+            await bo.suspend_member(team["K"]["user"], why, ctx=octx)
+        await bo.suspend_member(team["N"]["user"], why, ctx=octx)
+        await bo.suspend_member(team["P"]["user"], why, ctx=octx)
+        with monkeypatch.context() as m:
+            m.setattr(audit_ledger.ledger, "record", audit_fails)
+            await bo._reinstate(octx, team["P"]["user"], why)
+
+        async def state_of(tag):
+            t = team[tag]
+            return (await admin.fetchval("SELECT is_active FROM users WHERE id=$1", t["user"]),
+                    await admin.fetchval("SELECT active FROM telephony_routes WHERE id=$1::uuid", t["telephony"]),
+                    await admin.fetchval("SELECT active FROM messaging_routes WHERE id=$1::uuid", t["messaging"]))
+
+        assert await state_of("K") == (False, False, False) == await state_of("N")
+        assert await state_of("P") == (True, False, False)
+        back = await pl.withdraw_closure(octx, reason="keep the brokerage")
+        assert await state_of("K") == (False, False, False)
+        assert await state_of("N") == (False, False, False)
+        assert await state_of("P") == (True, True, True)
+        assert await switched_on(live) == (True, True, True)
+        assert await switched_on(idle) == (False, False, False)
+        assert sorted((u["id"], u["reason"]) for u in back["skipped_users"]) == sorted(
+            (str(team[t]["user"]), "suspended") for t in ("K", "N"))
+        assert sorted(back["skipped_routes"]) == sorted(
+            team[t][r] for t in ("K", "N") for r in ("telephony", "messaging"))
+        recorded = await op_row(kept["operation_id"])
+        assert recorded["state"] == "cancelled"
+        assert sorted(recorded["result"]["skipped_routes"]) == sorted(back["skipped_routes"])
 
         # ── L17-58: once an erasure has started there is nothing to withdraw ─
         await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE id=$1", hold)

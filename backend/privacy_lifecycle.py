@@ -912,9 +912,56 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
 #: closure a withdrawal restores from and an erasure finishes (L17-58).
 _CURRENT_CLOSURE = ("running", "blocked_legal_hold")
 
+# Members of a closure's freeze list that the brokerage has itself switched
+# off since that closure, and who are still off (review of PR #185). A
+# withdrawal (and the runbook repair) must not switch them back on, nor the
+# numbers they now hold: an owner may reinstate and then suspend a frozen
+# agent while the brokerage is closing, and after an older withdrawal that
+# restored nothing, may have offboarded one (offboarding parks the number,
+# _hand_over_routes). Offboarding itself is refused while closing
+# (offboard_agent), so that case is defensive for current closures.
+#   suspended:  team_memberships.status 'suspended' (suspend_member and
+#               offboarding set it; reinstate_member clears it), or the latest
+#               team.member.* audit event since the closure is a suspension
+#               (that event is written after commit, best effort, so it only
+#               adds to the membership marker)
+#   offboarded: an offboard operation for the member since the closure, or
+#               the latest such audit event is team.member.offboarded
+_SWITCHED_OFF_SINCE_SQL = """
+SELECT u.id::text AS id, u.agent_id,
+       CASE WHEN off.id IS NOT NULL OR ev.action = 'team.member.offboarded'
+            THEN 'offboarded' ELSE 'suspended' END AS reason
+  FROM users u
+  LEFT JOIN LATERAL (SELECT p.id FROM privacy_operations p
+                      WHERE p.tenant_id = u.tenant_id AND p.kind = 'offboard'
+                        AND p.subject_ref = u.id::text AND p.requested_at > $3
+                      LIMIT 1) off ON true
+  LEFT JOIN LATERAL (SELECT a.action FROM audit_ledger a
+                      WHERE a.tenant_id = u.tenant_id AND a.target_id = u.id AND a.created_at > $3
+                        AND a.action IN ('team.member.suspended', 'team.member.reinstated',
+                                         'team.member.offboarded')
+                      ORDER BY a.created_at DESC LIMIT 1) ev ON true
+ WHERE u.tenant_id = $1 AND u.id::text = ANY($2::text[]) AND NOT u.is_active
+   AND (off.id IS NOT NULL
+        OR ev.action IN ('team.member.suspended', 'team.member.offboarded')
+        OR EXISTS (SELECT 1 FROM team_memberships m
+                    WHERE m.tenant_id = u.tenant_id AND m.user_id = u.id AND m.status = 'suspended'))
+ ORDER BY u.id
+"""
+
+
+async def _switched_off_since(conn, tenant_id: str, user_ids: list, since) -> list[dict]:
+    """[{id, agent_id, reason: suspended|offboarded}] for the freeze-list
+    members the brokerage switched off itself after `since` (still off)."""
+    if not user_ids:
+        return []
+    return [dict(r) for r in await conn.fetch(_SWITCHED_OFF_SINCE_SQL, tenant_id, list(user_ids), since)]
+
 
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
-    """Change of mind during the grace period: back to exactly how it was.
+    """Change of mind during the grace period: back to how it was. Members the
+    owner has suspended or offboarded since the closure stay off, with the
+    numbers they hold, and are reported (skipped_users, skipped_routes).
     Resuming renewal is queued durably in the same transaction (22.1)."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can reopen the brokerage.", status_code=403)
@@ -935,7 +982,7 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         # begin_erasure, which locks the same row before it moves a closing
         # brokerage to 'erasing'; a withdrawal after that is refused above.
         op = await conn.fetchrow(
-            "SELECT id, state, progress, error FROM privacy_operations WHERE tenant_id=$1 "
+            "SELECT id, state, progress, error, requested_at FROM privacy_operations WHERE tenant_id=$1 "
             "AND kind='closure' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
         withdrawn = op if op is not None and op["state"] in _CURRENT_CLOSURE else None
         progress = withdrawn["progress"] if withdrawn else None
@@ -944,18 +991,32 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
             "UPDATE tenants SET lifecycle_state='active', closure_requested_at=NULL, "
             "closure_requested_by=NULL, closure_reason=NULL, updated_at=now() WHERE id=$1",
             ctx.tenant_id)
+        # Not those the owner switched off since the closure, nor the numbers
+        # they hold now (_SWITCHED_OFF_SINCE_SQL); they are reported instead.
+        user_ids = list(freeze.get("signed_out_user_ids", []))
+        held = await _switched_off_since(conn, ctx.tenant_id, user_ids,
+                                         withdrawn["requested_at"]) if withdrawn else []
+        held_ids = {h["id"] for h in held}
+        held_agents = sorted({(h["agent_id"] or "").lower() for h in held})
         restored_users = _rowcount(await conn.execute(
             "UPDATE users SET is_active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, freeze.get("signed_out_user_ids", [])))
+            ctx.tenant_id, [u for u in user_ids if u not in held_ids]))
         routes = freeze.get("routes", {})
-        restored_routes = _rowcount(await conn.execute(
-            "UPDATE telephony_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("telephony_routes", [])))
-        restored_routes += _rowcount(await conn.execute(
-            "UPDATE messaging_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("messaging_routes", [])))
+        restored_routes, skipped_routes = 0, []
+        for table in ("telephony_routes", "messaging_routes"):
+            ids = list(routes.get(table, []))
+            if held_agents and ids:
+                skipped_routes += [r[0] for r in await conn.fetch(
+                    f"SELECT id::text FROM {table} WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+                    "AND lower(agent_id) = ANY($3::text[]) ORDER BY id", ctx.tenant_id, ids, held_agents)]
+            restored_routes += _rowcount(await conn.execute(
+                f"UPDATE {table} SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+                "AND COALESCE(lower(agent_id), '') <> ALL($3::text[])", ctx.tenant_id, ids, held_agents))
+        skipped_users = [{"id": h["id"], "reason": h["reason"]} for h in held]
         if withdrawn:
             result = {"withdrawn_by": ctx.agent_id, "withdraw_reason": reason}
+            if skipped_users or skipped_routes:
+                result.update(skipped_users=skipped_users, skipped_routes=skipped_routes)
             blocked = withdrawn["state"] == "blocked_legal_hold"
             if blocked:
                 # Withdrawn like any closure ('cancelled'). The hold is not
@@ -976,9 +1037,10 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
                                        str(latest) if latest else None)
     billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
-                 metadata={"reason": reason, "billing": billing})
+                 metadata={"reason": reason, "billing": billing, "skipped_users": len(skipped_users),
+                           "skipped_routes": len(skipped_routes)})
     return {"state": "active", "restored_users": restored_users, "restored_routes": restored_routes,
-            "billing": billing,
+            "skipped_users": skipped_users, "skipped_routes": skipped_routes, "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 
@@ -1285,7 +1347,13 @@ async def start_due_erasures() -> list[str]:
             "SELECT id::text FROM tenants WHERE lifecycle_state='closing' AND erase_after <= now() "
             "AND id <> $1::uuid ORDER BY erase_after LIMIT 20", PLATFORM_TENANT_ID)
     for row in due:
-        op_id = await begin_erasure(row[0], requested_by="retention-scheduler")
+        try:
+            op_id = await begin_erasure(row[0], requested_by="retention-scheduler")
+        except LifecycleError as exc:
+            # One brokerage is no longer closing (the owner withdrew between
+            # the read above and its lock): log it and erase the others.
+            log.warning("scheduled erasure of %s skipped: %s", row[0], exc)
+            continue
         if op_id:
             started.append(op_id)
     return started

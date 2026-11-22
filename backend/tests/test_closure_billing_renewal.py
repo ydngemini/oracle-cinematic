@@ -43,12 +43,21 @@ class _ClosureConn:
     """The tenants row and the brokerage's LATEST closure operation (its
     state, freeze list and error). A read of privacy_operations filtered on
     state='running' sees that operation only while it is running; any other
-    state filter is refused, so a changed query has to change this fake."""
+    state filter is refused, so a changed query has to change this fake.
+    `held` are the freeze-list members the owner switched off since the
+    closure (what _SWITCHED_OFF_SINCE_SQL finds); `route_agents` maps a route
+    id to the agent holding it now."""
 
-    def __init__(self, lifecycle, op_id="op-1", op_state="running", freeze=None, error=None):
+    REQUESTED_AT = datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+    def __init__(self, lifecycle, op_id="op-1", op_state="running", freeze=None, error=None,
+                 held=(), route_agents=None):
         self.lifecycle, self.executed = lifecycle, []
         self.op_id, self.op_state, self.error = op_id, op_state, error
         self.freeze = freeze if freeze is not None else {}
+        self.held, self.route_agents = list(held), dict(route_agents or {})
+        self.routes_on: list[str] = []
+        self.held_reads = 0
 
     def _op(self, sql):
         where = sql.split("WHERE", 1)[1]
@@ -58,6 +67,7 @@ class _ClosureConn:
             if self.op_state != "running":
                 return None
         return self.op_id and {"id": self.op_id, "state": self.op_state, "error": self.error,
+                               "requested_at": self.REQUESTED_AT,
                                "progress": json.dumps({"freeze": self.freeze})}
 
     async def fetchrow(self, sql, *args):
@@ -76,12 +86,23 @@ class _ClosureConn:
         return self.lifecycle
 
     async def fetch(self, sql, *args):
+        if "team_memberships" in sql:              # _switched_off_since
+            assert args[0] == T and args[2] == self.REQUESTED_AT
+            self.held_reads += 1
+            return [dict(h) for h in self.held if h["id"] in args[1]]
+        if "lower(agent_id) = ANY($3::text[])" in sql:     # the routes those members hold
+            return [(r,) for r in args[1] if self.route_agents.get(r, "").lower() in args[2]]
         return []
 
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
-        if "SET is_active=true" in sql or "SET active=true" in sql:
+        if "SET is_active=true" in sql:
             return f"UPDATE {len(args[1])}"
+        if "SET active=true" in sql:
+            held = args[2] if len(args) > 2 else []
+            on = [r for r in args[1] if self.route_agents.get(r, "").lower() not in held]
+            self.routes_on += on
+            return f"UPDATE {len(on)}"
         return "UPDATE 0"
 
     def restored(self, table):
@@ -281,6 +302,45 @@ def test_a_withdrawal_outside_the_grace_period_changes_nothing(monkeypatch, life
     assert conn.executed == []
 
 
+# Review of PR #185: an owner may reinstate a frozen agent while the brokerage
+# is closing and then suspend them; after an older withdrawal that restored
+# nothing, they may have offboarded one (which parks the number). The
+# withdrawal used to switch every freeze-list member and route back on.
+
+_TWO = {"signed_out_user_ids": ["u-1", "u-2"],
+        "routes": {"telephony_routes": ["tr-1", "tr-2"], "messaging_routes": ["mr-1", "mr-2"]}}
+_AGENTS = {"tr-1": "one@x.test", "mr-1": "one@x.test", "tr-2": "Two@x.test", "mr-2": "two@x.test"}
+
+
+@pytest.mark.parametrize("op_state", ["running", "blocked_legal_hold"])
+@pytest.mark.parametrize("why", ["suspended", "offboarded"])
+def test_a_member_switched_off_since_the_closure_stays_off_with_their_numbers(monkeypatch, op_state, why):
+    conn = _ClosureConn("closing", op_state=op_state, freeze=_TWO, route_agents=_AGENTS,
+                        held=[{"id": "u-2", "agent_id": "two@X.test", "reason": why}])
+    out, conn, _q, _f = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                             billing={"state": "confirmed"})
+    assert conn.restored("users") == ["u-1"]                       # u-2 stays off
+    assert sorted(conn.routes_on) == ["mr-1", "tr-1"]              # and the numbers u-2 holds
+    assert out["skipped_users"] == [{"id": "u-2", "reason": why}]
+    assert sorted(out["skipped_routes"]) == ["mr-2", "tr-2"]
+    [(_id, state, result, _e)] = conn.finished()                   # also on the operation's record
+    assert state == "cancelled" and result["skipped_users"] == out["skipped_users"]
+    assert sorted(result["skipped_routes"]) == ["mr-2", "tr-2"]
+    assert out["restored_users"] == 1 and out["restored_routes"] == 2
+
+
+def test_with_nobody_switched_off_since_everything_frozen_comes_back(monkeypatch):
+    conn = _ClosureConn("closing", freeze=_TWO, route_agents=_AGENTS)
+    out, conn, _q, _f = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                             billing={"state": "confirmed"})
+    assert conn.held_reads == 1                                    # asked, found nobody
+    assert conn.restored("users") == ["u-1", "u-2"]
+    assert sorted(conn.routes_on) == ["mr-1", "mr-2", "tr-1", "tr-2"]
+    assert out["skipped_users"] == [] and out["skipped_routes"] == []
+    [(_id, _s, result, _e)] = conn.finished()
+    assert "skipped_users" not in result
+
+
 # ── an erasure finishes the closure it erases, blocked or not (L17-58) ─────
 # After a hold was released, begin_erasure finished only a 'running' closure
 # as 'succeeded', so a closure an earlier attempt had left 'blocked_legal_hold'
@@ -328,7 +388,9 @@ class _EraseConn:
             if c and c["state"] == "running":
                 c["state"] = "succeeded"
         elif "SET state='blocked_legal_hold'" in flat:
-            if c and c["state"] == "running":
+            where = flat.split("WHERE", 1)[1]
+            hits = ("running", "blocked_legal_hold") if "blocked_legal_hold" in where else ("running",)
+            if c and c["state"] in hits:
                 c.update(state="blocked_legal_hold", error="legal hold " + args[1])
         elif flat.startswith("UPDATE tenants SET lifecycle_state='erasing'"):
             self.lifecycle = "erasing"
@@ -387,6 +449,47 @@ def test_an_erasure_under_a_hold_blocks_the_closure_and_starts_nothing(monkeypat
     assert op_id is None and queued == [] and conn.created == []
     assert conn.closure["state"] == "blocked_legal_hold" and conn.closure["error"] == "legal hold h-2"
     assert conn.lifecycle == "closing"
+
+
+def test_a_second_erasure_pass_under_a_standing_hold_changes_nothing(monkeypatch):
+    """The scheduler comes back while the hold still stands: the closure an
+    earlier pass blocked stays exactly as it is, and nothing starts."""
+    conn = _EraseConn("blocked_legal_hold", hold={"id": "h-2"})
+    op_id, queued = _erase(monkeypatch, conn)
+    assert op_id is None and queued == [] and conn.created == []
+    assert conn.closure == {"id": "op-c", "state": "blocked_legal_hold", "error": "legal hold h-1",
+                            "result": {}}
+    assert conn.lifecycle == "closing"
+
+
+def test_the_scheduler_erases_the_others_when_one_brokerage_is_no_longer_closing(monkeypatch, caplog):
+    """Withdrawn between the scheduler's read and begin_erasure's lock: that
+    brokerage raises LifecycleError ('tenant is active'); the pass used to
+    stop there and leave every later brokerage for the next run."""
+    class _Due:
+        async def fetch(self, sql, *args):
+            assert "lifecycle_state='closing'" in sql and "erase_after <= now()" in sql
+            return [("t-1",), ("t-2",), ("t-3",)]
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Due()
+
+    seen = []
+
+    async def begin(tenant_id, *, requested_by):
+        seen.append((tenant_id, requested_by))
+        if tenant_id == "t-1":
+            raise pl.LifecycleError("tenant is active; only a closing tenant is erased")
+        return {"t-2": "op-2", "t-3": None}[tenant_id]
+
+    monkeypatch.setattr(pl, "tenant_tx", tx)
+    monkeypatch.setattr(pl, "begin_erasure", begin)
+    with caplog.at_level(logging.WARNING, logger=pl.log.name):
+        started = asyncio.run(pl.start_due_erasures())
+    assert started == ["op-2"]
+    assert [t for t, _ in seen] == ["t-1", "t-2", "t-3"]
+    assert any("t-1" in r.getMessage() and "tenant is active" in r.getMessage() for r in caplog.records)
 
 
 def test_a_resumed_erasure_finishes_a_closure_older_code_left_blocked(monkeypatch):

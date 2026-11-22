@@ -39,8 +39,9 @@ def test_the_committed_backlog_is_current():
 
 
 def test_every_evidence_sha_is_read_as_text():
-    """A commit hash of digits only (or digits and one 'e') is read by YAML as
-    a number: 0650144 became 217188 (octal) and 1e21191 would become infinity.
+    """A commit hash of digits only is read by YAML as a number: 0650144
+    became 217188 (octal) and 67192808 an integer. (A hash of digits and one
+    'e', such as 1e21191, stays text here: PyYAML's floats need a dot.)
     Quote such a hash in evidence_shas so the ledger records the real commit."""
     text = backlog.LEDGER.read_text()
     numeric = []
