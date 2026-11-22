@@ -116,7 +116,8 @@ class _ClosureConn:
                 if "SET state=$2, result=result ||" in sql]
 
 
-def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fast_error=None, conn=None):
+def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fast_error=None, conn=None,
+         audits=None):
     conn, state = conn or _ClosureConn(lifecycle), {"in_tx": False}
 
     @asynccontextmanager
@@ -141,8 +142,9 @@ def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fa
             raise fast_error
         return billing
 
-    async def audit(*_a, **_k):
-        return None
+    async def audit(*a, **k):
+        if audits is not None:
+            audits.append((a, k))
 
     monkeypatch.setattr(pl, "tenant_tx", tx)
     monkeypatch.setattr(automation_jobs, "enqueue_job_in_tx", enqueue)
@@ -316,17 +318,40 @@ _AGENTS = {"tr-1": "one@x.test", "mr-1": "one@x.test", "tr-2": "Two@x.test", "mr
 @pytest.mark.parametrize("why", ["suspended", "offboarded"])
 def test_a_member_switched_off_since_the_closure_stays_off_with_their_numbers(monkeypatch, op_state, why):
     conn = _ClosureConn("closing", op_state=op_state, freeze=_TWO, route_agents=_AGENTS,
-                        held=[{"id": "u-2", "agent_id": "two@X.test", "reason": why}])
+                        held=[{"id": "u-2", "agent_id": "two@X.test", "full_name": "Pat Two",
+                               "email": "two@x.test", "reason": why}])
     out, conn, _q, _f = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
                              billing={"state": "confirmed"})
     assert conn.restored("users") == ["u-1"]                       # u-2 stays off
     assert sorted(conn.routes_on) == ["mr-1", "tr-1"]              # and the numbers u-2 holds
-    assert out["skipped_users"] == [{"id": "u-2", "reason": why}]
+    assert out["skipped_users"] == [{"id": "u-2", "reason": why, "name": "Pat Two"}]
     assert sorted(out["skipped_routes"]) == ["mr-2", "tr-2"]
-    [(_id, state, result, _e)] = conn.finished()                   # also on the operation's record
-    assert state == "cancelled" and result["skipped_users"] == out["skipped_users"]
+    [(_id, state, result, _e)] = conn.finished()                   # also on the operation's record,
+    assert state == "cancelled"                                    # without the name
+    assert result["skipped_users"] == [{"id": "u-2", "reason": why}]
     assert sorted(result["skipped_routes"]) == ["mr-2", "tr-2"]
     assert out["restored_users"] == 1 and out["restored_routes"] == 2
+
+
+@pytest.mark.parametrize("who, name", [
+    ({"full_name": "Pat Two", "email": "two@x.test"}, "Pat Two"),
+    ({"full_name": None, "email": "two@x.test"}, "two@x.test"),
+    ({"full_name": "", "email": None}, "two@X.test"),
+])
+def test_the_answer_names_who_was_left_off_as_team_does(monkeypatch, who, name):
+    """The owner sees who stayed off by name (Team's full name, else email,
+    else login); the operation's record and the audit event carry no name."""
+    held = [{"id": "u-2", "agent_id": "two@X.test", "reason": "suspended", **who}]
+    conn = _ClosureConn("closing", freeze=_TWO, route_agents=_AGENTS, held=held)
+    audits = []
+    out, conn, _q, _f = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                             billing={"state": "confirmed"}, audits=audits)
+    assert out["skipped_users"] == [{"id": "u-2", "reason": "suspended", "name": name}]
+    [(_id, _s, result, _e)] = conn.finished()
+    assert result["skipped_users"] == [{"id": "u-2", "reason": "suspended"}]
+    [((_ctx, action), kw)] = audits
+    assert action == "brokerage.closure.withdrawn"
+    assert kw["metadata"]["skipped_users"] == 1 and name not in json.dumps(kw["metadata"])
 
 
 def test_with_nobody_switched_off_since_everything_frozen_comes_back(monkeypatch):

@@ -155,7 +155,11 @@ API: `POST /api/privacy/closure`.
   else (the response counts `restored_users` and `restored_routes`), except
   members the owner has suspended (or offboarded) since the closure and the
   numbers they now hold: those stay off and are listed in `skipped_users`
-  (id and reason) and `skipped_routes`, also on the operation's `result`.
+  (id, reason and, in the response only, the name Team shows) and
+  `skipped_routes`, also on the operation's `result` (ids and reasons, no
+  names). Account & data lists them after the withdrawal and points the owner
+  to Team to reinstate anyone they want back; a reinstatement gives back the
+  sign-in, not the numbers.
   Cancelled jobs and revoked links are not restored. Renewal is turned back
   on through the same durable job.
 
@@ -257,35 +261,61 @@ ROLLBACK;
    and unflagged, that they want back. A flagged member is never restored
    here: if the owner wants one back, they reinstate them in Team (which
    checks seats and records it). Leave a flagged number off and record it in
-   the incident.
+   the incident. If the owner wants nobody back, the list is empty (step 4,
+   `finish=none`).
 
-4. Run the repair with exactly that list, in one transaction:
-   `psql -v op=<operation_id> -v tenant=<tenant_id> -v ids=<id,id,...> -v operator=<your name>`.
-   It switches on only ids that are in the list, in that closure's freeze
-   list, still off and unflagged (the same flags as step 2, computed again
-   inside the statement), and finishes the operation `cancelled` with
-   `withdrawn_from` and the ids it restored, the error kept. Everything
-   requires the operation still `blocked_legal_hold` and the brokerage
-   `active`, so a second run changes nothing. Check the counts before
-   `COMMIT`; if the re-check does not show `active | blocked_legal_hold`,
-   `ROLLBACK` and stop.
-   - If it fails with `seat limit reached` (SQLSTATE `NSEAT`, the
-     `users_seat_limit` trigger), nothing changed: the brokerage's plan has no
-     seat for everyone in the list. The owner frees a seat or raises the
-     plan, or confirms a shorter list; run it again.
+4. Preview, then repair, with exactly that list:
+   `psql -v ON_ERROR_STOP=1 -v op=<operation_id> -v tenant=<tenant_id> -v ids=<id,id,...> -v operator=<your name>`,
+   first **without** `finish`, then again with `-v finish=yes`. The script is
+   safe to run with `psql -f`: its closing `COMMIT` keeps only what the one
+   gated statement did, and that statement changes nothing unless `finish`
+   is exactly `yes` or `none` and its condition holds.
+   - **Preview** (no `finish`, or any other value): nothing changes. It
+     returns `outcome` `preview: nothing changed`, how many members
+     (`users`) and routes (`telephony_routes`, `messaging_routes`) the list
+     would switch on, and `not_restorable`: the ids in the list that would
+     not be (not in that closure's freeze list, already on, flagged, or
+     mistyped). The leftover stays in step 1's list.
+   - **`-v finish=yes`**: switches on the listed ids and finishes the
+     operation `cancelled` (with `withdrawn_from`, `repaired_by`, `finish` and
+     the ids it restored, the error kept), in the same statement, only when
+     the list has at least one id and **every** id in it is restorable (the
+     preview's `not_restorable` is empty). Otherwise it changes nothing
+     (`outcome` `refused: nothing changed`, with `not_restorable`): an empty,
+     mistyped or partly mistyped list never closes the case. Fix the list
+     with the owner and run it again.
+   - **`-v finish=none -v ids=`** (an empty list): the owner wants nobody back.
+     It finishes the operation `cancelled` restoring nothing. With any id in
+     the list it changes nothing.
+
+   An id is restorable when it is in that closure's freeze list, still off
+   and unflagged (the same flags as step 2, computed again inside the
+   statement). Everything requires the operation still `blocked_legal_hold`
+   and the brokerage `active`, so once it is finished a re-run changes
+   nothing (every id is then `not_restorable`). The first `SELECT` shows the
+   re-check under lock; anything but `active | blocked_legal_hold` means stop.
+   - If the `finish=yes` run fails with `seat limit reached` (SQLSTATE
+     `NSEAT`, the `users_seat_limit` trigger), nothing changed: the
+     brokerage's plan has no seat for everyone in the list (a preview cannot
+     see this). The owner frees a seat or raises the plan, or confirms a
+     shorter list; run it again.
    - If a route fails on a uniqueness constraint, the number has been reused
      since: nothing changed; take that id out of the list and tell the owner.
    - The repair writes no `audit_ledger` row. Do not insert one by hand: the
      ledger is hash-chained, and a hand-written row breaks verification.
-     The record is the operation's `result` (`repaired_by`, `restored`) and
-     the incident record. The legal hold is not touched.
+     The record is the operation's `result` (`repaired_by`, `finish`,
+     `restored`) and the incident record. The legal hold is not touched.
 
 ```sql
+\if :{?finish}
+\else
+\set finish preview
+\endif
 BEGIN;
 SELECT set_config('app.current_role', 'platform_admin', true),
        set_config('app.current_tenant', :'tenant', true),
        set_config('app.current_agent', :'operator', true);
--- Re-check under lock: expect active | blocked_legal_hold, else ROLLBACK.
+-- Re-check under lock: expect active | blocked_legal_hold, else stop.
 SELECT t.lifecycle_state, o.state
   FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
  WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'
@@ -294,7 +324,8 @@ WITH c AS (SELECT o.id, o.requested_at AS since, o.progress->'freeze' AS f
              FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
             WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'
               AND o.state = 'blocked_legal_hold' AND t.lifecycle_state = 'active'),
-     confirmed AS (SELECT btrim(x) AS id FROM unnest(string_to_array(:'ids', ',')) AS x),
+     confirmed AS (SELECT DISTINCT btrim(x) AS id FROM unnest(string_to_array(:'ids', ',')) AS x
+                    WHERE btrim(x) <> ''),
      members AS (
        SELECT u.id, u.agent_id, u.is_active, u.updated_at > c.since AS changed,
               EXISTS (SELECT 1 FROM privacy_operations p
@@ -314,41 +345,63 @@ WITH c AS (SELECT o.id, o.requested_at AS since, o.progress->'freeze' AS f
         WHERE NOT is_active
           AND (offboard_op OR membership_suspended OR changed
                OR last_team_event IN ('team.member.suspended', 'team.member.offboarded'))),
-     users_on AS (
-       UPDATE users u SET is_active = true, updated_at = now()
-         FROM members m
-        WHERE u.id = m.id AND NOT m.is_active
-          AND m.id NOT IN (SELECT id FROM flagged)
-          AND m.id::text IN (SELECT id FROM confirmed)
-       RETURNING u.id),
-     voice_on AS (
-       UPDATE telephony_routes r SET active = true, updated_at = now()
-         FROM c
+     users_ok AS (
+       SELECT m.id FROM members m
+        WHERE NOT m.is_active AND m.id NOT IN (SELECT id FROM flagged)
+          AND m.id::text IN (SELECT id FROM confirmed)),
+     voice_ok AS (
+       SELECT r.id FROM telephony_routes r, c
         WHERE r.tenant_id = :'tenant' AND NOT r.active AND r.updated_at <= c.since
           AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'telephony_routes', '[]')))
           AND r.id::text IN (SELECT id FROM confirmed)
-          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)
-       RETURNING r.id),
-     sms_on AS (
-       UPDATE messaging_routes r SET active = true, updated_at = now()
-         FROM c
+          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)),
+     sms_ok AS (
+       SELECT r.id FROM messaging_routes r, c
         WHERE r.tenant_id = :'tenant' AND NOT r.active AND r.updated_at <= c.since
           AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'messaging_routes', '[]')))
           AND r.id::text IN (SELECT id FROM confirmed)
-          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)
+          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)),
+     not_restorable AS (
+       SELECT id FROM confirmed
+        WHERE id NOT IN (SELECT id::text FROM users_ok UNION ALL SELECT id::text FROM voice_ok
+                         UNION ALL SELECT id::text FROM sms_ok)),
+     go AS (
+       SELECT EXISTS (SELECT 1 FROM c)
+              AND ((:'finish' = 'yes' AND EXISTS (SELECT 1 FROM confirmed)
+                    AND NOT EXISTS (SELECT 1 FROM not_restorable))
+                   OR (:'finish' = 'none' AND NOT EXISTS (SELECT 1 FROM confirmed))) AS ok),
+     users_on AS (
+       UPDATE users u SET is_active = true, updated_at = now()
+        WHERE u.id IN (SELECT id FROM users_ok) AND (SELECT ok FROM go)
+       RETURNING u.id),
+     voice_on AS (
+       UPDATE telephony_routes r SET active = true, updated_at = now()
+        WHERE r.id IN (SELECT id FROM voice_ok) AND (SELECT ok FROM go)
+       RETURNING r.id),
+     sms_on AS (
+       UPDATE messaging_routes r SET active = true, updated_at = now()
+        WHERE r.id IN (SELECT id FROM sms_ok) AND (SELECT ok FROM go)
        RETURNING r.id),
      done AS (
        UPDATE privacy_operations o
           SET state = 'cancelled', completed_at = now(), updated_at = now(),
               result = o.result || jsonb_build_object(
                 'withdrawn_from', 'blocked_legal_hold', 'repaired_by', :'operator', 'repair', 'L17-58',
+                'finish', :'finish',
                 'restored', jsonb_build_object(
                   'users', COALESCE((SELECT jsonb_agg(id) FROM users_on), '[]'),
                   'telephony_routes', COALESCE((SELECT jsonb_agg(id) FROM voice_on), '[]'),
                   'messaging_routes', COALESCE((SELECT jsonb_agg(id) FROM sms_on), '[]')))
-         FROM c WHERE o.id = c.id
+         FROM c WHERE o.id = c.id AND (SELECT ok FROM go)
        RETURNING o.id)
-SELECT (SELECT count(*) FROM users_on) AS users_restored,
+SELECT CASE WHEN (SELECT ok FROM go) THEN 'repaired and finished'
+            WHEN :'finish' IN ('yes', 'none') THEN 'refused: nothing changed'
+            ELSE 'preview: nothing changed' END AS outcome,
+       (SELECT count(*) FROM users_ok) AS users,
+       (SELECT count(*) FROM voice_ok) AS telephony_routes,
+       (SELECT count(*) FROM sms_ok) AS messaging_routes,
+       (SELECT string_agg(id, ',' ORDER BY id) FROM not_restorable) AS not_restorable,
+       (SELECT count(*) FROM users_on) AS users_restored,
        (SELECT count(*) FROM voice_on) AS telephony_routes_restored,
        (SELECT count(*) FROM sms_on) AS messaging_routes_restored,
        (SELECT count(*) FROM done) AS operation_finished;

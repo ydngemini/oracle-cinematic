@@ -172,6 +172,77 @@ describe('AccountDataPanel', () => {
     expect((await screen.findByTestId('renewal-status')).textContent).toMatch('not confirmed by Stripe yet');
   });
 
+  // L17-58: a withdrawal leaves off the members the owner suspended or
+  // offboarded after closing, with the numbers they hold, and says so.
+  const keepBrokerage = async (answer) => {
+    api.crmGet.mockResolvedValue({ ...ACTIVE, lifecycle_state: 'closing', erase_after: '2026-12-01T12:00:00Z' });
+    api.crmPost.mockResolvedValue(answer);
+    render(<AccountDataPanel />);
+    await screen.findByText(/This brokerage is closing/);
+    typePassword();
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'changed my mind' } });
+    api.crmGet.mockResolvedValue(ACTIVE);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the brokerage' }));
+    return screen.findByText(/Closure withdrawn/);
+  };
+
+  it('after keeping the brokerage, names who was left off, why, and how to bring them back', async () => {
+    const notice = await keepBrokerage({
+      state: 'active', billing: 'confirmed', restored_users: 3, restored_routes: 6,
+      skipped_users: [
+        { id: 'u-2', reason: 'suspended', name: 'Kim Keller' },
+        { id: 'u-3', reason: 'offboarded', name: 'nora@lockwood.test' },
+      ],
+      skipped_routes: ['tr-2', 'mr-2', 'tr-3', 'mr-3'],
+    });
+    expect(notice.textContent).toMatch('Your other agents can sign in again');
+    const left = await screen.findByTestId('withdraw-left-off');
+    expect(left.textContent).toMatch('2 members you suspended or offboarded after closing stay signed out');
+    expect(left.textContent).toMatch('the numbers they hold stay off');
+    const items = [...left.querySelectorAll('li')].map((li) => li.textContent);
+    expect(items).toEqual(['Kim Keller \u2014 suspended after you closed',
+      'nora@lockwood.test \u2014 offboarded after you closed']);
+    expect(left.textContent).toMatch('4 call and text routes');
+    expect(left.textContent).toMatch('reinstate them under Team');
+    expect(left.textContent).toMatch('not their numbers');
+    // the next action starts clean
+    typePassword();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare export' }));
+    await waitFor(() => expect(screen.queryByTestId('withdraw-left-off')).toBeNull());
+  });
+
+  it('counts members the answer does not name, and never invents a name', async () => {
+    await keepBrokerage({
+      state: 'active', billing: 'confirmed',
+      skipped_users: [{ id: 'u-2', reason: 'suspended' }, { id: 'u-3', reason: 'suspended', name: '  ' }],
+      skipped_routes: ['tr-2'],
+    });
+    const left = await screen.findByTestId('withdraw-left-off');
+    expect(left.textContent).toMatch('2 members you suspended or offboarded after closing stay signed out');
+    expect(left.querySelectorAll('li')).toHaveLength(0);
+    expect(left.textContent).not.toMatch('u-2');
+    expect(left.textContent).toMatch('1 call or text route');
+    cleanup();
+    await keepBrokerage({
+      state: 'active', billing: 'confirmed',
+      skipped_users: [{ id: 'u-2', reason: 'suspended', name: 'Kim Keller' }, { id: 'u-3', reason: 'offboarded' }],
+      skipped_routes: [],
+    });
+    const items = [...(await screen.findByTestId('withdraw-left-off')).querySelectorAll('li')].map((li) => li.textContent);
+    expect(items).toEqual(['Kim Keller \u2014 suspended after you closed', '1 other member']);
+    expect(screen.getByTestId('withdraw-left-off').textContent).not.toMatch('routes');
+  });
+
+  it('says nothing about anyone left off when everyone came back', async () => {
+    const notice = await keepBrokerage({ state: 'active', billing: 'confirmed', restored_users: 2,
+      skipped_users: [], skipped_routes: [] });
+    expect(notice.textContent).toMatch('Closure withdrawn. Your agents can sign in again');
+    expect(screen.queryByTestId('withdraw-left-off')).toBeNull();
+    cleanup();
+    await keepBrokerage({ state: 'active', billing: 'confirmed' });            // an older server
+    expect(screen.queryByTestId('withdraw-left-off')).toBeNull();
+  });
+
   it('shows the server refusal and changes nothing', async () => {
     api.crmPost.mockRejectedValue(new Error('Password is incorrect.'));
     render(<AccountDataPanel />);

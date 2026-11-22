@@ -311,15 +311,22 @@ async def _scenario(fake, monkeypatch):
         #   P (membership row) suspended and reinstated again, the second audit
         #     write failing: the audit's last word says suspended, but P is on,
         #     so P and P's numbers come back.
+        # And S (membership row), suspended in Team BEFORE this closure, then
+        # put back on by plain SQL (no newer Team event), so this closure
+        # froze S: the only suspension S has on record is older than the
+        # closure, and the lookup is bounded to events since it
+        # (_SWITCHED_OFF_SINCE_SQL, a.created_at > requested_at), so S and
+        # S's numbers come back.
         import audit_ledger
         import brokerage_onboarding as bo
 
         team = {}
-        for tag, membership in (("K", True), ("N", False), ("P", True)):
+        names = {"K": "Kim Keller", "N": None, "P": "Pat Park", "S": "Sam Stone"}
+        for tag, membership in (("K", True), ("N", False), ("P", True), ("S", True)):
             who = f"{tag.lower()}-{s}@live.test"
             uid = await admin.fetchval(
-                "INSERT INTO users (tenant_id, agent_id, role, email, password_hash) "
-                "VALUES ($1,$2,'agent',$2,'scrypt$x$y') RETURNING id", T, who)
+                "INSERT INTO users (tenant_id, agent_id, role, email, password_hash, full_name) "
+                "VALUES ($1,$2,'agent',$2,'scrypt$x$y',$3) RETURNING id", T, who, names[tag])
             if membership:
                 await admin.execute("INSERT INTO team_memberships (tenant_id, user_id, team_name, status) "
                                     "VALUES ($1,$2,'Team','active')", T, uid)
@@ -330,9 +337,16 @@ async def _scenario(fake, monkeypatch):
                 T, who, "+1302" + str(secrets.randbelow(10**7)).zfill(7), "AC" + "0" * 32, "AC" + "0" * 32)
             mr = await admin.fetchval("INSERT INTO messaging_routes (tenant_id, agent_id, active) "
                                       "VALUES ($1,$2,true) RETURNING id::text", T, who)
-            team[tag] = {"user": uid, "telephony": tr, "messaging": mr}
-        kept = await pl.request_closure(octx, confirm_name=name, reason="closing (team changes)")
+            team[tag] = {"user": uid, "telephony": tr, "messaging": mr, "agent": who}
         why = bo.MemberStatusChange(reason="owner decision")
+        await bo.suspend_member(team["S"]["user"], why, ctx=octx)
+        await admin.execute("UPDATE users SET is_active=true, updated_at=now() WHERE id=$1", team["S"]["user"])
+        await admin.execute("UPDATE team_memberships SET status='active' WHERE user_id=$1", team["S"]["user"])
+        kept = await pl.request_closure(octx, confirm_name=name, reason="closing (team changes)")
+        s_events = await admin.fetch(
+            "SELECT a.action, a.created_at < o.requested_at AS before FROM audit_ledger a, privacy_operations o "
+            "WHERE a.target_id = $1 AND o.id = $2", team["S"]["user"], kept["operation_id"])
+        assert [(e["action"], e["before"]) for e in s_events] == [("team.member.suspended", True)], s_events
 
         async def audit_fails(*_a, **_k):
             raise RuntimeError("audit store unavailable")
@@ -356,19 +370,26 @@ async def _scenario(fake, monkeypatch):
 
         assert await state_of("K") == (False, False, False) == await state_of("N")
         assert await state_of("P") == (True, False, False)
+        assert await state_of("S") == (False, False, False)              # frozen by this closure
         back = await pl.withdraw_closure(octx, reason="keep the brokerage")
         assert await state_of("K") == (False, False, False)
         assert await state_of("N") == (False, False, False)
         assert await state_of("P") == (True, True, True)
+        assert await state_of("S") == (True, True, True)                 # its old suspension is not "since"
         assert await switched_on(live) == (True, True, True)
         assert await switched_on(idle) == (False, False, False)
         assert sorted((u["id"], u["reason"]) for u in back["skipped_users"]) == sorted(
             (str(team[t]["user"]), "suspended") for t in ("K", "N"))
+        # named for the owner as Team names them (N has no full name: email),
+        # but the operation's record keeps ids and reasons only
+        assert sorted(u["name"] for u in back["skipped_users"]) == sorted(["Kim Keller", team["N"]["agent"]])
         assert sorted(back["skipped_routes"]) == sorted(
             team[t][r] for t in ("K", "N") for r in ("telephony", "messaging"))
         recorded = await op_row(kept["operation_id"])
         assert recorded["state"] == "cancelled"
         assert sorted(recorded["result"]["skipped_routes"]) == sorted(back["skipped_routes"])
+        assert sorted(recorded["result"]["skipped_users"], key=lambda u: u["id"]) == sorted(
+            ({"id": str(team[t]["user"]), "reason": "suspended"} for t in ("K", "N")), key=lambda u: u["id"])
 
         # ── L17-58: once an erasure has started there is nothing to withdraw ─
         await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE id=$1", hold)
