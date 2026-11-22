@@ -56,8 +56,9 @@ ROLE = {
     "media_jobs": "important",
     # Expired data-export archives whose delete keeps failing (audit 29.6).
     "export_cleanup": "important",
-    # Provider-side cleanup the retries could not finish (audits 22.6, 22.7):
-    # a departed agent's Google grant still live.
+    # Provider-side cleanup the retries could not finish (audits 22.1, 22.6,
+    # 22.7): a departed agent's Google grant still live, or a closed (or
+    # reopened) brokerage's Stripe renewal not what it was told.
     "external_cleanup": "important",
 }
 
@@ -143,13 +144,25 @@ _SQL_EXPORT_CLEANUP = (
     "AND artifact_key IS NOT NULL AND artifact_expires_at < now() - interval '1 day'")
 
 
-# External cleanup the durable retries gave up on (audits 22.6, 22.7): an
-# offboarded agent's credential whose revocation at Google was never
+# External cleanup the durable retries gave up on (audits 22.1, 22.6, 22.7):
+# an offboarded agent's credential whose revocation at Google was never
 # confirmed is kept disabled and marked 'revocation_failed'
-# (privacy_lifecycle.REVOCATION_FAILED_MARK) until a person resolves it.
+# (privacy_lifecycle.REVOCATION_FAILED_MARK) until a person resolves it; a
+# closure operation whose subscription renewal Stripe never confirmed carries
+# progress.billing.state 'divergent' until a later confirmation settles it.
+# Also stuck: still pending 6 hours on (the retries take ~2.4 h), which means
+# the job is gone without its final attempt recording anything (a lease
+# reaped after a crash, or a worker without the handler during a deploy).
 _SQL_EXTERNAL_CLEANUP = (
     "SELECT (SELECT count(*) FROM provider_credentials "
-    "        WHERE validation_error = 'revocation_failed') AS credentials_unrevoked")
+    "        WHERE validation_error = 'revocation_failed') AS credentials_unrevoked, "
+    "       (SELECT count(*) FROM privacy_operations WHERE kind = 'closure' "
+    "        AND progress->'billing'->>'state' = 'divergent') AS billing_divergent, "
+    "       (SELECT count(*) FROM privacy_operations WHERE state = 'running' AND kind = 'offboard' "
+    "        AND updated_at < now() - interval '6 hours') "
+    "     + (SELECT count(*) FROM privacy_operations WHERE kind = 'closure' "
+    "        AND progress->'billing'->>'state' = 'pending' "
+    "        AND updated_at < now() - interval '6 hours') AS stuck_pending")
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -465,14 +478,26 @@ def _export_cleanup(overdue: int) -> dict:
 
 
 def _external_cleanup(row: dict) -> dict:
-    """Audits 22.6, 22.7: the retries are spent and the provider still holds
-    something the customer was told is gone: a departed agent's Google grant.
-    Stays until a person resolves it (docs/account-offboarding-runbook.md)."""
+    """Audits 22.1, 22.6, 22.7: the retries are spent and a provider does not
+    do what the customer was told: a departed agent's Google grant may still
+    be live, or a brokerage's subscription renews (or stops) against its
+    closure state. Stays until resolved (docs/account-offboarding-runbook.md)."""
     unrevoked = int(row.get("credentials_unrevoked") or 0)
+    divergent = int(row.get("billing_divergent") or 0)
+    stuck = int(row.get("stuck_pending") or 0)
+    problems = []
+    if divergent:
+        problems.append("subscription renewal does not match a closure or reopening (Stripe not confirmed)")
     if unrevoked:
-        return _c(DEGRADED, "offboarded agents' Google connections could not be revoked "
-                  "(the grants may still be live at Google)", credentials_unrevoked=unrevoked)
-    return _c(HEALTHY, "provider cleanup confirmed")
+        problems.append("offboarded agents' Google connections could not be revoked "
+                        "(the grants may still be live at Google)")
+    if stuck:
+        problems.append("a credential revocation or renewal change has been pending for over 6 hours "
+                        "with nothing retrying it")
+    detail = {"credentials_unrevoked": unrevoked, "billing_divergent": divergent, "stuck_pending": stuck}
+    if problems:
+        return _c(DEGRADED, "; ".join(problems), **detail)
+    return _c(HEALTHY, "provider cleanup confirmed", **detail)
 
 
 async def _outbound_opt_outs() -> dict:

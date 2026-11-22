@@ -141,13 +141,49 @@ API: `POST /api/privacy/closure`.
 - phone and text routes off (STOP texts are still recorded);
 - background work stops (`claim_next_job` skips non-active tenants);
 - spend and outreach routes refused with 423;
-- the Stripe subscription set to not renew.
+- the Stripe subscription set to not renew, through a durable job (below).
 
 **During the grace period** (`ORACLE_CLOSURE_GRACE_DAYS`, default 30):
 - the owner can export;
 - the owner can **Keep the brokerage** (`POST /api/privacy/closure/withdraw`).
   This restores the users and routes the closure switched off. Cancelled
-  jobs and revoked links are not restored.
+  jobs and revoked links are not restored. Renewal is turned back on through
+  the same durable job.
+
+**Subscription renewal is confirmed, not assumed (external audit 22.1).**
+Closing and withdrawing each queue a `privacy:billing_renewal` job in their
+own transaction. The job reads `tenants.lifecycle_state` when it runs
+(`closing`/`erasing`/`erased`: stop renewal; `active`: renew), so a close
+followed by a withdrawal ends on the owner's last action whatever order the
+jobs run in. It sets `cancel_at_period_end` and reads it back with
+`Subscription.retrieve`. The request tries once inline; the response says
+`billing: confirmed | pending | no_subscription`, and Account & data shows the
+same from `billing_renewal` (on `GET /api/privacy/lifecycle`), never an
+unconditional "will not renew". A Stripe outage, recovery mode or a worker
+without `STRIPE_SECRET_KEY` (`stripe_not_configured` with a live
+subscription) is retried for about 2.4 hours (12 attempts). The last attempt
+records `progress.billing.state = 'divergent'` on the closure operation, emits
+`closure.billing_divergent`, and the `external_cleanup` alert fires. To
+resolve it:
+1. Read the closure operation's `progress.billing` (`desired`, `detail`).
+2. Set the subscription in the Stripe dashboard: *Cancel at period end* for
+   `stop_renewal`, or resume it for `renew`.
+3. The divergence clears when a later billing job confirms Stripe matches
+   (the owner closing or reopening again queues one). Otherwise set
+   `progress.billing.state` to `superseded` on that operation (platform
+   login); the alert closes on its own.
+Erasure's provider phase sets and reads back the renewal too: anything but a
+confirmed stop (or no subscription) fails that step.
+
+**Pending with nothing retrying it.** `external_cleanup` also fires
+(`detail.stuck_pending`) when an offboarding is still `running`, or a closure's
+`progress.billing.state` still `pending`, 6 hours on: its job ended without
+its final attempt recording anything (a lease reaped after a crash, or a
+worker without the handler during a deploy, `NO_JOB_HANDLER`). Find the job
+(`automation_jobs`, `job_type` `privacy:revoke_credentials` with the
+operation id in its payload, or `privacy:billing_renewal` for the
+brokerage), and queue it again on the platform login (`state='queued'`,
+`attempt_count=0`, `next_retry_at=NULL`).
 
 **After it**, erasure runs (`docs/privacy-request-runbook.md` §4), and the
 owner receives the receipt. The receipt states:

@@ -20,6 +20,31 @@ function exportNeedsSupport(error) {
   return EXPORT_SUPPORT_CODES.some((code) => String(error || '').includes(code));
 }
 
+// What Stripe has confirmed about the subscription's renewal after a closure
+// or a withdrawal (audit 22.1): the server's billing_renewal / billing state,
+// never a promise made before Stripe answered. An unknown state reads as
+// pending.
+const RENEWAL_TEXT = {
+  stop_renewal: {
+    confirmed: 'Stripe has confirmed your subscription will not renew.',
+    pending: 'Stopping your subscription\u2019s renewal is not confirmed by Stripe yet; Neoh keeps trying.',
+    divergent: 'Neoh could not confirm with Stripe that your subscription will not renew. Neoh support has been alerted; contact support before your next renewal date.',
+    no_subscription: 'You have no subscription that renews.',
+  },
+  renew: {
+    confirmed: 'Your subscription renews as before.',
+    pending: 'Restarting your subscription\u2019s renewal is not confirmed by Stripe yet; Neoh keeps trying.',
+    divergent: 'Neoh could not confirm with Stripe that your subscription renews again. Neoh support has been alerted.',
+    no_subscription: '',
+  },
+};
+
+function renewalText(desired, state) {
+  const texts = RENEWAL_TEXT[desired];
+  if (!texts || state === 'skipped') return '';
+  return texts[state] ?? texts.pending;
+}
+
 function retentionLabel(days) {
   if (days === null || days === undefined) return 'Kept until you delete it';
   if (days >= 365) return `${Math.round(days / 365)} years`;
@@ -51,8 +76,8 @@ export function AccountDataPanel() {
     setError('');
     setNotice('');
     try {
-      await fn();
-      setNotice(done);
+      const result = await fn();
+      setNotice(typeof done === 'function' ? done(result) : done);
       setPassword('');
       await load();
     } catch (err) {
@@ -67,6 +92,8 @@ export function AccountDataPanel() {
   const exportReady = latest?.state === 'succeeded' && latest?.artifact_expires_at
     && new Date(latest.artifact_expires_at) > new Date();
   const exportRunning = latest && ['requested', 'running'].includes(latest.state);
+  const renewal = state?.billing_renewal;
+  const renewalStatus = renewal ? renewalText(renewal.desired, renewal.state) : '';
 
   if (!state && !error) {
     return (
@@ -87,6 +114,9 @@ export function AccountDataPanel() {
           erased on <strong>{fmtDate(state.erase_after)}</strong>
           {state.legal_hold ? ' — erasure is paused by a legal hold' : ''}. Until then you can
           export your data or keep the brokerage.
+          {renewal?.desired === 'stop_renewal' && renewalStatus && (
+            <> <span data-testid="renewal-status">{renewalStatus}</span></>
+          )}
         </div>
       )}
 
@@ -185,13 +215,18 @@ export function AccountDataPanel() {
               <button
                 type="button" className={styles.button} disabled={busy || !password || reason.trim().length < 3}
                 onClick={() => act(() => crmPost('/api/privacy/closure/withdraw', { password, reason }),
-                  'Closure withdrawn. Your agents can sign in again; reconnect anything you need.')}
+                  (r) => ['Closure withdrawn. Your agents can sign in again; reconnect anything you need.',
+                    renewalText('renew', r?.billing)].filter(Boolean).join(' '))}
               >
                 Keep the brokerage
               </button>
             </div>
           </>
         ) : !closing ? (
+          <>
+          {renewal?.desired === 'renew' && ['pending', 'divergent'].includes(renewal.state) && (
+            <p className={styles.text} role="status" data-testid="renewal-status">{renewalStatus}</p>
+          )}
           <button
             type="button" className={styles.link}
             onClick={() => {
@@ -201,13 +236,14 @@ export function AccountDataPanel() {
           >
             Close this brokerage…
           </button>
+          </>
         ) : (
           <>
             <h3 className={styles.heading}>Close this brokerage</h3>
             <ul className={styles.consequences}>
               <li>Every agent is signed out now; public client links and sites go offline.</li>
               <li>The AI stops answering your phone lines and nothing more is sent.</li>
-              <li>Your subscription will not renew.</li>
+              <li>Neoh tells Stripe to stop your subscription renewing, and shows here once Stripe confirms it.</li>
               <li>For {state?.grace_days ?? 30} days you can still export, or change your mind.</li>
               <li>After that everything is permanently erased. Billing records and opt-out
                 lists are kept as the law requires; you will get a receipt.</li>
@@ -238,7 +274,7 @@ export function AccountDataPanel() {
                 disabled={busy || !password || confirmName.trim() !== (state?.name || '').trim() || reason.trim().length < 3}
                 onClick={() => act(
                   () => crmPost('/api/privacy/closure', { confirm_name: confirmName, reason, password }),
-                  'Closure scheduled.',
+                  (r) => `Closure scheduled. ${renewalText('stop_renewal', r?.billing)}`,
                 ).then(() => setClosing(false))}
               >
                 Close brokerage

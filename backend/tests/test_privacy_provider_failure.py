@@ -243,12 +243,13 @@ def test_the_erasure_provider_phase_fails_on_an_unreadable_token_and_unconfigure
                  "detail": "undecryptable"},
                 {"credential_id": "g2", "provider": "google", "status": "revoked"}]
 
-    async def no_stripe(_tenant, _value):
+    async def no_stripe(_tenant, cancel, **_kw):
+        assert cancel is True
         return "stripe_not_configured"
 
     monkeypatch.setattr(pl, "tenant_tx", tx)
     monkeypatch.setattr(pl, "revoke_personal_credentials", revoke)
-    monkeypatch.setattr(pl, "_set_cancel_at_period_end", no_stripe)
+    monkeypatch.setattr(pl, "_converge_subscription", no_stripe)
     out = asyncio.run(pl._phase_providers(pl._platform_ctx(), "op1", CTX.tenant_id, {}))
     assert out["failed"] == 2
     unverified = next(s for s in out["steps"] if s["status"] == "revocation_unverified")

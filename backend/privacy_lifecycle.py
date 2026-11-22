@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
@@ -59,6 +60,7 @@ JOB_EXPORT = "privacy:export"
 # active (automation_jobs.claim_next_job), and cancel_pending_side_effects
 # never cancels them (_PENDING below), so a closure cannot strand them.
 JOB_REVOKE_CREDENTIALS = "privacy:revoke_credentials"
+JOB_BILLING_RENEWAL = "privacy:billing_renewal"
 ERASE_BATCH = 5000
 
 
@@ -823,6 +825,9 @@ async def tenant_lifecycle(ctx: TenantContext) -> dict:
             "SELECT id, name, lifecycle_state, closure_requested_at, closure_requested_by, "
             "erase_after, erased_at FROM tenants WHERE id=$1", ctx.tenant_id)
         hold = await active_legal_hold(conn, ctx.tenant_id)
+        billing = await conn.fetchval(
+            "SELECT progress->'billing' FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
     if row is None:
         raise LifecycleError("Unknown brokerage.", status_code=404)
     out = dict(row)
@@ -830,11 +835,23 @@ async def tenant_lifecycle(ctx: TenantContext) -> dict:
     out["legal_hold"] = bool(hold)
     out["grace_days"] = closure_grace_days()
     out["backup_days"] = BACKUP_DAYS
+    # Where the subscription's renewal stands after the latest closure or
+    # withdrawal (external audit 22.1): {desired: stop_renewal|renew, state:
+    # confirmed|pending|divergent|no_subscription|skipped}, or None when the
+    # brokerage never asked to close. Never an unconditional "will not renew".
+    billing = json.loads(billing) if isinstance(billing, str) else billing
+    out["billing_renewal"] = ({k: billing.get(k) for k in ("desired", "state", "checked_at")}
+                              if isinstance(billing, dict) else None)
     return out
 
 
 async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str) -> dict:
-    """Owner asks to close. Nothing is deleted until the grace period ends."""
+    """Owner asks to close. Nothing is deleted until the grace period ends.
+
+    Stopping the subscription's renewal is queued as a durable
+    privacy:billing_renewal job in the same transaction (external audit
+    22.1); the inline attempt after commit is only a fast path, and the
+    response says `billing: confirmed | pending | no_subscription`."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can close the brokerage.", status_code=403)
     if ctx.tenant_id == PLATFORM_TENANT_ID:
@@ -866,9 +883,12 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
         await conn.execute(
             "UPDATE privacy_operations SET progress=$2::jsonb WHERE id=$1", op["id"],
             json.dumps({"freeze": {"cancelled": cancelled, "revoked": revoked, "routes": routes,
-                                   "signed_out_user_ids": signed_out}}))
-    billing = await _cancel_billing_at_period_end(ctx.tenant_id)
-    emit_event("deletion.scheduled", operation_id=str(op["id"]), tenant_id=ctx.tenant_id, grace_days=grace)
+                                   "signed_out_user_ids": signed_out},
+                        "billing": {"desired": "stop_renewal", "state": "pending"}}))
+        await _enqueue_billing_renewal(conn, ctx, f"{op['id']}:close", str(op["id"]))
+    billing = await _billing_fast_path(ctx.tenant_id)
+    emit_event("deletion.scheduled", operation_id=str(op["id"]), tenant_id=ctx.tenant_id, grace_days=grace,
+               billing_pending=billing == "pending")
     await _audit(ctx, "brokerage.closure.requested", target=ctx.tenant_id,
                  metadata={"erase_after": erase_after.isoformat(), "operation_id": str(op["id"]),
                            "billing": billing})
@@ -878,7 +898,8 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
 
 
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
-    """Change of mind during the grace period: back to exactly how it was."""
+    """Change of mind during the grace period: back to exactly how it was.
+    Resuming renewal is queued durably in the same transaction (22.1)."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can reopen the brokerage.", status_code=403)
     async with tenant_tx(ctx) as conn:
@@ -908,20 +929,142 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         if op:
             await _finish_operation(conn, str(op["id"]), state="cancelled",
                                     result={"withdrawn_by": ctx.agent_id, "withdraw_reason": reason})
-    billing = await _resume_billing(ctx.tenant_id)
+            await conn.execute(
+                "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb) WHERE id=$1",
+                op["id"], json.dumps({"desired": "renew", "state": "pending"}))
+        # A closure without a running operation (one blocked by a legal hold)
+        # still gets its own job: the key only has to be unique per action.
+        await _enqueue_billing_renewal(conn, ctx, f"{op['id'] if op else uuid.uuid4()}:withdraw",
+                                       str(op["id"]) if op else None)
+    billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
                  metadata={"reason": reason, "billing": billing})
     return {"state": "active", "restored_users": restored_users, "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 
-async def _cancel_billing_at_period_end(tenant_id: str) -> str:
-    """Stop renewal; access already paid for runs out on its own."""
-    return await _set_cancel_at_period_end(tenant_id, True)
+# ── Subscription renewal: durable, confirmed, convergent (external audit 22.1)
+#
+# Closure committed `closing` and then asked Stripe once: a timeout, recovery
+# mode, a worker without STRIPE_SECRET_KEY or a crash between the commit and
+# the call left the subscription renewing while the owner was told it would
+# not (and a failed withdrawal left an active brokerage cancelling at period
+# end). Now every closure and withdrawal queues privacy:billing_renewal in its
+# own transaction. The job derives what Stripe should say from
+# tenants.lifecycle_state when it RUNS (closing/erasing/erased: stop renewal;
+# active: renew), so close-then-withdraw converges on the owner's last word
+# whatever order the jobs run in, sets it, and confirms it with
+# Subscription.retrieve. Not confirmed → retried (12 attempts, ~2.4 h); the
+# final attempt records `divergent` on the closure operation and the
+# external_cleanup alert pages someone.
+
+BILLING_MAX_ATTEMPTS = 12
+#: The job starts after any inline Stripe call of the same action has ended
+#: (the SDK's own request timeout is 80 s), so a slow inline call can never
+#: land after the job has confirmed the other value.
+BILLING_JOB_DELAY = timedelta(minutes=3)
+#: The request path's budget per Stripe call (set, then confirm); the job
+#: uses STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS.
+INLINE_STRIPE_TIMEOUT_SECONDS = 15
+_RENEWAL_BY_LIFECYCLE = {"active": False, "closing": True, "erasing": True, "erased": True}
+_BILLING_SETTLED = ("confirmed", "no_subscription")
 
 
-async def _resume_billing(tenant_id: str) -> str:
-    return await _set_cancel_at_period_end(tenant_id, False)
+class BillingRenewalPending(RuntimeError):
+    """Stripe has not confirmed the renewal the brokerage's state calls for: the job retries."""
+
+
+async def _enqueue_billing_renewal(conn, ctx: TenantContext, key: str, op_id: Optional[str]) -> None:
+    from automation_jobs import enqueue_job_in_tx
+
+    await enqueue_job_in_tx(
+        conn, ctx, job_type=JOB_BILLING_RENEWAL, payload={"operation_id": op_id},
+        idempotency_key=f"privacy:billing:{key}", created_by=ctx.agent_id,
+        max_attempts=BILLING_MAX_ATTEMPTS, scheduled_at=datetime.now(timezone.utc) + BILLING_JOB_DELAY)
+
+
+async def _billing_fast_path(tenant_id: str) -> str:
+    """The inline attempt: confirmed | no_subscription | pending. Never raises:
+    the queued job owns the outcome."""
+    try:
+        billing = await reconcile_billing_renewal(tenant_id, timeout=INLINE_STRIPE_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - the job retries
+        log.warning("inline subscription update failed (%s); the job retries", type(exc).__name__)
+        return "pending"
+    return billing["state"] if billing["state"] in _BILLING_SETTLED else "pending"
+
+
+async def reconcile_billing_renewal(tenant_id: str, *, final_attempt: bool = False,
+                                    timeout: Optional[float] = None) -> dict:
+    """Make Stripe's renewal match the brokerage's state now, confirm it, and
+    record the result on the latest closure operation (progress.billing)."""
+    async with tenant_tx(_platform_ctx("privacy-billing")) as conn:
+        lifecycle = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", tenant_id)
+    cancel = _RENEWAL_BY_LIFECYCLE.get(lifecycle)
+    if cancel is None:
+        # Suspended (or unknown): renewal follows the platform's suspension,
+        # not a closure the owner withdrew; nothing to set here.
+        billing = {"desired": None, "state": "skipped", "detail": f"lifecycle {lifecycle}"}
+    else:
+        status = await _converge_subscription(tenant_id, cancel, timeout=timeout)
+        state = status if status in _BILLING_SETTLED else ("divergent" if final_attempt else "pending")
+        billing = {"desired": "stop_renewal" if cancel else "renew", "state": state, "detail": status}
+    billing["checked_at"] = datetime.now(timezone.utc).isoformat()
+    await _record_billing(tenant_id, billing)
+    if billing["state"] == "divergent":
+        emit_event("closure.billing_divergent", tenant_id=tenant_id, kind=billing["desired"])
+        log.error("subscription renewal for %s not confirmed after the last retry (%s)",
+                  tenant_id, billing["detail"])
+    return billing
+
+
+async def _record_billing(tenant_id: str, billing: dict) -> None:
+    """progress.billing on the latest closure operation (the one
+    tenant_lifecycle reads). A settled result also settles an older
+    closure's divergence: Stripe now matches the brokerage's current state."""
+    async with tenant_tx(_platform_ctx("privacy-billing")) as conn:
+        latest = await conn.fetchval(
+            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", tenant_id)
+        if latest is None:
+            return
+        await conn.execute(
+            "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb), "
+            "updated_at=now() WHERE id=$1", latest, json.dumps(billing))
+        if billing["state"] in (*_BILLING_SETTLED, "skipped"):
+            await conn.execute(
+                "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing,state}', "
+                "'\"superseded\"'::jsonb), updated_at=now() WHERE tenant_id=$1 AND kind='closure' "
+                "AND id <> $2 AND progress->'billing'->>'state' = 'divergent'", tenant_id, latest)
+
+
+async def _billing_renewal_job(payload: dict, reporter) -> dict:
+    """`privacy:billing_renewal`: converge, confirm, retry; the final attempt
+    records `divergent` (and pages) instead of retrying forever."""
+    from automation_jobs import is_final_attempt
+
+    job = getattr(reporter, "job", None) or {}
+    tenant_id = str(job.get("tenant_id") or "")
+    final = is_final_attempt(job)
+    try:
+        billing = await reconcile_billing_renewal(tenant_id, final_attempt=final)
+    except Exception as exc:
+        if final:
+            try:
+                await _record_billing(tenant_id, {"desired": None, "state": "divergent",
+                                                  "detail": f"failed:{type(exc).__name__}",
+                                                  "checked_at": datetime.now(timezone.utc).isoformat()})
+                emit_event("closure.billing_divergent", tenant_id=tenant_id)
+            except Exception:  # noqa: BLE001 - the worker records the job's own failure
+                log.exception("could not record the divergent renewal for %s", tenant_id)
+        raise
+    if billing["state"] == "pending":
+        raise BillingRenewalPending(f"subscription renewal not confirmed: {billing['detail']}")
+    out = {"state": billing["state"], "desired": billing.get("desired"),
+           "operation_id": payload.get("operation_id")}
+    if billing["state"] == "divergent":
+        out["_terminal_state"] = "partial"
+    return out
 
 
 #: How long the closure path waits for Stripe to change a subscription (24.7).
@@ -931,18 +1074,53 @@ STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS = 30
 # withdraw) must not be overtaken by it — the order the owner acted in is the
 # order Stripe sees. Held until the thread finishes, not until the wait ends.
 # Bound to the process's one event loop; a handful of entries per closure, not
-# pruned. A withdrawal waits out an earlier change (one HTTP attempt).
+# pruned. A withdrawal waits out an earlier change (one HTTP attempt). Across
+# processes the durable job (above) converges instead.
 _SUBSCRIPTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
-async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
-    import recovery_mode
-
+async def _active_subscription_id(tenant_id: str) -> Optional[str]:
     async with tenant_tx(_platform_ctx()) as conn:
-        sub = await conn.fetchval(
+        return await conn.fetchval(
             "SELECT stripe_subscription_id FROM subscriptions WHERE tenant_id=$1 "
             "AND status IN ('active','trialing','past_due') AND stripe_subscription_id IS NOT NULL "
             "ORDER BY created_at DESC LIMIT 1", tenant_id)
+
+
+def _stripe_field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+async def _converge_subscription(tenant_id: str, cancel: bool, *, timeout: Optional[float] = None) -> str:
+    """Set cancel_at_period_end, then read it back from Stripe. Returns
+    confirmed | no_subscription | stripe_not_configured | failed:<reason>;
+    only the first two mean the subscription does what it should."""
+    sub = await _active_subscription_id(tenant_id)
+    if not sub:
+        return "no_subscription"
+    status = await _set_cancel_at_period_end(tenant_id, cancel, sub=sub, timeout=timeout)
+    if status not in ("renewal_cancelled", "renewal_resumed"):
+        return status
+    try:
+        import stripe
+
+        current = await asyncio.wait_for(
+            asyncio.to_thread(stripe.Subscription.retrieve, sub, max_network_retries=0),
+            timeout=timeout or STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - unconfirmed is retried, never assumed
+        log.warning("subscription read-back failed: %s", type(exc).__name__)
+        return f"failed:{type(exc).__name__}"
+    if bool(_stripe_field(current, "cancel_at_period_end")) is not cancel:
+        return "failed:unconfirmed"
+    return "confirmed"
+
+
+async def _set_cancel_at_period_end(tenant_id: str, value: bool, *, sub: Optional[str] = None,
+                                    timeout: Optional[float] = None) -> str:
+    import recovery_mode
+
+    if sub is None:
+        sub = await _active_subscription_id(tenant_id)
     if not sub:
         return "no_subscription"
     try:
@@ -971,7 +1149,7 @@ async def _set_cancel_at_period_end(tenant_id: str, value: bool) -> str:
                 log.warning("subscription change finished with %s", type(t.exception()).__name__)
 
         task.add_done_callback(_done)
-        await asyncio.wait_for(asyncio.shield(task), timeout=STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout or STRIPE_SUBSCRIPTION_TIMEOUT_SECONDS)
         return "renewal_cancelled" if value else "renewal_resumed"
     except Exception as exc:  # noqa: BLE001 - reported to the owner and the runbook
         log.warning("subscription update for closure failed: %s", type(exc).__name__)
@@ -1211,8 +1389,11 @@ async def _phase_providers(ctx, op_id, tenant_id, progress) -> dict:
         if outcome["status"] in REVOCATION_FAILED:
             step["note"] = MANUAL_REVOKE_NOTE
         steps.append(step)
-    billing = await _set_cancel_at_period_end(tenant_id, True)
-    steps.append({"provider": "stripe", "action": "stop_renewal", "status": billing,
+    # Set and read back (22.1): a renewal left on, or Stripe not configured
+    # in this worker, is a failed step, never "done".
+    billing = await _converge_subscription(tenant_id, True)
+    steps.append({"provider": "stripe", "action": "stop_renewal",
+                  "status": "renewal_cancelled" if billing == "confirmed" else billing,
                   "note": "billing records are retained by Neoh as controller (7 years)"})
     failed = [s for s in steps if _provider_step_failed(s["status"])]
     return {"steps": steps, "failed": len(failed)}
@@ -1816,3 +1997,4 @@ def register() -> None:
 
     register_handler(JOB_ERASE, _erase_job)
     register_handler(JOB_REVOKE_CREDENTIALS, _revoke_credentials_job)
+    register_handler(JOB_BILLING_RENEWAL, _billing_renewal_job)
