@@ -281,6 +281,123 @@ def test_a_withdrawal_outside_the_grace_period_changes_nothing(monkeypatch, life
     assert conn.executed == []
 
 
+# ── an erasure finishes the closure it erases, blocked or not (L17-58) ─────
+# After a hold was released, begin_erasure finished only a 'running' closure
+# as 'succeeded', so a closure an earlier attempt had left 'blocked_legal_hold'
+# stayed blocked while its brokerage was erased.
+
+class _EraseConn:
+    """begin_erasure's reads and writes, with the latest closure's state
+    modelled: _finish_operation (by id) and 0112123's tenant-wide
+    "SET state='succeeded' ... WHERE state='running'" both change it."""
+
+    def __init__(self, closure_state="blocked_legal_hold", *, hold=None, existing=None,
+                 error="legal hold h-1"):
+        self.lifecycle, self.hold, self.existing = "closing", hold, existing
+        self.closure = ({"id": "op-c", "state": closure_state, "error": error, "result": {}}
+                        if closure_state else None)
+        self.created, self.closure_at_create = [], None
+
+    async def fetchval(self, sql, *args):
+        if "FROM tenants" in sql:
+            return self.lifecycle
+        if "kind='erasure'" in sql:
+            return self.existing
+        raise AssertionError(sql)
+
+    async def fetchrow(self, sql, *args):
+        if "FROM legal_holds" in sql:
+            return self.hold
+        if "INSERT INTO privacy_operations" in sql:
+            self.created.append(args[1])
+            self.closure_at_create = self.closure and self.closure["state"]
+            return {"id": "op-e"}
+        if "FROM privacy_operations" in sql and "kind='closure'" in sql:
+            where = sql.split("WHERE", 1)[1]
+            assert "requested_at DESC" in where and "state" not in where, sql
+            return self.closure and {k: self.closure[k] for k in ("id", "state", "error")}
+        raise AssertionError(sql)
+
+    async def execute(self, sql, *args):
+        flat = " ".join(sql.split())
+        c = self.closure
+        if "SET state=$2, result=result ||" in flat:                # _finish_operation
+            assert c is not None and args[0] == c["id"], args
+            c.update(state=args[1], result={**c["result"], **json.loads(args[2])}, error=args[4])
+        elif "SET state='succeeded'" in flat and "state='running'" in flat:
+            if c and c["state"] == "running":
+                c["state"] = "succeeded"
+        elif "SET state='blocked_legal_hold'" in flat:
+            if c and c["state"] == "running":
+                c.update(state="blocked_legal_hold", error="legal hold " + args[1])
+        elif flat.startswith("UPDATE tenants SET lifecycle_state='erasing'"):
+            self.lifecycle = "erasing"
+        else:
+            raise AssertionError(sql)
+        return "UPDATE 1"
+
+
+def _erase(monkeypatch, conn):
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    queued = []
+
+    async def enqueue(_ctx, **kw):
+        queued.append(kw)
+        return {"id": "job"}, True
+
+    monkeypatch.setattr(pl, "tenant_tx", tx)
+    monkeypatch.setattr(automation_jobs, "enqueue_job", enqueue)
+    return asyncio.run(pl.begin_erasure(T, requested_by="retention-scheduler")), queued
+
+
+def test_an_erasure_after_a_released_hold_finishes_the_closure_it_blocked(monkeypatch):
+    conn = _EraseConn("blocked_legal_hold")
+    op_id, queued = _erase(monkeypatch, conn)
+    assert conn.closure["state"] == "succeeded"
+    assert conn.closure["result"] == {"erasure_started_from": "blocked_legal_hold"}
+    assert conn.closure["error"] == "legal hold h-1"            # the hold stays on record
+    assert conn.closure_at_create == "succeeded" and conn.created == ["erasure"]
+    assert op_id == "op-e" and conn.lifecycle == "erasing"
+    [job] = queued
+    assert job["payload"] == {"operation_id": "op-e"}
+
+
+def test_an_erasure_finishes_a_running_closure_as_before(monkeypatch):
+    conn = _EraseConn("running", error=None)
+    op_id, _ = _erase(monkeypatch, conn)
+    assert conn.closure_at_create == "succeeded"                # before the erasure exists
+    assert conn.closure["result"] == {} and conn.closure["error"] is None
+    assert op_id == "op-e" and conn.lifecycle == "erasing"
+
+
+@pytest.mark.parametrize("stale", ["succeeded", "failed", "cancelled"])
+def test_an_erasure_never_rewrites_a_closure_that_is_not_current(monkeypatch, stale):
+    conn = _EraseConn(stale, error="earlier")
+    op_id, _ = _erase(monkeypatch, conn)
+    assert conn.closure == {"id": "op-c", "state": stale, "error": "earlier", "result": {}}
+    assert op_id == "op-e"
+
+
+def test_an_erasure_under_a_hold_blocks_the_closure_and_starts_nothing(monkeypatch):
+    conn = _EraseConn("running", hold={"id": "h-2"}, error=None)
+    op_id, queued = _erase(monkeypatch, conn)
+    assert op_id is None and queued == [] and conn.created == []
+    assert conn.closure["state"] == "blocked_legal_hold" and conn.closure["error"] == "legal hold h-2"
+    assert conn.lifecycle == "closing"
+
+
+def test_a_resumed_erasure_finishes_a_closure_older_code_left_blocked(monkeypatch):
+    conn = _EraseConn("blocked_legal_hold", existing="op-e0")
+    op_id, queued = _erase(monkeypatch, conn)
+    assert op_id == "op-e0" and conn.created == []               # no second erasure
+    assert conn.closure["state"] == "succeeded"
+    assert conn.closure["result"] == {"erasure_started_from": "blocked_legal_hold"}
+    assert queued[0]["payload"] == {"operation_id": "op-e0"}
+
+
 # ── the convergence itself, against a Stripe stub ───────────────────────────
 
 class _Stripe:

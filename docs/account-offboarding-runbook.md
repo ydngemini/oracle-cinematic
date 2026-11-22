@@ -161,8 +161,86 @@ the brokerage stays `closing` and its closure operation becomes
 `blocked_legal_hold`, so the owner can still keep the brokerage. The
 withdrawal restores what that closure switched off and ends the operation
 `cancelled`, with `result.withdrawn_from = blocked_legal_hold` and its `error`
-(`legal hold <id>`) kept. The hold itself stays until an operator releases it
+(`legal hold <id>`) kept. The hold itself stays until an operator releases it.
+Once the hold is released, the next erasure finishes that closure `succeeded`,
+with `result.erasure_started_from = blocked_legal_hold` and the error kept
 (L17-58).
+
+*Closures an older withdrawal left behind.* Before L17-58, withdrawing a
+blocked closure reopened the brokerage but restored nothing and left the
+operation `blocked_legal_hold`: its agents stayed signed out and its numbers
+off. Find them, read-only, on the platform login (`psql` as
+`oracle_platform_login`):
+
+```sql
+BEGIN READ ONLY;
+SELECT set_config('app.current_role', 'platform_admin', true);
+SELECT o.id AS operation_id, o.tenant_id, o.requested_at, o.error,
+       jsonb_array_length(COALESCE(o.progress->'freeze'->'signed_out_user_ids', '[]')) AS users_frozen,
+       jsonb_array_length(COALESCE(o.progress->'freeze'->'routes'->'telephony_routes', '[]'))
+     + jsonb_array_length(COALESCE(o.progress->'freeze'->'routes'->'messaging_routes', '[]')) AS routes_frozen
+  FROM privacy_operations o
+  JOIN tenants t ON t.id = o.tenant_id
+ WHERE o.kind = 'closure' AND o.state = 'blocked_legal_hold'
+   AND t.lifecycle_state = 'active'
+ ORDER BY o.requested_at;
+ROLLBACK;
+```
+
+To repair one:
+1. Tell the brokerage owner first. They asked for the brokerage back as it
+   was when they withdrew; anyone they now want kept off can be deactivated
+   in Team afterwards.
+2. Run the repair below for that operation, in one transaction:
+   `psql -v op=<operation_id> -v tenant=<tenant_id> -v operator=<your name>`.
+   It restores only the users and routes listed in that operation's freeze
+   list that are still off, then finishes the operation `cancelled` with
+   `withdrawn_from`, as the withdrawal does now. If the re-check does not show
+   `active | blocked_legal_hold`, `ROLLBACK` and stop. If a route update fails
+   on a uniqueness constraint, the number has been reused since: `ROLLBACK`,
+   add `AND id <> '<that route id>'` to that statement, run it again and tell
+   the owner which number stays off.
+3. Read the counts each `UPDATE` reports before `COMMIT`. Each statement
+   acts only while that operation is still `blocked_legal_hold` and the
+   brokerage `active`, so a second run changes nothing. The legal hold is not
+   touched.
+
+```sql
+BEGIN;
+SELECT set_config('app.current_role', 'platform_admin', true),
+       set_config('app.current_tenant', :'tenant', true),
+       set_config('app.current_agent', :'operator', true);
+-- Re-check under lock: expect active | blocked_legal_hold, else ROLLBACK.
+SELECT t.lifecycle_state, o.state
+  FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+ WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'
+   FOR UPDATE;
+UPDATE users SET is_active = true, updated_at = now()
+ WHERE tenant_id = :'tenant' AND NOT is_active
+   AND id::text IN (SELECT jsonb_array_elements_text(COALESCE(o.progress->'freeze'->'signed_out_user_ids', '[]'))
+                      FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+                     WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.state = 'blocked_legal_hold'
+                       AND t.lifecycle_state = 'active');
+UPDATE telephony_routes SET active = true, updated_at = now()
+ WHERE tenant_id = :'tenant' AND NOT active
+   AND id::text IN (SELECT jsonb_array_elements_text(COALESCE(o.progress->'freeze'->'routes'->'telephony_routes', '[]'))
+                      FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+                     WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.state = 'blocked_legal_hold'
+                       AND t.lifecycle_state = 'active');
+UPDATE messaging_routes SET active = true, updated_at = now()
+ WHERE tenant_id = :'tenant' AND NOT active
+   AND id::text IN (SELECT jsonb_array_elements_text(COALESCE(o.progress->'freeze'->'routes'->'messaging_routes', '[]'))
+                      FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+                     WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.state = 'blocked_legal_hold'
+                       AND t.lifecycle_state = 'active');
+UPDATE privacy_operations
+   SET state = 'cancelled', completed_at = now(), updated_at = now(),
+       result = result || jsonb_build_object('withdrawn_from', 'blocked_legal_hold',
+                                             'repaired_by', :'operator', 'repair', 'L17-58')
+ WHERE id = :'op' AND tenant_id = :'tenant' AND state = 'blocked_legal_hold'
+   AND EXISTS (SELECT 1 FROM tenants WHERE id = :'tenant' AND lifecycle_state = 'active');
+COMMIT;
+```
 
 **Subscription renewal is confirmed, not assumed (external audit 22.1).**
 Closing and withdrawing each queue a `privacy:billing_renewal` job in their

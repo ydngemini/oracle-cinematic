@@ -238,18 +238,27 @@ async def _scenario(monkeypatch, media_root):
         assert dry["stored_objects"] == 2 and dry["retained_after_erasure"]["subscriptions"] == 1
         assert sentinel not in json.dumps(dry)
         assert await admin.fetchval("SELECT count(*) FROM clients WHERE tenant_id=$1", T) == 1
-        await pl.request_closure(octx, confirm_name=f"Brokerage {sentinel}", reason="closing for good")
+        final = await pl.request_closure(octx, confirm_name=f"Brokerage {sentinel}", reason="closing for good")
 
         # ── 6. Legal hold blocks erasure; release; erase ──────────────────
-        await admin.execute("INSERT INTO legal_holds (tenant_id, scope, reason, placed_by) "
-                            "VALUES ($1,'tenant','litigation','counsel')", T)
+        hold = await admin.fetchval("INSERT INTO legal_holds (tenant_id, scope, reason, placed_by) "
+                                    "VALUES ($1,'tenant','litigation','counsel') RETURNING id", T)
         assert await pl.begin_erasure(T, requested_by="test") is None
         assert await admin.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", T) == "closing"
+        assert await admin.fetchval("SELECT state FROM privacy_operations WHERE id=$1",
+                                    final["operation_id"]) == "blocked_legal_hold"
         await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE tenant_id=$1", T)
-        await admin.execute("UPDATE privacy_operations SET state='running' WHERE tenant_id=$1 "
-                            "AND kind='closure' AND state='blocked_legal_hold'", T)
+        # The real path (L17-58): the erasure finishes the closure the hold
+        # blocked, by id, keeping the hold on record; no hand reset to running.
         op_id = await pl.begin_erasure(T, requested_by="test")
         assert op_id
+        closed = await admin.fetchrow("SELECT state, result, error, completed_at FROM privacy_operations "
+                                      "WHERE id=$1", final["operation_id"])
+        assert closed["state"] == "succeeded" and closed["completed_at"] is not None
+        assert json.loads(closed["result"])["erasure_started_from"] == "blocked_legal_hold"
+        assert closed["error"] == f"legal hold {hold}"
+        assert await admin.fetchval("SELECT count(*) FROM privacy_operations WHERE tenant_id=$1 "
+                                    "AND kind='closure' AND state='blocked_legal_hold'", T) == 0
         # Storage unreachable: the erasure is not "succeeded"; it stays running
         # with what is pending, and the retry finishes it (22.2, 22.3, 22.4).
         import object_storage

@@ -908,8 +908,9 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
             "billing": billing}
 
 
-#: The states a closure operation is in while its brokerage is 'closing'.
-_WITHDRAWABLE_CLOSURE = ("running", "blocked_legal_hold")
+#: The states a closure operation is in while its brokerage is 'closing': the
+#: closure a withdrawal restores from and an erasure finishes (L17-58).
+_CURRENT_CLOSURE = ("running", "blocked_legal_hold")
 
 
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
@@ -936,7 +937,7 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
         op = await conn.fetchrow(
             "SELECT id, state, progress, error FROM privacy_operations WHERE tenant_id=$1 "
             "AND kind='closure' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
-        withdrawn = op if op is not None and op["state"] in _WITHDRAWABLE_CLOSURE else None
+        withdrawn = op if op is not None and op["state"] in _CURRENT_CLOSURE else None
         progress = withdrawn["progress"] if withdrawn else None
         freeze = (json.loads(progress) if isinstance(progress, str) else progress or {}).get("freeze", {})
         await conn.execute(
@@ -1308,15 +1309,30 @@ async def begin_erasure(tenant_id: str, *, requested_by: str) -> Optional[str]:
                 tenant_id, str(hold["id"]))
             log.warning("erasure of %s blocked by legal hold %s", tenant_id, hold["id"])
             return None
+        # The closure being erased is the latest closure operation: 'running',
+        # or 'blocked_legal_hold' when an earlier attempt found a hold that has
+        # since been released (the rule withdraw_closure uses). It is finished
+        # by id, before the erasure operation is created (one open closure or
+        # erasure per tenant). A blocked one keeps its error ('legal hold
+        # <id>') and records erasure_started_from. Only a running closure used
+        # to be finished, so a blocked one stayed 'blocked_legal_hold' while
+        # its brokerage was erased (L17-58). On a resumed erasure the latest
+        # closure is already finished, unless older code left it blocked.
+        closure = await conn.fetchrow(
+            "SELECT id, state, error FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", tenant_id)
+        if closure is not None and closure["state"] in _CURRENT_CLOSURE:
+            blocked = closure["state"] == "blocked_legal_hold"
+            await _finish_operation(
+                conn, str(closure["id"]), state="succeeded",
+                result={"erasure_started_from": "blocked_legal_hold"} if blocked else {},
+                error=closure["error"] if blocked else None)
         existing = await conn.fetchval(
             "SELECT id::text FROM privacy_operations WHERE tenant_id=$1 AND kind='erasure' "
             "AND state IN ('requested','running')", tenant_id)
         if existing:
             op_id = existing
         else:
-            await conn.execute(
-                "UPDATE privacy_operations SET state='succeeded', completed_at=now(), updated_at=now() "
-                "WHERE tenant_id=$1 AND kind='closure' AND state='running'", tenant_id)
             op = await _create_operation(conn, tenant_id=tenant_id, kind="erasure",
                                          requested_by=requested_by, subject_kind="tenant",
                                          subject_ref=tenant_id, state="running")
