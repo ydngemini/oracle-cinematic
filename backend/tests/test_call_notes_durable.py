@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import elevenlabs_realtime as el  # noqa: E402
 from tests.test_elevenlabs_realtime import (  # noqa: E402 - after the sys.path line above
-    SETTINGS, START, FakeAgent, FakePlivo, _results, _run, _tool, install_notes_backend)
+    SETTINGS, START, Connect, FakeAgent, FakePlivo, _results, _run, _tool, install_notes_backend)
 
 REF = "ref-notes"
 STATE = {"direction": "outbound", "reference": REF, "briefing": "123 Main Street."}
@@ -397,3 +397,242 @@ def test_the_retry_tag_is_keyed_by_a_key_derived_for_it(monkeypatch):
     assert tag != client_note_crypto.content_tag(tenant, "Has a dog")
     assert tag != client_note_crypto.content_tag("22222222-2222-2222-2222-222222222222", text)
 
+
+
+# ── A hang-up during a note or consent write (external audit 23.7) ──────────
+# The caller hangs up (Plivo "stop") while a write is running: the bridge
+# cancels the tool call, the write goes on (shielded), and the close-out waits
+# for it and counts what it did before it delivers notes or replays a "no".
+
+def _hang_up_during_write(monkeypatch, events, started, after_hang_up=None):
+    """Run the call; the caller hangs up once `started` is set (by a fake
+    write), and `after_hang_up()` runs alongside the bridge's close-out."""
+    import plivo_call_handler
+
+    async def fake_state(uuid, **_kw):
+        return dict(STATE)
+
+    async def signed(_settings):
+        return "wss://signed.example/conv"
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", fake_state)
+
+    async def scenario():
+        plivo_done = asyncio.Event()
+        plivo, agent = FakePlivo([]), FakeAgent(events, plivo_done)
+
+        async def receive_text():
+            await started.wait()
+            plivo_done.set()
+            return json.dumps({"event": "stop"})
+
+        plivo.receive_text = receive_text
+        bridge = el.PlivoElevenLabsBridge(plivo, "c-1", START, SETTINGS, connect=Connect(agent), signed_url=signed)
+        helper = asyncio.ensure_future(after_hang_up()) if after_hang_up else None
+        async with asyncio.timeout(5):
+            await bridge.run()
+        if helper is not None:
+            await helper
+        return agent, bridge
+
+    return asyncio.run(scenario())
+
+
+def _release_after_hang_up(started, gate, order=None):
+    async def release():
+        await started.wait()
+        for _ in range(20):   # the hang-up cancels the tool call; run() reaches its close-out
+            await asyncio.sleep(0)
+        if order is not None:
+            order.append("released")
+        gate.set()
+    return release
+
+
+def _slow_note(monkeypatch, slow_text, started, gate, *, fails=False, order=None):
+    """save_call_note: the note `slow_text` waits for `gate` (and then fails
+    if `fails`); every other note is written at once."""
+    import commands_api
+
+    real_save = commands_api.save_call_note
+    real_deliver = commands_api.deliver_call_notes
+
+    async def save(ref, note, **kw):
+        if note == slow_text:
+            started.set()
+            await gate.wait()
+            if fails:
+                raise RuntimeError("database went away after the hang-up")
+        result = await real_save(ref, note, **kw)
+        if order is not None:
+            order.append(("committed", note))
+        return result
+
+    async def deliver(*args, **kwargs):
+        if order is not None:
+            order.append("delivered")
+        return await real_deliver(*args, **kwargs)
+
+    monkeypatch.setattr(commands_api, "save_call_note", save)
+    monkeypatch.setattr(commands_api, "deliver_call_notes", deliver)
+
+
+NOTES_THEN = [_tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+              _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoons")]
+
+
+def test_a_hang_up_during_a_note_write_delivers_after_it_with_the_note_counted(monkeypatch, notes_backend):
+    started, gate, order = asyncio.Event(), asyncio.Event(), []
+    _slow_note(monkeypatch, "Has a dog", started, gate, order=order)
+    agent, bridge = _hang_up_during_write(
+        monkeypatch, NOTES_THEN + [_tool(el.TOOL_SAVE_NOTE, "t3", note="Has a dog")],
+        started, _release_after_hang_up(started, gate, order))
+    assert order == [("committed", "Prefers afternoons"), "released", ("committed", "Has a dog"), "delivered"], \
+        "the close-out ran before the note write it interrupted"
+    assert notes_backend["delivered"] == [(REF, ["Prefers afternoons", "Has a dog"])]
+    assert notes_backend["unsaved"] == [0]
+    assert "t3" not in _results(agent), "nothing is said to a caller who has gone"
+
+
+def test_a_note_write_that_fails_after_the_hang_up_is_counted_unsaved(monkeypatch, notes_backend):
+    started, gate = asyncio.Event(), asyncio.Event()
+    _slow_note(monkeypatch, "Has a dog", started, gate, fails=True)
+    _, bridge = _hang_up_during_write(
+        monkeypatch, NOTES_THEN + [_tool(el.TOOL_SAVE_NOTE, "t3", note="Has a dog")],
+        started, _release_after_hang_up(started, gate))
+    assert bridge.notes == ["Prefers afternoons"]
+    assert notes_backend["delivered"] == [(REF, ["Prefers afternoons"])]
+    assert notes_backend["unsaved"] == [1], "a note lost after the hang-up was not counted"
+
+
+def test_a_note_write_still_running_at_the_bound_is_counted_unsaved(monkeypatch, notes_backend, caplog):
+    monkeypatch.setattr(el, "_SETTLE_TIMEOUT", 0.05)
+    started, never = asyncio.Event(), asyncio.Event()
+    _slow_note(monkeypatch, "Has a dog", started, never)
+    with caplog.at_level(logging.ERROR, logger="oracle.elevenlabs_realtime"):
+        _hang_up_during_write(monkeypatch, NOTES_THEN + [_tool(el.TOOL_SAVE_NOTE, "t3", note="Has a dog")],
+                              started)
+    assert notes_backend["delivered"] == [(REF, ["Prefers afternoons"])]
+    assert notes_backend["unsaved"] == [1], "an unconfirmed write is not counted as saved"
+    assert any("still running" in r.getMessage() for r in caplog.records)
+
+
+def _slow_no(monkeypatch, seen, started, gate, *, outcome):
+    """record_call_note_consent: the first "no" waits for `gate`, then
+    `outcome` ('fails' raises; 'records' records it); later calls are normal.
+    seen["attempts"] lists every call as it starts, finished or not."""
+    import commands_api
+
+    real_consent = commands_api.record_call_note_consent
+    first = {"no": True}
+    seen["attempts"] = []
+
+    async def consent(ref, granted):
+        seen["attempts"].append(granted)
+        if not granted and first["no"]:
+            first["no"] = False
+            started.set()
+            await gate.wait()
+            if outcome == "fails":
+                seen["consent"].append((ref, granted))
+                raise RuntimeError("database went away after the hang-up")
+        return await real_consent(ref, granted)
+
+    monkeypatch.setattr(commands_api, "record_call_note_consent", consent)
+
+
+def test_the_audit_probe_a_no_cut_off_by_a_hang_up_stays_pending(monkeypatch):
+    """The 23.7 probe, flipped: cancelling the tool call mid-write (the caller
+    hung up) used to leave _withdraw_pending False — CancelledError bypasses
+    `except Exception` — so hang-up delivered notes saved under the earlier yes."""
+    import commands_api
+
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def consent(_ref, granted):
+        started.set()
+        await gate.wait()
+        return True
+
+    monkeypatch.setattr(commands_api, "record_call_note_consent", consent)
+
+    async def scenario():
+        bridge = _bridge()
+        bridge.notes = ["saved earlier under a yes"]
+        task = asyncio.create_task(bridge._on_tool_call(el.TOOL_NOTE_CONSENT, {"granted": False}, "t9"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        pending_at_hang_up = bridge._withdraw_pending
+        gate.set()
+        await bridge._settle_writes()
+        return pending_at_hang_up, bridge
+
+    pending_at_hang_up, bridge = asyncio.run(scenario())
+    assert pending_at_hang_up is True, "a no cut off by the hang-up is not replayed"
+    # The shielded write then recorded it: counted at call end, nothing kept.
+    assert bridge._withdraw_pending is False and bridge.notes_consent is False and bridge.notes == []
+
+
+def test_a_no_whose_write_fails_after_the_hang_up_is_replayed(monkeypatch, notes_backend):
+    started, gate = asyncio.Event(), asyncio.Event()
+    _slow_no(monkeypatch, notes_backend, started, gate, outcome="fails")
+    agent, _ = _hang_up_during_write(
+        monkeypatch, NOTES_THEN + [_tool(el.TOOL_NOTE_CONSENT, "t3", granted=False)],
+        started, _release_after_hang_up(started, gate))
+    assert notes_backend["attempts"] == [True, False, False], "the no was not replayed"
+    assert notes_backend["consent"] == [(REF, True), (REF, False), (REF, False)]
+    assert notes_backend["saved"] == [], "notes saved before the no outlived it"
+    assert notes_backend["delivered"] == []
+    assert "t3" not in _results(agent)
+
+
+def test_a_no_whose_write_commits_after_the_hang_up_is_written_once(monkeypatch, notes_backend):
+    started, gate = asyncio.Event(), asyncio.Event()
+    _slow_no(monkeypatch, notes_backend, started, gate, outcome="records")
+    _, bridge = _hang_up_during_write(
+        monkeypatch, NOTES_THEN + [_tool(el.TOOL_NOTE_CONSENT, "t3", granted=False)],
+        started, _release_after_hang_up(started, gate))
+    assert notes_backend["attempts"] == [True, False], "the write under way was cut off and the no replayed"
+    assert notes_backend["consent"] == [(REF, True), (REF, False)]
+    assert notes_backend["saved"] == [] and notes_backend["delivered"] == []
+    assert bridge.notes == [] and bridge._withdraw_pending is False
+
+
+def test_a_no_whose_write_is_still_running_at_the_bound_is_replayed(monkeypatch, notes_backend):
+    monkeypatch.setattr(el, "_SETTLE_TIMEOUT", 0.05)
+    started, never = asyncio.Event(), asyncio.Event()
+    _slow_no(monkeypatch, notes_backend, started, never, outcome="records")
+    _hang_up_during_write(monkeypatch, NOTES_THEN + [_tool(el.TOOL_NOTE_CONSENT, "t3", granted=False)], started)
+    assert notes_backend["attempts"] == [True, False, False], "the replay at hang-up is missing"
+    assert notes_backend["consent"] == [(REF, True), (REF, False)], "only the replay recorded it"
+    assert notes_backend["saved"] == [] and notes_backend["delivered"] == []
+
+
+def test_a_failed_no_then_a_yes_recorded_after_the_hang_up_keeps_the_notes(monkeypatch, notes_backend):
+    """L09-18 r2 still holds when the later yes is the write a hang-up cut off:
+    once recorded it supersedes the failed no, which is not replayed."""
+    import commands_api
+
+    real_consent = commands_api.record_call_note_consent
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def consent(ref, granted):
+        if not granted:
+            notes_backend["consent"].append((ref, granted))
+            raise RuntimeError("database unavailable")
+        if any(g is False for _, g in notes_backend["consent"]):
+            started.set()   # the second yes: the caller hangs up while it is written
+            await gate.wait()
+        return await real_consent(ref, granted)
+
+    monkeypatch.setattr(commands_api, "record_call_note_consent", consent)
+    _, bridge = _hang_up_during_write(
+        monkeypatch, NOTES_THEN + [_tool(el.TOOL_NOTE_CONSENT, "t3", granted=False),
+                                   _tool(el.TOOL_NOTE_CONSENT, "t4", granted=True)],
+        started, _release_after_hang_up(started, gate))
+    assert notes_backend["consent"] == [(REF, True), (REF, False), (REF, True)], "the failed no was replayed"
+    assert notes_backend["saved"] == [(REF, "Prefers afternoons")]
+    assert notes_backend["delivered"] == [(REF, ["Prefers afternoons"])]
+    assert bridge._withdraw_pending is False
