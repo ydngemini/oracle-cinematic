@@ -49,7 +49,7 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites; L14-05 domain verification and rollback 0173 (local) | Owner: networks, listings on sites, rollback approval, claim expiry; edge serving of customer hostnames | T14.03 + AC14.03 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list); L17-28 local (plan images and walkthrough audio checked by content); L17-29 local (inline platform-admin checks classified; AWS observability operator-only); L17-56 local (environment operator sessions server-revocable, 0181, audit 28.3; emailed-code cool-down, L17-32); L17-57 local (offboarding Google revocation and closure Stripe renewal durable and confirmed, audits 22.1, 22.6, 22.7) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157); L17-26 local (operator routes refuse tenant roles); L17-27 local (SSRF: market-data redirects held to the allow-list); L17-28 local (plan images and walkthrough audio checked by content); L17-29 local (inline platform-admin checks classified; AWS observability operator-only); L17-56 local (environment operator sessions server-revocable, 0181, audit 28.3; emailed-code cool-down, L17-32); L17-57 local (offboarding Google revocation and closure Stripe renewal durable and confirmed, audits 22.1, 22.6, 22.7); L17-58 local (withdrawing a closure a legal hold blocked restores what it switched off) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local); L18-06 Stripe events in order, one checkout per brokerage 0169; L18-07 payment failure keeps reads and export, stops sends; L18-08 AI token budget for Neoh chat 0170; L18-09 every hosted call outside chat under it (local) | D-2026-10-12-02 (billable stage; seat number and who counts; past_due length; AI inference when lapsed; budget numbers) | T18.07 remaining channels; AC18.03 in Stripe test mode (owner keys) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local); L19-07 restore verified only by decrypting restored ciphertext (local, DR-001) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
@@ -329,19 +329,20 @@ updated: 2026-11-16
 id: L02-12
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; Noah canary cycle-1794808375-2 + interactive correction
+evidence_shas: ["5723117"]   # base; Noah canary cycle-1794808375-2 + interactive correction
 files: [oracle-app/src/components/SalesAgentPage.jsx, oracle-app/src/components/SalesAgentPage.test.jsx]
 tests_run:
   - {cmd: "Noah canary (queue item NQ-01, $0.2971): regression test red on 5723117, then green; full frontend tests, lint, build green in the verify sandbox", result: "REVIEW_REQUIRED; review: changes requested (heading markup changed only to satisfy the test)", date: 2026-11-16}
   - {cmd: "correction: heading markup reverted, test queries scoped by role; vitest SalesAgentPage.test.jsx", result: "1 passed; red (1 failed) against 5723117's component", date: 2026-11-16}
   - {cmd: "npm test; npm run lint; npm run build", result: "104 files / 1082 tests passed; lint clean; build ok", date: 2026-11-16}
+  - {cmd: "read external audit 33.2 (CommsTab conversation selection has an out-of-order response race) against this row and CommsTab.jsx at 0112123 (ledger audit_refs hygiene)", result: "not fixed: applyMessages (CommsTab.jsx:74-79) sets the messages of whichever response arrives, with no check that its thread is still selected (openThread :110-116, handleSent :125-127). next_task tracks it (NQ-02, after its owner privacy review), and it is the same out-of-order response race this row fixed for the sales work queue (NQ-01). 33.2 added to audit_refs as tracked; L02-13's next_task names it too, but that row (33.3, contact search) is not its tracker", date: 2026-11-22}
 authz_checked: n/a (client-side ordering of one read; no API change)
 blockers:
   - "Independent review of the corrected diff, then merge and validation on main, before NQ-01 is CLOSED."
-audit_refs: [33.4]
+audit_refs: [33.4, 33.2]
 decision_refs: []
 next_task: "33.2 CommsTab thread race (NQ-02) after its owner privacy review."
-updated: 2026-11-16
+updated: 2026-11-22
 ```
 New exported `verdictQueue(rows)` and a read-only `--verdicts` flag split the pages into recorded, ready for review (clean crawl, no writes on open, not legacy), needs attention, not crawled and legacy. It writes no file; the generated matrix is unchanged. The Playwright and crawl work for AC02.04, AC02.05 and AC02.08 is still owed.
 
@@ -724,7 +725,7 @@ updated: 2026-10-16
 id: L03-14
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; fix in the commit that adds this row
+evidence_shas: ["5723117"]   # base; fix in the commit that adds this row
 files: [backend/ws_hub.py, backend/voice_intel.py, backend/commands_api.py, backend/record_access.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py]
 tests_run:
   - {cmd: "read voice_intel._broadcast_voice + its two callers, commands_api.call_telemetry and record_call_consent at 5723117", result: "none passed lead_id: a session opened on a lead (no client/contact) made record_access.linked_audience return None, so ws_hub.broadcast_record fell back to broadcast() — every socket in the brokerage got VOICE_SESSION / VOICE_TELEMETRY (transcript excerpt, counter offer, MAO, objection draft), NEGOTIATION_TELEMETRY and CALL_CONSENT", date: 2026-11-16}
@@ -1224,7 +1225,7 @@ updated: 2026-10-14
 id: L05-05
 status: tests_pass
 env: local
-evidence_shas: [8956127, bf90efc, f8142c1]
+evidence_shas: ["8956127", bf90efc, f8142c1]
 files: [backend/semantic_language.py, backend/neoh_render.py, backend/neoh_intents.py, backend/intent_states.py, backend/belief_store.py, backend/expected_value.py, backend/commands_api.py, backend/intelligence_os_api.py, backend/ai_chat_models.py, backend/ai_chat_api.py, backend/ai_chat_agent.py, backend/semantic_turn.py, backend/tests/test_fast_path_language.py, backend/tests/fast_path_language_cases.py, backend/tests/fast_path_en_golden.json, oracle-app/src/neoh/speechLanguage.js, oracle-app/src/neoh/speechLanguage.test.js, oracle-app/src/neoh/useSpeechInput.js, oracle-app/src/neoh/useSpeechInput.test.js, oracle-app/src/neoh/useNeohComposer.js, oracle-app/src/neoh/useNeohChannel.js, oracle-app/src/neoh/NeohComposer.jsx, oracle-app/src/neoh/NeohComposer.module.css, oracle-app/src/neoh/NeohConversation.test.jsx]
 tests_run:
   - {cmd: "python -m tests.fast_path_language_cases at da163ba (before any change)", result: "33 English outputs frozen in tests/fast_path_en_golden.json: 12 ask-path answers over every fast-path intent, 9 renderer branches, 12 fallback drafts (6 intents x with/without client). Committed alone as 8956127; the only later edit strips the wall-clock checked_at", date: 2026-10-15}
@@ -1895,7 +1896,7 @@ Real-time voice.
 id: L09-01
 status: tests_pass
 env: staging
-evidence_shas: [7662171, 4cef36d]
+evidence_shas: ["7662171", 4cef36d]
 files: [backend/elevenlabs_realtime.py, backend/plivo_call_handler.py, backend/commands_api.py, scripts/elevenlabs-agent.py]
 tests_run:
   - {cmd: "pytest backend/tests/test_elevenlabs_realtime.py", result: "pass (CI run 37686937230)", date: 2026-10-07}
@@ -2156,7 +2157,7 @@ updated: 2026-11-21
 id: L09-12
 status: tests_pass
 env: local
-evidence_shas: [8541081, 3bf72d1, d9a5b3b, fcefe23, d51efdf, 24ff9b3]   # bases (2026-11-16 outbox fix; 2026-11-20 requester membership; 2026-11-21 merge of main after #168-#174; 2026-11-21 review follow-ups on main fcefe23; 2026-11-21 review-of-#175 follow-ups on main d51efdf (PR #176, merged as 24ff9b3); 2026-11-21 review-of-#176 follow-ups on main 24ff9b3); fixes in the commits that add those entries
+evidence_shas: ["8541081", 3bf72d1, d9a5b3b, fcefe23, d51efdf, 24ff9b3]   # bases (2026-11-16 outbox fix; 2026-11-20 requester membership; 2026-11-21 merge of main after #168-#174; 2026-11-21 review follow-ups on main fcefe23; 2026-11-21 review-of-#175 follow-ups on main d51efdf (PR #176, merged as 24ff9b3); 2026-11-21 review-of-#176 follow-ups on main 24ff9b3); fixes in the commits that add those entries
 files: [backend/email_outbox.py, backend/commands_api.py, backend/crm.py, backend/tenancy.py, backend/auth.py, backend/brokerage_onboarding.py, backend/speed_to_lead.py, backend/scripts/onboard_ai_agent.py, backend/tests/test_crm_workflows.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_email_outbox.py, backend/tests/test_outbox_sender_access_live.py, backend/tests/test_requester_membership.py, backend/tests/test_speed_to_lead.py, backend/tests/test_command_drafts_access_live.py]
 tests_run:
   - {cmd: "read email_outbox.deliver at 8541081", result: "rechecks billing, suppression and footer, then sends as the stored created_by with no check that they may still contact client_id (the command worker makes that check: _requester_may_contact)", date: 2026-11-16}
@@ -2203,7 +2204,7 @@ updated: 2026-11-21
 id: L09-13
 status: tests_pass
 env: local
-evidence_shas: [8541081]   # base; fix in the commit that adds this row
+evidence_shas: ["8541081"]   # base; fix in the commit that adds this row
 files: [backend/outreach_compliance.py, oracle-app/src/components/OutreachConsentPanel.jsx, backend/compliance_engine/tests/test_outreach_compliance.py, backend/tests/test_voice_frequency_claim_live.py]
 tests_run:
   - {cmd: "read guard_outreach + ConsentLedger.gather_state at 8541081", result: "26.7: the 24 h voice count was read on one connection and the attempt row written on another, so callers racing for the last slot all read the same count. 26.8: vp_consent had no channel or expiry predicate, unlike has_consent", date: 2026-11-16}
@@ -2384,6 +2385,7 @@ tests_run:
   - {cmd: "after review r2: the 27-file pytest set above plus test_ai_budget_hosted_calls and test_crm_workflows (--basetemp on SYPHER_CORE2); ruff check . (backend)", result: "724 passed, 4 skipped; All checks passed", date: 2026-11-20}
   - {cmd: "after review r2, live (throwaway --rm oracle-backend container, dev DB at 0176, not migrated): test_call_notes_incremental_live, test_call_notes_live, test_pan_redaction_live, test_client_note_sealing_live", result: "4 passed (the incremental test now also proves: a pg_sleep(6) inside save_call_note is cancelled under 5.9 s with nothing written; a no waits at most 2 s on a locked note and at most 5 s per statement, and either timeout leaves consent and the note as they were; the timeline meta holds no note text)", date: 2026-11-20}
   - {cmd: "read elevenlabs_realtime.py (the record-consent tool and _withdraw_at_hang_up) at fcefe23 (independent review of PR #171, non-blocking; ledger only)", result: "elevenlabs_realtime.py:408-419: a 'no' whose write fails sets _withdraw_pending; :499-507 tries the withdrawal once at hang-up and, if that fails too, only logs 'Note consent withdrawal NOT recorded; the call's notes remain'. No task, spool or sweep retries it and nothing tells the agent. Recorded as a blocker; no code changed", date: 2026-11-21}
+  - {cmd: "read external audit 23.4 (ElevenLabs confirms a note before it is durably saved) against this row (ledger audit_refs hygiene)", result: "the defect this row fixed: 23.4's observation is the one recorded above for 34.4 / RUN-03 (save_note answered 'Saved for their agent.' before any write; the only write in the bridge's finally, its failure logged), and this row's tests cover 23.4's regression list (a failed write, hang-up, crash, a duplicate tool call id, no client anchor, consent withdrawal). Still open from 23.4: a withdrawal whose write and hang-up retry both fail is not retried durably (blocker above). 23.4 added to audit_refs", date: 2026-11-22}
 authz_checked: "No new access. commands_api.save_call_note writes in the platform context (neoh-ai-call) exactly where deliver_call_notes writes: the session row is locked FOR UPDATE (every write of one call's notes runs in turn), consent_recorded must be true (else 'refused', nothing written), the client is the session's client or a lead-only call's seller client (L09-06), a call with no client writes nothing and tells the requester once (the existing task), the note is sealed by client_note_crypto.seal_body under the brokerage's key (card numbers removed by pan_redaction first and again by seal_body), author neoh-ai-call, review mode read for the requester (D-2026-10-12-03). The first note creates the note and the call's 'ai_call_notes' timeline row (deliver_call_notes' idempotency key); each later one opens the note FOR UPDATE (an agent's concurrent edit is not overwritten), appends a line and reseals. In 'review' mode an append returns the note to proposed and clears reviewed_by / reviewed_at; 'direct' never approves a proposed note. A note the agent discarded mid-call stays deleted; the next item starts a new note that the timeline row then names. The row's meta keeps tool call keys — the tool call id plus a keyed tag of the redacted text (client_note_crypto.content_tag), never the text: the same id with the same text answers 'duplicate' and appends nothing; the same id with other text is written. The CALL_NOTES frame is sent after each commit with ws_hub.broadcast_record(only=call_note_recipients(requester, assignee), mirror=False): the same recipients and record re-check as at call end, never wider. The bridge answers 'Saved for their agent.' only when save_call_note returned saved / duplicate (after the transaction committed); any exception or other status is an error the AI must voice ('Tell them you couldn't save that note'); the write is shielded from a hang-up (nothing was said about it either way). At call end deliver_call_notes finds the call's row, writes no second note, closes the session's transcript status and, for notes the caller was told could not be saved, adds '— N could not be saved' to that row, or (none saved) leaves the requester a task with the count and no content. Review r1 fixes: (1) a retry is the same tool call id with the same text — the key is the id plus client_note_crypto.content_tag (HMAC-SHA256 of the redacted text under a tag key derived from the tenant's key, HMAC(tenant key, 'call-note-tag'), so the timeline row's meta reveals nothing about the text and the encryption key is never an HMAC key itself); the same id with other text is written. (2) Optimistic concurrency on the note routes: PATCH /clients/{id}/notes/{note} and POST .../approve accept expected_updated_at (the version the agent read); a mismatch is 409 'This note changed while you were editing; reload to see the latest.' — the agent's role and record access are checked first exactly as before (require_client_edit inside the same transaction), so the 409 reveals only that a note the caller may already edit has changed; a missing note is still 404, an already-approved note still 409 'note is not waiting for review'. ClientNotes sends the version the editor started from (and the one on screen for approve), reloads on 409, keeps the draft and shows the latest saved text above it; the next Save is against that latest version. The field is optional: an API caller that omits it keeps last-write-wins. (3) A no after notes were saved (record_call_note_consent granted=false) deletes the call's AI note in the same transaction as the consent change, and the timeline row keeps only 'Call notes withdrawn: the caller withdrew consent, nothing from this call is kept' (no note link, no content); the AI is told 'Recorded that they declined. Nothing from this call is kept.'; a no that failed to reach the database is written again at hang-up. (4) save_call_note and record_call_note_consent (including a no's note deletion) run under SET LOCAL lock_timeout '2s' and statement_timeout '5s': a timeout rolls back; for a note the AI says 'not saved', for a no the bridge keeps it pending and writes it at hang-up. Review r2: a pending no is cleared whenever a later consent answer (yes or no) is recorded, so it is never replayed over a later yes. (5) Hang-up calls delivery for every consented call, so a call with no note, or no client, has its transcript status closed."
 blockers:
   - "Owner decision 2026-11-20 ('continue all' on open decisions): one AI note per call, written and updated as the call goes. It is not in the Owner decisions register; only the owner adds rows there."
@@ -2398,10 +2400,10 @@ blockers:
   - "scripts/elevenlabs-agent.py tool descriptions are unchanged (re-provisioning calls ElevenLabs); the per-call prompt and each tool answer carry the 'couldn't save that note' rule."
   - "No real call made (T09.18 needs owner approval); not deployed (C4.4)."
   - "A 'no' that fails mid-call and whose hang-up retry also fails leaves the call's notes in place with only a log line (elevenlabs_realtime._withdraw_at_hang_up): no durable task, spool or sweep retries the withdrawal, and the agent is not told (review of PR #171, 2026-11-21). Open."
-audit_refs: [34.4, RUN-03]
+audit_refs: [34.4, RUN-03, 23.4]
 decision_refs: []
 next_task: "Independent review r3; then a real ElevenLabs call with the database write forced to fail once T09.18 is approved."
-updated: 2026-11-21
+updated: 2026-11-22
 ```
 
 #### L09-19 A hang-up during a call-note or consent write: both media tasks are joined, the write is awaited and counted before close-out, and a "no" cut off by the hang-up is still replayed (external audit 23.7)
@@ -2655,7 +2657,7 @@ How it works (`messaging_data.assign_campaign_number`): under the brokerage's la
 id: L10-11
 status: tests_pass
 env: local
-evidence_shas: [0650144]
+evidence_shas: ["0650144"]
 files: [backend/db/migrations/0164_provider_health_platform_smtp.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, oracle-app/src/components/ProviderDeliveryPage.jsx, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js]
 tests_run:
   - {cmd: "read sales_api._provider_snapshot and providers() at 0650144", result: "L10-08 still true: env SMTP settings alone made channels.email true; /api/sales/providers also never returned platform_sender, so the page's 'who sends' line was always empty", date: 2026-10-16}
@@ -2742,7 +2744,7 @@ updated: 2026-11-13
 id: L10-15
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; fix in the commit that adds this row
+evidence_shas: ["5723117"]   # base; fix in the commit that adds this row
 files: [backend/outreach_compliance.py, backend/compliance_engine/tests/test_outreach_compliance.py]
 tests_run:
   - {cmd: "read outreach_compliance.is_stop_keyword at 5723117", result: "the WHOLE body, letters only, had to equal one keyword; REVOKE was not a keyword. messaging_api (Telnyx inbound), POST /api/outreach/inbound and the orphan opt-out path all use it, so plain-language replies recorded no suppression", date: 2026-11-16}
@@ -2772,6 +2774,7 @@ tests_run:
   - {cmd: "after: live test_sms_send_readiness_live; unit test_sms_send_readiness (16) + messaging/onboarding/SMS/telnyx/operator/twilio selection", result: "1 live pass (8 registration states + worker refuse/send); 452 unit pass", date: 2026-11-18}
   - {cmd: "full suite at 452729f (2 failed: source guards still naming the old hosting-only check); independent review (REQUEST_CHANGES: 'correct provider account' not implemented; revocation/unassignment never observed (called fail-closed); channel_setup and the UI still said ready on hosting alone; onboarding 'pending' could not occur (a route carries a campaign only after approval); platform env attesting a tenant sender; brand provider not compared; misleading 'assign' blocker; bad provider env 500s) -> route.provider_account_id records an opaque fingerprint (sha256) of the Telnyx account that created or proved the hosting (connect, or the hosting refresh as the upgrade path) and every send compares it with the account it would use (wrong_account); revocation and unassignment are observed by the 25.2 sync (L10-17, same PR); channel_setup._sms and the UI follow the gate (server ready/send_blockers, 'Check texting registration'); onboarding pending from the brokerage's own campaign/brand; the Twilio type comes from the sender's own source; brand provider compared; blockers no_campaign / campaign_not_approved / no_campaign_assigned; MessagingProviderError reported as wrong_provider", result: "full suite at a147508: 2 failed (env documentation; a source guard broken by line-wrapping) — fixed below", date: 2026-11-18}
   - {cmd: "independent re-review of a147508 (REQUEST_CHANGES: blocker the failing source guard; majors: Telnyx assignment_status ignored; a 404 from a different account expired campaigns/released assignments; unknown/unattached submissions not surfaced to operators; channel_setup/onboarding skipped the account check and the UI offered the wrong fix for wrong_account; a stale 'approved' kept sending while reads failed (401)) -> fixed together with L10-17", result: "after: 607 affected unit pass; live test_sms_send_readiness_live + test_10dlc_status_sync_live pass (this host's dev DB); vitest ProviderDeliveryPage 3 pass", date: 2026-11-18}
+  - {cmd: "read external audit 34.8 (live carrier, sender registration and receipt evidence not yet shown) against this row (review of PR #185 on the audit_refs hygiene)", result: "covers its code side: before any business text this row's gate requires the approved campaign, the number's attached assignment and a provider read of them within 14 days (L10-17), the checks 34.8 lists first. Not covered here: the live evidence itself (registration proof from the provider account, a signed inbound STOP, delivery receipts, failed or unknown reconciliation and duplicate callbacks on a real carrier), owed by the owner and the provider account. 34.8 added to audit_refs", date: 2026-11-22}
 authz_checked: "The gate reads only the sending agent's own route (tenant_id + agent_id) and joins campaign, brand and assignment on the same tenant; the composite FK messaging_routes(tenant_id, campaign_id) refuses another brokerage's campaign (live test). Refused before submission_started, so the command fails cleanly and is not retried into a later send."
 blockers:
   - "messaging_data.messaging_send_readiness / send_blockers: route active, provider is the one sending, hosting active, owner's voice-verified number, not toll-free, route campaign approved (same tenant and provider), brand registered (not failed/not_started), and an ATTACHED 10DLC assignment of that exact number to that campaign's provider id. An 'unknown' (unconfirmed) assignment is not committed."
@@ -2784,10 +2787,10 @@ blockers:
   - "Legacy Twilio: the sender must declare twilio_registered, ported or toll_free_verified, from the same source as the sender (a credential sender its credential's sms_sender_type, an env sender TWILIO_SMS_SENDER_TYPE); undeclared is refused, and channel_setup says so. Neoh does not read Twilio's A2P registry: the declaration is the brokerage's (or the platform's)."
   - "The brand check is weak by design: pending/unverified pass because an approved campaign implies TCR accepted the brand; the campaign approval and the assignment carry the assurance."
   - "Customer-contact/compliance change: independent review + owner approval before merge. Not deployed (C4.4)."
-audit_refs: [25.1]
+audit_refs: [25.1, 34.8]
 decision_refs: []
 next_task: "25.4 (per-tenant Telnyx webhook keys)."
-updated: 2026-11-18
+updated: 2026-11-22
 ```
 
 #### L10-17 10DLC brand, campaign and number-assignment status is read back from the provider (external audit 25.2)
@@ -2880,6 +2883,8 @@ tests_run:
   - {cmd: "read commands_api ACS EventGrid webhook, webhook_auth.verify_webhook and infra/digitalocean/app.yaml at 9bfe5d5", result: "confirmed 34.7: the webhook schedules its handlers with asyncio.ensure_future and returns accepted before they run, so a crash after the 200 loses the event. Scope: ACS is not in the deployed offering — the app spec carries no ORACLE_ACS_WEBHOOK_SECRET, and verify_webhook answers 503 without it, so nothing is scheduled today", date: 2026-11-19}
   - {cmd: "the new test against 9bfe5d5's config.py", result: "red: production booted with the ACS webhook secret set", date: 2026-11-19}
   - {cmd: "after: test_config_acs_experimental 2 passed; config boot-guard and env-documentation tests 37 passed; full unit suite 6947 passed / 158 skipped (round 1). After review r1: ACS + demo-login + weak-secret + env-doc + rendered-spec boot tests 63 passed (production rules with prod / production / unset / ci refuse the ACS secret; an acknowledged experiment boots; webhooks on without ACS boot; the ACS placeholder is still refused inside the experiment). Review r2 caught test_recovery_security still expecting the ACS secret whenever webhooks are on: updated to the new rule (required only inside the experiment, checked both ways); full unit suite 6952 passed / 158 skipped", result: "pass", date: 2026-11-19}
+  - {cmd: "read external audit 34.8 (live carrier, sender registration and receipt evidence not yet shown) against this row (ledger audit_refs hygiene)", result: "not fixed here; next_task tracks it (live carrier / 10DLC evidence, owed by the owner and the provider account). 34.8 added to audit_refs as tracked", date: 2026-11-22}
+  - {cmd: "review of PR #185 (audit_refs): 34.8 re-read against this row", result: "a sequence pointer only: next_task names 34.8 as the next item, and this row gates the ACS webhook (34.7). 34.8 removed from audit_refs and recorded on L10-16, whose send gate refuses a text without a registered sender, an approved campaign and an attached number assignment (L10-17 reads that status back)", date: 2026-11-22}
 authz_checked: "No access-control change. config.validate_or_die refuses to start any environment outside dev and staging (production, or an unset / unrecognised ORACLE_ENV, as for demo logins) when ORACLE_ACS_WEBHOOK_SECRET is set unless ORACLE_ACS_EXPERIMENTAL=1 records the decision to accept event loss; the message names the settings, never the secret. With ORACLE_ENABLE_WEBHOOKS on, the ACS secret is required only inside the acknowledged experiment (before: always), so turning webhooks on never forces the experiment; the custom-call secret is still required. Dev and staging are unchanged."
 blockers:
   - "Not done (the audit's other option): durable, deduplicated ACS callback events before acknowledgement. ACS stays out of the paid offering; enabling it for customers needs that work first."
@@ -2889,7 +2894,7 @@ blockers:
 audit_refs: [34.7]
 decision_refs: []
 next_task: "34.8 (live carrier / 10DLC evidence: owner and provider account)."
-updated: 2026-11-19
+updated: 2026-11-22
 ```
 
 #### L10-21 Twilio calls on a brokerage's own account: webhooks and the media socket are checked against that account's token, live calls are moved with its whole credential (external audits 23.2, 23.3)
@@ -3308,7 +3313,7 @@ updated: 2026-10-18
 id: L11-17
 status: tests_pass
 env: local
-evidence_shas: [8341575]
+evidence_shas: ["8341575"]
 files: [oracle-app/src/lib/propertyLookupStatus.js, oracle-app/src/lib/propertyLookupStatus.test.js, oracle-app/src/components/ClientDetailDrawer.jsx]
 tests_run:
   - {cmd: "source read at 8341575: client_ai_automation.py:716 stores match_basis 'exact owner name' for a comparison that lower-cases and strips everything outside a-z0-9 (:681); ClientDetailDrawer.jsx:829 printed it verbatim next to a 'Review-only' heading; neoh_render.py:598 keys its mapping on the stored words", result: "L11-08's open blocker confirmed still present; the stored string is left unchanged on purpose (Neoh's renderer and existing stored candidates depend on it), so the drawer maps it", date: 2026-11-16}
@@ -3679,15 +3684,16 @@ tests_run:
   - {cmd: "python -m pytest -q -p no:cacheprovider tests/ (backend, ORACLE_SKIP_DOTENV=1)", result: "3421 passed, 21 skipped, exit 0", date: 2026-10-13}
   - {cmd: "performance/rls_tenant_wall_plans.sh (local dev DB; EXPLAIN ANALYZE as oracle_app_login / oracle_platform_login; throwaway 21,000-contact brokerage beside a 253-client one; one run, single machine shared with other work, no concurrency)", result: "pre-0141 -> 0141. Small agent (253 clients): client count 14.8 -> 2.1 ms (seq scan of 35,961 -> bitmap index); client page 14.4 -> 0.9 ms; phone-hash lookup 3.0 -> 0.1 ms, generic plan 54.8 -> 0.2 ms (seq -> index); leads pipeline page >5 s (cancelled) -> 1.3 ms; generic client count 30.9 -> 0.8 ms. Big owner (21,268 clients): count 65.0 -> 15.4 ms, page 56.0 -> 15.9 ms, generic count 62.7 -> 14.9 ms. Forged admin GUC: same as the small agent (count 22.0 -> 1.1 ms; leads >5 s -> 0.2 ms). Platform admin: count 57.1 -> 22.2 ms. Unchanged: child rows by client_id 0.3-0.5 ms, client by id 0.1-0.2 ms. Regressions: big agent/owner leads page 0.2-0.6 -> 2.5-6.4 ms (tenant index + sort instead of the global ranking index; bounded by the brokerage's size, not the platform's); per-row policy cost on a forced seq scan 43-58 -> 115-120 ms for 36k rows (two plpgsql calls, ~2 us/row) for owner/admin, unchanged for agents", date: 2026-10-13}
   - {cmd: "EXPLAIN ANALYZE x3 of crm.list_clients page selection with/without the 0113 predicate, pre-0141 vs 0141", result: "with the predicate (current code): big owner 58-80 -> 28-42 ms, small agent 3.2-4.0 -> 3.7-4.9 ms; without it on 0141: 27-30 ms and 1.6-1.8 ms — the restated predicate is now redundant and costs ~2-3 ms", date: 2026-10-13}
+  - {cmd: "read external audit 30.10 (the capacity pass relies on older local, mock-provider measurements) against this row (review of PR #185 on the audit_refs hygiene, which asked for the closest capacity row)", result: "the same gap: this row records the baseline as local only, keeps A10 open in its blockers and has the staging protocol (T16.10) as next task. Not fixed: no current-SHA DigitalOcean staging run exists (staging deploys fail at doctl auth since 2026-11-08, L19-01). '30.10' added to audit_refs (quoted: YAML reads 30.10 as 30.1)", date: 2026-11-22}
 authz_checked: "tenant isolation proven equivalent per policy and context (B, D above), incl. a forged platform_admin GUC on the request login; restrictive agent-scope policies (0131/0134) unchanged and still AND"
 blockers:
   - {type: owner, note: "No production-shaped target exists yet (L19-02). A10 (capacity on production-shaped infrastructure) stays open: these are local single-run plans, not capacity evidence."}
   - {type: owner, note: "0141 is local only: unpushed branch; pushing to main deploys staging (CONTRACT C4.4). On staging it runs as doadmin (table owner), one transaction, lock_timeout 5 s, ACCESS EXCLUSIVE per table briefly."}
   - {type: scope, note: "Not rewritten: audit_ledger (nullable tenant_id), user_interactions/user_profiles (text tenant_id), the 5 tenant+user policies (ai_chat_messages, ai_chat_actions, ai_tool_operations, agent_decisions, autonomy_preferences) and other non-canonical shapes. tenant_id = ANY (app_visible_tenants()) (0113, still used by crm.list_clients and server.push_deal_pipeline) hides rows whose tenant row is gone from a platform admin; the dev DB has such rows (15 lead_pipeline_counts, 120 tenant_contract_template_registrations)."}
-audit_refs: [A10]
+audit_refs: [A10, '30.10']
 decision_refs: []
 next_task: "Done in L16-03 (0113 predicates dropped, plan proof, 0144, T16.04 inventory). Remaining here: T16.10 protocol on staging once 0141/0144 are deployed."
-updated: 2026-10-14
+updated: 2026-11-22
 ```
 
 #### L16-03 The tenant wall is not restated; duplicate tenant policies are gone; hot-query index inventory
@@ -4358,7 +4364,7 @@ updated: 2026-10-15
 id: L17-22
 status: tests_pass
 env: staging
-evidence_shas: [cef0006, 1528459, a5caaca]
+evidence_shas: [cef0006, "1528459", a5caaca]
 branch: worktree-agent-a67b64a862bbe3928
 files: [backend/db/migrations/0154_sealed_text_slice_two.sql, backend/sealed_text.py, backend/backfill_sealed_text.py, backend/data_integrations/periodic.py, backend/crm.py, backend/email_outbox.py, backend/commands_api.py, backend/voice_intel.py, backend/intelligence_os_api.py, backend/client_portal.py, backend/client_enterprise.py, backend/client_ai_automation.py, backend/lead_dossier.py, backend/neoh_intents.py, backend/admin_ops.py, backend/ai_chat_store.py, backend/belief_store.py, backend/memory_core/session_manager.py, backend/privacy_requests.py, backend/privacy_export.py, backend/privacy_data_map.py, backend/tests/test_sealed_text.py, backend/tests/test_sealed_text_two_live.py, backend/tests/test_sealed_text_live.py, backend/tests/test_crm_workflows.py, backend/tests/test_email_unsubscribe_live.py, .github/workflows/ci.yml, docs/privacy-data-map.md, docs/operator-scripts.md]
 tests_run:
@@ -4441,7 +4447,7 @@ updated: 2026-10-15
 id: L17-25
 status: tests_pass
 env: local
-evidence_shas: [6380735]
+evidence_shas: ["6380735"]
 files: [backend/crm.py, backend/tests/test_comms_threads_live.py, backend/tests/test_crm_workflows.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "read crm.comms_threads at 6380735", result: "two correlated LATERAL scans of the whole touches CTE per client (newest touch, count): quadratic in brokerage size (L17-22 defect)", date: 2026-10-16}
@@ -4485,7 +4491,7 @@ updated: 2026-11-08
 id: L17-27
 status: tests_pass
 env: local
-evidence_shas: [2971182]   # base; fix in the commit that adds this row
+evidence_shas: ["2971182"]   # base; fix in the commit that adds this row
 files: [backend/market_research_agent.py, backend/tests/test_market_research_agent.py]
 tests_run:
   - {cmd: "review of every server-side HTTP fetch with a non-literal URL (requests/httpx/aiohttp/urllib across backend/, 2026-11-08)", result: "no route fetches a URL a user or tenant supplies. Custom-call api_url is read from credentials but the only caller passes none (ORACLE_CUSTOM_CALL_API_URL, operator env); SMTP hosts must resolve to is_global addresses (smtp_mailer); site domains are verified by DNS, not HTTP; govinfo and site asset URLs are validated; video downloads take the provider's content_url (feature off); the rest are fixed provider or env URLs. One gap: market_research_agent checked its publisher allow-list on the first URL only, and urllib follows redirects", date: 2026-11-08}
@@ -4621,7 +4627,7 @@ updated: 2026-11-20
 id: L17-33
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_lifecycle.py, backend/tests/test_erasure_completion_truth.py, backend/tests/test_job_handler_contract.py]
 tests_run:
   - {cmd: "read privacy_lifecycle at 1569501", result: "confirmed: _phase_verify counted unconfigured storage and an unlistable prefix as 0 objects (clean); _phase_receipt marked succeeded with directive_written=false; run_erasure returned 'succeeded' whatever the receipt stored, and the job completed (no retry); a failed op could never be resumed", date: 2026-11-16}
@@ -4653,7 +4659,7 @@ updated: 2026-11-16
 id: L17-34
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_requests.py, backend/tests/test_dsar_subject_truth_live.py, backend/tests/test_dsar_access_complete.py]
 tests_run:
   - {cmd: "read privacy_requests at 1569501", result: "confirmed 29.3: _discover ORs email/phone/contact_id/client_id, so A's email + B's phone (or B's record id) returned or deleted both. Confirmed 29.8 (worse than claimed): each table capped at LIMIT 5000, a failed query became no rows, encrypted contacts/calls silently skipped without the key, and the dependent tables discovery counts (contact_intake_sessions, lead_intake_events, outreach_attempt_log, agent_call_intents, smart_plan_*, ...) were never returned", date: 2026-11-16}
@@ -4679,7 +4685,7 @@ updated: 2026-11-16
 id: L17-35
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_lifecycle.py, backend/tests/test_departing_agent_routes_live.py, oracle-app/src/components/OffboardMemberForm.jsx, oracle-app/src/components/OffboardMemberForm.test.jsx]
 tests_run:
   - {cmd: "read privacy_lifecycle._hand_over_routes, inbound_voice.resolve_inbound_route, messaging_data.resolve_messaging_route_by_number at 1569501", result: "confirmed: when the successor already has a route, the departing route only lost its forwarding and stayed active under the deactivated agent (messaging route untouched); neither inbound resolver checks that the route's agent is active", date: 2026-11-16}
@@ -5329,7 +5335,7 @@ blockers:
   - "22.1 design choice (owner instruction 2026-11-20 ('continue all' on the open decisions); rule chosen by the Claude session): the billing job does not carry the wanted value. It reads tenants.lifecycle_state when it runs (closing/erasing/erased: stop renewal; active: renew; suspended: left alone, recorded 'skipped'), so a close followed by a withdrawal converges on the last action in any job order; the per-process _SUBSCRIPTION_LOCKS stay for in-process ordering. The job is scheduled 3 minutes after the action, past the SDK's 80 s request timeout, so a slow inline call cannot land after the job confirmed the other value."
   - "22.1 design choice (same instruction; rule chosen by the Claude session): confirmation is a set (Subscription.modify) then a read-back (Subscription.retrieve) of cancel_at_period_end; the result lives on the LATEST closure operation's progress.billing, whatever that operation's state (no new column, no migration). Older closures are history: since review r1 an older 'pending' is marked 'superseded' whenever a newer result is recorded (every later job writes the latest, so it could never be confirmed), and an older 'divergent' once a result is confirmed or no-subscription. An unsettled record that does not know its direction (the final attempt raised, or the tenants row was unreadable) keeps the previous record's desired, else the one the brokerage's state implies. The request path's two Stripe calls are bounded at 15 s each (was one 30 s call)."
   - "Design choice (same instruction; rule chosen by the Claude session): one shared alert component, external_cleanup (role important, DEGRADED pages through ops_alerts), counts credentials marked revocation_failed, each brokerage's LATEST closure operation whose progress.billing.state is 'divergent' (review r1: latest only), and offboardings, or latest closures whose billing is 'pending', 6 h on without an update (a job reaped or dead-lettered without its final attempt, e.g. a worker without the handler during a deploy)."
-  - "A suspended brokerage's renewal is not touched by the billing job (recorded 'skipped'). A withdrawal of a closure an erasure left 'blocked_legal_hold' (no running closure operation): the pending mark, the job key and the result all go to the latest closure operation, which is that blocked one, and tenant_lifecycle shows it (as-run, test_closure_billing_live: {renew, confirmed} on the blocked operation). Judged right: it is the closure being withdrawn and the record the owner reads (review r1 found the earlier sentence here wrong: the withdrawal now marks the latest closure, not only a running one). Pre-existing and out of scope: such a withdrawal restores none of the users or routes the closure switched off and leaves that operation 'blocked_legal_hold', because withdraw_closure reads the freeze list only from a running closure."
+  - "A suspended brokerage's renewal is not touched by the billing job (recorded 'skipped'). A withdrawal of a closure an erasure left 'blocked_legal_hold' (no running closure operation): the pending mark, the job key and the result all go to the latest closure operation, which is that blocked one, and tenant_lifecycle shows it (as-run, test_closure_billing_live: {renew, confirmed} on the blocked operation). Judged right: it is the closure being withdrawn and the record the owner reads (review r1 found the earlier sentence here wrong: the withdrawal now marks the latest closure, not only a running one). Pre-existing and out of scope: such a withdrawal restores none of the users or routes the closure switched off and leaves that operation 'blocked_legal_hold', because withdraw_closure reads the freeze list only from a running closure. Resolved 2026-11-22 by L17-58: the withdrawal now restores exactly what that blocked closure froze and ends it 'cancelled', the hold kept on record."
   - "Design choice (review r1, same instruction; rule chosen by the Claude session): a Google token rejected as invalid_token is counted already_invalid only when it was the refresh token; when only an access token is held, Google's invalid_token for an expired access token proves nothing about the grant, so the row is kept as revocation_unverified (detail access_token_rejected) and, retries being pointless, ends in the alert for a person."
   - "Review r1 (pre-existing, fixed): a Google connect whose callback finished after the agent's offboarding (state consumed in one transaction, upsert in another) inserted an ACTIVE credential. Both upserts now lock the member row (users, FOR SHARE, under the connecting agent's own context) and refuse a member who is no longer active: the callback revokes the grant it was given and redirects with ?google=member_inactive; the store route answers 409. A label no member carries (a shared one) is unaffected."
   - "Billing divergence resolution is manual (runbook § 5): fix the subscription in the Stripe dashboard, then a later billing job confirms it or an operator marks the record 'superseded'. Real Stripe needs test keys (owner blockers L18-04, L18-06); proved with a stub only."
@@ -5339,6 +5345,56 @@ blockers:
 audit_refs: [22.1, 22.6, 22.7]
 decision_refs: []
 next_task: "Independent review (privacy, billing); then a staging run with Stripe test keys once L18-04 is unblocked; deploy only with owner approval."
+updated: 2026-11-22
+```
+
+#### L17-58 Withdrawing a closure that a legal hold stopped restores what that closure switched off, never members the owner has switched off since, and ends it withdrawn; an erasure after the hold is released finishes it; the hold kept on record (review of PR #183, recorded in L17-57; review of PR #185)
+```yaml
+id: L17-58
+status: tests_pass
+env: local
+evidence_shas: ['0112123', '67192808', '56e46cad']   # base (main); the withdrawal fix and this row in 67192808; the erasure fix and the runbook repair in 56e46cad; the review-of-#185 fixes in the commit after 4f2737d3
+files: [backend/privacy_lifecycle.py, backend/tests/test_closure_billing_renewal.py, backend/tests/test_closure_billing_live.py, backend/tests/test_privacy_lifecycle_live.py, backend/tests/test_launch_backlog.py, docs/account-offboarding-runbook.md]
+tests_run:
+  - {cmd: "read privacy_lifecycle.py (request_closure, begin_erasure, active_legal_hold, withdraw_closure), privacy_api.py (legal-hold routes) and AccountDataPanel.jsx at 0112123 (C1.5 re-check of the PR #183 review finding recorded in L17-57)", result: "open as described: request_closure records the freeze list (agents signed out, telephony and messaging routes switched off) on the closure operation it creates 'running' in the transaction that sets 'closing' (privacy_lifecycle.py:888-896); begin_erasure under an unreleased hold sets that operation 'blocked_legal_hold' and returns None, leaving the brokerage 'closing' (:1281-1288); withdraw_closure read the freeze list only from a closure in state 'running' (:921-923), so for the blocked one it set the brokerage 'active', restored no agent and no route, and did not finish the operation (:940-942), which stayed 'blocked_legal_hold'. The response said restored_users 0 while Account & data said 'Your agents can sign in again' (AccountDataPanel.jsx:223)", date: 2026-11-22}
+  - {cmd: "red: cd backend && pytest -p no:cacheprovider --basetemp=<scratch on SYPHER_CORE2> -q tests/test_closure_billing_renewal.py against 0112123's privacy_lifecycle.py (backup outside the basetemp, restored after)", result: "6 failed, 29 passed: the blocked-closure case fails on behaviour (nothing restored: [] == ['u-1', 'u-2']); the running, not-open (3) and no-operation cases fail only on the new restored_routes count, their behaviour assertions passing on the base; the 4 outside-the-grace-period cases and the rest pin unchanged behaviour", date: 2026-11-22}
+  - {cmd: "live reproduction on the throwaway database below: tests/test_closure_billing_live.py against 0112123's privacy_lifecycle.py with only the restored_routes count added to its response (no behaviour change; the unmodified base stops earlier, at the first withdrawal, on the missing key)", result: "1 failed, at the withdrawal of the closure the hold blocked: restored_users 0, expected 1", date: 2026-11-22}
+  - {cmd: "four hand mutants of the fix, each against test_closure_billing_renewal and test_closure_billing_live", result: "4 of 4 killed: the blocked closure restored from but not finished (both: it stays 'blocked_legal_hold'); the hold's error wiped (both); a naive fix that cancels every blocked closure of the brokerage (live: the older blocked closure is cancelled; unit: killed once the blocked case asserted every operation write is by id); the freeze read from the latest closure whatever its state (unit: the not-open cases restore; live cannot reach it, since request_closure always makes the latest closure the open one)", date: 2026-11-22}
+  - {cmd: "throwaway Docker network, every container --rm and removed after (the local dev DB untouched, no volume left): postgres:16-alpine on tmpfs aliased db; run_migrations.py as in CI (175 processed); the oracle-backend image with the worktree's backend copied in, as oracle_app_login / oracle_platform_login: pytest -p no:cacheprovider -q tests/test_closure_billing_live.py tests/test_privacy_lifecycle_live.py", result: "2 passed. New live cases: withdrawing the closure the hold blocked restores the agent and both routes that closure switched off and nothing else (an agent and routes already off before any closure stay off; an older 'blocked_legal_hold' closure, as the old code left one, is neither restored from nor rewritten), ends the operation 'cancelled' with result.withdrawn_from and error 'legal hold <id>', leaves the hold unreleased (tenant_lifecycle: legal_hold true), and records billing {renew, confirmed} on it as before; a second withdrawal is refused and changes nothing; begin_erasure and the withdrawal queued on the tenants row lock in each order (a third connection holds the lock until pg_stat_activity shows both waiting) end the same way (erasure first: the closure blocked, then restored from; withdrawal first: the erasure refused, 'tenant is active'); once begin_erasure has moved the brokerage to 'erasing', a withdrawal is refused and nothing is restored", date: 2026-11-22}
+  - {cmd: "the same throwaway database, this commit's code: the CI live command pytest -p no:cacheprovider -q tests/test_*_live.py tests/test_migration_precheck.py; then the network, containers and database removed (no volume created: the data directory was tmpfs)", result: "187 passed, 5 skipped, exit 0", date: 2026-11-22}
+  - {cmd: "python3 scripts/build-launch-backlog.py && --check, then cd backend && pytest -p no:cacheprovider --basetemp=<scratch on SYPHER_CORE2> -q tests compliance_engine/tests (the CI unit command, local venv); ruff check on the changed Python files and ruff check --select F82 .", result: "backlog current; 7974 passed, 182 skipped (live files skip without a database), exit 0; ruff clean", date: 2026-11-22}
+  - {cmd: "read privacy_lifecycle.begin_erasure at 67192808 (the neighbouring defect this row recorded as out of scope; coordinator follow-up)", result: "open as recorded: after a hold is released, begin_erasure finished only a closure in state 'running' (privacy_lifecycle.py:1318-1319, a tenant-wide UPDATE ... WHERE state='running'), so the closure an earlier attempt had left 'blocked_legal_hold' stayed blocked while its brokerage was erased; test_privacy_lifecycle_live set it back to 'running' by hand before erasing", date: 2026-11-22}
+  - {cmd: "red: tests/test_closure_billing_renewal.py (7 new begin_erasure cases) against 67192808's privacy_lifecycle.py (backup outside the basetemp, restored after)", result: "2 failed, 40 passed: the released-hold and resumed-erasure cases fail on behaviour (the closure stays 'blocked_legal_hold'); the running, not-current (3) and under-a-hold cases pass on it, pinning unchanged behaviour", date: 2026-11-22}
+  - {cmd: "live red: test_privacy_lifecycle_live (hand reset to 'running' removed) against 67192808's privacy_lifecycle.py on the throwaway database below", result: "1 failed: after the hold is released and begin_erasure runs, the closure is still 'blocked_legal_hold' (expected 'succeeded')", date: 2026-11-22}
+  - {cmd: "three more hand mutants of the erasure fix, each against test_closure_billing_renewal and both privacy live files", result: "3 of 3 killed: the blocked closure finished without its hold history (unit and live: no erasure_started_from); the closure finished after the erasure operation is created (unit; live: uq_privacy_operations_one_open_closure violated on a running closure in test_closure_billing_live); finished only when a new erasure is created, not on a resumed one (unit; live cannot make that state with the fixed withdrawal)", date: 2026-11-22}
+  - {cmd: "throwaway database (as below, fresh: 175 migrations): pytest -p no:cacheprovider -q tests/test_closure_billing_live.py tests/test_privacy_lifecycle_live.py at the erasure fix", result: "2 passed: in the full lifecycle the hold blocks the erasure, is released, and begin_erasure finishes that closure 'succeeded' with result.erasure_started_from and error 'legal hold <id>' (no blocked closure left), then the erasure runs to its receipt", date: 2026-11-22}
+  - {cmd: "the runbook's detection and repair SQL (docs/account-offboarding-runbook.md, Under a legal hold), extracted verbatim and run with psql as oracle_platform_login on the throwaway database against a leftover made by 0112123's own code (request_closure, a hold, begin_erasure blocked, withdraw_closure: restored_users 0, brokerage active); nothing run on any deployed database", result: "detection lists exactly that operation (users_frozen 1, routes_frozen 2), and 0 rows without its set_config line (RLS); the repair restores the frozen agent and both routes, leaves the agent and routes already off before the closure off, ends the operation 'cancelled' with withdrawn_from, repaired_by and repair, keeps the error and leaves the hold unreleased; detection then 0 rows; after the agent was switched off again, a re-run changes nothing (UPDATE 0 four times: each statement requires the operation still blocked and the brokerage active)", date: 2026-11-22}
+  - {cmd: "at the erasure fix: python3 scripts/build-launch-backlog.py && --check; ruff check on the changed Python files and --select F82 .; then cd backend && pytest -p no:cacheprovider --basetemp=<scratch on SYPHER_CORE2> -q tests compliance_engine/tests (the CI unit command, local venv)", result: "backlog current; ruff clean; 7981 passed, 182 skipped (live files skip without a database), exit 0", date: 2026-11-22}
+  - {cmd: "read privacy_lifecycle.py and brokerage_onboarding.py at 4f2737d3 (C1.5 re-check of the review of PR #185, REQUEST_CHANGES)", result: "confirmed: withdraw_closure switched every freeze-list user and route back on (privacy_lifecycle.py:947-956), including an agent the owner reinstated and then suspended in Team while closing (suspend_member: users off, team_memberships 'suspended', brokerage_onboarding.py:1103; its audit event is written after commit and may fail, :1125, :1053); offboarding is refused unless the brokerage is active (privacy_lifecycle.py:415-418), so for a current closure only suspension can happen, but after an older withdrawal that restored nothing an owner may have offboarded a frozen agent (the number is parked, _hand_over_routes) and the runbook repair restored every 'still off' id, those included; start_due_erasures stopped its whole pass on one brokerage's LifecycleError (:1288)", date: 2026-11-22}
+  - {cmd: "red: tests/test_closure_billing_renewal.py (new cases) against 4f2737d3's privacy_lifecycle.py (backup outside the basetemp, restored after)", result: "6 failed, 43 passed: the four switched-off-member cases (suspended or offboarded, running or blocked closure: u-2 and its numbers switched back on), the nobody-switched-off case (no skipped lists, nothing asked) and the scheduler case (the LifecycleError stopped the pass); the new second-pass-under-a-hold case passes on it (it pins behaviour; the mutant below is what it kills)", date: 2026-11-22}
+  - {cmd: "hand mutants of the review-of-#185 fixes, each against test_closure_billing_renewal and test_closure_billing_live", result: "8 of 8 killed: the switched-off lookup skipped (unit); members skipped but not their numbers (unit); the scheduler without its per-brokerage catch (unit); the hold's block widened to an already blocked closure (unit, once the fake honoured the statement's state filter: the second pass overwrote 'legal hold h-1'); the closure finished before the hold check (unit); the membership marker removed (live: K back on); the audit marker removed (live: N back on); the NOT is_active guard removed (live: P's numbers left off)", date: 2026-11-22}
+  - {cmd: "live red: test_closure_billing_live (new team section) against 4f2737d3's privacy_lifecycle.py on the throwaway database below", result: "1 failed: K, suspended in Team during the closure, is switched back on with both numbers (True, True, True)", date: 2026-11-22}
+  - {cmd: "throwaway database (postgres:16-alpine on tmpfs, 175 migrations, the oracle-backend image with this backend copied in, as oracle_app_login / oracle_platform_login): pytest -p no:cacheprovider -q tests/test_closure_billing_live.py tests/test_privacy_lifecycle_live.py at the fixes", result: "2 passed. New live section: three agents frozen by a running closure, each reinstated in Team; K (membership row) suspended with the audit write failing, N (no membership row) suspended, P suspended and reinstated with the second audit write failing; the withdrawal leaves K and N off with all four of their numbers, brings P and P's numbers back, restores the other agent, and lists K and N (reason suspended) and their four route ids in the response and on the operation's result", date: 2026-11-22}
+  - {cmd: "the runbook's three SQL blocks (Under a legal hold, steps 1, 2 and 4), extracted verbatim and run with psql as oracle_platform_login on the throwaway database, against the reviewer's scenario made with 0112123's code (old withdrawal restored 0; then A offboarded to the owner, whose own number parks A's; B reinstated and suspended by plain SQL, as in the review repro; C left alone; D, with a membership row, reinstated and suspended through Team); nothing run on any deployed database", result: "step 2 flags A offboarded since the closure, D suspended since, B changed since, and A's, B's and D's four routes held by a member switched off since; C and the owner's routes unflagged. The repair with every frozen id confirmed restored 1 user and 4 routes (C, C's two, the owner's two): A, B, D and their six numbers stayed off; the operation ended cancelled with withdrawn_from, repaired_by and the restored ids, the error kept, the hold unreleased; a re-run restored 0 and step 1 then listed nothing. On a second leftover, a list of only C's user and the owner's voice route restored exactly those two. On a third, with seat_limit set to the seats in use, the repair failed with 'seat limit reached: 1 of 1 seats in use' and changed nothing (C off, the operation still blocked)", date: 2026-11-22}
+  - {cmd: "at the review-of-#185 fixes: python3 scripts/build-launch-backlog.py && --check; ruff check on the changed Python files and --select F82 .; the touched unit files (test_closure_billing_renewal, test_launch_backlog, test_privacy_provider_failure, test_job_handler_contract, test_brokerage_onboarding); the two privacy live files on the throwaway database (then removed: no container, network or volume left); cd backend && pytest -p no:cacheprovider --basetemp=<scratch on SYPHER_CORE2> -q tests compliance_engine/tests (the CI unit command, local venv)", result: "backlog current; ruff clean; 152 passed; live 2 passed; full suite 7989 passed, 182 skipped (live files skip without a database), exit 0", date: 2026-11-22}
+  - {cmd: "CI security scans on 0c9e3dea: bandit (new findings only) flagged B608 at the route restore (an f-string table name from a fixed tuple). The restore now uses literal per-table SQL (_ROUTE_RESTORE_SQL). bandit 1.8.6 as CI runs it (-x ./tests,./venv,./ml_forge,./node_modules,./scripts, medium/medium, -b .bandit-baseline.json); pytest test_closure_billing_renewal, test_privacy_provider_failure, test_offboarding_external_revocation, test_component_health", result: "bandit exit 0, no issues; 168 passed; ruff clean", date: 2026-11-22}
+authz_checked: "No access widened. withdraw_closure runs in the owner's tenant context as before (privacy_operations, users, telephony_routes and messaging_routes are tenant-isolated under RLS; proved live as oracle_app_login). The only new read is the latest closure operation's state and error, in the same tenant. It writes only the users and routes in that closure's own freeze list, and only that operation (by id). legal_holds is not touched: the platform alone places and releases holds (privacy_api.py admin routes). begin_erasure keeps its platform context; it now reads the latest closure's state and error and finishes only that row, by id. The runbook repair runs on the platform login and must set app.current_role (RLS shows no rows otherwise); its statements touch one brokerage's listed rows only. Review of #185: the withdrawal also reads, in the owner's own tenant context, that brokerage's team_memberships, offboard operations and audit_ledger rows for the frozen members (each tenant-isolated under RLS; audit_ledger_select scopes a non-admin to its own brokerage); it writes nothing new."
+blockers:
+  - "Design choice (rule chosen by the Claude session from the task brief): the closure withdrawn is the brokerage's LATEST closure operation, and its freeze list is used only when it is 'running' or 'blocked_legal_hold', the two states a closure is in while its brokerage is 'closing'. Any other latest state (reachable only by hand: request_closure creates the running closure in the transaction that sets 'closing') restores nothing and is not rewritten, and the brokerage still reopens: refusing would leave it to be erased against the owner's last word. The response now counts restored_routes beside restored_users."
+  - "Design choice (same): a withdrawn blocked closure ends 'cancelled' like any withdrawn closure, with result.withdrawn_from = 'blocked_legal_hold' and its error ('legal hold <id>') kept. The hold is not released (only an operator does that) and tenant_lifecycle still reports it. A withdrawal under a hold is allowed: it erases nothing."
+  - "Concurrency: withdraw_closure and begin_erasure both lock the tenants row FOR UPDATE first. begin_erasure moves a closing brokerage to 'erasing' (and a running closure to 'succeeded') in that transaction, before any erasure job exists; a withdrawal after that is refused before it writes anything. Proved live in both lock orders, and unit (nothing written outside 'closing')."
+  - "Design choice (coordinator follow-up 2026-11-22; rule chosen by the Claude session): the closure an erasure finishes is the latest closure operation when it is 'running' or 'blocked_legal_hold' (the withdrawal's rule, _CURRENT_CLOSURE), finished 'succeeded' by id before the erasure operation is created (one open closure or erasure per tenant), also on a resumed erasure; a blocked one keeps its error and records result.erasure_started_from. The earlier tenant-wide finish of 'running' closures is gone; blocking under a hold is unchanged."
+  - "Design choice (review of PR #185, coordinator instruction; markers chosen by the Claude session): a withdrawal leaves off the freeze-list members the owner has switched off since the closure and still off, and the numbers they hold now (matched by the route's current agent), and reports them (skipped_users with reason, skipped_routes; also on the operation's result). Suspended: team_memberships 'suspended', or the latest Team audit event since the closure is a suspension; offboarded: an offboard operation since the closure, or that audit event is an offboarding. The audit event is written after commit and best effort, so it only adds to the membership marker. A suspended agent's numbers stay off too, unlike a plain suspension (which leaves them on with forwarding cleared): fail-closed, reported."
+  - "Residual: a member with no team_memberships row whose suspension's audit write failed carries no marker, so a withdrawal brings them back (no updated_at test in the product path: background writes could hold back members the owner wants). The runbook repair, which acts later and on the owner's behalf, also refuses members and numbers changed since the closure."
+  - "Rows the old code left (a closure withdrawn while 'blocked_legal_hold': brokerage 'active', the operation still blocked, its agents and numbers still off) are not repaired automatically. The runbook (Under a legal hold): step 1 finds them, step 2 lists each frozen member and number with a flag (offboarded, suspended or changed since the closure; numbers held by a flagged member or changed since), step 3 agrees a list with the owner, step 4 restores only ids in that list that are still off and unflagged, in one statement. It names the seat-limit failure (users_seat_limit, NSEAT: nothing changes) and that it writes no audit_ledger row (hash-chained: never insert by hand; the record is the operation's result and the incident). Proved only on a throwaway database; not run on any deployed database."
+  - "start_due_erasures logs a brokerage whose begin_erasure raises LifecycleError (withdrawn between the scheduler's read and its lock) and goes on to the next; other exceptions still end the pass."
+  - "Pre-existing, not handled here: a withdrawal whose restored users exceed a seat limit lowered while closing fails with the trigger's NSEAT error."
+  - "Frontend unchanged: after a withdrawal Account & data says 'Your agents can sign in again' (AccountDataPanel.jsx:223), now true for a blocked closure too; it shows no counts and not the skipped members (a follow-up for the panel)."
+  - "Privacy: independent review + owner approval before merge (owner decision 4)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Independent review (privacy); deploy only with owner approval."
 updated: 2026-11-22
 ```
 
@@ -5408,7 +5464,7 @@ updated: 2026-10-13
 id: L18-04
 status: external_configuration_required
 env: staging
-evidence_shas: [6719298]
+evidence_shas: ["6719298"]
 files: [backend/billing.py, oracle-app/src/components/BillingOverlay.jsx]
 tests_run:
   - {cmd: "owner signed in on staging with their own brokerage (2026-10-13)", result: "/billing/plan source 'unavailable' (no Stripe price on staging); 'Start Neoh' -> create-checkout-session fails -> 'Neoh is temporarily unavailable'; /billing/status active=false", date: 2026-10-13}
@@ -5664,12 +5720,14 @@ evidence_shas: [b6d1160, 745f2fa]
 files: [.github/workflows/ci.yml, infra/digitalocean/app.yaml, scripts/carry-secrets.py, backend/run_migrations.py]
 tests_run:
   - {cmd: "push to main → CI → DigitalOcean staging", result: "success (run 38127122126 deployed 745f2fa)", date: 2026-10-11}
+  - {cmd: "gh run list / gh run view, main's ci.yml push runs (review of PR #185; read-only)", result: "the staging rollout stopped at DigitalOcean authorization: the last successful 'build release → staging' was run 38723270472 (2026-10-15, 26e06e1); from run 42466199988 (2026-11-08, 0f25ab1) every main push that reached that job failed at step 'doctl auth', the latest seen 44970413731 (2026-11-22, 29ccd86). The next task 'None for staging' was stale. External audit 30.5 (staging rollout failed at DigitalOcean authorization) added to audit_refs", date: 2026-11-22}
 authz_checked: n/a
-blockers: []
-audit_refs: [A04]
+blockers:
+  - {type: owner, note: "DigitalOcean access for CI has failed since 2026-11-08 (doctl auth; runs above), so merges to main no longer reach staging. The owner repairs or rotates the token and the GitHub staging environment mapping; then staging is rerun at the same SHA with the deployed digest and the smoke result recorded (external audit 30.5)."}
+audit_refs: [A04, 30.5]
 decision_refs: []
-next_task: "None for staging."
-updated: 2026-10-12
+next_task: "Owner: repair DigitalOcean access for CI (30.5); then rerun the staging deploy at the same SHA and record the digest and smoke result."
+updated: 2026-11-22
 ```
 
 #### L19-02 Production environment
@@ -5681,12 +5739,13 @@ evidence_shas: []
 files: [infra/digitalocean/app.yaml]
 tests_run:
   - {cmd: "doctl apps list", result: "only the staging app exists; no production app", date: 2026-10-07}
+  - {cmd: "read external audit 30.1 (production environment unverified and documented as deferred) against this row (review of PR #185 on the audit_refs hygiene)", result: "tracks it: this row is the production environment, its blocker is the owner's approval and budget to create it and its next task the owner's deferral (create it 3-4 months before the ISO Stage 2 audit). Still open: no production app (doctl apps list above); 30.1's fresh inventory, provisioning, promotion of a staging-proven SHA and the readiness run with an operator token are owed. 30.1 added to audit_refs", date: 2026-11-22}
 authz_checked: n/a
 blockers: [{type: owner, note: "Creating production needs owner approval and budget."}]
-audit_refs: [A04, A10]
+audit_refs: [A04, A10, 30.1]
 decision_refs: []
 next_task: "Owner 2026-10-14: production deferred (\"wait later\"); staging stays as is. Create production about 3-4 months before the ISO Stage 2 audit (L17-06). A copy sized like staging is about $105/month at list price (estimate)."
-updated: 2026-10-12
+updated: 2026-11-22
 ```
 
 #### L19-03 Health and runbooks cover legacy MLS, not the real property providers
@@ -6119,6 +6178,8 @@ tests_run:
   - {cmd: "after review r1: test_voice_heartbeat + test_component_health + test_deal_pipeline_sql (quote balance)", result: "76 passed: a running walkthrough bumps updated_at while it runs and stops with it", date: 2026-11-19}
   - {cmd: "full unit suite after review r1", result: "6953 passed, 1 failed (test_env_documentation: ORACLE_VOICE_HEARTBEAT_SECONDS undocumented); documented in .env.example, env-documentation 5 passed. Review r2: APPROVE (runbook still named voice_hung: fixed)", date: 2026-11-19}
   - {cmd: "test_launch_readiness + test_component_health + test_rendered_spec_boots + spec/deploy wiring tests", result: "pass", date: 2026-11-19}
+  - {cmd: "read external audit 30.10 (the capacity pass relies on older local, mock-provider measurements) against this row (ledger audit_refs hygiene)", result: "not fixed here; next_task tracks it (a current-SHA staging capacity run, waiting on the DigitalOcean token and owner thresholds). 30.10 added to audit_refs as tracked, quoted so YAML does not read it as 30.1", date: 2026-11-22}
+  - {cmd: "review of PR #185 (audit_refs): 30.10 re-read against this row", result: "loose: this row inventories the worker (30.9) and only names 30.10 as next. L16-01 (the performance baseline is local only; A10, capacity on production-shaped infrastructure, open in its blockers; next the T16.10 protocol on staging) tracks it; 30.10 moved there", date: 2026-11-22}
 authz_checked: "No access change. media_jobs reads counts and ages through the existing platform component-health context; it reports numbers, never ids. app.yaml changes are comments only."
 blockers:
   - "Not done (the audit's migration work, ordered in docs/worker-background-work-inventory.md): leases for voice claims and the reconstruction orphan sweep/reaper, an atomic leased video claim with an attempts cap, a lock for the disposition enforcer, idempotent voice notes, and a SIGKILL rehearsal during an active walkthrough and reconstruction. Until then the worker stays at exactly one (launch check worker_count)."
@@ -6128,7 +6189,7 @@ blockers:
 audit_refs: [30.9]
 decision_refs: []
 next_task: "Owner: the lease work above before any second worker; 30.10 (staging capacity run) needs the DigitalOcean token and owner thresholds."
-updated: 2026-11-19
+updated: 2026-11-22
 ```
 
 #### L19-23 The backend's Python dependencies are hash-locked: every transitive version and artifact is pinned, installed with --require-hashes and scanned (external audit 35-01)

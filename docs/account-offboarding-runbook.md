@@ -151,9 +151,209 @@ API: `POST /api/privacy/closure`.
 **During the grace period** (`ORACLE_CLOSURE_GRACE_DAYS`, default 30):
 - the owner can export;
 - the owner can **Keep the brokerage** (`POST /api/privacy/closure/withdraw`).
-  This restores the users and routes the closure switched off. Cancelled
-  jobs and revoked links are not restored. Renewal is turned back on through
-  the same durable job.
+  This restores the users and routes the closure switched off, and nothing
+  else (the response counts `restored_users` and `restored_routes`), except
+  members the owner has suspended (or offboarded) since the closure and the
+  numbers they now hold: those stay off and are listed in `skipped_users`
+  (id and reason) and `skipped_routes`, also on the operation's `result`.
+  Cancelled jobs and revoked links are not restored. Renewal is turned back
+  on through the same durable job.
+
+**Under a legal hold.** A hold stops the erasure when the grace period ends:
+the brokerage stays `closing` and its closure operation becomes
+`blocked_legal_hold`, so the owner can still keep the brokerage. The
+withdrawal restores what that closure switched off (with the same
+exception) and ends the operation `cancelled`, with
+`result.withdrawn_from = blocked_legal_hold` and its `error`
+(`legal hold <id>`) kept. The hold itself stays until an operator releases it.
+Once the hold is released, the next erasure finishes that closure `succeeded`,
+with `result.erasure_started_from = blocked_legal_hold` and the error kept
+(L17-58).
+
+*Closures an older withdrawal left behind.* Before L17-58, withdrawing a
+blocked closure reopened the brokerage but restored nothing and left the
+operation `blocked_legal_hold`: its agents stayed signed out and its numbers
+off. The brokerage has been `active` since, so the owner may have offboarded
+or suspended some of those agents in the meantime; nothing they switched off
+may come back. All SQL here runs on the platform login (`psql` as
+`oracle_platform_login`); without its `set_config` line the tables read empty.
+
+1. Find the leftovers (read-only):
+
+```sql
+BEGIN READ ONLY;
+SELECT set_config('app.current_role', 'platform_admin', true);
+SELECT o.id AS operation_id, o.tenant_id, o.requested_at, o.error
+  FROM privacy_operations o
+  JOIN tenants t ON t.id = o.tenant_id
+ WHERE o.kind = 'closure' AND o.state = 'blocked_legal_hold'
+   AND t.lifecycle_state = 'active'
+ ORDER BY o.requested_at;
+ROLLBACK;
+```
+
+2. For one of them, list what its closure switched off, with what has
+   happened since (read-only; `psql -v op=<operation_id> -v tenant=<tenant_id>`).
+   A member is flagged *offboarded since the closure* (an offboarding
+   operation, or the latest Team audit event is an offboarding), *suspended
+   since the closure* (their membership is `suspended`, or the latest Team
+   audit event is a suspension) or *changed since the closure* (their user
+   row was updated after it). A route is flagged when the member now holding
+   it is flagged, or when it was changed after the closure (offboarding parks
+   a number; suspension clears its forwarding). Rows already on need nothing.
+
+```sql
+BEGIN READ ONLY;
+SELECT set_config('app.current_role', 'platform_admin', true);
+WITH c AS (SELECT o.requested_at AS since, o.progress->'freeze' AS f
+             FROM privacy_operations o
+            WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'),
+     members AS (
+       SELECT u.id, u.agent_id, u.is_active, u.updated_at > c.since AS changed,
+              EXISTS (SELECT 1 FROM privacy_operations p
+                       WHERE p.tenant_id = u.tenant_id AND p.kind = 'offboard'
+                         AND p.subject_ref = u.id::text AND p.requested_at > c.since) AS offboard_op,
+              EXISTS (SELECT 1 FROM team_memberships m
+                       WHERE m.tenant_id = u.tenant_id AND m.user_id = u.id AND m.status = 'suspended') AS membership_suspended,
+              (SELECT a.action FROM audit_ledger a
+                WHERE a.tenant_id = u.tenant_id AND a.target_id = u.id AND a.created_at > c.since
+                  AND a.action IN ('team.member.suspended', 'team.member.reinstated', 'team.member.offboarded')
+                ORDER BY a.created_at DESC LIMIT 1) AS last_team_event
+         FROM users u, c
+        WHERE u.tenant_id = :'tenant'
+          AND u.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'signed_out_user_ids', '[]')))),
+     flagged AS (
+       SELECT id, lower(agent_id) AS agent,
+              CASE WHEN offboard_op OR last_team_event = 'team.member.offboarded' THEN 'offboarded since the closure'
+                   WHEN membership_suspended OR last_team_event = 'team.member.suspended' THEN 'suspended since the closure'
+                   ELSE 'changed since the closure' END AS flag
+         FROM members
+        WHERE NOT is_active
+          AND (offboard_op OR membership_suspended OR changed
+               OR last_team_event IN ('team.member.suspended', 'team.member.offboarded')))
+SELECT 'user' AS kind, m.id::text AS id, NOT m.is_active AS still_off, f.flag
+  FROM members m LEFT JOIN flagged f ON f.id = m.id
+UNION ALL
+SELECT 'telephony_route', r.id::text, NOT r.active,
+       CASE WHEN r.active THEN NULL
+            WHEN lower(r.agent_id) IN (SELECT agent FROM flagged) THEN 'held by a member switched off since the closure'
+            WHEN r.updated_at > c.since THEN 'changed since the closure' END
+  FROM telephony_routes r, c
+ WHERE r.tenant_id = :'tenant'
+   AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'telephony_routes', '[]')))
+UNION ALL
+SELECT 'messaging_route', r.id::text, NOT r.active,
+       CASE WHEN r.active THEN NULL
+            WHEN lower(r.agent_id) IN (SELECT agent FROM flagged) THEN 'held by a member switched off since the closure'
+            WHEN r.updated_at > c.since THEN 'changed since the closure' END
+  FROM messaging_routes r, c
+ WHERE r.tenant_id = :'tenant'
+   AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'messaging_routes', '[]')))
+ ORDER BY 1, 2;
+ROLLBACK;
+```
+
+3. Agree the list with the brokerage owner: the ids, among those still off
+   and unflagged, that they want back. A flagged member is never restored
+   here: if the owner wants one back, they reinstate them in Team (which
+   checks seats and records it). Leave a flagged number off and record it in
+   the incident.
+
+4. Run the repair with exactly that list, in one transaction:
+   `psql -v op=<operation_id> -v tenant=<tenant_id> -v ids=<id,id,...> -v operator=<your name>`.
+   It switches on only ids that are in the list, in that closure's freeze
+   list, still off and unflagged (the same flags as step 2, computed again
+   inside the statement), and finishes the operation `cancelled` with
+   `withdrawn_from` and the ids it restored, the error kept. Everything
+   requires the operation still `blocked_legal_hold` and the brokerage
+   `active`, so a second run changes nothing. Check the counts before
+   `COMMIT`; if the re-check does not show `active | blocked_legal_hold`,
+   `ROLLBACK` and stop.
+   - If it fails with `seat limit reached` (SQLSTATE `NSEAT`, the
+     `users_seat_limit` trigger), nothing changed: the brokerage's plan has no
+     seat for everyone in the list. The owner frees a seat or raises the
+     plan, or confirms a shorter list; run it again.
+   - If a route fails on a uniqueness constraint, the number has been reused
+     since: nothing changed; take that id out of the list and tell the owner.
+   - The repair writes no `audit_ledger` row. Do not insert one by hand: the
+     ledger is hash-chained, and a hand-written row breaks verification.
+     The record is the operation's `result` (`repaired_by`, `restored`) and
+     the incident record. The legal hold is not touched.
+
+```sql
+BEGIN;
+SELECT set_config('app.current_role', 'platform_admin', true),
+       set_config('app.current_tenant', :'tenant', true),
+       set_config('app.current_agent', :'operator', true);
+-- Re-check under lock: expect active | blocked_legal_hold, else ROLLBACK.
+SELECT t.lifecycle_state, o.state
+  FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+ WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'
+   FOR UPDATE;
+WITH c AS (SELECT o.id, o.requested_at AS since, o.progress->'freeze' AS f
+             FROM privacy_operations o JOIN tenants t ON t.id = o.tenant_id
+            WHERE o.id = :'op' AND o.tenant_id = :'tenant' AND o.kind = 'closure'
+              AND o.state = 'blocked_legal_hold' AND t.lifecycle_state = 'active'),
+     confirmed AS (SELECT btrim(x) AS id FROM unnest(string_to_array(:'ids', ',')) AS x),
+     members AS (
+       SELECT u.id, u.agent_id, u.is_active, u.updated_at > c.since AS changed,
+              EXISTS (SELECT 1 FROM privacy_operations p
+                       WHERE p.tenant_id = u.tenant_id AND p.kind = 'offboard'
+                         AND p.subject_ref = u.id::text AND p.requested_at > c.since) AS offboard_op,
+              EXISTS (SELECT 1 FROM team_memberships m
+                       WHERE m.tenant_id = u.tenant_id AND m.user_id = u.id AND m.status = 'suspended') AS membership_suspended,
+              (SELECT a.action FROM audit_ledger a
+                WHERE a.tenant_id = u.tenant_id AND a.target_id = u.id AND a.created_at > c.since
+                  AND a.action IN ('team.member.suspended', 'team.member.reinstated', 'team.member.offboarded')
+                ORDER BY a.created_at DESC LIMIT 1) AS last_team_event
+         FROM users u, c
+        WHERE u.tenant_id = :'tenant'
+          AND u.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'signed_out_user_ids', '[]')))),
+     flagged AS (
+       SELECT id, lower(agent_id) AS agent FROM members
+        WHERE NOT is_active
+          AND (offboard_op OR membership_suspended OR changed
+               OR last_team_event IN ('team.member.suspended', 'team.member.offboarded'))),
+     users_on AS (
+       UPDATE users u SET is_active = true, updated_at = now()
+         FROM members m
+        WHERE u.id = m.id AND NOT m.is_active
+          AND m.id NOT IN (SELECT id FROM flagged)
+          AND m.id::text IN (SELECT id FROM confirmed)
+       RETURNING u.id),
+     voice_on AS (
+       UPDATE telephony_routes r SET active = true, updated_at = now()
+         FROM c
+        WHERE r.tenant_id = :'tenant' AND NOT r.active AND r.updated_at <= c.since
+          AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'telephony_routes', '[]')))
+          AND r.id::text IN (SELECT id FROM confirmed)
+          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)
+       RETURNING r.id),
+     sms_on AS (
+       UPDATE messaging_routes r SET active = true, updated_at = now()
+         FROM c
+        WHERE r.tenant_id = :'tenant' AND NOT r.active AND r.updated_at <= c.since
+          AND r.id::text IN (SELECT jsonb_array_elements_text(COALESCE(c.f->'routes'->'messaging_routes', '[]')))
+          AND r.id::text IN (SELECT id FROM confirmed)
+          AND lower(r.agent_id) NOT IN (SELECT agent FROM flagged)
+       RETURNING r.id),
+     done AS (
+       UPDATE privacy_operations o
+          SET state = 'cancelled', completed_at = now(), updated_at = now(),
+              result = o.result || jsonb_build_object(
+                'withdrawn_from', 'blocked_legal_hold', 'repaired_by', :'operator', 'repair', 'L17-58',
+                'restored', jsonb_build_object(
+                  'users', COALESCE((SELECT jsonb_agg(id) FROM users_on), '[]'),
+                  'telephony_routes', COALESCE((SELECT jsonb_agg(id) FROM voice_on), '[]'),
+                  'messaging_routes', COALESCE((SELECT jsonb_agg(id) FROM sms_on), '[]')))
+         FROM c WHERE o.id = c.id
+       RETURNING o.id)
+SELECT (SELECT count(*) FROM users_on) AS users_restored,
+       (SELECT count(*) FROM voice_on) AS telephony_routes_restored,
+       (SELECT count(*) FROM sms_on) AS messaging_routes_restored,
+       (SELECT count(*) FROM done) AS operation_finished;
+COMMIT;
+```
 
 **Subscription renewal is confirmed, not assumed (external audit 22.1).**
 Closing and withdrawing each queue a `privacy:billing_renewal` job in their

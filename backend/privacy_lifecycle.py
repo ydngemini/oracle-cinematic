@@ -908,8 +908,78 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
             "billing": billing}
 
 
+#: The states a closure operation is in while its brokerage is 'closing': the
+#: closure a withdrawal restores from and an erasure finishes (L17-58).
+_CURRENT_CLOSURE = ("running", "blocked_legal_hold")
+
+# Members of a closure's freeze list that the brokerage has itself switched
+# off since that closure, and who are still off (review of PR #185). A
+# withdrawal (and the runbook repair) must not switch them back on, nor the
+# numbers they now hold: an owner may reinstate and then suspend a frozen
+# agent while the brokerage is closing, and after an older withdrawal that
+# restored nothing, may have offboarded one (offboarding parks the number,
+# _hand_over_routes). Offboarding itself is refused while closing
+# (offboard_agent), so that case is defensive for current closures.
+#   suspended:  team_memberships.status 'suspended' (suspend_member and
+#               offboarding set it; reinstate_member clears it), or the latest
+#               team.member.* audit event since the closure is a suspension
+#               (that event is written after commit, best effort, so it only
+#               adds to the membership marker)
+#   offboarded: an offboard operation for the member since the closure, or
+#               the latest such audit event is team.member.offboarded
+_SWITCHED_OFF_SINCE_SQL = """
+SELECT u.id::text AS id, u.agent_id,
+       CASE WHEN off.id IS NOT NULL OR ev.action = 'team.member.offboarded'
+            THEN 'offboarded' ELSE 'suspended' END AS reason
+  FROM users u
+  LEFT JOIN LATERAL (SELECT p.id FROM privacy_operations p
+                      WHERE p.tenant_id = u.tenant_id AND p.kind = 'offboard'
+                        AND p.subject_ref = u.id::text AND p.requested_at > $3
+                      LIMIT 1) off ON true
+  LEFT JOIN LATERAL (SELECT a.action FROM audit_ledger a
+                      WHERE a.tenant_id = u.tenant_id AND a.target_id = u.id AND a.created_at > $3
+                        AND a.action IN ('team.member.suspended', 'team.member.reinstated',
+                                         'team.member.offboarded')
+                      ORDER BY a.created_at DESC LIMIT 1) ev ON true
+ WHERE u.tenant_id = $1 AND u.id::text = ANY($2::text[]) AND NOT u.is_active
+   AND (off.id IS NOT NULL
+        OR ev.action IN ('team.member.suspended', 'team.member.offboarded')
+        OR EXISTS (SELECT 1 FROM team_memberships m
+                    WHERE m.tenant_id = u.tenant_id AND m.user_id = u.id AND m.status = 'suspended'))
+ ORDER BY u.id
+"""
+
+
+async def _switched_off_since(conn, tenant_id: str, user_ids: list, since) -> list[dict]:
+    """[{id, agent_id, reason: suspended|offboarded}] for the freeze-list
+    members the brokerage switched off itself after `since` (still off)."""
+    if not user_ids:
+        return []
+    return [dict(r) for r in await conn.fetch(_SWITCHED_OFF_SINCE_SQL, tenant_id, list(user_ids), since)]
+
+
+#: Per route table: the numbers a still-off member holds (left off), and the
+#: restore of the rest. Literal SQL per table, never a formatted table name.
+_ROUTE_RESTORE_SQL = {
+    "telephony_routes": (
+        "SELECT id::text FROM telephony_routes WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+        "AND lower(agent_id) = ANY($3::text[]) ORDER BY id",
+        "UPDATE telephony_routes SET active=true, updated_at=now() WHERE tenant_id=$1 "
+        "AND id::text = ANY($2::text[]) AND COALESCE(lower(agent_id), '') <> ALL($3::text[])",
+    ),
+    "messaging_routes": (
+        "SELECT id::text FROM messaging_routes WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+        "AND lower(agent_id) = ANY($3::text[]) ORDER BY id",
+        "UPDATE messaging_routes SET active=true, updated_at=now() WHERE tenant_id=$1 "
+        "AND id::text = ANY($2::text[]) AND COALESCE(lower(agent_id), '') <> ALL($3::text[])",
+    ),
+}
+
+
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
-    """Change of mind during the grace period: back to exactly how it was.
+    """Change of mind during the grace period: back to how it was. Members the
+    owner has suspended or offboarded since the closure stay off, with the
+    numbers they hold, and are reported (skipped_users, skipped_routes).
     Resuming renewal is queued durably in the same transaction (22.1)."""
     if not ctx.is_broker_owner:
         raise LifecycleError("Only a brokerage owner can reopen the brokerage.", status_code=403)
@@ -918,34 +988,61 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
             "SELECT lifecycle_state FROM tenants WHERE id=$1 FOR UPDATE", ctx.tenant_id)
         if state != "closing":
             raise LifecycleError("Closure can only be withdrawn during the grace period.")
+        # The closure being withdrawn is the brokerage's LATEST closure
+        # operation (request_closure creates it in the transaction that sets
+        # 'closing'): 'running', or 'blocked_legal_hold' when an erasure found
+        # a legal hold and left the brokerage 'closing'. Either way its freeze
+        # list is exactly what this closure switched off, and only that comes
+        # back (L17-58: a blocked one used to restore nothing and stay
+        # blocked). A latest closure in any other state holds no freeze of
+        # this closure, so nothing is restored from it and it is not
+        # rewritten. The tenants row lock above serialises this with
+        # begin_erasure, which locks the same row before it moves a closing
+        # brokerage to 'erasing'; a withdrawal after that is refused above.
         op = await conn.fetchrow(
-            "SELECT id, progress FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
-            "AND state='running' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
-        freeze = (json.loads(op["progress"]) if op and isinstance(op["progress"], str)
-                  else (op["progress"] if op else {})).get("freeze", {})
+            "SELECT id, state, progress, error, requested_at FROM privacy_operations WHERE tenant_id=$1 "
+            "AND kind='closure' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        withdrawn = op if op is not None and op["state"] in _CURRENT_CLOSURE else None
+        progress = withdrawn["progress"] if withdrawn else None
+        freeze = (json.loads(progress) if isinstance(progress, str) else progress or {}).get("freeze", {})
         await conn.execute(
             "UPDATE tenants SET lifecycle_state='active', closure_requested_at=NULL, "
             "closure_requested_by=NULL, closure_reason=NULL, updated_at=now() WHERE id=$1",
             ctx.tenant_id)
+        # Not those the owner switched off since the closure, nor the numbers
+        # they hold now (_SWITCHED_OFF_SINCE_SQL); they are reported instead.
+        user_ids = list(freeze.get("signed_out_user_ids", []))
+        held = await _switched_off_since(conn, ctx.tenant_id, user_ids,
+                                         withdrawn["requested_at"]) if withdrawn else []
+        held_ids = {h["id"] for h in held}
+        held_agents = sorted({(h["agent_id"] or "").lower() for h in held})
         restored_users = _rowcount(await conn.execute(
             "UPDATE users SET is_active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, freeze.get("signed_out_user_ids", [])))
+            ctx.tenant_id, [u for u in user_ids if u not in held_ids]))
         routes = freeze.get("routes", {})
-        await conn.execute(
-            "UPDATE telephony_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("telephony_routes", []))
-        await conn.execute(
-            "UPDATE messaging_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("messaging_routes", []))
-        if op:
-            await _finish_operation(conn, str(op["id"]), state="cancelled",
-                                    result={"withdrawn_by": ctx.agent_id, "withdraw_reason": reason})
+        restored_routes, skipped_routes = 0, []
+        for table, (held_sql, restore_sql) in _ROUTE_RESTORE_SQL.items():
+            ids = list(routes.get(table, []))
+            if held_agents and ids:
+                skipped_routes += [r[0] for r in await conn.fetch(held_sql, ctx.tenant_id, ids, held_agents)]
+            restored_routes += _rowcount(await conn.execute(restore_sql, ctx.tenant_id, ids, held_agents))
+        skipped_users = [{"id": h["id"], "reason": h["reason"]} for h in held]
+        if withdrawn:
+            result = {"withdrawn_by": ctx.agent_id, "withdraw_reason": reason}
+            if skipped_users or skipped_routes:
+                result.update(skipped_users=skipped_users, skipped_routes=skipped_routes)
+            blocked = withdrawn["state"] == "blocked_legal_hold"
+            if blocked:
+                # Withdrawn like any closure ('cancelled'). The hold is not
+                # lifted (only an operator releases it), and the record of why
+                # the erasure stopped ('legal hold <id>') is kept.
+                result["withdrawn_from"] = "blocked_legal_hold"
+            await _finish_operation(conn, str(withdrawn["id"]), state="cancelled", result=result,
+                                    error=withdrawn["error"] if blocked else None)
         # The renewal record lives on the LATEST closure operation whatever its
         # state (as _record_billing writes it): the running one, or one an
         # erasure left 'blocked_legal_hold', which is the closure withdrawn.
-        latest = await conn.fetchval(
-            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
-            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        latest = op["id"] if op else None
         if latest:
             await conn.execute(
                 "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb) WHERE id=$1",
@@ -954,8 +1051,10 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
                                        str(latest) if latest else None)
     billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
-                 metadata={"reason": reason, "billing": billing})
-    return {"state": "active", "restored_users": restored_users, "billing": billing,
+                 metadata={"reason": reason, "billing": billing, "skipped_users": len(skipped_users),
+                           "skipped_routes": len(skipped_routes)})
+    return {"state": "active", "restored_users": restored_users, "restored_routes": restored_routes,
+            "skipped_users": skipped_users, "skipped_routes": skipped_routes, "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 
@@ -1262,7 +1361,13 @@ async def start_due_erasures() -> list[str]:
             "SELECT id::text FROM tenants WHERE lifecycle_state='closing' AND erase_after <= now() "
             "AND id <> $1::uuid ORDER BY erase_after LIMIT 20", PLATFORM_TENANT_ID)
     for row in due:
-        op_id = await begin_erasure(row[0], requested_by="retention-scheduler")
+        try:
+            op_id = await begin_erasure(row[0], requested_by="retention-scheduler")
+        except LifecycleError as exc:
+            # One brokerage is no longer closing (the owner withdrew between
+            # the read above and its lock): log it and erase the others.
+            log.warning("scheduled erasure of %s skipped: %s", row[0], exc)
+            continue
         if op_id:
             started.append(op_id)
     return started
@@ -1286,15 +1391,30 @@ async def begin_erasure(tenant_id: str, *, requested_by: str) -> Optional[str]:
                 tenant_id, str(hold["id"]))
             log.warning("erasure of %s blocked by legal hold %s", tenant_id, hold["id"])
             return None
+        # The closure being erased is the latest closure operation: 'running',
+        # or 'blocked_legal_hold' when an earlier attempt found a hold that has
+        # since been released (the rule withdraw_closure uses). It is finished
+        # by id, before the erasure operation is created (one open closure or
+        # erasure per tenant). A blocked one keeps its error ('legal hold
+        # <id>') and records erasure_started_from. Only a running closure used
+        # to be finished, so a blocked one stayed 'blocked_legal_hold' while
+        # its brokerage was erased (L17-58). On a resumed erasure the latest
+        # closure is already finished, unless older code left it blocked.
+        closure = await conn.fetchrow(
+            "SELECT id, state, error FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
+            "ORDER BY requested_at DESC LIMIT 1", tenant_id)
+        if closure is not None and closure["state"] in _CURRENT_CLOSURE:
+            blocked = closure["state"] == "blocked_legal_hold"
+            await _finish_operation(
+                conn, str(closure["id"]), state="succeeded",
+                result={"erasure_started_from": "blocked_legal_hold"} if blocked else {},
+                error=closure["error"] if blocked else None)
         existing = await conn.fetchval(
             "SELECT id::text FROM privacy_operations WHERE tenant_id=$1 AND kind='erasure' "
             "AND state IN ('requested','running')", tenant_id)
         if existing:
             op_id = existing
         else:
-            await conn.execute(
-                "UPDATE privacy_operations SET state='succeeded', completed_at=now(), updated_at=now() "
-                "WHERE tenant_id=$1 AND kind='closure' AND state='running'", tenant_id)
             op = await _create_operation(conn, tenant_id=tenant_id, kind="erasure",
                                          requested_by=requested_by, subject_kind="tenant",
                                          subject_ref=tenant_id, state="running")
