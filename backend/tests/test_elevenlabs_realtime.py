@@ -533,3 +533,118 @@ def test_a_hang_up_cannot_cancel_an_inbound_opt_out_write(monkeypatch):
         return written
 
     assert asyncio.run(scenario()) == ["call-3"]
+
+
+# ── Both media tasks are joined before run() returns (external audit 23.7) ──
+
+class _SilentAgent(FakeAgent):
+    """An agent that, after its script, stays connected and says nothing."""
+
+    async def __anext__(self):
+        if self.events:
+            return await super().__anext__()
+        await asyncio.sleep(3600)
+
+
+def _signed_and_state(monkeypatch, state=None):
+    import plivo_call_handler
+
+    async def fake_state(uuid, **_kw):
+        return dict(state) if state is not None else {"direction": "outbound", "briefing": "x"}
+
+    async def signed(_settings):
+        return "wss://signed.example/conv"
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", fake_state)
+    return signed
+
+
+def _stream_tasks(monkeypatch):
+    """The bridge's two media tasks, as asyncio.create_task made them."""
+    created = []
+    real = asyncio.create_task
+
+    def spy(coro, **kwargs):
+        task = real(coro, **kwargs)
+        if getattr(coro, "__qualname__", "").startswith("PlivoElevenLabsBridge."):
+            created.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", spy)
+    return created
+
+
+@pytest.mark.parametrize("winner", ["caller hangs up", "agent fails"])
+def test_both_media_tasks_are_done_when_run_returns(monkeypatch, winner):
+    signed = _signed_and_state(monkeypatch)
+    created = _stream_tasks(monkeypatch)
+
+    async def scenario():
+        if winner == "caller hangs up":
+            plivo, agent = FakePlivo([{"event": "stop"}]), _SilentAgent([], asyncio.Event())
+        else:   # the Plivo side never ends on its own
+            plivo = FakePlivo([])
+            agent = _SilentAgent([{"type": "client_error", "error_event": {"code": 1011}}], asyncio.Event())
+        bridge = el.PlivoElevenLabsBridge(plivo, "c-1", START, SETTINGS, connect=Connect(agent), signed_url=signed)
+        error = None
+        async with asyncio.timeout(5):   # not wait_for: no extra task, no extra loop turn
+            try:
+                await bridge.run()
+            except el.ElevenLabsRealtimeError as exc:
+                error = exc
+        # Checked before this coroutine yields once: nothing ran after run().
+        return [(t.get_coro().__qualname__, t.done()) for t in created], error
+
+    states, error = asyncio.run(scenario())
+    assert len(states) == 2
+    assert all(done for _, done in states), f"a media task still running after run() returned: {states}"
+    assert (error is not None) == (winner == "agent fails")
+
+
+@pytest.mark.parametrize("plivo_side", ["stop", "socket closed"])
+def test_a_hang_up_at_the_same_moment_as_an_agent_error(monkeypatch, plivo_side):
+    """Both media tasks finish in the same loop turn: the agent's error is the
+    one raised (never masked by the hang-up), the other side's outcome is
+    retrieved, and the consented call's notes are closed out once."""
+    from fastapi import WebSocketDisconnect
+
+    seen = install_notes_backend(monkeypatch)
+    signed = _signed_and_state(monkeypatch, {"direction": "outbound", "reference": "ref-sim", "briefing": "x"})
+    created = _stream_tasks(monkeypatch)
+
+    async def scenario():
+        go, script_done = asyncio.Event(), asyncio.Event()
+
+        class SimAgent(FakeAgent):
+            async def __anext__(self):
+                if self.events:
+                    return json.dumps(self.events.pop(0))
+                script_done.set()
+                await go.wait()   # no await after this: both sides finish in one turn
+                return json.dumps({"type": "client_error",
+                                   "error_event": {"code": 1011, "error_name": "internal"}})
+
+        async def receive_text():
+            await go.wait()
+            if plivo_side == "socket closed":
+                raise WebSocketDisconnect(1006)
+            return json.dumps({"event": "stop"})
+
+        async def both_at_once():
+            await script_done.wait()
+            go.set()
+
+        plivo = FakePlivo([])
+        plivo.receive_text = receive_text
+        agent = SimAgent([_tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+                          _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoons")], asyncio.Event())
+        bridge = el.PlivoElevenLabsBridge(plivo, "c-1", START, SETTINGS, connect=Connect(agent), signed_url=signed)
+        trigger = asyncio.ensure_future(both_at_once())
+        with pytest.raises(el.ElevenLabsRealtimeError, match="1011"):
+            async with asyncio.timeout(5):
+                await bridge.run()
+        await trigger
+        return [t.done() for t in created]
+
+    assert asyncio.run(scenario()) == [True, True]
+    assert seen["delivered"] == [("ref-sim", ["Prefers afternoons"])], "closed out once, with the note"
