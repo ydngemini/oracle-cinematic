@@ -958,6 +958,24 @@ async def _switched_off_since(conn, tenant_id: str, user_ids: list, since) -> li
     return [dict(r) for r in await conn.fetch(_SWITCHED_OFF_SINCE_SQL, tenant_id, list(user_ids), since)]
 
 
+#: Per route table: the numbers a still-off member holds (left off), and the
+#: restore of the rest. Literal SQL per table, never a formatted table name.
+_ROUTE_RESTORE_SQL = {
+    "telephony_routes": (
+        "SELECT id::text FROM telephony_routes WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+        "AND lower(agent_id) = ANY($3::text[]) ORDER BY id",
+        "UPDATE telephony_routes SET active=true, updated_at=now() WHERE tenant_id=$1 "
+        "AND id::text = ANY($2::text[]) AND COALESCE(lower(agent_id), '') <> ALL($3::text[])",
+    ),
+    "messaging_routes": (
+        "SELECT id::text FROM messaging_routes WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
+        "AND lower(agent_id) = ANY($3::text[]) ORDER BY id",
+        "UPDATE messaging_routes SET active=true, updated_at=now() WHERE tenant_id=$1 "
+        "AND id::text = ANY($2::text[]) AND COALESCE(lower(agent_id), '') <> ALL($3::text[])",
+    ),
+}
+
+
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
     """Change of mind during the grace period: back to how it was. Members the
     owner has suspended or offboarded since the closure stay off, with the
@@ -1003,15 +1021,11 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
             ctx.tenant_id, [u for u in user_ids if u not in held_ids]))
         routes = freeze.get("routes", {})
         restored_routes, skipped_routes = 0, []
-        for table in ("telephony_routes", "messaging_routes"):
+        for table, (held_sql, restore_sql) in _ROUTE_RESTORE_SQL.items():
             ids = list(routes.get(table, []))
             if held_agents and ids:
-                skipped_routes += [r[0] for r in await conn.fetch(
-                    f"SELECT id::text FROM {table} WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
-                    "AND lower(agent_id) = ANY($3::text[]) ORDER BY id", ctx.tenant_id, ids, held_agents)]
-            restored_routes += _rowcount(await conn.execute(
-                f"UPDATE {table} SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[]) "
-                "AND COALESCE(lower(agent_id), '') <> ALL($3::text[])", ctx.tenant_id, ids, held_agents))
+                skipped_routes += [r[0] for r in await conn.fetch(held_sql, ctx.tenant_id, ids, held_agents)]
+            restored_routes += _rowcount(await conn.execute(restore_sql, ctx.tenant_id, ids, held_agents))
         skipped_users = [{"id": h["id"], "reason": h["reason"]} for h in held]
         if withdrawn:
             result = {"withdrawn_by": ctx.agent_id, "withdraw_reason": reason}
