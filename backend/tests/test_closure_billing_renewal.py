@@ -40,24 +40,39 @@ def _events(caplog, name):
 # ── request_closure / withdraw_closure: the job joins the transaction ──────
 
 class _ClosureConn:
-    def __init__(self, lifecycle, running="op-1", latest="op-1"):
+    """The tenants row and the brokerage's LATEST closure operation (its
+    state, freeze list and error). A read of privacy_operations filtered on
+    state='running' sees that operation only while it is running; any other
+    state filter is refused, so a changed query has to change this fake."""
+
+    def __init__(self, lifecycle, op_id="op-1", op_state="running", freeze=None, error=None):
         self.lifecycle, self.executed = lifecycle, []
-        self.running, self.latest = running, latest
+        self.op_id, self.op_state, self.error = op_id, op_state, error
+        self.freeze = freeze if freeze is not None else {}
+
+    def _op(self, sql):
+        where = sql.split("WHERE", 1)[1]
+        assert "tenant_id=$1" in where and "kind='closure'" in where and "requested_at DESC" in where
+        if "state" in where:
+            assert "state='running'" in where, sql
+            if self.op_state != "running":
+                return None
+        return self.op_id and {"id": self.op_id, "state": self.op_state, "error": self.error,
+                               "progress": json.dumps({"freeze": self.freeze})}
 
     async def fetchrow(self, sql, *args):
         if "FROM tenants" in sql:
             return {"name": "Brokerage B", "lifecycle_state": self.lifecycle}
         if "INSERT INTO privacy_operations" in sql:
             return {"id": "op-1"}
-        if "FROM privacy_operations" in sql:      # withdraw: the running closure
-            assert "state='running'" in sql
-            return {"id": self.running, "progress": json.dumps({"freeze": {}})} if self.running else None
+        if "FROM privacy_operations" in sql:      # withdraw: the closure being withdrawn
+            return self._op(sql)
         raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
-        if "FROM privacy_operations" in sql:      # withdraw: the latest closure, any state
-            assert "state" not in sql.split("WHERE", 1)[1]
-            return self.latest
+        if "FROM privacy_operations" in sql:      # withdraw: the latest closure's id
+            op = self._op(sql)
+            return op["id"] if op else None
         return self.lifecycle
 
     async def fetch(self, sql, *args):
@@ -65,7 +80,19 @@ class _ClosureConn:
 
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
+        if "SET is_active=true" in sql or "SET active=true" in sql:
+            return f"UPDATE {len(args[1])}"
         return "UPDATE 0"
+
+    def restored(self, table):
+        [args] = [a for sql, a in self.executed if f"UPDATE {table} SET" in sql and "=true" in sql]
+        assert args[0] == T
+        return list(args[1])
+
+    def finished(self):
+        """(state, result, error) of every _finish_operation call."""
+        return [(a[0], a[1], json.loads(a[2]), a[4]) for sql, a in self.executed
+                if "SET state=$2, result=result ||" in sql]
 
 
 def _act(monkeypatch, action, *, lifecycle, billing=None, enqueue_error=None, fast_error=None, conn=None):
@@ -155,7 +182,7 @@ def test_withdrawing_a_closure_blocked_by_a_legal_hold_records_on_that_closure(m
     """No running closure (an erasure left it 'blocked_legal_hold'): the
     pending mark and the job key go to the latest closure operation, the one
     being withdrawn and the one tenant_lifecycle reads (review of 22.1)."""
-    conn = _ClosureConn("closing", running=None, latest="op-blocked")
+    conn = _ClosureConn("closing", op_id="op-blocked", op_state="blocked_legal_hold", error="legal hold h-1")
     out, conn, queued, _ = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
                                 billing={"state": "confirmed"})
     assert out["billing"] == "confirmed"
@@ -164,6 +191,94 @@ def test_withdrawing_a_closure_blocked_by_a_legal_hold_records_on_that_closure(m
     assert job["payload"] == {"operation_id": "op-blocked"}
     marked = next(a for sql, a in conn.executed if "jsonb_set(progress, '{billing}'" in sql)
     assert marked[0] == "op-blocked"
+
+
+# ── withdrawal restores exactly what the closure froze (L17-58) ────────────
+# A closure an erasure left 'blocked_legal_hold' (a hold stopped the erasure;
+# the brokerage stays 'closing') used to be withdrawn with nothing restored:
+# withdraw_closure read the freeze list only from a running closure, so the
+# brokerage came back 'active' with its agents still signed out and its
+# numbers still off, and the operation stayed 'blocked_legal_hold'.
+
+_FREEZE = {"signed_out_user_ids": ["u-1", "u-2"],
+           "routes": {"telephony_routes": ["tr-1"], "messaging_routes": ["mr-1", "mr-2"]}}
+
+
+def test_withdrawing_a_closure_blocked_by_a_legal_hold_restores_what_it_froze(monkeypatch):
+    conn = _ClosureConn("closing", op_id="op-blocked", op_state="blocked_legal_hold",
+                        freeze=_FREEZE, error="legal hold h-1")
+    out, conn, queued, _ = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                                billing={"state": "confirmed"})
+    assert out["state"] == "active"
+    assert conn.restored("users") == ["u-1", "u-2"]
+    assert conn.restored("telephony_routes") == ["tr-1"]
+    assert conn.restored("messaging_routes") == ["mr-1", "mr-2"]
+    # Finished as a withdrawn closure is ('cancelled'), the hold still on record.
+    [(op_id, state, result, error)] = conn.finished()
+    assert (op_id, state) == ("op-blocked", "cancelled")
+    assert result == {"withdrawn_by": OWNER.agent_id, "withdraw_reason": "changed my mind",
+                      "withdrawn_from": "blocked_legal_hold"}
+    assert error == "legal hold h-1"
+    # The hold itself is not lifted: only an operator releases it.
+    assert not any("legal_holds" in sql for sql, _a in conn.executed)
+    # Only this closure is rewritten (by id), never every blocked one.
+    writes = [" ".join(sql.split()) for sql, _a in conn.executed if "UPDATE privacy_operations" in sql]
+    assert writes and all("WHERE id=$1" in sql for sql in writes), writes
+    # #183's billing record and job are unchanged.
+    [job] = queued
+    assert job["idempotency_key"] == "privacy:billing:op-blocked:withdraw"
+    assert out["restored_users"] == 2 and out["restored_routes"] == 3
+
+
+def test_withdrawing_a_running_closure_still_restores_and_cancels_it(monkeypatch):
+    conn = _ClosureConn("closing", op_id="op-1", op_state="running", freeze=_FREEZE)
+    out, conn, _q, _f = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                             billing={"state": "confirmed"})
+    assert conn.restored("users") == ["u-1", "u-2"]
+    [(op_id, state, result, error)] = conn.finished()
+    assert (op_id, state, error) == ("op-1", "cancelled", None)
+    assert "withdrawn_from" not in result
+    assert out["restored_users"] == 2 and out["restored_routes"] == 3
+
+
+@pytest.mark.parametrize("stale", ["succeeded", "failed", "cancelled"])
+def test_a_latest_closure_that_is_not_open_restores_nothing(monkeypatch, stale):
+    """Only request_closure moves a brokerage to 'closing', and it creates the
+    running closure in the same transaction, so this is reachable only by hand.
+    Its freeze list is not this closure's, so nothing comes back from it, and
+    it is not rewritten; the brokerage still reopens (refusing would leave it
+    to be erased against the owner's word) and the counts say what happened."""
+    conn = _ClosureConn("closing", op_id="op-old", op_state=stale, freeze=_FREEZE)
+    out, conn, queued, _ = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                                billing={"state": "confirmed"})
+    assert out["state"] == "active"
+    assert conn.restored("users") == [] and conn.restored("telephony_routes") == []
+    assert conn.restored("messaging_routes") == []
+    assert conn.finished() == []
+    [job] = queued                        # the renewal record still goes to the latest closure (#183)
+    assert job["idempotency_key"] == "privacy:billing:op-old:withdraw"
+    assert out["restored_users"] == 0 and out["restored_routes"] == 0
+
+
+def test_no_closure_operation_restores_nothing(monkeypatch):
+    conn = _ClosureConn("closing", op_id=None)
+    out, conn, queued, _ = _act(monkeypatch, "withdraw", lifecycle="closing", conn=conn,
+                                billing={"state": "confirmed"})
+    assert conn.finished() == []
+    [job] = queued
+    assert job["payload"] == {"operation_id": None}
+    assert out["restored_users"] == 0 and out["restored_routes"] == 0
+
+
+@pytest.mark.parametrize("lifecycle", ["erasing", "erased", "active", "suspended"])
+def test_a_withdrawal_outside_the_grace_period_changes_nothing(monkeypatch, lifecycle):
+    """Once begin_erasure has moved the brokerage to 'erasing' (it locks the
+    same tenants row), or after a first withdrawal ('active'), a withdrawal
+    is refused before anything is restored, finished or queued."""
+    conn = _ClosureConn(lifecycle, op_id="op-1", op_state="running", freeze=_FREEZE)
+    with pytest.raises(pl.LifecycleError, match="grace period"):
+        _act(monkeypatch, "withdraw", lifecycle=lifecycle, conn=conn)
+    assert conn.executed == []
 
 
 # ── the convergence itself, against a Stripe stub ───────────────────────────

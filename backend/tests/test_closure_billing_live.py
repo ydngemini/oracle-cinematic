@@ -96,6 +96,34 @@ async def _scenario(fake):
         await admin.execute("INSERT INTO subscriptions (tenant_id, stripe_customer_id, stripe_subscription_id, "
                             "status) VALUES ($1,$2,$3,'active')", T, f"cus_{s}", sub)
         octx = TenantContext(agent_id=owner, tenant_id=T, role=Role.BROKER_OWNER)
+        # L17-58: an agent each closure signs out and whose numbers it switches
+        # off, and one already signed out with numbers already off before any
+        # closure, which no withdrawal may switch back on.
+        live, idle = f"agent-{s}@live.test", f"idle-{s}@live.test"
+        agent = {}
+        for who, on in ((live, True), (idle, False)):
+            uid = await admin.fetchval(
+                "INSERT INTO users (tenant_id, agent_id, role, email, password_hash, is_active) "
+                "VALUES ($1,$2,'agent',$2,'scrypt$x$y',$3) RETURNING id::text", T, who, on)
+            tr = await admin.fetchval(
+                "INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, agent_forward_e164, active, "
+                "provider, twilio_account_sid, provider_account_id) "
+                "VALUES ($1,$2,$3,'+13025550188',$4,'twilio',$5,$6) RETURNING id::text",
+                T, who, "+1302" + str(secrets.randbelow(10**7)).zfill(7), on, "AC" + "0" * 32, "AC" + "0" * 32)
+            mr = await admin.fetchval("INSERT INTO messaging_routes (tenant_id, agent_id, active) "
+                                      "VALUES ($1,$2,$3) RETURNING id::text", T, who, on)
+            agent[who] = {"user": uid, "telephony": tr, "messaging": mr}
+
+        async def switched_on(who):
+            a = agent[who]
+            return (await admin.fetchval("SELECT is_active FROM users WHERE id=$1::uuid", a["user"]),
+                    await admin.fetchval("SELECT active FROM telephony_routes WHERE id=$1::uuid", a["telephony"]),
+                    await admin.fetchval("SELECT active FROM messaging_routes WHERE id=$1::uuid", a["messaging"]))
+
+        async def op_row(op_id):
+            row = await admin.fetchrow("SELECT state, result, error, completed_at FROM privacy_operations "
+                                       "WHERE id=$1", op_id)
+            return {**dict(row), "result": json.loads(row["result"])}
 
         # ── Stripe down at closure: closing, honest "pending", job committed
         closing = await pl.request_closure(octx, confirm_name=name, reason="closing")
@@ -121,8 +149,12 @@ async def _scenario(fake):
 
         # ── withdraw with Stripe down; the CLOSE job runs again afterwards ─
         fake.up = False
+        assert await switched_on(live) == (False, False, False)
         reopened = await pl.withdraw_closure(octx, reason="changed mind")
         assert reopened["state"] == "active" and reopened["billing"] == "pending"
+        assert reopened["restored_users"] == 1 and reopened["restored_routes"] == 2
+        assert await switched_on(live) == (True, True, True)
+        assert await switched_on(idle) == (False, False, False)
         assert len(await jobs()) == 2
         fake.up = True
         assert (await run(close_job, 3))["desired"] == "renew"    # derived from 'active' now
@@ -173,20 +205,113 @@ async def _scenario(fake):
         # ── review of 22.1: a closure blocked by a legal hold, then withdrawn
         # No running closure operation: the record goes to the latest one
         # (the blocked closure being withdrawn), which tenant_lifecycle reads.
-        await admin.execute("INSERT INTO legal_holds (tenant_id, scope, reason, placed_by) "
-                            "VALUES ($1,'tenant','litigation','counsel')", T)
+        # L17-58: an older closure the pre-fix withdrawal left 'blocked_legal_hold'
+        # (its freeze list names the idle agent) is history, never restored from.
+        stale = await admin.fetchval(
+            "INSERT INTO privacy_operations (tenant_id, kind, state, subject_kind, subject_ref, requested_by, "
+            "requested_at, progress, error, policy_version) VALUES ($1,'closure','blocked_legal_hold','tenant',"
+            "$2,$3, now() - interval '1 day', $4::jsonb, 'legal hold earlier', 'test') RETURNING id",
+            T, T, owner, json.dumps({"freeze": {"signed_out_user_ids": [agent[idle]["user"]], "routes": {
+                "telephony_routes": [agent[idle]["telephony"]], "messaging_routes": [agent[idle]["messaging"]]}}}))
+        hold = await admin.fetchval("INSERT INTO legal_holds (tenant_id, scope, reason, placed_by) "
+                                    "VALUES ($1,'tenant','litigation','counsel') RETURNING id", T)
         assert await pl.begin_erasure(T, requested_by="test") is None
         assert await admin.fetchval("SELECT state FROM privacy_operations WHERE id=$1",
                                     third_close["operation_id"]) == "blocked_legal_hold"
+        assert await switched_on(live) == (False, False, False)
         fake.up = True
         withdrawn = await pl.withdraw_closure(octx, reason="settled")
         assert withdrawn["billing"] == "confirmed" and fake.cancel is False
+        # Everything the blocked closure froze is back, nothing else is.
+        assert withdrawn["restored_users"] == 1 and withdrawn["restored_routes"] == 2
+        assert await switched_on(live) == (True, True, True)
+        assert await switched_on(idle) == (False, False, False)
+        # Finished as a withdrawn closure, the hold still on record and not lifted.
+        blocked = await op_row(third_close["operation_id"])
+        assert blocked["state"] == "cancelled" and blocked["completed_at"] is not None
+        assert blocked["result"]["withdrawn_by"] == owner
+        assert blocked["result"]["withdrawn_from"] == "blocked_legal_hold"
+        assert blocked["error"] == f"legal hold {hold}"
+        assert await admin.fetchval("SELECT released_at FROM legal_holds WHERE id=$1", hold) is None
+        assert (await op_row(stale))["state"] == "blocked_legal_hold"
+        assert "withdrawn_by" not in (await op_row(stale))["result"]
         assert await billing_of(third_close["operation_id"]) == {
             **await billing_of(third_close["operation_id"]), "desired": "renew", "state": "confirmed"}
         lifecycle = await pl.tenant_lifecycle(octx)
+        assert lifecycle["lifecycle_state"] == "active" and lifecycle["legal_hold"] is True
         assert lifecycle["billing_renewal"]["desired"] == "renew"
         assert lifecycle["billing_renewal"]["state"] == "confirmed"
         assert (await jobs())[-1]["idempotency_key"] == f"privacy:billing:{third_close['operation_id']}:withdraw"
+        # Withdrawing twice: the second is refused and changes nothing.
+        with pytest.raises(pl.LifecycleError, match="grace period"):
+            await pl.withdraw_closure(octx, reason="again")
+        assert (await op_row(third_close["operation_id"]))["result"]["withdraw_reason"] == "settled"
+
+        # ── L17-58: the scheduler's erasure and the withdrawal at the same time,
+        # the hold still standing. Both lock the tenants row first. A third
+        # connection holds that lock while the two queue behind it in a chosen
+        # order (PostgreSQL grants a row lock to its waiters in turn), so each
+        # order is run, not left to chance: the erasure first blocks the
+        # closure and the withdrawal then restores from the blocked one; the
+        # withdrawal first reopens and the erasure is refused. The end is the
+        # same either way.
+        async def waiting_on_tenant_lock(n):
+            for _ in range(400):
+                if await admin.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                        "AND query LIKE '%FROM tenants WHERE id=$1 FOR UPDATE%'") >= n:
+                    return
+                await asyncio.sleep(0.025)
+            raise AssertionError(f"{n} callers never queued on the tenants row")
+
+        async def erase():
+            try:
+                return await pl.begin_erasure(T, requested_by="retention-scheduler")
+            except pl.LifecycleError as exc:
+                return str(exc)
+
+        for first in ("erase", "withdraw"):
+            closure = await pl.request_closure(octx, confirm_name=name, reason=f"closing ({first} first)")
+            assert await switched_on(live) == (False, False, False)
+            locker = await asyncpg.connect(DSN)
+            try:
+                lock = locker.transaction()
+                await lock.start()
+                await locker.execute("SELECT 1 FROM tenants WHERE id=$1 FOR UPDATE", T)
+                racers = {}
+                for who in ((first, "withdraw" if first == "erase" else "erase")):
+                    racers[who] = asyncio.ensure_future(
+                        erase() if who == "erase" else pl.withdraw_closure(octx, reason="raced"))
+                    await waiting_on_tenant_lock(len(racers))
+                await lock.rollback()
+                erased, withdrawn = await racers["erase"], await racers["withdraw"]
+            finally:
+                await locker.close()
+            if first == "erase":
+                assert erased is None                      # blocked by the hold, then withdrawn
+            else:
+                assert erased.startswith("tenant is active"), erased
+            assert withdrawn["restored_users"] == 1 and withdrawn["restored_routes"] == 2
+            assert await admin.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", T) == "active"
+            assert await switched_on(live) == (True, True, True)
+            assert await switched_on(idle) == (False, False, False)
+            raced = await op_row(closure["operation_id"])
+            assert raced["state"] == "cancelled", raced
+            assert (raced["result"].get("withdrawn_from") == "blocked_legal_hold") == (first == "erase")
+            assert await admin.fetchval("SELECT count(*) FROM privacy_operations WHERE tenant_id=$1 "
+                                        "AND kind='erasure'", T) == 0
+            assert await admin.fetchval("SELECT released_at FROM legal_holds WHERE id=$1", hold) is None
+
+        # ── L17-58: once an erasure has started there is nothing to withdraw ─
+        await admin.execute("UPDATE legal_holds SET released_at=now(), released_by='counsel' WHERE id=$1", hold)
+        last = await pl.request_closure(octx, confirm_name=name, reason="closing, erase")
+        erasure = await pl.begin_erasure(T, requested_by="test")
+        assert erasure and (await op_row(last["operation_id"]))["state"] == "succeeded"
+        with pytest.raises(pl.LifecycleError, match="grace period"):
+            await pl.withdraw_closure(octx, reason="too late")
+        assert await admin.fetchval("SELECT lifecycle_state FROM tenants WHERE id=$1", T) == "erasing"
+        assert await switched_on(live) == (False, False, False)
+        assert (await op_row(last["operation_id"]))["state"] == "succeeded"
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

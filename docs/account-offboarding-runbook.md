@@ -151,9 +151,18 @@ API: `POST /api/privacy/closure`.
 **During the grace period** (`ORACLE_CLOSURE_GRACE_DAYS`, default 30):
 - the owner can export;
 - the owner can **Keep the brokerage** (`POST /api/privacy/closure/withdraw`).
-  This restores the users and routes the closure switched off. Cancelled
+  This restores the users and routes the closure switched off, and nothing
+  else (the response counts `restored_users` and `restored_routes`). Cancelled
   jobs and revoked links are not restored. Renewal is turned back on through
   the same durable job.
+
+**Under a legal hold.** A hold stops the erasure when the grace period ends:
+the brokerage stays `closing` and its closure operation becomes
+`blocked_legal_hold`, so the owner can still keep the brokerage. The
+withdrawal restores what that closure switched off and ends the operation
+`cancelled`, with `result.withdrawn_from = blocked_legal_hold` and its `error`
+(`legal hold <id>`) kept. The hold itself stays until an operator releases it
+(L17-58).
 
 **Subscription renewal is confirmed, not assumed (external audit 22.1).**
 Closing and withdrawing each queue a `privacy:billing_renewal` job in their

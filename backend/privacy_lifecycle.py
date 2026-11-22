@@ -908,6 +908,10 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
             "billing": billing}
 
 
+#: The states a closure operation is in while its brokerage is 'closing'.
+_WITHDRAWABLE_CLOSURE = ("running", "blocked_legal_hold")
+
+
 async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
     """Change of mind during the grace period: back to exactly how it was.
     Resuming renewal is queued durably in the same transaction (22.1)."""
@@ -918,11 +922,23 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
             "SELECT lifecycle_state FROM tenants WHERE id=$1 FOR UPDATE", ctx.tenant_id)
         if state != "closing":
             raise LifecycleError("Closure can only be withdrawn during the grace period.")
+        # The closure being withdrawn is the brokerage's LATEST closure
+        # operation (request_closure creates it in the transaction that sets
+        # 'closing'): 'running', or 'blocked_legal_hold' when an erasure found
+        # a legal hold and left the brokerage 'closing'. Either way its freeze
+        # list is exactly what this closure switched off, and only that comes
+        # back (L17-58: a blocked one used to restore nothing and stay
+        # blocked). A latest closure in any other state holds no freeze of
+        # this closure, so nothing is restored from it and it is not
+        # rewritten. The tenants row lock above serialises this with
+        # begin_erasure, which locks the same row before it moves a closing
+        # brokerage to 'erasing'; a withdrawal after that is refused above.
         op = await conn.fetchrow(
-            "SELECT id, progress FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
-            "AND state='running' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
-        freeze = (json.loads(op["progress"]) if op and isinstance(op["progress"], str)
-                  else (op["progress"] if op else {})).get("freeze", {})
+            "SELECT id, state, progress, error FROM privacy_operations WHERE tenant_id=$1 "
+            "AND kind='closure' ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        withdrawn = op if op is not None and op["state"] in _WITHDRAWABLE_CLOSURE else None
+        progress = withdrawn["progress"] if withdrawn else None
+        freeze = (json.loads(progress) if isinstance(progress, str) else progress or {}).get("freeze", {})
         await conn.execute(
             "UPDATE tenants SET lifecycle_state='active', closure_requested_at=NULL, "
             "closure_requested_by=NULL, closure_reason=NULL, updated_at=now() WHERE id=$1",
@@ -931,21 +947,26 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
             "UPDATE users SET is_active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
             ctx.tenant_id, freeze.get("signed_out_user_ids", [])))
         routes = freeze.get("routes", {})
-        await conn.execute(
+        restored_routes = _rowcount(await conn.execute(
             "UPDATE telephony_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("telephony_routes", []))
-        await conn.execute(
+            ctx.tenant_id, routes.get("telephony_routes", [])))
+        restored_routes += _rowcount(await conn.execute(
             "UPDATE messaging_routes SET active=true, updated_at=now() WHERE tenant_id=$1 AND id::text = ANY($2::text[])",
-            ctx.tenant_id, routes.get("messaging_routes", []))
-        if op:
-            await _finish_operation(conn, str(op["id"]), state="cancelled",
-                                    result={"withdrawn_by": ctx.agent_id, "withdraw_reason": reason})
+            ctx.tenant_id, routes.get("messaging_routes", [])))
+        if withdrawn:
+            result = {"withdrawn_by": ctx.agent_id, "withdraw_reason": reason}
+            blocked = withdrawn["state"] == "blocked_legal_hold"
+            if blocked:
+                # Withdrawn like any closure ('cancelled'). The hold is not
+                # lifted (only an operator releases it), and the record of why
+                # the erasure stopped ('legal hold <id>') is kept.
+                result["withdrawn_from"] = "blocked_legal_hold"
+            await _finish_operation(conn, str(withdrawn["id"]), state="cancelled", result=result,
+                                    error=withdrawn["error"] if blocked else None)
         # The renewal record lives on the LATEST closure operation whatever its
         # state (as _record_billing writes it): the running one, or one an
         # erasure left 'blocked_legal_hold', which is the closure withdrawn.
-        latest = await conn.fetchval(
-            "SELECT id FROM privacy_operations WHERE tenant_id=$1 AND kind='closure' "
-            "ORDER BY requested_at DESC LIMIT 1", ctx.tenant_id)
+        latest = op["id"] if op else None
         if latest:
             await conn.execute(
                 "UPDATE privacy_operations SET progress = jsonb_set(progress, '{billing}', $2::jsonb) WHERE id=$1",
@@ -955,7 +976,8 @@ async def withdraw_closure(ctx: TenantContext, *, reason: str) -> dict:
     billing = await _billing_fast_path(ctx.tenant_id)
     await _audit(ctx, "brokerage.closure.withdrawn", target=ctx.tenant_id,
                  metadata={"reason": reason, "billing": billing})
-    return {"state": "active", "restored_users": restored_users, "billing": billing,
+    return {"state": "active", "restored_users": restored_users, "restored_routes": restored_routes,
+            "billing": billing,
             "note": "Cancelled jobs and revoked links are not restored; create them again if needed."}
 
 
