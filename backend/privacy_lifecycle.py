@@ -12,7 +12,9 @@ Three flows:
   (who wrote a note, who sent a message, who approved what) is never
   rewritten. Pending side effects the agent authored are cancelled, their
   phone line stops forwarding to their personal phone, and their personal
-  Google/SMTP credentials are revoked and deleted.
+  Google/SMTP credentials are disabled at once, then revoked at the provider
+  and deleted; the operation stays 'running' until that is confirmed, with a
+  durable job retrying it (external audit 22.7).
 
 * **Closing a brokerage** (`request_closure` / `withdraw_closure`) — the
   owner asks to close. The tenant stops doing anything (no jobs, no outbound,
@@ -39,7 +41,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
@@ -52,6 +54,11 @@ log = logging.getLogger("oracle.privacy_lifecycle")
 PLATFORM_TENANT_ID = os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000")
 JOB_ERASE = "privacy:erase"
 JOB_EXPORT = "privacy:export"
+# Durable external cleanup (external audits 22.7, 22.1). The privacy: prefix
+# matters twice: claim_next_job runs privacy jobs for a tenant that is not
+# active (automation_jobs.claim_next_job), and cancel_pending_side_effects
+# never cancels them (_PENDING below), so a closure cannot strand them.
+JOB_REVOKE_CREDENTIALS = "privacy:revoke_credentials"
 ERASE_BATCH = 5000
 
 
@@ -365,6 +372,7 @@ class OffboardPlan:
     telephony: str
     credentials: int
     warnings: list[str]
+    credential_ids: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -409,29 +417,189 @@ async def offboard_agent(ctx: TenantContext, *, departing_agent_id: str, success
             plan = await _offboard_in_tx(conn, ctx, departing, successor, reason)
             if preview:
                 raise _Preview(plan)
+            # External audit 22.7: the operation is 'running' until every
+            # personal credential is confirmed revoked at the provider. Local
+            # access ends in this transaction; the durable revocation job is
+            # queued in it too, so a crash after commit still revokes.
+            external = bool(plan.credential_ids)
             op = await _create_operation(
                 conn, tenant_id=ctx.tenant_id, kind="offboard", requested_by=ctx.agent_id,
                 reason=reason, subject_kind="user", subject_ref=str(plan.departing["id"]),
-                params={"successor": plan.successor["agent_id"]}, state="succeeded")
-            await _finish_operation(conn, str(op["id"]), state="succeeded", result=plan.as_dict())
+                params={"successor": plan.successor["agent_id"]},
+                state="running" if external else "succeeded")
+            op_id = str(op["id"])
+            await _finish_operation(
+                conn, op_id, state="running" if external else "succeeded",
+                result={**plan.as_dict(), "access_disabled": True,
+                        "external_revocation": "pending" if external else "complete",
+                        "cleanup_pending": ["credential_revocation"] if external else []})
+            if external:
+                await _enqueue_credential_revocation(conn, ctx, op_id, plan.credential_ids)
     except _Preview as dry:
         return {"preview": True, **dry.plan.as_dict()}
 
-    revocations = await revoke_personal_credentials(ctx, tenant_id=ctx.tenant_id,
-                                                    agent_id=plan.departing["agent_id"])
-    async with tenant_tx(ctx) as conn:
-        await conn.execute(
-            "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() WHERE id=$1",
-            op["id"], json.dumps({"credential_revocation": revocations}))
-    emit_event("offboarding.completed", operation_id=str(op["id"]), tenant_id=ctx.tenant_id,
+    settled = {"state": "succeeded", "external_revocation": "complete", "credential_revocation": []}
+    if plan.credential_ids:
+        try:
+            settled = await settle_offboard_revocation(ctx, op_id, plan.credential_ids)
+        except Exception as exc:  # noqa: BLE001 - the queued job retries; the owner is told it is pending
+            log.warning("inline credential revocation for offboarding %s failed (%s); the job retries",
+                        op_id, type(exc).__name__)
+            settled = {"state": "running", "external_revocation": "pending", "credential_revocation": []}
+    revocations = settled["credential_revocation"]
+    emit_event("offboarding.completed", operation_id=op_id, tenant_id=ctx.tenant_id, state=settled["state"],
                reassigned=sum(plan.reassign.values()), cancelled=sum(plan.pending.values()),
-               credential_revocations_failed=sum(1 for r in revocations if r["status"] == "revoke_failed"))
+               credential_revocations_failed=sum(1 for r in revocations if r["status"] in REVOCATION_FAILED),
+               external_revocation_pending=settled["external_revocation"] != "complete")
     await _audit(ctx, "team.member.offboarded", target=str(plan.departing["id"]),
                  metadata={"successor": plan.successor["agent_id"], "reason": reason,
                            "reassigned": plan.reassign, "cancelled": plan.pending,
-                           "operation_id": str(op["id"])})
-    return {"preview": False, "operation_id": str(op["id"]), **plan.as_dict(),
-            "credential_revocation": revocations}
+                           "operation_id": op_id, "external_revocation": settled["external_revocation"]})
+    return {"preview": False, "operation_id": op_id, **plan.as_dict(), "state": settled["state"],
+            "credential_revocation": revocations, "external_revocation": settled["external_revocation"]}
+
+
+#: Revocation retries after the inline attempt: ~2.4 h of backoff
+#: (automation_jobs.fail_job: 5 s doubling, capped at an hour) before the
+#: operation fails and the external_cleanup alert is raised.
+REVOKE_MAX_ATTEMPTS = 12
+#: The job first runs after the inline attempt has had its chance (a Google
+#: revoke waits at most 15 s per credential), so the two rarely overlap. They
+#: may: a second revoke of the same grant answers already_invalid.
+REVOKE_JOB_DELAY = timedelta(minutes=2)
+
+
+async def _enqueue_credential_revocation(conn, ctx: TenantContext, op_id: str,
+                                         credential_ids: list[str]) -> None:
+    from automation_jobs import enqueue_job_in_tx
+
+    await enqueue_job_in_tx(
+        conn, ctx, job_type=JOB_REVOKE_CREDENTIALS,
+        payload={"operation_id": op_id, "credential_ids": list(credential_ids)},
+        idempotency_key=f"privacy:revoke-credentials:{op_id}", created_by=ctx.agent_id,
+        max_attempts=REVOKE_MAX_ATTEMPTS, scheduled_at=datetime.now(timezone.utc) + REVOKE_JOB_DELAY)
+
+
+async def settle_offboard_revocation(ctx: TenantContext, operation_id: str, credential_ids: Iterable[str],
+                                     *, final_attempt: bool = False) -> dict:
+    """Revoke the offboarded agent's credentials that are still disabled and
+    record where the offboarding stands (external audit 22.7).
+
+    Every row among `credential_ids` still disabled is pending: revoked and
+    deleted rows are done, and a row a reconnect re-enabled (which the marker
+    refuses, commands_api) would be a new grant that is never revoked. None
+    pending → 'succeeded'. Some pending → still 'running' for the job to
+    retry, or, on the final attempt, 'failed': the rows stay disabled and are
+    marked `revocation_failed` (the external_cleanup alert counts them), and
+    offboarding.external_cleanup_pending is emitted. Returns {state,
+    external_revocation: complete|pending|failed, credential_revocation,
+    credentials_pending}."""
+    ids = [str(i) for i in credential_ids]
+    outcomes = await revoke_personal_credentials(ctx, tenant_id=ctx.tenant_id, agent_id=None,
+                                                 credential_ids=ids)
+    async with tenant_tx(ctx) as conn:
+        op = await conn.fetchrow(
+            "SELECT state, result FROM privacy_operations WHERE id=$1 AND kind='offboard' FOR UPDATE",
+            operation_id)
+        if op is None:
+            raise LifecycleError("unknown offboarding operation", status_code=404)
+        stored = op["result"] if isinstance(op["result"], dict) else json.loads(op["result"] or "{}")
+        merged = {o["credential_id"]: o for o in stored.get("credential_revocation") or []}
+        merged.update({o["credential_id"]: o for o in outcomes})
+        remaining = [r[0] for r in await conn.fetch(
+            "SELECT id::text FROM provider_credentials WHERE tenant_id=$1 AND id = ANY($2::uuid[]) "
+            "AND disabled_at IS NOT NULL", ctx.tenant_id, ids)]
+        state, failed_now = op["state"], False
+        if state == "running":
+            if not remaining:
+                state, external = "succeeded", "complete"
+            elif final_attempt:
+                state, external, failed_now = "failed", "failed", True
+                await conn.execute(
+                    "UPDATE provider_credentials SET validation_error=$3, updated_at=now() "
+                    "WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                    ctx.tenant_id, remaining, REVOCATION_FAILED_MARK)
+            else:
+                external = "pending"
+            await _finish_operation(
+                conn, operation_id, state=state,
+                result={"credential_revocation": list(merged.values()), "external_revocation": external,
+                        "cleanup_pending": ["credential_revocation"] if remaining else [],
+                        "credentials_pending": len(remaining)},
+                error=(f"credential revocation not confirmed for {len(remaining)} credential(s): "
+                       + MANUAL_REVOKE_NOTE) if failed_now else None)
+        else:
+            # Finished by another attempt (the inline one, or an earlier run):
+            # record what this one did, never reopen or re-close it.
+            external = stored.get("external_revocation") or ("complete" if state == "succeeded" else "failed")
+            await conn.execute(
+                "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() WHERE id=$1",
+                operation_id, json.dumps({"credential_revocation": list(merged.values())}))
+    if failed_now:
+        emit_event("offboarding.external_cleanup_pending", operation_id=operation_id, tenant_id=ctx.tenant_id,
+                   credential_revocations_failed=len(remaining))
+        log.error("offboarding %s: %d credential(s) not confirmed revoked after the last retry",
+                  operation_id, len(remaining))
+    return {"state": state, "external_revocation": external, "credential_revocation": outcomes,
+            "credentials_pending": len(remaining)}
+
+
+class CredentialRevocationPending(RuntimeError):
+    """An offboarded agent's credential is not confirmed revoked yet: the job retries."""
+
+
+async def _fail_offboard_revocation(ctx: TenantContext, operation_id: str, credential_ids: Iterable[str],
+                                    error: str) -> None:
+    """The final attempt raised before it could record anything: end the
+    operation 'failed' (and mark its rows) rather than leave it running with
+    the job gone. Best effort: the database may be why it raised."""
+    try:
+        async with tenant_tx(ctx) as conn:
+            failed = await conn.fetchval(
+                "UPDATE privacy_operations SET state='failed', completed_at=now(), updated_at=now(), "
+                "error=$2, result = result || $3::jsonb "
+                "WHERE id=$1 AND kind='offboard' AND state='running' RETURNING id",
+                operation_id, error + ": " + MANUAL_REVOKE_NOTE,
+                json.dumps({"external_revocation": "failed", "cleanup_pending": ["credential_revocation"]}))
+            if failed is not None:
+                await conn.execute(
+                    "UPDATE provider_credentials SET validation_error=$3, updated_at=now() "
+                    "WHERE tenant_id=$1 AND id = ANY($2::uuid[]) AND disabled_at IS NOT NULL",
+                    ctx.tenant_id, [str(i) for i in credential_ids], REVOCATION_FAILED_MARK)
+    except Exception:  # noqa: BLE001 - the job's own failure is still recorded by the worker
+        log.exception("could not record the failed offboarding revocation %s", operation_id)
+        return
+    if failed is not None:
+        emit_event("offboarding.external_cleanup_pending", operation_id=operation_id, tenant_id=ctx.tenant_id)
+        log.error("offboarding %s: credential revocation stopped on its final attempt", operation_id)
+
+
+async def _revoke_credentials_job(payload: dict, reporter) -> dict:
+    """`privacy:revoke_credentials`: retry an offboarding's revocations until
+    every credential is confirmed revoked, then succeed; the final attempt
+    fails the operation instead of retrying forever (22.7)."""
+    from automation_jobs import is_final_attempt
+
+    job = getattr(reporter, "job", None) or {}
+    final = is_final_attempt(job)
+    ctx = TenantContext(agent_id="privacy-offboarding", tenant_id=str(job.get("tenant_id") or ""),
+                        role=Role.PLATFORM_ADMIN)
+    op_id = str(payload["operation_id"])
+    try:
+        out = await settle_offboard_revocation(ctx, op_id, payload.get("credential_ids") or [],
+                                               final_attempt=final)
+    except Exception as exc:
+        if final:
+            await _fail_offboard_revocation(
+                ctx, op_id, payload.get("credential_ids") or [],
+                f"credential revocation stopped on its final attempt: {type(exc).__name__}")
+        raise
+    if out["external_revocation"] == "pending":
+        raise CredentialRevocationPending(f"{out['credentials_pending']} credential(s) not confirmed revoked")
+    result = {"operation_id": op_id, "state": out["state"], "external_revocation": out["external_revocation"]}
+    if out["state"] == "failed":
+        result["_terminal_state"] = "partial"
+    return result
 
 
 async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: str,
@@ -502,11 +670,13 @@ async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: s
     #    clients, so it keeps working — but never again forwards to the
     #    departing agent's personal phone.
     telephony = await _hand_over_routes(conn, ctx.tenant_id, a["agent_id"], b["agent_id"])
-    # 6. personal credentials: disabled now, revoked at the provider after commit
-    creds = _rowcount(await conn.execute(
-        "UPDATE provider_credentials SET disabled_at=COALESCE(disabled_at, now()), updated_at=now() "
-        "WHERE tenant_id=$1 AND lower(account_label)=lower($2)", ctx.tenant_id, a["agent_id"]))
-    return OffboardPlan(a, b, reassign, pending, telephony, creds, warnings)
+    # 6. personal credentials: disabled now and marked pending revocation (a
+    #    reconnect cannot overwrite them), revoked at the provider after commit
+    creds = [r[0] for r in await conn.fetch(
+        "UPDATE provider_credentials SET disabled_at=COALESCE(disabled_at, now()), validation_error=$3, "
+        "updated_at=now() WHERE tenant_id=$1 AND lower(account_label)=lower($2) RETURNING id::text",
+        ctx.tenant_id, a["agent_id"], REVOCATION_PENDING_MARK)]
+    return OffboardPlan(a, b, reassign, pending, telephony, len(creds), warnings, creds)
 
 
 async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str) -> str:
@@ -545,18 +715,57 @@ async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str
     return "parked_successor_has_own_route"
 
 
-async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
-                                      agent_id: Optional[str]) -> list[dict]:
-    """Revoke disabled Google grants at Google, then delete the rows.
+#: Outcomes of revoke_personal_credentials that leave nothing behind: the
+#: grant is gone at Google (or there never was a remote grant) and the row is
+#: deleted.
+REVOCATION_DONE = frozenset({"revoked", "already_invalid", "deleted_no_remote_grant"})
+#: Outcomes that keep the row (disabled, still revocable) and count as a
+#: failure everywhere they are reported (external audit 22.6): `revoke_failed`
+#: when Google refused or could not be reached, `revocation_unverified` when
+#: the stored token could not be read (no encryption key, or a ciphertext that
+#: does not decrypt), so nobody can say the grant was revoked.
+REVOCATION_FAILED = frozenset({"revoke_failed", "revocation_unverified"})
+#: provider_credentials.validation_error markers (no new column: 22.6/22.7).
+#: Set on every row offboarding disables, until its revocation is confirmed
+#: and the row deleted; `revocation_failed` once the retries are spent (the
+#: external_cleanup alert counts those). A reconnect never overwrites a
+#: marked row (commands_api), so the old grant's only handle is never lost.
+REVOCATION_PENDING_MARK = "revocation_pending"
+REVOCATION_FAILED_MARK = "revocation_failed"
+REVOCATION_MARKS = (REVOCATION_PENDING_MARK, REVOCATION_FAILED_MARK)
+#: What a person does when Neoh could not revoke a Google grant itself.
+MANUAL_REVOKE_NOTE = ("not confirmed revoked: the account holder removes Neoh under Google Account > "
+                      "Security > Your connections to third-party apps & services")
 
-    With agent_id: that agent's own (offboarding). Without: every Google
-    credential of the tenant (erasure). A row whose revoke failed (Google
-    down, recovery mode) is kept disabled — unusable, but still revocable on
-    a retry — and reported, never silently dropped.
+
+async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
+                                      agent_id: Optional[str],
+                                      credential_ids: Optional[Iterable[str]] = None) -> list[dict]:
+    """Revoke Google grants at Google, then delete the rows.
+
+    With agent_id or credential_ids: only those rows, and only while they are
+    still disabled (offboarding; a row a reconnect re-enabled is a new grant
+    and is never revoked). With neither: every credential of the tenant
+    (erasure). A row whose revoke failed (Google down, recovery mode) is kept
+    disabled — unusable, but still revocable on a retry — and reported as
+    `revoke_failed`, never silently dropped.
+
+    External audit 22.6: a token that cannot be read is never deleted as if
+    it were revoked. The encryption key is derived once; without it nothing
+    Google holds is touched and every Google row is `revocation_unverified`.
+    Each decrypt runs in its own savepoint: pgp_sym_decrypt runs in the
+    database, and one corrupt row used to abort the shared transaction so
+    every later row failed to decrypt and was deleted unrevoked.
     """
     from commands_api import _provider_key, revoke_google_token
     from crypto import decrypt_pii
 
+    ids = [str(i) for i in credential_ids] if credential_ids is not None else None
+    scoped = agent_id is not None or ids is not None
+    try:
+        key: Optional[str] = _provider_key(tenant_id)
+    except Exception:  # noqa: BLE001 - HTTPException(503) when the master key is not configured
+        key = None
     outcomes: list[dict] = []
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
@@ -564,32 +773,42 @@ async def revoke_personal_credentials(ctx: TenantContext, *, tenant_id: str,
             SELECT id, provider, account_label, token_ciphertext, refresh_ciphertext
               FROM provider_credentials
              WHERE tenant_id=$1 AND ($2::text IS NULL OR lower(account_label)=lower($2))
-               AND ($2::text IS NULL OR disabled_at IS NOT NULL)
-            """, tenant_id, agent_id)
-        secrets = []
+               AND ($3::uuid[] IS NULL OR id = ANY($3::uuid[]))
+               AND ($4::boolean IS FALSE OR disabled_at IS NOT NULL)
+            """, tenant_id, agent_id, ids, scoped)
+        secrets: list[tuple[Any, str, Optional[str], Optional[str]]] = []
         for row in rows:
-            token = None
-            if row["provider"] == "google":
-                cipher = row["refresh_ciphertext"] or row["token_ciphertext"]
-                try:
-                    token = await decrypt_pii(conn, cipher, _provider_key(tenant_id)) if cipher else None
-                except Exception:  # noqa: BLE001 - unreadable token cannot be revoked; say so
-                    token = None
-            secrets.append((row["id"], row["provider"], token))
-    for cred_id, provider, token in secrets:
+            if row["provider"] != "google":
+                secrets.append((row["id"], row["provider"], None, None))
+                continue
+            if key is None:
+                secrets.append((row["id"], "google", None, "key_unavailable"))
+                continue
+            cipher = row["refresh_ciphertext"] or row["token_ciphertext"]
+            try:
+                async with conn.transaction():  # savepoint: a failed decrypt leaves the rest readable
+                    token = await decrypt_pii(conn, cipher, key)
+            except Exception:  # noqa: BLE001 - unreadable: kept and reported, never "revoked"
+                secrets.append((row["id"], "google", None, "undecryptable"))
+                continue
+            secrets.append((row["id"], "google", token, None))
+    for cred_id, provider, token, unreadable in secrets:
+        if unreadable:
+            outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                             "status": "revocation_unverified", "detail": unreadable})
+            continue
         status = "deleted_no_remote_grant"
         if provider == "google":
-            if token is None:
-                status = "deleted_token_unreadable"
-            else:
-                try:
-                    status = await revoke_google_token(token)
-                except Exception as exc:  # noqa: BLE001 - recorded and retried, never hidden
-                    outcomes.append({"credential_id": str(cred_id), "provider": provider,
-                                     "status": "revoke_failed", "detail": type(exc).__name__})
-                    continue
+            try:
+                status = await revoke_google_token(token)
+            except Exception as exc:  # noqa: BLE001 - recorded and retried, never hidden
+                outcomes.append({"credential_id": str(cred_id), "provider": provider,
+                                 "status": "revoke_failed", "detail": type(exc).__name__})
+                continue
         async with tenant_tx(ctx) as conn:
-            await conn.execute("DELETE FROM provider_credentials WHERE id=$1", cred_id)
+            await conn.execute(
+                "DELETE FROM provider_credentials WHERE id=$1 AND ($2::boolean IS FALSE OR disabled_at IS NOT NULL)",
+                cred_id, scoped)
         outcomes.append({"credential_id": str(cred_id), "provider": provider, "status": status})
     return outcomes
 
@@ -988,12 +1207,25 @@ async def _phase_providers(ctx, op_id, tenant_id, progress) -> dict:
             steps.append({"provider": provider, "action": "disconnect_hosted_sms", "status": "failed",
                           "detail": type(exc).__name__})
     for outcome in await revoke_personal_credentials(tctx, tenant_id=tenant_id, agent_id=None):
-        steps.append({"provider": outcome["provider"], "action": "revoke_credential", "status": outcome["status"]})
+        step = {"provider": outcome["provider"], "action": "revoke_credential", "status": outcome["status"]}
+        if outcome["status"] in REVOCATION_FAILED:
+            step["note"] = MANUAL_REVOKE_NOTE
+        steps.append(step)
     billing = await _set_cancel_at_period_end(tenant_id, True)
     steps.append({"provider": "stripe", "action": "stop_renewal", "status": billing,
                   "note": "billing records are retained by Neoh as controller (7 years)"})
-    failed = [s for s in steps if s["status"] in ("failed", "revoke_failed") or str(s["status"]).startswith("failed:")]
+    failed = [s for s in steps if _provider_step_failed(s["status"])]
     return {"steps": steps, "failed": len(failed)}
+
+
+def _provider_step_failed(status: Any) -> bool:
+    """A provider step that did not happen (external audit 22.6): a revoke
+    Google refused or that could not be attempted because the token is
+    unreadable, and a Stripe subscription left renewing because Stripe is
+    not configured in this process — each was once counted as done."""
+    text = str(status)
+    return (text in ("failed", "stripe_not_configured") or text in REVOCATION_FAILED
+            or text.startswith("failed:"))
 
 
 async def _provider_credentials(tctx: TenantContext, provider: str) -> dict:
@@ -1583,3 +1815,4 @@ def register() -> None:
     from automation_jobs import register_handler
 
     register_handler(JOB_ERASE, _erase_job)
+    register_handler(JOB_REVOKE_CREDENTIALS, _revoke_credentials_job)

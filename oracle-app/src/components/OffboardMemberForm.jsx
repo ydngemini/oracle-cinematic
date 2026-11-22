@@ -6,6 +6,9 @@ import { friendlyError } from '../lib/errorMessages';
 // Offboard one agent: pick who takes over, see exactly what will move (a dry
 // run of the real thing), then confirm with your password. Their notes,
 // messages and history keep their name — only open work changes hands.
+// Their Google connection is switched off at once, but removing it at Google
+// can lag (Google down): the server says so (external_revocation) and this
+// form says it is pending instead of claiming it is gone (audit 22.7).
 
 const LABELS = {
   agent_contacts: 'contacts', clients: 'clients', client_tasks: 'open tasks',
@@ -27,6 +30,7 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(null);
 
   const body = (preview) => ({
     agent_id: member.agent_id, successor_agent_id: successor, reason, preview,
@@ -39,6 +43,7 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
     try {
       const result = await crmPost('/api/privacy/offboard', body(preview));
       if (preview) setPlan(result);
+      else if (result?.external_revocation && result.external_revocation !== 'complete') setPending(result);
       else onDone(result);
     } catch (err) {
       setError(friendlyError(err, { fallback: 'Offboarding failed. Nothing was changed.' }));
@@ -46,6 +51,22 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
       setBusy(false);
     }
   };
+
+  if (pending) {
+    return (
+      <div className={styles.block} aria-label={`Offboard ${member.full_name || member.email}`} role="group">
+        <h3 className={styles.heading}>Offboarded {member.full_name || member.email}</h3>
+        <p className={styles.text} role="status" data-testid="offboard-pending">
+          They are signed out and their open work has moved. Their Google connection is switched off in
+          Neoh, but Google has not yet confirmed it is removed. Neoh keeps trying; if it still cannot,
+          Neoh support is alerted to finish it.
+        </p>
+        <div className={styles.actions}>
+          <button type="button" className={styles.button} onClick={() => onDone(pending)}>Done</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.block} aria-label={`Offboard ${member.full_name || member.email}`} role="group">

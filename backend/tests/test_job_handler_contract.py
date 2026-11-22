@@ -43,11 +43,19 @@ def test_privacy_handlers_take_the_payload(monkeypatch):
         calls.append(("export", op))
         return {"state": "succeeded"}
 
+    async def settle(ctx, op, ids, **_kw):
+        calls.append(("revoke", ctx.tenant_id, op, list(ids)))
+        return {"state": "succeeded", "external_revocation": "complete", "credentials_pending": 0}
+
     monkeypatch.setattr(privacy_lifecycle, "run_erasure", run_erasure)
     monkeypatch.setattr(privacy_export, "build_export", build_export)
+    monkeypatch.setattr(privacy_lifecycle, "settle_offboard_revocation", settle)
     asyncio.run(privacy_lifecycle._erase_job({"operation_id": "e1"}, Reporter()))
     asyncio.run(privacy_export._export_job({"operation_id": "x1"}, Reporter()))
-    assert calls == [("erase", "e1"), ("export", "x1")]
+    asyncio.run(privacy_lifecycle._revoke_credentials_job({"operation_id": "o1", "credential_ids": ["c1"]},
+                                                          Reporter()))
+    assert calls == [("erase", "e1"), ("export", "x1"),
+                     ("revoke", "11111111-1111-1111-1111-111111111111", "o1", ["c1"])]
 
 
 def test_every_registered_handler_takes_payload_and_reporter():

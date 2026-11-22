@@ -444,3 +444,18 @@ def test_an_export_archive_kept_past_expiry_for_a_day_alerts():
     assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING and bad["detail"]["overdue"] == 2
     assert "export_cleanup" in ch._DB_KEYS and ch.role_of("export_cleanup") == "important"
     assert "interval '1 day'" in ch._SQL_EXPORT_CLEANUP and "artifact_key IS NOT NULL" in ch._SQL_EXPORT_CLEANUP
+
+
+def test_a_credential_offboarding_could_not_revoke_alerts():
+    """Audits 22.6, 22.7: when the revocation retries are spent the rows stay
+    disabled, marked revocation_failed, and someone is paged until a person
+    resolves them."""
+    import component_health as ch
+    import privacy_lifecycle as pl
+
+    assert ch._external_cleanup({"credentials_unrevoked": 0})["state"] == ch.HEALTHY
+    bad = ch._external_cleanup({"credentials_unrevoked": 3})
+    assert bad["state"] == ch.DEGRADED and bad["state"] in ch.ALERTING
+    assert bad["detail"]["credentials_unrevoked"] == 3
+    assert "external_cleanup" in ch._DB_KEYS and ch.role_of("external_cleanup") == "important"
+    assert f"validation_error = '{pl.REVOCATION_FAILED_MARK}'" in ch._SQL_EXTERNAL_CLEANUP

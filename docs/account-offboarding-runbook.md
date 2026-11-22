@@ -25,7 +25,7 @@ API: `POST /api/privacy/offboard {agent_id, successor_agent_id, reason, preview,
 | Cancel unsent work they authored | commands (draft → queued), pending approvals (`revoked`), queued/failed jobs, missions (paused), smart-plan enrollments and steps (paused), queued emails, prepared calls, OAuth flows in progress |
 | Move open responsibility to the successor | contacts, clients, open tasks, handoff tasks, open milestones, smart plans, sites (published copy still shows the old agent until republished — a warning says so), record attachments, segments, routing-rule pools; site collaborator rows removed |
 | Phone & text | If the successor has no line: the route moves to them, with forwarding to the departing agent's phone cleared. Otherwise the line stays (it is the brokerage's clients' number) but stops forwarding to the departing agent. **Numbers are never released here.** |
-| Personal credentials | their Google/SMTP rows disabled in the transaction, then (after commit) the Google grant is revoked at Google and the rows deleted; a failed revoke keeps the row disabled and is reported |
+| Personal credentials | their Google/SMTP rows disabled in the transaction and marked `revocation_pending` (`validation_error`); a `privacy:revoke_credentials` job is queued in the same transaction. After commit the Google grant is revoked at Google and the rows deleted. A row whose revoke failed, or whose token cannot be read, is kept disabled and never deleted as revoked (external audit 22.6) |
 
 **Never rewritten:** every `created_by` and `updated_by`, `audit_ledger`,
 note authors, `sms_messages.agent_id`, approval requesters and deciders,
@@ -34,6 +34,30 @@ autonomy preferences, profile, licences, or writing-style model.
 
 A `privacy_operations` row (`kind='offboard'`) records the counts, and the
 audit ledger records `team.member.offboarded`.
+
+**Google revocation is confirmed, not assumed (external audit 22.7).** The
+operation is `running` until every disabled credential is confirmed revoked
+(`result.external_revocation`: `pending` → `complete`); the API response and
+the Offboard form say "pending" until then. Local access ends at once either
+way. The `privacy:revoke_credentials` job retries for about 2.4 hours (12
+attempts, revoking only rows still disabled). On its last attempt it marks the
+operation `failed`, marks the rows `revocation_failed`, emits
+`offboarding.external_cleanup_pending`, and the `external_cleanup` alert
+fires. To resolve it:
+1. Read the operation's `result.credential_revocation`: `revoke_failed`
+   (Google refused or was unreachable) or `revocation_unverified` (the token
+   could not be decrypted, or the encryption key was missing).
+2. Ask the departed agent to remove Neoh under Google Account > Security >
+   *Your connections to third-party apps & services*, or confirm the Google
+   account is closed.
+3. Delete the kept row (`provider_credentials`, `validation_error =
+   'revocation_failed'`) on the platform login. The alert closes on its own.
+There is no operator button for this yet.
+
+While a row waits for revocation the same account cannot reconnect Google: the
+OAuth callback refuses (`?google=revocation_pending`) and revokes the grant it
+was just given, and storing a credential over it answers 409. Overwriting the
+row would lose the only handle on the old grant.
 
 **Things to tell the owner:**
 - Calendar events the agent created live in the agent's own Google

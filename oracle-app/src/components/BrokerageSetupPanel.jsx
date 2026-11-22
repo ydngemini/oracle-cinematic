@@ -430,7 +430,13 @@ export function BrokerageSetupPanel() {
             member={offboarding}
             members={team?.members || []}
             onCancel={() => setOffboarding(null)}
-            onDone={() => { setOffboarding(null); setNotice('Offboarded. Their open work has moved and their access is gone.'); load(); }}
+            onDone={(result) => {
+              setOffboarding(null);
+              setNotice(result?.external_revocation && result.external_revocation !== 'complete'
+                ? 'Offboarded. Their open work has moved and they are signed out; removing their Google connection at Google is still pending.'
+                : 'Offboarded. Their open work has moved and their access is gone.');
+              load();
+            }}
           />
           </Suspense>
         )}
