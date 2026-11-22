@@ -61,7 +61,11 @@ Two smoke-test lessons from the same app:
   dashboards and logs it shows as a 504. A `Retry-After` header never reaches
   the client. `smoke-test.sh` treats `504` with `x-do-orig-status: 503` on a
   callback as "provider not configured here" (WARN), unless the provider is in
-  `REQUIRE_CALLBACK_PROVIDERS`.
+  `REQUIRE_CALLBACK_PROVIDERS`. The production release derives that list from
+  the spec it deploys (`scripts/callback-requirements.py`: Stripe while billing
+  is on, Telnyx and Plivo when declared, plus the repository variable) and
+  fails on an empty list unless `ALLOW_UNBILLED_PRODUCTION='who: why'` is set
+  (audit 30.4). Staging keeps the WARN.
 - `/openapi.json` (like `/live`) is not routed to the api, so the SPA's
   fallback answers 200 `text/html`. Only a JSON API map is a leak.
 

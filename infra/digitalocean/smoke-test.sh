@@ -23,9 +23,17 @@
 #   EXPECTED_GIT_SHA  (optional — skip to only check that /version answers)
 #   SPACES_ENDPOINT   (default https://nyc3.digitaloceanspaces.com)
 #   SPACES_BUCKET     (default neoh-media; use neoh-media-staging for staging)
-#   REQUIRE_CALLBACK_PROVIDERS  space-separated providers (as named in
+#   REQUIRE_CALLBACK_PROVIDERS  space- or comma-separated providers (as named in
 #                     callback-routes.txt, e.g. "stripe") whose webhook MUST be
-#                     configured here; otherwise a not-configured one is a WARN
+#                     configured here; otherwise a not-configured one is a WARN.
+#                     The production release derives it from the deployed spec
+#                     (scripts/callback-requirements.py) plus the repo variable
+#   SMOKE_ENV         production | staging (default staging). In production an
+#                     EMPTY REQUIRE_CALLBACK_PROVIDERS is a FAIL (audit 30.4): a
+#                     release that lost STRIPE_WEBHOOK_SECRET must not pass
+#   ALLOW_UNBILLED_PRODUCTION  'who: why'. Production only: accepts an empty
+#                     requirement set (a production that neither bills nor uses a
+#                     carrier), reported as a WARN naming the waiver
 #
 # Requires: curl, and (only for check 4) the aws CLI with Spaces keys set as
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — Spaces accepts the same CLI,
@@ -132,9 +140,42 @@ echo "== 2c. Provider callback URLs are still reachable =="
 # That means "provider not configured HERE": a WARN, unless the provider is
 # listed in REQUIRE_CALLBACK_PROVIDERS (e.g. "stripe" on a production that
 # bills), where it is a FAIL. Any other mismatch is a FAIL.
+#
+# Audit 30.4: production used to pass this section with the list empty (the
+# repository variable was never set), so a release that lost the Stripe
+# webhook secret passed. In production the list is now derived from the
+# deployed spec, and an empty one is a FAIL unless ALLOW_UNBILLED_PRODUCTION
+# names who decided it and why. Staging keeps WARN.
 CALLBACKS="$(dirname "${BASH_SOURCE[0]}")/callback-routes.txt"
 CB_HEADERS="$(mktemp)"
+SMOKE_ENV="${SMOKE_ENV:-staging}"
+_providers="${REQUIRE_CALLBACK_PROVIDERS:-}"
+_required=()
+read -r -a _required <<< "${_providers//,/ }"
+# ${a[*]+...}: an empty array is "unbound" to set -u on bash before 4.4 (macOS).
+REQUIRED_LIST="${_required[*]+${_required[*]}}"
+REQUIRED=" $REQUIRED_LIST "
+case "$SMOKE_ENV" in
+  production|staging) info "callbacks required on $SMOKE_ENV: ${REQUIRED_LIST:-none}" ;;
+  *) fail "SMOKE_ENV='$SMOKE_ENV' is neither production nor staging — refusing to guess which rules apply" ;;
+esac
+if [ "$SMOKE_ENV" = "production" ] && [ -z "$REQUIRED_LIST" ]; then
+  waiver="${ALLOW_UNBILLED_PRODUCTION:-}"
+  who="${waiver%%:*}"
+  why="${waiver#*:}"
+  if [[ "$waiver" == *:* && "$who" =~ [^[:space:]] && "$why" =~ [^[:space:]] ]]; then
+    warn "no provider callback is required on this production — WAIVED: $waiver"
+  elif [ -n "$waiver" ]; then
+    fail "ALLOW_UNBILLED_PRODUCTION must read 'who: why' — the waiver is refused, and REQUIRE_CALLBACK_PROVIDERS is empty"
+  else
+    fail "REQUIRE_CALLBACK_PROVIDERS is empty in production: an unconfigured Stripe webhook would only warn. Derive it with scripts/callback-requirements.py, or set ALLOW_UNBILLED_PRODUCTION='who: why'"
+  fi
+fi
 if [ -f "$CALLBACKS" ]; then
+  for p in ${_required[@]+"${_required[@]}"}; do
+    awk -v p="$p" '$1 !~ /^#/ && $4 == p {found=1} END {exit !found}' "$CALLBACKS" \
+      || fail "REQUIRE_CALLBACK_PROVIDERS names '$p', which callback-routes.txt does not list — it can never be checked"
+  done
   while read -r method path want provider; do
     case "$method" in ''|'#'*) continue ;; esac
     got=$(curl -s -m 15 -o /dev/null -D "$CB_HEADERS" -w '%{http_code}' -X "$method" "$APP_URL$path" || echo "000")
@@ -142,7 +183,7 @@ if [ -f "$CALLBACKS" ]; then
     if [ "$got" = "$want" ]; then
       pass "$provider callback $method $path -> $got"
     elif [ "$got" = "504" ] && [ "$orig" = "503" ]; then
-      case " ${REQUIRE_CALLBACK_PROVIDERS:-} " in
+      case "$REQUIRED" in
         *" $provider "*) fail "$provider callback $method $path -> 503 (shown as 504 by DO's edge): its signing secret is not configured, but this environment requires $provider" ;;
         *)               warn "$provider callback $method $path -> 503 (shown as 504 by DO's edge): $provider is not configured on this environment" ;;
       esac

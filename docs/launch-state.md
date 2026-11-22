@@ -1,32 +1,43 @@
-# Neoh launch state
+# Neoh launch state (historical snapshot)
 
-**Could Brokerage #1 use Neoh tomorrow? No.** Production does not exist yet.
-Staging came up for the first time on 2026-10-03, and the open blockers are
-ranked below.
+> **Historical snapshot, 2026-10-03, not maintained.** This page recorded
+> launch state on the day staging first came up. It is not authoritative and
+> nobody keeps it current: status lives only in
+> [`docs/claude-prompts/LEDGER.md`](claude-prompts/LEDGER.md) (CONTRACT C10.1).
+> For live, machine-checked state run `scripts/neoh-launch-readiness.py --env
+> production --json <file>` (or `--env staging`) and read its JSON only as of
+> its `generated_at`; the saved runs in [`launch-readiness/`](launch-readiness/README.md)
+> are from the same day as this page. Facts that later events overturned are
+> struck through and corrected in place (2026-11-22, audit 35-05). Everything
+> else is as it stood on 2026-10-03.
 
-This page is the one authoritative view of launch state. It summarises the
-detailed documents and does not replace them. Anything machine-checkable is
-also checked live by:
+At the snapshot: **could Brokerage #1 use Neoh tomorrow? No.** Production did
+not exist. Staging came up for the first time on 2026-10-03, and the open
+blockers were ranked below. The page summarised the detailed documents; it
+never replaced them.
+
+How the readiness check is run:
 
 ```sh
-NEOH_OPERATOR_TOKEN=<operator session token> python3 scripts/neoh-launch-readiness.py --env production   # or --env staging
+NEOH_OPERATOR_TOKEN=<operator session token> python3 scripts/neoh-launch-readiness.py --env production --json /tmp/readiness.json   # or --env staging
 ```
 
 Production without the operator token is BLOCKED (component health and billing
 exceptions are operator-only, audit 30.7). While production is not charging,
 `--not-charging --waive-operator-checks 'who: why'` records a deliberate skip.
 
-The latest saved runs are in [`launch-readiness/`](launch-readiness/README.md).
-**State as of 2026-10-03 ~20:00 UTC.** Migration head is `0124_job_claim_aging.sql`.
-Branch commits referenced below are on the Mission 3 launch-operations branch.
+Snapshot taken 2026-10-03 ~20:00 UTC. This page no longer names a migration
+head: the live one is `migration_head` in `GET /version`, and the newest
+migration is the last file in `backend/db/migrations/`. Branch commits
+referenced below were on the Mission 3 launch-operations branch.
 
 ## State by area
 
 | Area | State | Evidence / detail |
 |---|---|---|
 | **Production** | **Does not exist.** No app `neoh`, no `neoh-postgres` / `neoh-redis`, no production CI secrets, no `NEOH_DOMAIN`. The GitHub `production` environment exists with required reviewers | readiness run: 5 PASS / 9 WARN / 30 BLOCKED. [`deploy-digitalocean.md`](deploy-digitalocean.md) |
-| **Staging** | **Up for the first time** (`neoh-staging`, app `3386001b…`, reduced size ≈ $109/mo). api 2× / worker 1× / web 1× ACTIVE; `/health` 200; worker alive; recovery mode on; 123 migrations applied over verified TLS. It runs a hand-built bootstrap image (`git_sha unknown`). Stripe, SMTP, AI and voice keys are not set yet. 9 of the 10 GitHub `staging` secrets are set (`DIGITALOCEAN_ACCESS_TOKEN` is not); `STAGING_ENABLED` unset | readiness run: 25 PASS / 17 WARN / 4 BLOCKED. [`staging-setup.md`](staging-setup.md) |
-| **Release pipeline** | Built and tested offline. It has **never run end to end**: no CI secrets yet. Nine defects were found and fixed by the first real bring-up (below) | [`release-checklist.md`](release-checklist.md), `.github/workflows/ci.yml` |
+| **Staging** | **Up for the first time** (`neoh-staging`, app `3386001b…`, reduced size ≈ $109/mo). api 2× / worker 1× / web 1× ACTIVE; `/health` 200; worker alive; recovery mode on; 123 migrations applied over verified TLS. ~~It runs a hand-built bootstrap image (`git_sha unknown`).~~ Overtaken 2026-10-04: staging runs CI-built, digest-pinned releases (first: run 37236009143, `252a58d`; recorded in `b24ec21`). Stripe, SMTP, AI and voice keys are not set yet. ~~9 of the 10 GitHub `staging` secrets are set (`DIGITALOCEAN_ACCESS_TOKEN` is not); `STAGING_ENABLED` unset~~ Overtaken: the 2026-10-04 CI release deployed with the staging environment's DigitalOcean token, and `STAGING_ENABLED` is `true` (last changed 2026-10-06T19:52Z per `gh variable list`, read 2026-11-22) | readiness run: 25 PASS / 17 WARN / 4 BLOCKED. [`staging-setup.md`](staging-setup.md) |
+| **Release pipeline** | Built and tested offline. ~~It has **never run end to end**: no CI secrets yet.~~ Overtaken 2026-10-04: the first CI release to staging succeeded (run 37236009143, `b24ec21`). Nine defects were found and fixed by the first real bring-up (below) | [`release-checklist.md`](release-checklist.md), `.github/workflows/ci.yml` |
 | **Security gate** | **FAIL** (2026-10-01) on one condition: `staging_dast_no_blocker` (no staging existed, so OWASP ZAP was never run). The other 20 of 21 conditions PASS, including RLS, IDOR, JWT, CSRF/CORS, webhooks, SSRF and uploads. Four controls need a person: GitHub environment protection on both environments; DO Postgres/Valkey trusted sources (both **0 rules** on staging today); Spaces bucket private; `ORACLE_DB_PLATFORM_PASSWORD` plus an operator second factor set in production | [`security-launch-gate.json`](security-launch-gate.json), [`security-launch-review.md`](security-launch-review.md) |
 | **Privacy** (Mission 10) | **FAIL for real brokerage data.** Consumer Gmail SMTP has no DPA. DashScope realtime voice defaults to Singapore. ElevenLabs trains on content unless opted out (not in the production spec). Counsel sign-off pending. Several PII columns are plaintext (`clients`, `leads.payload`, `sms_messages`, `user_interactions`). **Resolved on staging only (2026-10-03):** on neoh-postgres-staging, `doadmin` has BYPASSRLS (not superuser), so the DEFINER erasure functions see every row; production must be proven on its own cluster (owner gate, audit 30.6). `doadmin` must run migrations only, never the app | [`subprocessor-inventory.md`](subprocessor-inventory.md), [`privacy-data-map.md`](privacy-data-map.md), [`privacy-counsel-checklist.md`](privacy-counsel-checklist.md), owner gates |
 | **Resilience** (Mission 2) | **FAIL for pilot.** Every drill passed, but against a local topology and a provider mock. None has run on DigitalOcean staging or against provider sandboxes. Backlog drain throughput is unexplained (29.7/s vs 49.3/s) | [`resilience-drill-report.md`](resilience-drill-report.md) |
@@ -103,7 +114,7 @@ First CI release to staging (2026-10-04, run 37236009143) — staging now runs a
 
 Each one unblocks the next. Rows 1–4 need the owner.
 
-1. **Finish staging.** Set the last GitHub `staging` secret (`DIGITALOCEAN_ACCESS_TOKEN`). Re-apply the app's secret values: the app spec is currently the blank-secret one, and the serving deployment is DO's automatic rollback. Add Fireworks, Stripe **test**, SMTP and Twilio test values. **Prove that App Platform accepts resubmitted `EV[…]` values** ([`staging-setup.md`](staging-setup.md) step 13). If it does not, switch CI to plaintext injection from GitHub environment secrets. Only then set `STAGING_ENABLED` and run a CI-built release (`confirm: stage`).
+1. **Finish staging.** ~~Set the last GitHub `staging` secret (`DIGITALOCEAN_ACCESS_TOKEN`).~~ Re-apply the app's secret values: the app spec is currently the blank-secret one, and the serving deployment is DO's automatic rollback. Add Fireworks, Stripe **test**, SMTP and Twilio test values. ~~**Prove that App Platform accepts resubmitted `EV[…]` values** ([`staging-setup.md`](staging-setup.md) step 13). If it does not, switch CI to plaintext injection from GitHub environment secrets. Only then set `STAGING_ENABLED` and run a CI-built release (`confirm: stage`).~~ Done: resubmission proven and the first CI release ran on 2026-10-04 (`b24ec21`); `STAGING_ENABLED` is `true` (last changed 2026-10-06).
 2. **Decide trusted sources vs CI migrations.** GitHub-hosted runners have no fixed IP, so locking Postgres to the app breaks CI migrations. Options are in [`staging-setup.md`](staging-setup.md) §9.
 3. **Run the staging-only launch work:** OWASP ZAP (closes the security gate), the resilience drills on DO staging and provider sandboxes, and the live erasure test on the DO cluster.
 4. **Privacy:** an email provider with a DPA, the DashScope region decision, and counsel sign-off.
@@ -117,6 +128,6 @@ These are not blockers: they are WARNs in the readiness report. MLS licensing (u
 
 - **Trusted sources vs CI migrations** (above).
 - **Production web size:** 2× `apps-s-1vcpu-1gb` ($24, survives an instance failure) vs 1× `apps-s-1vcpu-0.5gb` ($5).
-- **`REQUIRE_CALLBACK_PROVIDERS`** (repository variable). Set it to `stripe`, plus `telnyx` if used, once production bills. The production smoke test then fails if those webhooks are not configured.
+- ~~**`REQUIRE_CALLBACK_PROVIDERS`** (repository variable). Set it to `stripe`, plus `telnyx` if used, once production bills. The production smoke test then fails if those webhooks are not configured.~~ No longer a decision (audit 30.4, L19-32): the production smoke test derives the list from the deployed spec (`scripts/callback-requirements.py`: Stripe while billing is on, Telnyx and Plivo when declared) and fails on an empty list unless `ALLOW_UNBILLED_PRODUCTION='who: why'` is set. The variable can still add providers.
 - **Support address and urgent route.**
 - **Delete the local, untracked AWS Terraform state files** ([`infrastructure-status.md`](infrastructure-status.md#local-terraform-state-outside-git)). They hold placeholders only, so no rotation is needed.

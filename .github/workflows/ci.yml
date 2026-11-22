@@ -996,12 +996,25 @@ jobs:
           rm -f /tmp/app.production.deploy.yaml
           exit $status
 
+      # Audit 30.4: the webhooks that MUST answer are derived from the spec this
+      # release deployed (Stripe while billing is on, Telnyx/Plivo when
+      # declared), plus the repository variable — never the variable alone,
+      # which was unset, so a release that lost the Stripe webhook secret passed.
+      # In production an empty set fails unless ALLOW_UNBILLED_PRODUCTION
+      # ('who: why') says who decided this production does not bill.
       - name: Smoke test (production)
+        env:
+          REQUIRE_CALLBACK_PROVIDERS: ${{ vars.REQUIRE_CALLBACK_PROVIDERS }}
+          ALLOW_UNBILLED_PRODUCTION: ${{ vars.ALLOW_UNBILLED_PRODUCTION }}
         run: |
+          set -euo pipefail
           chmod +x infra/digitalocean/smoke-test.sh
+          required="$(python3 scripts/callback-requirements.py --spec /tmp/app.production.yaml \
+            --also "$REQUIRE_CALLBACK_PROVIDERS")"
+          SMOKE_ENV=production \
           APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ env.PROMOTE_SHA }}" \
-          REQUIRE_CALLBACK_PROVIDERS="${{ vars.REQUIRE_CALLBACK_PROVIDERS }}" \
+          REQUIRE_CALLBACK_PROVIDERS="$required" \
             ./infra/digitalocean/smoke-test.sh
 
       # The release record: what went out, from which staged run, rendered
