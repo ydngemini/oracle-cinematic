@@ -125,6 +125,14 @@ async def load_twilio_call_state(
     return state
 
 
+def _state_is_this_calls(existing: dict[str, Any], state: dict[str, Any]) -> bool:
+    """An early answer bound from this call's own reference (24.2) wrote the
+    same reference, brokerage and account: keep it (it may be streaming)."""
+    return (str(existing.get("correlation") or "") == str(state.get("correlation") or "")
+            and str(existing.get("tenant_id") or "") == str(state.get("tenant_id") or "")
+            and str(existing.get("account_sid") or "") == str(state.get("account_sid") or ""))
+
+
 async def initialize_twilio_call_state(
     call_sid: str,
     callee_number: str,
@@ -161,7 +169,19 @@ async def initialize_twilio_call_state(
         written = await redis.set(_state_key(call_sid), json.dumps(state, separators=(",", ":"), sort_keys=True),
                                   ex=_STATE_TTL_SECONDS, nx=True)
         if not written:
-            return await load_twilio_call_state(call_sid) or state
+            existing = await load_twilio_call_state(call_sid)
+            if existing is not None and _state_is_this_calls(existing, state):
+                return existing
+            # The worker holds Twilio's own CallSid -> reference pairing (the
+            # create response). A state under this CallSid that names another
+            # reference, brokerage or account was not written for this call: a
+            # webhook signed by some account paired its own reference with
+            # this CallSid before the worker got here (PR #182 review r2). The
+            # worker's state replaces it, so this call's own webhooks are not
+            # refused as crossed.
+            if existing is not None:
+                logger.warning("Twilio call %s: replaced a state written under another reference", call_sid[-6:])
+            await _save_call_state(call_sid, state)
         return state
     await _save_call_state(call_sid, state)
     return state
