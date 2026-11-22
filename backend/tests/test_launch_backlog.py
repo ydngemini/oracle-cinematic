@@ -36,3 +36,16 @@ def test_nothing_short_of_production_verified_is_closed():
 def test_the_committed_backlog_is_current():
     assert backlog.OUT.read_text() == backlog.build(backlog.LEDGER.read_text()), \
         "run: python3 scripts/build-launch-backlog.py"
+
+
+def test_every_evidence_sha_is_read_as_text():
+    """A commit hash of digits only (or digits and one 'e') is read by YAML as
+    a number: 0650144 became 217188 (octal) and 1e21191 would become infinity.
+    Quote such a hash in evidence_shas so the ledger records the real commit."""
+    text = backlog.LEDGER.read_text()
+    numeric = []
+    for row in backlog.rows(text):
+        for sha in row.get("evidence_shas") or []:
+            if not isinstance(sha, str):
+                numeric.append((row["id"], sha))
+    assert not numeric, f"quote these evidence_shas: {numeric}"

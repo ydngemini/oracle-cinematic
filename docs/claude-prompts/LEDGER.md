@@ -329,7 +329,7 @@ updated: 2026-11-16
 id: L02-12
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; Noah canary cycle-1794808375-2 + interactive correction
+evidence_shas: ["5723117"]   # base; Noah canary cycle-1794808375-2 + interactive correction
 files: [oracle-app/src/components/SalesAgentPage.jsx, oracle-app/src/components/SalesAgentPage.test.jsx]
 tests_run:
   - {cmd: "Noah canary (queue item NQ-01, $0.2971): regression test red on 5723117, then green; full frontend tests, lint, build green in the verify sandbox", result: "REVIEW_REQUIRED; review: changes requested (heading markup changed only to satisfy the test)", date: 2026-11-16}
@@ -725,7 +725,7 @@ updated: 2026-10-16
 id: L03-14
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; fix in the commit that adds this row
+evidence_shas: ["5723117"]   # base; fix in the commit that adds this row
 files: [backend/ws_hub.py, backend/voice_intel.py, backend/commands_api.py, backend/record_access.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py]
 tests_run:
   - {cmd: "read voice_intel._broadcast_voice + its two callers, commands_api.call_telemetry and record_call_consent at 5723117", result: "none passed lead_id: a session opened on a lead (no client/contact) made record_access.linked_audience return None, so ws_hub.broadcast_record fell back to broadcast() — every socket in the brokerage got VOICE_SESSION / VOICE_TELEMETRY (transcript excerpt, counter offer, MAO, objection draft), NEGOTIATION_TELEMETRY and CALL_CONSENT", date: 2026-11-16}
@@ -1225,7 +1225,7 @@ updated: 2026-10-14
 id: L05-05
 status: tests_pass
 env: local
-evidence_shas: [8956127, bf90efc, f8142c1]
+evidence_shas: ["8956127", bf90efc, f8142c1]
 files: [backend/semantic_language.py, backend/neoh_render.py, backend/neoh_intents.py, backend/intent_states.py, backend/belief_store.py, backend/expected_value.py, backend/commands_api.py, backend/intelligence_os_api.py, backend/ai_chat_models.py, backend/ai_chat_api.py, backend/ai_chat_agent.py, backend/semantic_turn.py, backend/tests/test_fast_path_language.py, backend/tests/fast_path_language_cases.py, backend/tests/fast_path_en_golden.json, oracle-app/src/neoh/speechLanguage.js, oracle-app/src/neoh/speechLanguage.test.js, oracle-app/src/neoh/useSpeechInput.js, oracle-app/src/neoh/useSpeechInput.test.js, oracle-app/src/neoh/useNeohComposer.js, oracle-app/src/neoh/useNeohChannel.js, oracle-app/src/neoh/NeohComposer.jsx, oracle-app/src/neoh/NeohComposer.module.css, oracle-app/src/neoh/NeohConversation.test.jsx]
 tests_run:
   - {cmd: "python -m tests.fast_path_language_cases at da163ba (before any change)", result: "33 English outputs frozen in tests/fast_path_en_golden.json: 12 ask-path answers over every fast-path intent, 9 renderer branches, 12 fallback drafts (6 intents x with/without client). Committed alone as 8956127; the only later edit strips the wall-clock checked_at", date: 2026-10-15}
@@ -1896,7 +1896,7 @@ Real-time voice.
 id: L09-01
 status: tests_pass
 env: staging
-evidence_shas: [7662171, 4cef36d]
+evidence_shas: ["7662171", 4cef36d]
 files: [backend/elevenlabs_realtime.py, backend/plivo_call_handler.py, backend/commands_api.py, scripts/elevenlabs-agent.py]
 tests_run:
   - {cmd: "pytest backend/tests/test_elevenlabs_realtime.py", result: "pass (CI run 37686937230)", date: 2026-10-07}
@@ -2157,7 +2157,7 @@ updated: 2026-11-21
 id: L09-12
 status: tests_pass
 env: local
-evidence_shas: [8541081, 3bf72d1, d9a5b3b, fcefe23, d51efdf, 24ff9b3]   # bases (2026-11-16 outbox fix; 2026-11-20 requester membership; 2026-11-21 merge of main after #168-#174; 2026-11-21 review follow-ups on main fcefe23; 2026-11-21 review-of-#175 follow-ups on main d51efdf (PR #176, merged as 24ff9b3); 2026-11-21 review-of-#176 follow-ups on main 24ff9b3); fixes in the commits that add those entries
+evidence_shas: ["8541081", 3bf72d1, d9a5b3b, fcefe23, d51efdf, 24ff9b3]   # bases (2026-11-16 outbox fix; 2026-11-20 requester membership; 2026-11-21 merge of main after #168-#174; 2026-11-21 review follow-ups on main fcefe23; 2026-11-21 review-of-#175 follow-ups on main d51efdf (PR #176, merged as 24ff9b3); 2026-11-21 review-of-#176 follow-ups on main 24ff9b3); fixes in the commits that add those entries
 files: [backend/email_outbox.py, backend/commands_api.py, backend/crm.py, backend/tenancy.py, backend/auth.py, backend/brokerage_onboarding.py, backend/speed_to_lead.py, backend/scripts/onboard_ai_agent.py, backend/tests/test_crm_workflows.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_email_outbox.py, backend/tests/test_outbox_sender_access_live.py, backend/tests/test_requester_membership.py, backend/tests/test_speed_to_lead.py, backend/tests/test_command_drafts_access_live.py]
 tests_run:
   - {cmd: "read email_outbox.deliver at 8541081", result: "rechecks billing, suppression and footer, then sends as the stored created_by with no check that they may still contact client_id (the command worker makes that check: _requester_may_contact)", date: 2026-11-16}
@@ -2204,7 +2204,7 @@ updated: 2026-11-21
 id: L09-13
 status: tests_pass
 env: local
-evidence_shas: [8541081]   # base; fix in the commit that adds this row
+evidence_shas: ["8541081"]   # base; fix in the commit that adds this row
 files: [backend/outreach_compliance.py, oracle-app/src/components/OutreachConsentPanel.jsx, backend/compliance_engine/tests/test_outreach_compliance.py, backend/tests/test_voice_frequency_claim_live.py]
 tests_run:
   - {cmd: "read guard_outreach + ConsentLedger.gather_state at 8541081", result: "26.7: the 24 h voice count was read on one connection and the attempt row written on another, so callers racing for the last slot all read the same count. 26.8: vp_consent had no channel or expiry predicate, unlike has_consent", date: 2026-11-16}
@@ -2657,7 +2657,7 @@ How it works (`messaging_data.assign_campaign_number`): under the brokerage's la
 id: L10-11
 status: tests_pass
 env: local
-evidence_shas: [0650144]
+evidence_shas: ["0650144"]
 files: [backend/db/migrations/0164_provider_health_platform_smtp.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, oracle-app/src/components/ProviderDeliveryPage.jsx, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js]
 tests_run:
   - {cmd: "read sales_api._provider_snapshot and providers() at 0650144", result: "L10-08 still true: env SMTP settings alone made channels.email true; /api/sales/providers also never returned platform_sender, so the page's 'who sends' line was always empty", date: 2026-10-16}
@@ -2744,7 +2744,7 @@ updated: 2026-11-13
 id: L10-15
 status: tests_pass
 env: local
-evidence_shas: [5723117]   # base; fix in the commit that adds this row
+evidence_shas: ["5723117"]   # base; fix in the commit that adds this row
 files: [backend/outreach_compliance.py, backend/compliance_engine/tests/test_outreach_compliance.py]
 tests_run:
   - {cmd: "read outreach_compliance.is_stop_keyword at 5723117", result: "the WHOLE body, letters only, had to equal one keyword; REVOKE was not a keyword. messaging_api (Telnyx inbound), POST /api/outreach/inbound and the orphan opt-out path all use it, so plain-language replies recorded no suppression", date: 2026-11-16}
@@ -3311,7 +3311,7 @@ updated: 2026-10-18
 id: L11-17
 status: tests_pass
 env: local
-evidence_shas: [8341575]
+evidence_shas: ["8341575"]
 files: [oracle-app/src/lib/propertyLookupStatus.js, oracle-app/src/lib/propertyLookupStatus.test.js, oracle-app/src/components/ClientDetailDrawer.jsx]
 tests_run:
   - {cmd: "source read at 8341575: client_ai_automation.py:716 stores match_basis 'exact owner name' for a comparison that lower-cases and strips everything outside a-z0-9 (:681); ClientDetailDrawer.jsx:829 printed it verbatim next to a 'Review-only' heading; neoh_render.py:598 keys its mapping on the stored words", result: "L11-08's open blocker confirmed still present; the stored string is left unchanged on purpose (Neoh's renderer and existing stored candidates depend on it), so the drawer maps it", date: 2026-11-16}
@@ -4361,7 +4361,7 @@ updated: 2026-10-15
 id: L17-22
 status: tests_pass
 env: staging
-evidence_shas: [cef0006, 1528459, a5caaca]
+evidence_shas: [cef0006, "1528459", a5caaca]
 branch: worktree-agent-a67b64a862bbe3928
 files: [backend/db/migrations/0154_sealed_text_slice_two.sql, backend/sealed_text.py, backend/backfill_sealed_text.py, backend/data_integrations/periodic.py, backend/crm.py, backend/email_outbox.py, backend/commands_api.py, backend/voice_intel.py, backend/intelligence_os_api.py, backend/client_portal.py, backend/client_enterprise.py, backend/client_ai_automation.py, backend/lead_dossier.py, backend/neoh_intents.py, backend/admin_ops.py, backend/ai_chat_store.py, backend/belief_store.py, backend/memory_core/session_manager.py, backend/privacy_requests.py, backend/privacy_export.py, backend/privacy_data_map.py, backend/tests/test_sealed_text.py, backend/tests/test_sealed_text_two_live.py, backend/tests/test_sealed_text_live.py, backend/tests/test_crm_workflows.py, backend/tests/test_email_unsubscribe_live.py, .github/workflows/ci.yml, docs/privacy-data-map.md, docs/operator-scripts.md]
 tests_run:
@@ -4444,7 +4444,7 @@ updated: 2026-10-15
 id: L17-25
 status: tests_pass
 env: local
-evidence_shas: [6380735]
+evidence_shas: ["6380735"]
 files: [backend/crm.py, backend/tests/test_comms_threads_live.py, backend/tests/test_crm_workflows.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "read crm.comms_threads at 6380735", result: "two correlated LATERAL scans of the whole touches CTE per client (newest touch, count): quadratic in brokerage size (L17-22 defect)", date: 2026-10-16}
@@ -4488,7 +4488,7 @@ updated: 2026-11-08
 id: L17-27
 status: tests_pass
 env: local
-evidence_shas: [2971182]   # base; fix in the commit that adds this row
+evidence_shas: ["2971182"]   # base; fix in the commit that adds this row
 files: [backend/market_research_agent.py, backend/tests/test_market_research_agent.py]
 tests_run:
   - {cmd: "review of every server-side HTTP fetch with a non-literal URL (requests/httpx/aiohttp/urllib across backend/, 2026-11-08)", result: "no route fetches a URL a user or tenant supplies. Custom-call api_url is read from credentials but the only caller passes none (ORACLE_CUSTOM_CALL_API_URL, operator env); SMTP hosts must resolve to is_global addresses (smtp_mailer); site domains are verified by DNS, not HTTP; govinfo and site asset URLs are validated; video downloads take the provider's content_url (feature off); the rest are fixed provider or env URLs. One gap: market_research_agent checked its publisher allow-list on the first URL only, and urllib follows redirects", date: 2026-11-08}
@@ -4624,7 +4624,7 @@ updated: 2026-11-20
 id: L17-33
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_lifecycle.py, backend/tests/test_erasure_completion_truth.py, backend/tests/test_job_handler_contract.py]
 tests_run:
   - {cmd: "read privacy_lifecycle at 1569501", result: "confirmed: _phase_verify counted unconfigured storage and an unlistable prefix as 0 objects (clean); _phase_receipt marked succeeded with directive_written=false; run_erasure returned 'succeeded' whatever the receipt stored, and the job completed (no retry); a failed op could never be resumed", date: 2026-11-16}
@@ -4656,7 +4656,7 @@ updated: 2026-11-16
 id: L17-34
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_requests.py, backend/tests/test_dsar_subject_truth_live.py, backend/tests/test_dsar_access_complete.py]
 tests_run:
   - {cmd: "read privacy_requests at 1569501", result: "confirmed 29.3: _discover ORs email/phone/contact_id/client_id, so A's email + B's phone (or B's record id) returned or deleted both. Confirmed 29.8 (worse than claimed): each table capped at LIMIT 5000, a failed query became no rows, encrypted contacts/calls silently skipped without the key, and the dependent tables discovery counts (contact_intake_sessions, lead_intake_events, outreach_attempt_log, agent_call_intents, smart_plan_*, ...) were never returned", date: 2026-11-16}
@@ -4682,7 +4682,7 @@ updated: 2026-11-16
 id: L17-35
 status: tests_pass
 env: local
-evidence_shas: [1569501]   # base; fix in the commit that adds this row
+evidence_shas: ["1569501"]   # base; fix in the commit that adds this row
 files: [backend/privacy_lifecycle.py, backend/tests/test_departing_agent_routes_live.py, oracle-app/src/components/OffboardMemberForm.jsx, oracle-app/src/components/OffboardMemberForm.test.jsx]
 tests_run:
   - {cmd: "read privacy_lifecycle._hand_over_routes, inbound_voice.resolve_inbound_route, messaging_data.resolve_messaging_route_by_number at 1569501", result: "confirmed: when the successor already has a route, the departing route only lost its forwarding and stayed active under the deactivated agent (messaging route untouched); neither inbound resolver checks that the route's agent is active", date: 2026-11-16}
@@ -5449,7 +5449,7 @@ updated: 2026-10-13
 id: L18-04
 status: external_configuration_required
 env: staging
-evidence_shas: [6719298]
+evidence_shas: ["6719298"]
 files: [backend/billing.py, oracle-app/src/components/BillingOverlay.jsx]
 tests_run:
   - {cmd: "owner signed in on staging with their own brokerage (2026-10-13)", result: "/billing/plan source 'unavailable' (no Stripe price on staging); 'Start Neoh' -> create-checkout-session fails -> 'Neoh is temporarily unavailable'; /billing/status active=false", date: 2026-10-13}
