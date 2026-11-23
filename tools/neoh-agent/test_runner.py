@@ -1,0 +1,138 @@
+"""Offline guardrail tests. No Anthropic key or SDK import needed."""
+import importlib.util
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location(
+    "runner", Path(__file__).with_name("runner.py")
+)
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+
+
+class NeohAgentGuardTests(unittest.TestCase):
+    def test_reference_reads_never_allow_writes(self):
+        import asyncio
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "Oracle"
+            reference.mkdir()
+            target = reference / "source.py"
+            with patch.dict(runner.os.environ, {"NEOH_READ_ONLY_REFERENCE": str(reference)}):
+                self.assertTrue(runner.read_path_allowed(str(target)))
+                self.assertFalse(runner.write_path_allowed(str(target)))
+                self.assertFalse(runner.read_path_allowed(str(reference.parent / "outside.py")))
+                for action in ("Write", "Edit"):
+                    result = asyncio.run(runner.file_guard({
+                        "tool_name": action,
+                        "tool_input": {"file_path": str(target)},
+                    }, None, None))
+                    self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+                result = asyncio.run(runner.file_guard({
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": str(target)},
+                }, None, None))
+                self.assertEqual(result, {})
+
+    def test_reference_symlink_cannot_escape(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "Oracle"
+            reference.mkdir()
+            (reference / "escape").symlink_to(reference.parent)
+            with patch.dict(runner.os.environ, {"NEOH_READ_ONLY_REFERENCE": str(reference)}):
+                self.assertFalse(runner.read_path_allowed(str(reference / "escape" / "private.txt")))
+
+    def test_category(self):
+        self.assertTrue(runner.prompt_path("02").name.startswith("02-"))
+        with self.assertRaises(ValueError):
+            runner.prompt_path("21")
+
+    def test_source_boundary(self):
+        self.assertTrue(runner.source_path_allowed("oracle-app/src/App.jsx"))
+        self.assertTrue(runner.source_path_allowed("backend/server.py"))
+        for path in [".env", ".env.prod", ".git/config",
+                     ".github/workflows/ci.yml", "infra/digitalocean/app.yaml",
+                     "../outside.py", "/tmp/private.txt", ""]:
+            with self.subTest(path=path):
+                self.assertFalse(runner.source_path_allowed(path))
+
+    def test_governance_is_readable_but_not_writable(self):
+        self.assertTrue(runner.source_path_allowed("CLAUDE.md"))
+        for path in ["CLAUDE.md", "docs/claude-prompts/CONTRACT.md",
+                     "docs/claude-prompts/README.md",
+                     "tools/neoh-agent/runner.py", ".claude/agents"]:
+            with self.subTest(path=path):
+                self.assertFalse(runner.write_path_allowed(path))
+        self.assertTrue(runner.write_path_allowed(
+            "docs/claude-prompts/LEDGER.md"
+        ))
+        self.assertTrue(runner.write_path_allowed("oracle-app/src/App.jsx"))
+
+    def test_hook_denies_sensitive_write(self):
+        import asyncio
+        result = asyncio.run(runner.file_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "CLAUDE.md"}
+        }, None, None))
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        result = asyncio.run(runner.file_guard({
+            "tool_name": "Read",
+            "tool_input": {"file_path": "CLAUDE.md"}
+        }, None, None))
+        self.assertEqual(result, {})
+
+    def test_mode_prompt(self):
+        from argparse import Namespace
+        category = runner.prompt_path("02")
+        audit = runner.engineering_prompt(
+            Namespace(mode="audit", category="02", task=""), "abc", category
+        )
+        build = runner.engineering_prompt(
+            Namespace(mode="build", category="02", task="fix one bug"), "abc", category
+        )
+        self.assertIn("READ-ONLY", audit)
+        self.assertIn("implemented_untested", build)
+        self.assertIn("Engineering quality bar", build)
+        self.assertIn("contract-first design", build)
+
+    def test_a_queue_item_prompt_does_not_ask_for_blocked_files(self):
+        # NQ-09 (2026-11-16): the generic prompt said "write plan.json" and
+        # "update the ledger"; the path guard blocks both, and the agent
+        # stopped its first session instead of fixing the bug.
+        from argparse import Namespace
+        import json
+        allowed = ["backend/x.py", "backend/tests/test_x.py"]
+        with patch.dict(runner.os.environ, {"NEOH_ALLOWED_PATHS": json.dumps(allowed)}):
+            prompt = runner.engineering_prompt(
+                Namespace(mode="build", category="09", task="fix one bug"), "abc", runner.prompt_path("09"))
+        self.assertNotIn("write .neoh-agent-state/plan.json with", prompt)
+        self.assertNotIn("implemented_untested", prompt)
+        self.assertIn("Do NOT write .neoh-agent-state/plan.json", prompt)
+        self.assertIn("backend/x.py, backend/tests/test_x.py", prompt)
+
+    def test_email_answers_are_scoped_and_not_authority(self):
+        from argparse import Namespace
+        import json
+        from datetime import datetime, timezone
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "answers.json"
+            path.write_text(json.dumps([
+                {"category": "02", "answer": "Use the existing design", "answered_at": datetime.now(timezone.utc).isoformat()},
+                {"category": "18", "answer": "Unrelated billing decision", "answered_at": datetime.now(timezone.utc).isoformat()},
+            ]))
+            with patch.dict(runner.os.environ, {"NEOH_OWNER_ANSWERS": str(path)}):
+                prompt = runner.engineering_prompt(
+                    Namespace(mode="build", category="02", task="fix one bug"),
+                    "abc", runner.prompt_path("02"),
+                )
+            self.assertIn("Use the existing design", prompt)
+            self.assertNotIn("Unrelated billing decision", prompt)
+            self.assertIn("UNTRUSTED DATA", prompt)
+            self.assertIn("until the authoritative ledger agrees", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()
