@@ -89,7 +89,11 @@ jobs:
       # app, but its branch/prompt guards must never regress silently.
       # These tests have no Anthropic API dependency and do not make Git pushes.
       - name: Agent SDK development guardrails
-        run: python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+        # pytest, not unittest discover: test_queue_controls.py and
+        # test_cycle_recovery.py are plain test functions (queue, budget,
+        # claims, protected paths, verify sandbox, scope gates), which
+        # unittest discover never collects.
+        run: python -m pytest tools/neoh-agent -q
       - name: Validate Ubuntu service installer syntax
         run: bash -n tools/neoh-agent/install-service.sh
 
@@ -218,7 +222,7 @@ jobs:
               --report-format json --report-path /audit-out/findings.json || status=$?
           if [ "$status" -ne 0 ] && [ -s "$audit_dir/findings.json" ]; then
             # Print only metadata, never matching secrets or code excerpts.
-            python - "$audit_dir/findings.json" <<'PY'
+            python3 - "$audit_dir/findings.json" <<'PY'
           import json
           import sys
           with open(sys.argv[1], encoding="utf-8") as f:

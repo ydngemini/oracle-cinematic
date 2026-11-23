@@ -18,7 +18,7 @@ python3 -m venv "$HOME/.cache/neoh-agent-venv"
 source "$HOME/.cache/neoh-agent-venv/bin/activate"
 python -m pip install -r tools/neoh-agent/requirements.txt
 python -m pip install -r backend/requirements.txt -r backend/requirements-test.txt
-python -m unittest discover -s tools/neoh-agent -p 'test_*.py' -v
+python -m pytest tools/neoh-agent -q
 bash -n tools/neoh-agent/install-service.sh
 ```
 
@@ -201,7 +201,7 @@ push. Prefer autobuild.py for automatic engineering.
 
 ## Offline unit tests
 
-    python -m unittest discover -s tools/neoh-agent -p 'test_*.py'
+    python -m pytest tools/neoh-agent -q
 
 ## Permissions and limitations
 
