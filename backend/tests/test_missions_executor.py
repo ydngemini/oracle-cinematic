@@ -114,12 +114,14 @@ class TestWithholding:
         source = inspect.getsource(executor._work_one)
         assert "blocked_reason=verdict.blocked_reason or verdict.reason" in source
 
-    def test_a_task_channel_is_skipped_honestly_not_promoted(self):
-        """There is no TASK command type. A task must not be quietly turned
-        into an outbound EMAIL/SMS/CALL because the mapping had a default."""
+    def test_task_channel_is_internal_not_promoted_to_outbound(self):
+        """A real internal task is created through client_tasks, not SMS."""
         with pytest.raises(ValueError):
             executor._command_type("task")
-        assert "task actions are not executed yet" in inspect.getsource(executor._work_one)
+        source = inspect.getsource(executor._work_one)
+        assert "_create_internal_task(ctx, action)" in source
+        assert "if not verdict.may_release:" in source
+
 
     def test_planning_only_happens_when_nothing_is_pending(self):
         """Planning costs a model call. Re-planning over an unworked queue
@@ -144,3 +146,103 @@ class TestSweepScoping:
         assert "Role.PLATFORM_ADMIN" in source
         assert "role=Role.AGENT" in source
         assert "business scope" in source.lower(), "the cross-tenant read must say why"
+
+
+class TestExecutableInternalTasks:
+    @staticmethod
+    def _context(monkeypatch, *, state="planned", active=True, subject="client",
+                 client_id="33333333-3333-3333-3333-333333333333",
+                 created_by="a@t.test", intent="Schedule a follow-up"):
+        from contextlib import asynccontextmanager
+
+        class FakeConn:
+            def __init__(self):
+                self.statements = []
+                self.task_id = "44444444-4444-4444-4444-444444444444"
+
+            async def fetchrow(self, sql, *args):
+                self.statements.append(sql)
+                assert "FOR UPDATE OF a" in sql
+                assert "a.tenant_id=$2::uuid" in sql
+                assert "lower(cl.assignee_id)=lower(m.created_by)" in sql
+                return {
+                    "state": state, "due_at": None, "subject_type": subject,
+                    "subject_id": client_id, "evidence": {"intent": intent},
+                    "client_id": client_id, "mission_status": "active",
+                    "mode": "live", "created_by": created_by,
+                    "objective_text": "Help this buyer", "actor_active": active,
+                }
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                return self.task_id
+
+            async def execute(self, sql, *args):
+                self.statements.append(sql)
+                return "UPDATE 1"
+
+        conn = FakeConn()
+
+        @asynccontextmanager
+        async def fake_tx(_ctx):
+            yield conn
+
+        monkeypatch.setattr("db.connection.tenant_tx", fake_tx)
+        return conn
+
+    def test_live_authorized_task_creates_one_durable_task(self, monkeypatch):
+        conn = self._context(monkeypatch)
+        ok, task_id = asyncio.run(executor._create_internal_task(
+            CTX, {"id": "22222222-2222-2222-2222-222222222222"}))
+        assert ok is True and task_id == conn.task_id
+        assert any("INSERT INTO client_tasks" in q for q in conn.statements)
+        assert any("ON CONFLICT (tenant_id, mission_action_id)" in q for q in conn.statements)
+        assert any("SET state='executed'" in q for q in conn.statements)
+
+    def test_duplicate_tick_reads_existing_receipt_not_insert(self, monkeypatch):
+        conn = self._context(monkeypatch, state="executed")
+        ok, task_id = asyncio.run(executor._create_internal_task(
+            CTX, {"id": "22222222-2222-2222-2222-222222222222"}))
+        assert ok is True and task_id == conn.task_id
+        assert not any("INSERT INTO client_tasks" in q for q in conn.statements)
+
+    @pytest.mark.parametrize("overrides", [
+        {"active": False}, {"subject": "lead"}, {"client_id": None},
+        {"created_by": "different-agent@t.test"}, {"intent": ""},
+    ])
+    def test_invalid_or_inactive_task_is_withheld(self, monkeypatch, overrides):
+        conn = self._context(monkeypatch, **overrides)
+        ok, reason = asyncio.run(executor._create_internal_task(
+            CTX, {"id": "22222222-2222-2222-2222-222222222222"}))
+        assert ok is False and isinstance(reason, str)
+        assert not any("INSERT INTO client_tasks" in q for q in conn.statements)
+
+    def test_without_release_grant_no_internal_task_is_created(self, monkeypatch):
+        from missions import policy
+
+        async def contact(_ctx, _action):
+            return None, None
+
+        async def decision(*_args, **_kwargs):
+            return policy.Verdict(
+                may_stage=True, may_release=False, reason="requires approval")
+
+        async def record_state(*_args, **_kwargs):
+            return None
+
+        async def journal(*_args, **_kwargs):
+            return None
+
+        async def should_not_run(*_args, **_kwargs):
+            raise AssertionError("no internal task without authorization")
+
+        monkeypatch.setattr(executor, "_contact_for", contact)
+        monkeypatch.setattr(policy, "evaluate_action", decision)
+        monkeypatch.setattr(executor, "_set_state", record_state)
+        monkeypatch.setattr(executor, "_journal", journal)
+        monkeypatch.setattr(executor, "_create_internal_task", should_not_run)
+
+        result = asyncio.run(executor._work_one(
+            CTX, {"id": "mission", "status": "active"},
+            {"id": "action", "channel": "task"}))
+        assert result == "blocked"
