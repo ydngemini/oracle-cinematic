@@ -399,7 +399,9 @@ class _FakeOAuthSession:
 
 
 def test_google_oauth_pkce_exchange_refresh_and_local_return_paths(monkeypatch):
-    import commands_api
+    # The Google HTTP calls live in google_oauth_client since 35-02 slice 1;
+    # the names imported above are commands_api's re-exports of them.
+    import google_oauth_client
 
     challenge = _pkce_challenge("a" * 64)
     assert len(challenge) == 43
@@ -424,7 +426,7 @@ def test_google_oauth_pkce_exchange_refresh_and_local_return_paths(monkeypatch):
         _FakeOAuthResponse(200, {"access_token": "access", "refresh_token": "refresh"}),
         _FakeOAuthResponse(200, {"access_token": "renewed", "expires_in": 3600}),
     ]
-    monkeypatch.setattr(commands_api.aiohttp, "ClientSession", _FakeOAuthSession)
+    monkeypatch.setattr(google_oauth_client.aiohttp, "ClientSession", _FakeOAuthSession)
 
     async def exercise():
         exchanged = await _exchange_google_oauth_code(
