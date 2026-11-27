@@ -44,6 +44,12 @@ if ! grep -Eq '^ANTHROPIC_API_KEY=[^[:space:]#]+' "$ENV_FILE"; then
   echo "Configure ANTHROPIC_API_KEY in $ENV_FILE before starting." >&2
   exit 1
 fi
+if [[ ! -x /usr/bin/bwrap ]]; then
+  # Cycles run agent-written tests and builds; without bubblewrap they would
+  # run with network and readable git credentials (PR #187 review).
+  echo "bubblewrap (/usr/bin/bwrap) is required: install it before enabling the service." >&2
+  exit 1
+fi
 if [[ -e "$UNIT" ]]; then
   echo "Existing $UNIT detected. Review it before replacing." >&2
   exit 1
@@ -59,6 +65,10 @@ After=network-online.target
 Type=simple
 WorkingDirectory=$REPO
 EnvironmentFile=$ENV_FILE
+# Agent-written tests and builds run in the nested bubblewrap sandbox: no
+# network, no tokens, only the cycle worktree writable (verify_sandbox.py).
+Environment=NEOH_VERIFY_SANDBOX=1
+Environment=NEOH_STATE_DIR=$REPO/.neoh-agent-state
 ExecStart=$PYTHON $REPO/tools/neoh-agent/continuous.py --daily-budget-usd 48 --budget-usd 12
 Restart=on-failure
 RestartSec=60
