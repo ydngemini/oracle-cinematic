@@ -531,3 +531,14 @@ def test_a_blocked_item_returns_to_pending_only_through_an_operator_unblock(tmp_
     assert store.claim("NQ-07", "e2", 3600)
     with pytest.raises(claims_mod.ClaimError, match="not BLOCKED"):
         store.unblock("NQ-07", operator="owner", reason="again")
+
+
+def test_installed_service_runs_agent_code_in_the_verify_sandbox():
+    """PR #187 review: the installed unit must turn the verify sandbox on and
+    refuse to install without bubblewrap, so agent-written tests never run
+    with network and readable git credentials."""
+    from pathlib import Path as _Path
+    script = (_Path(__file__).parent / "install-service.sh").read_text()
+    assert "Environment=NEOH_VERIFY_SANDBOX=1" in script
+    assert "Environment=NEOH_STATE_DIR=$REPO/.neoh-agent-state" in script
+    assert "/usr/bin/bwrap" in script and "exit 1" in script.split("/usr/bin/bwrap", 1)[1][:400]
