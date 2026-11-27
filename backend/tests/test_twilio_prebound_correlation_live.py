@@ -80,6 +80,7 @@ async def _scenario(monkeypatch):
     import billing
     import command_providers
     import commands_api as ca
+    import twilio_voice_routes
     import inbound_voice
     import reconciliation
     import twilio_call_handler as tch
@@ -114,8 +115,8 @@ async def _scenario(monkeypatch):
     monkeypatch.setattr(ca, "_requester_may_contact", yes)
     monkeypatch.setattr(ca, "guard_outreach", allowed)
     monkeypatch.setattr(ca, "_load_provider_credential", nothing)
-    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
-    monkeypatch.setattr(ca, "_spoken", spoken)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_spoken", spoken)
     monkeypatch.setattr(inbound_voice, "get_verified_caller_id", caller_id)
     monkeypatch.setattr(inbound_voice, "get_telephony_route", route)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", ACCOUNT)

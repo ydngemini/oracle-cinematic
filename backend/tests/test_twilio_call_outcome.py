@@ -21,6 +21,7 @@ import pytest
 from starlette.datastructures import FormData
 
 import commands_api as ca
+import twilio_voice_routes
 
 SID = "CA" + "e" * 32
 
@@ -44,7 +45,7 @@ class _Request:
 
 @pytest.fixture()
 def hook(monkeypatch):
-    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
     seen = SimpleNamespace(accepted=[], cleaned=[], brokerage="brokerage-1", accept_error=None,
                            cleanup_error=None)
 
@@ -63,7 +64,7 @@ def hook(monkeypatch):
         seen.cleaned.append(call_sid)
 
     monkeypatch.setattr(ca, "accept_call_outcome", accept)
-    monkeypatch.setattr(ca, "_twilio_call_brokerage", brokerage)
+    monkeypatch.setattr(twilio_voice_routes, "_twilio_call_brokerage", brokerage)
     import twilio_call_handler
 
     monkeypatch.setattr(twilio_call_handler, "cleanup_twilio_call", cleanup)
@@ -194,8 +195,8 @@ def test_the_brokerage_comes_from_the_outbound_call_state(monkeypatch):
 
     conn = _Conn("b-session")
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", state)
-    monkeypatch.setattr(ca, "tenant_tx", _tx(conn))
-    assert asyncio.run(ca._twilio_call_brokerage(SID)) == "b-state"
+    monkeypatch.setattr(twilio_voice_routes, "tenant_tx", _tx(conn))
+    assert asyncio.run(twilio_voice_routes._twilio_call_brokerage(SID)) == "b-state"
     assert conn.queries == []
 
 
@@ -210,8 +211,8 @@ def test_otherwise_from_the_call_session(monkeypatch, state):
 
     conn = _Conn("b-session")
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", load)
-    monkeypatch.setattr(ca, "tenant_tx", _tx(conn))
-    assert asyncio.run(ca._twilio_call_brokerage(SID)) == "b-session"
+    monkeypatch.setattr(twilio_voice_routes, "tenant_tx", _tx(conn))
+    assert asyncio.run(twilio_voice_routes._twilio_call_brokerage(SID)) == "b-session"
     assert "live_call_sessions" in conn.queries[0][0] and conn.queries[0][1] == (SID,)
 
 
@@ -222,5 +223,5 @@ def test_unknown_everywhere_is_empty(monkeypatch):
         return None
 
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", load)
-    monkeypatch.setattr(ca, "tenant_tx", _tx(_Conn(None)))
-    assert asyncio.run(ca._twilio_call_brokerage(SID)) == ""
+    monkeypatch.setattr(twilio_voice_routes, "tenant_tx", _tx(_Conn(None)))
+    assert asyncio.run(twilio_voice_routes._twilio_call_brokerage(SID)) == ""

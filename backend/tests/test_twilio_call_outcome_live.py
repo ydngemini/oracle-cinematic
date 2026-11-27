@@ -53,6 +53,7 @@ async def _scenario(monkeypatch):
     import asyncpg
 
     import commands_api
+    import twilio_voice_routes
     import speed_to_lead
     import twilio_call_handler
     from db import connection
@@ -81,7 +82,7 @@ async def _scenario(monkeypatch):
         answered.append(call_id)
         await real_answered(call_id)
 
-    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", load_state)
     monkeypatch.setattr(twilio_call_handler, "cleanup_twilio_call", cleanup)
     monkeypatch.setattr(commands_api, "_record_call_answered", spy_answered)

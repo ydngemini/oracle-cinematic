@@ -22,6 +22,7 @@ from starlette.datastructures import FormData
 
 import command_providers
 import commands_api as ca
+import twilio_voice_routes
 import twilio_call_handler as tch
 
 SID = "CA" + "f" * 32
@@ -221,12 +222,12 @@ def test_the_signature_covers_the_reference(monkeypatch, path):
 def test_the_answer_webhook_connects_an_early_call(redis, monkeypatch):
     correlation = str(uuid.uuid4())
     _prebound(correlation)
-    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
 
     async def spoken(text, **_k):
         return f"<Say>{text}</Say>"
 
-    monkeypatch.setattr(ca, "_spoken", spoken)
+    monkeypatch.setattr(twilio_voice_routes, "_spoken", spoken)
     monkeypatch.setenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "false")
     early = asyncio.run(ca.twilio_webhook(_Request({"CallSid": SID, "To": "+15555550101"},
                                                    f"neoh_ref={correlation}")))
@@ -250,14 +251,14 @@ def test_an_early_status_knows_its_brokerage_by_the_reference(redis, monkeypatch
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(ca, "tenant_tx", _Tx)
-    assert asyncio.run(ca._twilio_call_brokerage(SID, correlation)) == TENANT
+    monkeypatch.setattr(twilio_voice_routes, "tenant_tx", _Tx)
+    assert asyncio.run(twilio_voice_routes._twilio_call_brokerage(SID, correlation)) == TENANT
 
 
 def test_the_status_route_stores_with_the_reference_and_cleans_it_up(redis, monkeypatch):
     correlation = str(uuid.uuid4())
     _prebound(correlation)
-    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
     stored = []
 
     async def accept(provider, call_sid, status, duration=None, *, tenant_id, aliases=()):

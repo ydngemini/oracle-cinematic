@@ -575,9 +575,10 @@ class _FormRequest:
 def _twilio_speech(monkeypatch, *, state, reply):
     import commands_api
     import twilio_call_handler
+    import twilio_voice_routes
     import voice_tts
 
-    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
 
     async def load(_sid, **_kwargs):
         if isinstance(state, Exception):

@@ -49,6 +49,7 @@ def test_each_carrier_speaks_the_disclosure_before_the_media_stream(cls_name, st
 @pytest.mark.parametrize("qwen", [True, False])
 def test_the_outbound_twilio_call_opens_with_the_disclosure(monkeypatch, qwen):
     import commands_api
+    import twilio_voice_routes
     import twilio_call_handler
     import voice_tts
 
@@ -71,7 +72,7 @@ def test_the_outbound_twilio_call_opens_with_the_disclosure(monkeypatch, qwen):
     async def stream_url(_sid):
         return STREAM
 
-    monkeypatch.setattr(commands_api, "_verify_outbound_twilio_signature", signed)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", signed)
     monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", state)
     monkeypatch.setattr(twilio_call_handler, "twilio_qwen_enabled", lambda s: qwen)
     monkeypatch.setattr(twilio_call_handler, "create_twilio_media_stream_url", stream_url)

@@ -27,6 +27,7 @@ import pytest
 from starlette.datastructures import FormData
 
 import commands_api as ca
+import twilio_voice_routes
 import inbound_voice
 from tenancy import Role, TenantContext
 
@@ -204,7 +205,7 @@ class FakeStatusRequest:
 
 @pytest.fixture()
 def patched_webhook(monkeypatch):
-    monkeypatch.setattr(ca, "_verify_outbound_twilio_signature", _signature_checked)
+    monkeypatch.setattr(twilio_voice_routes, "_verify_outbound_twilio_signature", _signature_checked)
     updates: list[tuple[str, str]] = []
     cleanups: list[str] = []
 
@@ -227,7 +228,7 @@ def patched_webhook(monkeypatch):
 
     outcomes.clear()
     monkeypatch.setattr(ca, "accept_call_outcome", fake_accept)
-    monkeypatch.setattr(ca, "_twilio_call_brokerage", fake_brokerage)
+    monkeypatch.setattr(twilio_voice_routes, "_twilio_call_brokerage", fake_brokerage)
 
     import twilio_call_handler
 
@@ -344,8 +345,8 @@ def test_status_callback_event_subscription_covers_terminal_states():
     assert 'status_callback_event=["initiated", "ringing", "answered", "completed"]' in source
 
     for terminal in ["completed", "busy", "failed", "no-answer", "canceled"]:
-        assert terminal in ca._TWILIO_TERMINAL_STATUSES
-        assert terminal in ca._TWILIO_OUTCOME_STATUSES
+        assert terminal in twilio_voice_routes._TWILIO_TERMINAL_STATUSES
+        assert terminal in twilio_voice_routes._TWILIO_OUTCOME_STATUSES
 
 
 # ── No SMS code path touched ────────────────────────────────────────────────
