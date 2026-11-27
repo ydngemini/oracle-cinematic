@@ -69,7 +69,10 @@ class _Conn:
 
     async def fetchval(self, sql, *args):
         if sql.startswith("SELECT lifecycle_state FROM tenants"):
-            assert "FOR SHARE" in sql
+            # FOR UPDATE: users_seat_limit takes this row FOR UPDATE on the
+            # activation below; a share lock here deadlocked two concurrent
+            # reinstatements (re-review of PR #190)
+            assert sql.rstrip().endswith("FOR UPDATE"), sql
             self.order.append("tenants")
             self.lifecycle_reads += 1
             return self.lifecycle
@@ -210,7 +213,7 @@ def test_the_statements_select_and_switch_only_left_off_numbers():
 
 
 def test_the_tenants_row_is_locked_before_the_member_and_the_candidates(run):
-    # review of PR #190: FOR SHARE on tenants first, so a concurrent
+    # review of PR #190: the tenants row locked first (FOR UPDATE), so a concurrent
     # withdrawal's skips are committed before the candidates are read (or
     # after this transaction), in withdraw_closure's lock order; also when
     # there turn out to be no candidates

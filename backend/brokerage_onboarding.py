@@ -1243,15 +1243,19 @@ async def reinstate_member(
 
 async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
-        # The tenants row first, FOR SHARE (L17-59, review of PR #190): it
+        # The tenants row first, FOR UPDATE (L17-59, reviews of PR #190): it
         # serialises this reinstatement with withdraw_closure and
         # request_closure (both FOR UPDATE on it), so a withdrawal's
         # skipped_routes are either committed before the candidates are read
-        # or written after this transaction; and the lock order (tenants,
-        # then users) is withdraw_closure's and offboard_agent's, so neither
-        # can deadlock with it.
+        # or written after this transaction. FOR UPDATE, not FOR SHARE: the
+        # users UPDATE below fires users_seat_limit (0161), which takes this
+        # same row FOR UPDATE on every activation; two reinstatements holding
+        # it FOR SHARE each waited on the other's share lock to upgrade and
+        # deadlocked (9 of 20 concurrent pairs in the re-review). Holding the
+        # strongest lock the trigger takes makes its lock a no-op. Lock order
+        # tenants then users, as in withdraw_closure.
         lifecycle = await conn.fetchval(
-            "SELECT lifecycle_state FROM tenants WHERE id = $1::uuid FOR SHARE", ctx.tenant_id)
+            "SELECT lifecycle_state FROM tenants WHERE id = $1::uuid FOR UPDATE", ctx.tenant_id)
         row = await conn.fetchrow(
             "UPDATE users SET is_active = true, updated_at = now() "
             " WHERE id = $1 AND tenant_id = $2::uuid AND NOT is_active "
