@@ -338,8 +338,8 @@ def test_the_provisioned_elevenlabs_agent_uses_the_same_instructions():
 
 WRITE_PATHS = {
     ("client_note_crypto", "seal_body"): "every client note (agent, AI chat tool, AI call)",
-    ("commands_api", "deliver_call_notes"): "AI call notes + CALL_NOTES frame",
-    ("commands_api", "save_call_note"): "AI call note written mid-call + CALL_NOTES frame",
+    ("call_notes_service", "deliver_call_notes"): "AI call notes + CALL_NOTES frame",
+    ("call_notes_service", "save_call_note"): "AI call note written mid-call + CALL_NOTES frame",
     ("commands_api", "call_telemetry"): "negotiation_events.transcript_excerpt",
     ("commands_api", "stage_command"): "outreach drafts (email/SMS/call) before approval",
     ("commands_api", "edit_command"): "edited outreach drafts",
