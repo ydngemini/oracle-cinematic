@@ -48,6 +48,7 @@ async def _scenario():
     import asyncpg
 
     import call_note_settings
+    import call_notes_service
     import client_enterprise
     from fastapi import HTTPException
     import client_note_crypto
@@ -278,7 +279,9 @@ async def _scenario():
         # A statement that runs past 5 s rolls the write back too.
         assert await commands_api.record_call_note_consent(slow_ref, True) is True
         kept = await save(slow_ref, "Prefers evenings", tool_call_id="s1")
-        real_read_mode, real_client = call_note_settings.read_mode, commands_api._call_note_client
+        # _call_note_client is called by the withdrawal inside call_notes_service
+        # (35-02 slice 3), so it is replaced there, not on commands_api.
+        real_read_mode, real_client = call_note_settings.read_mode, call_notes_service._call_note_client
 
         async def slow_read_mode(conn, *args):
             await conn.execute("SELECT pg_sleep(6)")
@@ -318,14 +321,14 @@ async def _scenario():
             await conn.execute("SELECT pg_sleep(6)")
             return await real_client(conn, session)
 
-        commands_api._call_note_client = slow_client
+        call_notes_service._call_note_client = slow_client
         try:
             started = time.monotonic()
             with pytest.raises(asyncpg.exceptions.QueryCanceledError):
                 await commands_api.record_call_note_consent(slow_ref, False)
             assert time.monotonic() - started < 5.9, "the withdrawal's statement was not bounded"
         finally:
-            commands_api._call_note_client = real_client
+            call_notes_service._call_note_client = real_client
         assert await consent_and_note() == (True, 1)
         assert await commands_api.record_call_note_consent(slow_ref, False) is True
         assert await consent_and_note() == (False, 0)

@@ -28,9 +28,10 @@ BACKEND = pathlib.Path(commands_api.__file__).resolve().parent
 _TRANSCRIPT_NAMES = re.compile(r"\b(speech_text|transcript|speech|utterance)\b")
 
 
-# The request modules whose code these guards read: commands_api and the
-# webhook authentication moved out of it (external audit 35-02, slice 2).
-_MODULES = ("commands_api.py", "twilio_webhook_auth.py")
+# The request modules whose code these guards read: commands_api, the webhook
+# authentication moved out of it (external audit 35-02, slice 2) and the AI
+# call-notes service, which handles what callers said (slice 3).
+_MODULES = ("commands_api.py", "twilio_webhook_auth.py", "call_notes_service.py")
 
 
 @pytest.mark.parametrize("module", _MODULES)

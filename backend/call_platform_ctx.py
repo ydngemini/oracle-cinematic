@@ -1,8 +1,9 @@
 """The platform context the call webhooks and the call-notes service read as.
 
 Moved verbatim out of commands_api.py (external audit 35-02, slice 2) so that
-commands_api's call-notes code and twilio_webhook_auth's durable call-state
-lookup share one definition without importing each other. It reads only
+commands_api's call webhooks, call_notes_service (slice 3) and
+twilio_webhook_auth's durable call-state lookup share one definition without
+importing each other. It reads only
 ORACLE_PLATFORM_TENANT_ID, at call time, as before.
 """
 

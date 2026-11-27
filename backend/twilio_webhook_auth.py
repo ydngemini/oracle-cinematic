@@ -9,7 +9,10 @@ normalization, the token loop (_validate_twilio_webhook_signature) and the
 durable session-row fallback (_durable_twilio_call_state). The routes that
 call them stay in commands_api.
 
-commands_api re-exports every name, and its routes call them through
+commands_api re-exports the names its routes and tests use
+(_require_webhook_secret, _verify_outbound_twilio_signature,
+_twilio_correlation, _twilio_signed_suffix and
+_validate_twilio_webhook_signature), and its routes call them through
 commands_api's own globals, so `monkeypatch.setattr(commands_api, "<name>",
 ...)` keeps taking effect for those route calls. Calls between the functions
 of this module resolve here, not through commands_api: a test that replaces
