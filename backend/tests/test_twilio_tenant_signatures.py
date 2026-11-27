@@ -42,6 +42,7 @@ import command_providers
 import commands_api as ca
 import qwen_omni_realtime
 import twilio_call_handler as tch
+import twilio_webhook_auth
 import voice_provider
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -149,6 +150,9 @@ def world(monkeypatch):
             return False
 
     monkeypatch.setattr(ca, "tenant_tx", _Tx)
+    # The signature check's durable fallback (_durable_twilio_call_state) reads
+    # through twilio_webhook_auth's own tenant_tx since 35-02 slice 2.
+    monkeypatch.setattr(twilio_webhook_auth, "tenant_tx", _Tx)
     monkeypatch.setattr(ca, "_load_provider_credential", load_credential)
     monkeypatch.setattr(ca, "_spoken", spoken)
     monkeypatch.setattr(ca, "accept_call_outcome", accept)
@@ -240,7 +244,8 @@ def test_a_missing_signature_is_refused_before_any_state_or_credential_is_read(w
         raise AssertionError("a request with no signature reached the state")
 
     monkeypatch.setattr(tch, "outbound_twilio_signing_state", no_lookup)
-    monkeypatch.setattr(ca, "_durable_twilio_call_state", no_lookup)
+    # _verify_outbound_twilio_signature calls it in its own module (35-02 slice 2).
+    monkeypatch.setattr(twilio_webhook_auth, "_durable_twilio_call_state", no_lookup)
     for route, path in ((ca.twilio_webhook, ANSWER), (ca.twilio_status_webhook, STATUS),
                         (ca.twilio_speech, SPEECH)):
         request = _Request({"CallSid": SID_A, "CallStatus": "completed"}, f"neoh_ref={ref}")

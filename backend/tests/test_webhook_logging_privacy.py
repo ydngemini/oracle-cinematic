@@ -18,6 +18,8 @@ import inspect
 import pathlib
 import re
 
+import pytest
+
 import commands_api
 
 BACKEND = pathlib.Path(commands_api.__file__).resolve().parent
@@ -26,8 +28,14 @@ BACKEND = pathlib.Path(commands_api.__file__).resolve().parent
 _TRANSCRIPT_NAMES = re.compile(r"\b(speech_text|transcript|speech|utterance)\b")
 
 
-def test_no_transcript_text_is_logged_or_printed():
-    source = pathlib.Path(commands_api.__file__).read_text(encoding="utf-8")
+# The request modules whose code these guards read: commands_api and the
+# webhook authentication moved out of it (external audit 35-02, slice 2).
+_MODULES = ("commands_api.py", "twilio_webhook_auth.py")
+
+
+@pytest.mark.parametrize("module", _MODULES)
+def test_no_transcript_text_is_logged_or_printed(module):
+    source = (BACKEND / module).read_text(encoding="utf-8")
     tree = ast.parse(source)
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -63,9 +71,10 @@ def test_no_transcript_text_is_logged_or_printed():
     )
 
 
-def test_request_handlers_use_the_logger_not_print():
+@pytest.mark.parametrize("module", _MODULES)
+def test_request_handlers_use_the_logger_not_print(module):
     """print() bypasses log level, formatting and every handler configured."""
-    source = pathlib.Path(commands_api.__file__).read_text(encoding="utf-8")
+    source = (BACKEND / module).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     prints = [
