@@ -1,0 +1,434 @@
+"""Offline tests for Neoh autonomous side-branch delivery. No GitHub push is made."""
+import importlib.util
+import io
+import os
+from contextlib import ExitStack, redirect_stdout
+import subprocess
+import sys
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location(
+    "autobuild", Path(__file__).with_name("autobuild.py")
+)
+autobuild = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(autobuild)
+
+
+class SideBranchTests(unittest.TestCase):
+    def setUp(self):
+        receipt = patch.object(autobuild.intelligence, "save_report")
+        receipt.start()
+        self.addCleanup(receipt.stop)
+
+    def test_stale_preflight_stops_before_model(self):
+        with patch.object(autobuild, "synchronize_latest_main", return_value=("a" * 40, [])), \
+                patch.dict(os.environ, {"NEOH_PLANNED_MAIN": "b" * 40}), \
+                patch.object(autobuild, "model_round") as model:
+            with self.assertRaisesRegex(RuntimeError, "Main changed after preflight"):
+                autobuild.autobuild(object())
+        model.assert_not_called()
+
+    def failing_builder(self, infrastructure=False):
+        args = type("Args", (), dict(
+            category="02", task="", max_repairs=4, budget_usd=12,
+            max_turns=24, model="sonnet", test_timeout=60,
+            agent_timeout=120, skip_categories="", commit=True, push=True,
+        ))()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"NEOH_PLANNED_MAIN": ""}))
+            stack.enter_context(patch.object(autobuild, "synchronize_latest_main", return_value=("a" * 40, [])))
+            stack.enter_context(patch.object(autobuild.work_discovery, "pending_categories", return_value=set()))
+            stack.enter_context(patch.object(autobuild.work_discovery, "select_work", return_value={
+                "category": "02", "task": "Fix source", "main_sha": "a" * 40, "prompt": "docs/prompt.md",
+            }))
+            stack.enter_context(patch.object(autobuild, "start_feature_branch", return_value=("auto/test", "b" * 40)))
+            model = stack.enter_context(patch.object(autobuild, "model_round", return_value=0))
+            stack.enter_context(patch.object(autobuild, "dirty_files", return_value=["backend/source.py"]))
+            tests = stack.enter_context(patch.object(autobuild, "execute_tests", return_value=(False, "same assertion")))
+            stack.enter_context(patch.object(autobuild.intelligence, "change_fingerprint", return_value="same content"))
+            commit = stack.enter_context(patch.object(autobuild, "commit_local"))
+            publish = stack.enter_context(patch.object(autobuild, "push_side_branch"))
+            if infrastructure:
+                tests.side_effect = autobuild.intelligence.InfrastructureFailure("disk full")
+            result = autobuild.autobuild(args)
+            commit.assert_not_called()
+            publish.assert_not_called()
+            return result, model.call_count
+
+    def test_unchanged_repairs_stop_early(self):
+        self.assertEqual(self.failing_builder(), (1, 2))
+
+    def test_infrastructure_error_does_not_retry_model(self):
+        self.assertEqual(self.failing_builder(infrastructure=True), (3, 1))
+
+    def test_failure_report_preserves_diagnostics_and_output_edges(self):
+        output = "start marker\n" + "noise\n" * 5000
+        output += "FAILED tests/test_seats.py::test_concurrency\n"
+        output += "noise\n" * 5000 + "end marker\n"
+        report = autobuild.summarize_failure(output, 2500)
+        self.assertLessEqual(len(report), 2500)
+        self.assertIn("FAILED tests/test_seats.py::test_concurrency", report)
+        self.assertIn("start marker", report)
+        self.assertIn("end marker", report)
+
+    def test_short_failure_report_is_unchanged(self):
+        self.assertEqual(autobuild.summarize_failure("one failure"), "one failure")
+
+    def test_backend_suite_uses_its_measured_timeout(self):
+        checks = autobuild.approval_tests(
+            ["backend/search_api.py"], timeout=1800, backend_timeout=2700,
+        )
+        backend = next(check for check in checks if check[0][-2:] == ["tests", "-q"])
+        self.assertEqual(backend[2], 2700)
+
+    def test_frontend_suite_keeps_the_standard_timeout(self):
+        checks = autobuild.approval_tests(
+            ["oracle-app/src/App.jsx"], timeout=1800, backend_timeout=2700,
+        )
+        frontend = next(check for check in checks if check[0] == ["npm", "test"])
+        self.assertEqual(frontend[2], 1800)
+
+    def test_provider_credit_is_not_reported_as_a_code_failure(self):
+        args = type("Args", (), dict(
+            category="02", budget_usd=2.0, max_turns=4, model="sonnet", agent_timeout=120,
+        ))()
+        with self._fake_runner("print('Credit balance is too low')\nraise SystemExit(1)"):
+            with self.assertRaises(autobuild.ProviderCreditUnavailable):
+                autobuild.model_round(args, "Fix one issue", 2.0, allow_dirty=False)
+
+    def _fake_runner(self, script):
+        real = subprocess.Popen
+        return patch.object(
+            autobuild.subprocess, "Popen",
+            lambda _argv, **options: real([sys.executable, "-c", script], **options),
+        )
+
+    def _round_args(self, timeout=30):
+        return type("Args", (), dict(
+            category="02", budget_usd=2.0, max_turns=4, model="sonnet", agent_timeout=timeout,
+        ))()
+
+    def test_model_output_reaches_the_cycle_log_and_keeps_the_exit_code(self):
+        log = io.StringIO()
+        with self._fake_runner("print('turn one')\nraise SystemExit(7)"), redirect_stdout(log):
+            code = autobuild.model_round(self._round_args(), "Fix", 2.0, allow_dirty=False)
+        self.assertEqual(code, 7)
+        self.assertIn("turn one", log.getvalue())
+
+    def test_a_timed_out_session_keeps_what_it_already_logged(self):
+        log = io.StringIO()
+        script = "import time\nprint('turn one', flush=True)\ntime.sleep(60)"
+        with self._fake_runner(script), redirect_stdout(log):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                autobuild.model_round(self._round_args(timeout=2), "Fix", 2.0, allow_dirty=False)
+        self.assertIn("turn one", log.getvalue())
+
+    def test_a_grandchild_holding_the_pipe_cannot_hang_a_timeout(self):
+        script = ("import subprocess, sys, time\n"
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'])\n"
+                  "time.sleep(60)")
+        started = time.monotonic()
+        with self._fake_runner(script), redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                autobuild.model_round(self._round_args(timeout=1), "Fix", 2.0, allow_dirty=False)
+        self.assertLess(time.monotonic() - started, 7.5)
+
+    def test_branch_naming(self):
+        self.assertIsNotNone(
+            autobuild.SIDE_BRANCH.fullmatch("auto/neoh-02-20261019T120000Z-abcdef")
+        )
+        for name in [
+            "main", "master", "feat/other",
+            "auto/neoh-99-20261019T120000Z-abcdef",
+            "auto/neoh-02-20261019T120000Z-ABCDEF",
+            "auto/neoh-02-20261019T120000Z-abcdef:main",
+        ]:
+            with self.subTest(name=name):
+                self.assertIsNone(autobuild.SIDE_BRANCH.fullmatch(name))
+
+    def test_remote_allowlist(self):
+        allowed = [
+            "https://github.com/ydngemini/oracle-cinematic",
+            "https://github.com/ydngemini/oracle-cinematic.git",
+            "git@github.com:ydngemini/oracle-cinematic.git",
+            "ssh://git@github.com/ydngemini/oracle-cinematic.git",
+        ]
+        for url in allowed:
+            self.assertIsNotNone(autobuild.TRUSTED_ORIGIN.fullmatch(url))
+        for url in [
+            "https://github.com/elsewhere/oracle-cinematic.git",
+            "https://github.com/ydngemini/oracle-cinematic.git@attacker.example",
+            "https://attacker.example/ydngemini/oracle-cinematic.git",
+            "https://secret@github.com/ydngemini/oracle-cinematic.git",
+        ]:
+            self.assertIsNone(autobuild.TRUSTED_ORIGIN.fullmatch(url))
+
+    def test_main_is_never_pushed(self):
+        with patch.object(autobuild.subprocess, "run") as run:
+            for forbidden in ["main", "master", "feature/unsafe"]:
+                with self.assertRaises(ValueError):
+                    autobuild.push_side_branch(forbidden, base_sha="b" * 40, main_sha="m" * 40)
+            run.assert_not_called()
+
+    def test_valid_push_only_targets_new_side_branch(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        origin = "git@github.com:ydngemini/oracle-cinematic.git"
+        def git(*args):
+            if args == ("branch", "--show-current"):
+                return branch
+            if args in (
+                ("remote", "get-url", "origin"),
+                ("remote", "get-url", "--push", "origin"),
+            ):
+                return origin
+            if args == ("status", "--porcelain", "--untracked-files=all"):
+                return ""
+            if args[0] == "rev-parse":
+                return "abc123"
+            if args[0] in ("diff-tree", "diff"):
+                return "oracle-app/src/App.jsx"
+            raise AssertionError(args)
+
+        with patch.object(autobuild.runner, "git", side_effect=git), \
+                patch.object(autobuild, "_publish_commit", return_value="c" * 40):
+            with patch.object(autobuild.subprocess, "run",
+                              return_value=subprocess.CompletedProcess(
+                                  ["git"], 0, "", "")) as call:
+                url = autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
+        self.assertEqual(
+            url, "https://github.com/ydngemini/oracle-cinematic/tree/" + branch
+        )
+        arguments = call.call_args.args[0]
+        self.assertEqual(arguments[0], "git")
+        self.assertIn("origin", arguments)
+        self.assertIn("c" * 40 + ":refs/heads/" + branch, arguments)
+        self.assertNotIn("--force", arguments)
+        self.assertNotIn("main", arguments)
+
+    def test_a_failed_push_says_why_without_the_credential(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        origin = "https://github.com/ydngemini/oracle-cinematic.git"
+        def git(*args):
+            if args == ("branch", "--show-current"):
+                return branch
+            if args in (("remote", "get-url", "origin"), ("remote", "get-url", "--push", "origin")):
+                return origin
+            if args == ("status", "--porcelain", "--untracked-files=all"):
+                return ""
+            if args[0] == "rev-parse":
+                return "abc123"
+            if args[0] in ("diff-tree", "diff"):
+                return "oracle-app/src/App.jsx"
+            raise AssertionError(args)
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        stderr = ("remote: Invalid username or password.\n"
+                  f"fatal: unable to access 'https://x:{token}@github.com/ydngemini/"
+                  "oracle-cinematic.git/': Could not resolve host: github.com\n")
+        with patch.object(autobuild.runner, "git", side_effect=git), \
+                patch.object(autobuild, "_publish_commit", return_value="c" * 40):
+            with patch.object(autobuild.subprocess, "run",
+                              return_value=subprocess.CompletedProcess(["git"], 128, "", stderr)):
+                with self.assertRaises(RuntimeError) as caught:
+                    autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
+        message = str(caught.exception)
+        self.assertIn("exit 128", message)
+        self.assertIn("Could not resolve host: github.com", message)
+        self.assertNotIn(token, message)
+        self.assertNotIn("x:", message)
+
+    def test_push_destination_mismatch_is_blocked(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        def git(*args):
+            if args == ("branch", "--show-current"):
+                return branch
+            if args == ("remote", "get-url", "origin"):
+                return "https://github.com/ydngemini/oracle-cinematic.git"
+            if args == ("remote", "get-url", "--push", "origin"):
+                return "https://github.com/attacker/not-neoh.git"
+            raise AssertionError(args)
+        with patch.object(autobuild.runner, "git", side_effect=git):
+            with patch.object(autobuild.subprocess, "run") as call:
+                with self.assertRaises(ValueError):
+                    autobuild.push_side_branch(branch, base_sha="b" * 40, main_sha="m" * 40)
+                call.assert_not_called()
+
+    def test_never_push_before_checks_pass(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        args = type("Args", (), dict(
+            category="02", task="Fix one issue", max_repairs=0,
+            budget_usd=2.0, max_turns=4, model="sonnet",
+            test_timeout=60, agent_timeout=120, skip_categories="",
+            commit=True, push=True,
+        ))()
+        with patch.object(autobuild, "synchronize_latest_main",
+                          return_value=("a" * 40, [])):
+            with patch.object(autobuild.work_discovery, "pending_categories",
+                              return_value=set()):
+                with patch.object(autobuild.work_discovery, "select_work",
+                                  return_value={"category": "02", "task": "Fix one issue",
+                                                "main_sha": "a" * 40, "prompt": "docs/claude-prompts/02-x.md"}):
+                    with patch.object(autobuild, "start_feature_branch",
+                                      return_value=(branch, "abc123")):
+                        with patch.object(autobuild, "model_round", return_value=0):
+                            with patch.object(autobuild, "dirty_files", return_value=[
+                                "oracle-app/src/App.jsx",
+                                "docs/claude-prompts/LEDGER.md",
+                            ]):
+                                with patch.object(autobuild, "execute_tests",
+                                                  return_value=(False, "lint failed")):
+                                    with patch.object(autobuild, "push_side_branch") as push:
+                                        with patch.object(autobuild, "commit_local") as commit:
+                                            result = autobuild.autobuild(args)
+        self.assertEqual(result, 1)
+        push.assert_not_called()
+        commit.assert_not_called()
+
+
+    def test_changed_main_blocks_automatic_push(self):
+        branch = "auto/neoh-02-20261019T120000Z-abcdef"
+        args = type("Args", (), dict(
+            category="auto", task="", max_repairs=0, budget_usd=2.0,
+            max_turns=4, model="sonnet", test_timeout=60,
+            agent_timeout=120, skip_categories="", commit=True, push=True,
+        ))()
+        with patch.object(autobuild, "synchronize_latest_main",
+                          return_value=("a" * 40, [])):
+            with patch.object(autobuild.work_discovery, "select_work",
+                              return_value={"category": "02", "task": "Fix a bug",
+                                            "main_sha": "a" * 40,
+                                            "prompt": "docs/claude-prompts/02-x.md"}):
+                with patch.object(autobuild.work_discovery, "pending_categories",
+                                  return_value=set()):
+                    with patch.object(autobuild, "start_feature_branch",
+                                      return_value=(branch, "abc123")):
+                        with patch.object(autobuild, "model_round", return_value=0):
+                            with patch.object(autobuild, "dirty_files",
+                                              return_value=["oracle-app/src/App.jsx"]):
+                                with patch.object(autobuild, "execute_tests",
+                                                  return_value=(True, "")):
+                                    with patch.object(autobuild, "commit_local"):
+                                        with patch.object(autobuild.work_discovery,
+                                                          "remote_main_sha", return_value="b" * 40):
+                                            with patch.object(autobuild, "push_side_branch") as push:
+                                                with self.assertRaises(RuntimeError):
+                                                    autobuild.autobuild(args)
+                                                push.assert_not_called()
+
+    def test_prompts_must_refresh_before_work_selection(self):
+        args = type("Args", (), dict(
+            category="auto", task="", max_repairs=0, budget_usd=2,
+            max_turns=4, model="sonnet", test_timeout=60,
+            agent_timeout=120, skip_categories="", commit=True, push=True
+        ))()
+        with patch.object(autobuild, "synchronize_latest_main",
+                          side_effect=RuntimeError("Cannot refresh main")):
+            with patch.object(autobuild.work_discovery, "select_work") as choose:
+                with self.assertRaises(RuntimeError):
+                    autobuild.autobuild(args)
+                choose.assert_not_called()
+
+
+class PublishOntoMainTests(unittest.TestCase):
+    """Real git: what reaches origin is the cycle's commit on main, nothing else.
+
+    2026-11-11: a verified category-02 cycle was refused by GitHub because its
+    branch carried the supervisor's tooling history, including a change to
+    .github/workflows/ci.yml, and Noah's token has no workflow scope.
+    """
+
+    BRANCH = "auto/neoh-02-20261111T222649Z-24e9aa"
+
+    def _git(self, cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def _commit(self, repo, files, message):
+        for name, text in files.items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            self._git(repo, "add", name)
+        self._git(repo, "commit", "-q", "-m", message)
+        return self._git(repo, "rev-parse", "HEAD")
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="neoh-publish-test-"))
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)], check=False)
+        self.origin = self.tmp / "origin.git"
+        self.repo = self.tmp / "work"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        for key, value in (("user.name", "t"), ("user.email", "t@example.invalid"),
+                           ("commit.gpgsign", "false")):
+            self._git(self.repo, "config", key, value)
+        self._git(self.repo, "remote", "add", "origin", str(self.origin))
+        self.main_sha = self._commit(self.repo, {
+            "README.md": "neoh\n",
+            ".github/workflows/ci.yml": "on: push\n",
+            "oracle-app/src/page.js": "export const a = 1;\n",
+        }, "main")
+        self._git(self.repo, "push", "-q", "origin", "main")
+        # The supervisor branch: tooling commits main does not have.
+        self.base_sha = self._commit(self.repo, {
+            ".github/workflows/ci.yml": "on: push\n# supervisor tooling check\n",
+            "tools/neoh-agent/x.py": "TOOL = 1\n",
+        }, "ci(devtools): tooling")
+        self._git(self.repo, "switch", "-q", "-c", self.BRANCH)
+        self.cycle_sha = self._commit(self.repo, {
+            "oracle-app/src/page.js": "export const a = 2;\n",
+        }, "feat(neoh): autonomous category 02 implementation")
+        for target in (autobuild, autobuild.runner):
+            stack = patch.object(target, "ROOT", self.repo)
+            stack.start()
+            self.addCleanup(stack.stop)
+        trusted = patch.object(autobuild, "TRUSTED_ORIGIN",
+                               autobuild.re.compile(autobuild.re.escape(str(self.origin))))
+        trusted.start()
+        self.addCleanup(trusted.stop)
+
+    def test_only_the_cycle_commit_is_published_with_main_as_its_parent(self):
+        autobuild.push_side_branch(self.BRANCH, base_sha=self.base_sha, main_sha=self.main_sha)
+        ref = "refs/heads/" + self.BRANCH
+        pushed = self._git(self.origin, "rev-parse", ref)
+        self.assertEqual(self._git(self.origin, "rev-parse", ref + "^"), self.main_sha)
+        self.assertEqual(self._git(self.origin, "rev-list", "--count", self.main_sha + ".." + ref), "1")
+        self.assertEqual(self._git(self.origin, "diff", "--name-only", self.main_sha, ref),
+                         "oracle-app/src/page.js")
+        self.assertEqual(self._git(self.origin, "show", ref + ":.github/workflows/ci.yml"), "on: push")
+        self.assertEqual(self._git(self.origin, "show", ref + ":oracle-app/src/page.js"),
+                         "export const a = 2;")
+        self.assertEqual(self._git(self.origin, "log", "-1", "--format=%s", pushed),
+                         "feat(neoh): autonomous category 02 implementation")
+        # The local branch and working tree are untouched.
+        self.assertEqual(self._git(self.repo, "rev-parse", "HEAD"), self.cycle_sha)
+        self.assertEqual(self._git(self.repo, "status", "--porcelain"), "")
+
+    def test_a_cycle_that_no_longer_applies_to_main_is_not_pushed(self):
+        self._git(self.repo, "switch", "-q", "main")
+        moved = self._commit(self.repo, {"oracle-app/src/page.js": "export const a = 9;\n"}, "main moved")
+        self._git(self.repo, "push", "-q", "origin", "main")
+        self._git(self.repo, "switch", "-q", self.BRANCH)
+        with self.assertRaises(RuntimeError) as caught:
+            autobuild.push_side_branch(self.BRANCH, base_sha=self.base_sha, main_sha=moved)
+        self.assertIn("nothing was pushed", str(caught.exception))
+        refs = self._git(self.origin, "for-each-ref", "--format=%(refname)")
+        self.assertNotIn(self.BRANCH, refs)
+
+    def test_the_rejection_reason_is_kept_not_the_closing_line(self):
+        stderr = (
+            "To https://github.com/ydngemini/oracle-cinematic.git\n"
+            " ! [remote rejected] 67bd695 -> auto/neoh-02-x (refusing to allow an OAuth App to "
+            "create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\n"
+            "error: failed to push some refs to 'https://github.com/ydngemini/oracle-cinematic.git'\n"
+        )
+        detail = autobuild._push_failure_detail(stderr)
+        self.assertIn("without `workflow` scope", detail)
+        self.assertEqual(autobuild._push_failure_detail(""), "no message")
+
+
+if __name__ == "__main__":
+    unittest.main()
