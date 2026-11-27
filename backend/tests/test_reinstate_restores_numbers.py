@@ -45,23 +45,32 @@ class _Conn:
         self.switch_calls, self.left_off_args, self.lifecycle_reads = [], None, 0
         self.savepoints = {"opened": 0, "rolled_back": 0}
         self.in_savepoint = False
+        self.order, self.consumed = [], None
 
     async def fetchrow(self, sql, *args):
         assert sql.lstrip().startswith("UPDATE users SET is_active = true"), sql
+        self.order.append("users")
         return {"id": K_ID, "agent_id": K_AGENT, "role": "agent"} if self.found else None
 
     async def execute(self, sql, *args):
+        if sql is bo._CONSUME_SKIPS_SQL:
+            assert self.consumed is None, "consumed once per reinstatement"
+            assert args[0] == T
+            self.consumed = list(args[1])
+            return "UPDATE 1"
         assert sql.lstrip().startswith("UPDATE team_memberships SET status = 'active'"), sql
         return "UPDATE 1"
 
     async def fetch(self, sql, *args):
         assert sql is bo._LEFT_OFF_ROUTES_SQL, sql
         self.left_off_args = args
+        self.order.append("candidates")
         return self.candidates
 
     async def fetchval(self, sql, *args):
         if sql.startswith("SELECT lifecycle_state FROM tenants"):
             assert "FOR SHARE" in sql
+            self.order.append("tenants")
             self.lifecycle_reads += 1
             return self.lifecycle
         table = next(t for t, q in bo._SWITCH_ROUTE_ON_SQL.items() if q == sql)
@@ -131,7 +140,7 @@ def test_a_plain_suspension_has_nothing_to_restore(run):
     conn = _Conn([])
     out = run(conn)
     assert out["restored_routes"] == [] and out["routes_not_restored"] == []
-    assert conn.switch_calls == [] and conn.lifecycle_reads == 0 and conn.savepoints["opened"] == 0
+    assert conn.switch_calls == [] and conn.savepoints["opened"] == 0 and conn.consumed is None
     assert run.audits[0]["extra"] == {"restored_routes": 0, "routes_not_restored": 0}
 
 
@@ -198,3 +207,38 @@ def test_the_statements_select_and_switch_only_left_off_numbers():
         for part in ("tenant_id = $1::uuid", "id = $2::uuid", "NOT active", "lower(agent_id) = lower($3)"):
             assert part in s, (table, part)
     assert "disconnected_at IS NULL" in bo._SWITCH_ROUTE_ON_SQL["messaging_routes"]
+
+
+def test_the_tenants_row_is_locked_before_the_member_and_the_candidates(run):
+    # review of PR #190: FOR SHARE on tenants first, so a concurrent
+    # withdrawal's skips are committed before the candidates are read (or
+    # after this transaction), in withdraw_closure's lock order; also when
+    # there turn out to be no candidates
+    for cands in ([], [_cand("telephony_routes", "tr-k")]):
+        conn = _Conn(cands)
+        run(conn)
+        assert conn.order[:3] == ["tenants", "users", "candidates"], conn.order
+        assert conn.lifecycle_reads == 1
+
+
+def test_every_decided_route_is_consumed_once_and_an_undecided_one_is_not(run):
+    # one shot: what this reinstatement restored or refused for good is
+    # consumed on the closures that listed it
+    conn = _Conn([_cand("telephony_routes", "tr-k"), _cand("messaging_routes", "mr-parked", offboarded=True),
+                  _cand("telephony_routes", "tr-taken"), _cand("messaging_routes", "mr-gone")],
+                 outcome={"tr-taken": "conflict", "mr-gone": "gone"})
+    run(conn)
+    assert sorted(conn.consumed) == ["mr-gone", "mr-parked", "tr-k", "tr-taken"]
+    # while the brokerage is closing nothing is decided, so nothing consumed
+    closing = _Conn([_cand("telephony_routes", "tr-k")], lifecycle="closing")
+    run(closing)
+    assert closing.consumed is None
+
+
+def test_a_consumed_route_is_never_a_candidate_again():
+    q = " ".join(bo._LEFT_OFF_ROUTES_SQL.split())
+    assert "o.result->'reinstate_consumed'" in q and "END) ? r.route_id" in q
+    c = " ".join(bo._CONSUME_SKIPS_SQL.split())
+    for part in ("o.tenant_id = $1::uuid AND o.kind = 'closure'", "'{reinstate_consumed}'",
+                 "o.result->'skipped_routes' ?| $2::text[]"):
+        assert part in c, part

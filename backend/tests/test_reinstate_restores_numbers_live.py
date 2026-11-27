@@ -142,12 +142,34 @@ async def _scenario():
         assert await state_of("C") == (True, False, True)
         assert await admin.fetchval("SELECT active FROM telephony_routes WHERE id=$1::uuid", other_route)
 
-        # ── a plain suspension leaves the numbers on: nothing to restore
+        # ── one shot (review of PR #190): every route decided above is
+        # consumed on the closure that listed it
+        recorded = json.loads(await admin.fetchval(
+            "SELECT result FROM privacy_operations WHERE id=$1", closure["operation_id"]))
+        assert sorted(recorded["reinstate_consumed"]) == routes("K", "O", "C")
+        assert sorted(recorded["skipped_routes"]) == routes("K", "M", "O", "C")      # history kept
+
+        # K switches their own call route off (what PUT /api/telephony/routes/me
+        # writes); a plain suspension (numbers stay on, forwarding cleared) and
+        # a reinstatement later, it stays off: the withdrawal's skip was used
+        import inbound_voice
+
+        kctx = TenantContext(agent_id=team["K"]["agent"], tenant_id=T, role=Role.AGENT)
+        k_did = await admin.fetchval("SELECT inbound_did FROM telephony_routes WHERE id=$1::uuid",
+                                     team["K"]["telephony"])
+        await inbound_voice.upsert_telephony_route(
+            kctx, {"inbound_did": k_did, "provider": "twilio", "twilio_account_sid": sid, "active": False})
+        assert await state_of("K") == (True, False, True)
         await bo.suspend_member(team["K"]["user"], why, ctx=octx)
-        assert await state_of("K") == (False, True, True)
+        assert await state_of("K") == (False, False, True)
         out = await bo.reinstate_member(team["K"]["user"], why, ctx=octx)
         assert out["restored_routes"] == [] and out["routes_not_restored"] == []
-        assert await state_of("K") == (True, True, True)
+        assert await state_of("K") == (True, False, True)
+        # a refusal is decided once too: O's parked numbers are not reported again
+        await bo.suspend_member(team["O"]["user"], why, ctx=octx)
+        out = await bo.reinstate_member(team["O"]["user"], why, ctx=octx)
+        assert out["restored_routes"] == [] and out["routes_not_restored"] == []
+        assert await state_of("O") == (True, False, False)
 
         # ── while a new closure runs, reinstating M restores none of M's
         # numbers (the brokerage is closing); they stay off after it
@@ -161,6 +183,12 @@ async def _scenario():
         assert again["operation_id"]
         assert await state_of("M") == (True, False, False)
         assert await state_of("O") == (True, False, False)              # parked stays parked
+        # nothing was decided while closing, so M's skips were not used: once
+        # the brokerage is active, a suspension and reinstatement brings them back
+        await bo.suspend_member(team["M"]["user"], why, ctx=octx)
+        out = await bo.reinstate_member(team["M"]["user"], why, ctx=octx)
+        assert sorted(out["restored_routes"]) == routes("M") and out["routes_not_restored"] == []
+        assert await state_of("M") == (True, True, True)
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

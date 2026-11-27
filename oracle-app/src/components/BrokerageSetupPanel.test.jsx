@@ -345,19 +345,23 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     it('says the numbers left off after keeping the brokerage are back on', async () => {
       expect(await reinstate({ id: 'u2', status: 'active', restored_routes: ['tr-k', 'mr-k'],
         routes_not_restored: [] }))
-        .toBe('Reinstated. Their numbers left off when you kept the brokerage are back on (2 call and text routes).');
+        .toBe('Reinstated. 2 call or text routes left off when you kept the brokerage are back on.');
     });
 
     it('says which numbers stay off and why, without claiming the line answers', async () => {
       const text = await reinstate({ id: 'u2', status: 'active', restored_routes: ['mr-k'],
         routes_not_restored: [{ id: 'tr-k', kind: 'call', reason: 'number_in_use' }] });
-      expect(text).toBe('Reinstated. 1 of their routes is back on. 1 stays off (call route: the number is now in use on another line).');
+      expect(text).toBe('Reinstated. 1 call or text route left off when you kept the brokerage is back on. 1 route stays off (call route: the number is now in use on another line).');
       expect(text).not.toMatch('answers calls');
     });
 
-    it('keeps the plain answer when nothing was left off', async () => {
+    it('claims nothing about the line when the server reports no numbers (review of PR #190)', async () => {
+      // numbers may still be off for reasons the answer does not cover (a
+      // closure freeze, the runbook repair, no number at all)
       expect(await reinstate({ id: 'u2', status: 'active', restored_routes: [], routes_not_restored: [] }))
-        .toBe('Reinstated. Their business number answers calls and texts again.');
+        .toBe('Reinstated.');
+      cleanup();
+      expect(await reinstate({ id: 'u2', status: 'active' })).toBe('Reinstated.');
     });
   });
 

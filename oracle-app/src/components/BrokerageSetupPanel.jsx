@@ -92,7 +92,9 @@ function mlsDetail(mls) {
 // L17-59: reinstating also switches back on the numbers a closure withdrawal
 // left off because of this member. The server lists what came back
 // (restored_routes) and what could not (routes_not_restored, with a reason);
-// only what it says is shown.
+// only what it says is shown. Two empty lists say nothing about the line
+// (a closure may hold it off, or the member may have no number), so the
+// answer is then just "Reinstated." (review of PR #190).
 const NOT_RESTORED_REASON = {
   number_in_use: 'the number is now in use on another line',
   offboarded: 'parked when they were offboarded',
@@ -104,14 +106,12 @@ const NOT_RESTORED_REASON = {
 function reinstatedText(result) {
   const restored = Array.isArray(result?.restored_routes) ? result.restored_routes.length : 0;
   const missed = Array.isArray(result?.routes_not_restored) ? result.routes_not_restored : [];
-  if (!missed.length) {
-    return restored
-      ? `Reinstated. Their numbers left off when you kept the brokerage are back on (${restored} call and text ${restored === 1 ? 'route' : 'routes'}).`
-      : 'Reinstated. Their business number answers calls and texts again.';
-  }
+  const back = restored
+    ? ` ${restored} call or text ${restored === 1 ? 'route' : 'routes'} left off when you kept the brokerage ${restored === 1 ? 'is' : 'are'} back on.`
+    : '';
+  if (!missed.length) return `Reinstated.${back}`;
   const why = missed.map((r) => `${r?.kind === 'text' ? 'text' : 'call'} route: ${NOT_RESTORED_REASON[r?.reason] || 'not switched on'}`);
-  return `Reinstated.${restored ? ` ${restored} of their ${restored === 1 ? 'routes is' : 'routes are'} back on.` : ''} `
-    + `${missed.length} ${missed.length === 1 ? 'stays' : 'stay'} off (${why.join('; ')}).`;
+  return `Reinstated.${back} ${missed.length} ${missed.length === 1 ? 'route stays' : 'routes stay'} off (${why.join('; ')}).`;
 }
 
 export function BrokerageSetupPanel() {

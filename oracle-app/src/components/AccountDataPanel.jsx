@@ -103,7 +103,9 @@ function LeftOffNotice({ users, routes }) {
       )}
       <p className={styles.text}>
         To bring someone back, reinstate them under Team: that gives them their sign-in back and
-        switches their numbers back on too. Team tells you about any number it could not switch on.
+        switches back on the numbers left off here that they still hold. A number parked or handed
+        to a successor when someone was offboarded stays off; Team tells you about any number it
+        could not switch on.
       </p>
     </div>
   );

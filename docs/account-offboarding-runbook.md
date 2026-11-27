@@ -175,7 +175,11 @@ API: `POST /api/privacy/closure`.
   (`number_in_use`: its inbound number is active on another route now, possibly
   in another brokerage). A refused number never stops the reinstatement. A
   plain suspension switches no number off, so its reinstatement has nothing
-  to restore.
+  to restore. It happens once per withdrawal: the first reinstatement that
+  restores or refuses a number records its id on that closure's
+  `result.reinstate_consumed`, and a recorded number is never switched on
+  again from that closure (the agent may since have switched it off on
+  purpose). Only `brokerage_not_active` records nothing.
   Cancelled jobs and revoked links are not restored. Renewal is turned back
   on through the same durable job.
 

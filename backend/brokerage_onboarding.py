@@ -1243,6 +1243,15 @@ async def reinstate_member(
 
 async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
+        # The tenants row first, FOR SHARE (L17-59, review of PR #190): it
+        # serialises this reinstatement with withdraw_closure and
+        # request_closure (both FOR UPDATE on it), so a withdrawal's
+        # skipped_routes are either committed before the candidates are read
+        # or written after this transaction; and the lock order (tenants,
+        # then users) is withdraw_closure's and offboard_agent's, so neither
+        # can deadlock with it.
+        lifecycle = await conn.fetchval(
+            "SELECT lifecycle_state FROM tenants WHERE id = $1::uuid FOR SHARE", ctx.tenant_id)
         row = await conn.fetchrow(
             "UPDATE users SET is_active = true, updated_at = now() "
             " WHERE id = $1 AND tenant_id = $2::uuid AND NOT is_active "
@@ -1260,7 +1269,7 @@ async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, A
             " WHERE tenant_id = $1::uuid AND user_id = $2 AND status = 'suspended'",
             ctx.tenant_id, user_id,
         )
-        restored, not_restored = await _restore_left_off_routes(conn, ctx.tenant_id, row)
+        restored, not_restored = await _restore_left_off_routes(conn, ctx.tenant_id, row, lifecycle)
     # Counts only on the audit event: the route ids are in the answer.
     await _record_member_change(ctx, "team.member.reinstated", row, body.reason,
                                 {"restored_routes": len(restored),
@@ -1278,6 +1287,17 @@ async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, A
 # skipped_routes, held now by this member (agent_id, case-insensitive) and
 # still off. A plain suspension never switches a route off (it clears
 # forwarding), so it has nothing here to restore.
+#
+# One shot (review of PR #190): skipped_routes is permanent history, and a
+# route can be switched off on purpose after it came back (the agent's own
+# PUT /api/telephony/routes/me writes `active`; offboarding parks; a text
+# route is disconnected). So the first reinstatement that decides a route
+# consumes it: its id goes on result.reinstate_consumed of every closure that
+# listed it, in this transaction, and a consumed id is never a candidate of
+# that closure again. Restored and refused routes are consumed alike; only
+# brokerage_not_active is not (nothing was decided: a later reinstatement
+# while the brokerage is active decides it). A later withdrawal that leaves
+# the route off again lists it on its own closure, which has not consumed it.
 #
 # Never switched on, and reported in routes_not_restored instead:
 #   offboarded    the member was offboarded since that closure (an offboard
@@ -1313,6 +1333,8 @@ WITH left_off AS (
            CASE WHEN jsonb_typeof(o.result->'skipped_routes') = 'array'
                 THEN o.result->'skipped_routes' ELSE '[]'::jsonb END) AS r(route_id)
    WHERE o.tenant_id = $1::uuid AND o.kind = 'closure'
+     AND NOT (CASE WHEN jsonb_typeof(o.result->'reinstate_consumed') = 'array'
+                   THEN o.result->'reinstate_consumed' ELSE '[]'::jsonb END) ? r.route_id
    GROUP BY r.route_id),
 routes AS (
   SELECT 'telephony_routes' AS route_table, id, agent_id, active, false AS disconnected
@@ -1344,17 +1366,37 @@ _SWITCH_ROUTE_ON_SQL = {
 }
 
 
-async def _restore_left_off_routes(conn, tenant_id: str, row) -> tuple[list[str], list[dict[str, str]]]:
+#: Marks routes decided on every closure of the brokerage that lists them
+#: and has not consumed them yet. Each row's new value is computed from the
+#: row as it is when updated (a concurrent reinstatement of another member
+#: waits on the row lock, then appends to the committed list).
+_CONSUME_SKIPS_SQL = """
+UPDATE privacy_operations o
+   SET result = jsonb_set(COALESCE(o.result, '{}'::jsonb), '{reinstate_consumed}',
+                          (CASE WHEN jsonb_typeof(o.result->'reinstate_consumed') = 'array'
+                                THEN o.result->'reinstate_consumed' ELSE '[]'::jsonb END)
+                          || to_jsonb(ARRAY(SELECT x FROM unnest($2::text[]) AS x
+                                             WHERE jsonb_typeof(o.result->'skipped_routes') = 'array'
+                                               AND o.result->'skipped_routes' ? x
+                                               AND NOT COALESCE(o.result->'reinstate_consumed' ? x, false)))),
+       updated_at = now()
+ WHERE o.tenant_id = $1::uuid AND o.kind = 'closure'
+   AND jsonb_typeof(o.result->'skipped_routes') = 'array'
+   AND o.result->'skipped_routes' ?| $2::text[]
+"""
+
+
+async def _restore_left_off_routes(conn, tenant_id: str, row,
+                                   state: Optional[str]) -> tuple[list[str], list[dict[str, str]]]:
     """Switch back on the reinstated member's numbers a closure withdrawal
-    left off (L17-59). Returns (restored route ids, [{id, kind, reason}])."""
+    left off (L17-59), once. `state` is the brokerage's lifecycle_state, read
+    FOR SHARE before anything else in this transaction. Returns (restored
+    route ids, [{id, kind, reason}])."""
     import asyncpg
 
     candidates = await conn.fetch(_LEFT_OFF_ROUTES_SQL, tenant_id, row["agent_id"], str(row["id"]))
     if not candidates:
         return [], []
-    # FOR SHARE: serialises with request_closure's FOR UPDATE on this row.
-    state = await conn.fetchval("SELECT lifecycle_state FROM tenants WHERE id = $1::uuid FOR SHARE",
-                                tenant_id)
     restored: list[str] = []
     not_restored: list[dict[str, str]] = []
     for c in candidates:
@@ -1375,6 +1417,9 @@ async def _restore_left_off_routes(conn, tenant_id: str, row) -> tuple[list[str]
                     continue
                 reason = "changed"
         not_restored.append({"id": c["id"], "kind": kind, "reason": reason})
+    decided = restored + [r["id"] for r in not_restored if r["reason"] != "brokerage_not_active"]
+    if decided:
+        await conn.execute(_CONSUME_SKIPS_SQL, tenant_id, decided)
     return restored, not_restored
 
 
