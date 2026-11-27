@@ -78,8 +78,11 @@ Since 2026-10-01, suspension also:
 - stops their line forwarding to their personal phone;
 - stops new leads routing to them.
 
-Reinstating restores the login only. Cancelled work stays cancelled, and
-forwarding has to be set up again.
+Reinstating restores the login. Cancelled work stays cancelled, and
+forwarding has to be set up again. A suspension leaves the agent's numbers on
+(forwarding cleared), so there is nothing else to restore, except numbers a
+closure withdrawal left off because of this member: those come back on with
+the reinstatement (L17-59, see section 5, *During the grace period*).
 
 ## 3. An owner leaves
 
@@ -158,8 +161,21 @@ API: `POST /api/privacy/closure`.
   (id, reason and, in the response only, the name Team shows) and
   `skipped_routes`, also on the operation's `result` (ids and reasons, no
   names). Account & data lists them after the withdrawal and points the owner
-  to Team to reinstate anyone they want back; a reinstatement gives back the
-  sign-in, not the numbers.
+  to Team to reinstate anyone they want back. Since L17-59, a reinstatement
+  gives back the sign-in and, in the same transaction, switches back on the
+  numbers a withdrawal left off for that member: routes listed in one of the
+  brokerage's closures' `skipped_routes`, still held by that member (agent id,
+  any case) and still off. The answer lists `restored_routes` (ids) and
+  `routes_not_restored` (id, `call`/`text`, reason); the audit event counts
+  both. A number is left off, and reported, when the member was offboarded
+  since that closure (`offboarded`: offboarding parks a number, and a parked
+  number stays parked), when its text route was disconnected
+  (`disconnected`), while the brokerage is closing again
+  (`brokerage_not_active`), or when a uniqueness constraint refuses it
+  (`number_in_use`: its inbound number is active on another route now, possibly
+  in another brokerage). A refused number never stops the reinstatement. A
+  plain suspension switches no number off, so its reinstatement has nothing
+  to restore.
   Cancelled jobs and revoked links are not restored. Renewal is turned back
   on through the same durable job.
 
@@ -261,7 +277,10 @@ ROLLBACK;
    and unflagged, that they want back. A flagged member is never restored
    here: if the owner wants one back, they reinstate them in Team (which
    checks seats and records it). Leave a flagged number off and record it in
-   the incident. If the owner wants nobody back, the list is empty (step 4,
+   the incident. The repair does not write `skipped_routes`, so a later Team
+   reinstatement does not switch those numbers on (L17-59 restores only what
+   a withdrawal recorded); if the owner wants one back after reinstating, it
+   is a support case. If the owner wants nobody back, the list is empty (step 4,
    `finish=none`).
 
 4. Preview, then repair, with exactly that list:

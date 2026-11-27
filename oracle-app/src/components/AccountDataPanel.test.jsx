@@ -204,7 +204,10 @@ describe('AccountDataPanel', () => {
       'nora@lockwood.test \u2014 offboarded after you closed']);
     expect(left.textContent).toMatch('4 call and text routes');
     expect(left.textContent).toMatch('reinstate them under Team');
-    expect(left.textContent).toMatch('not their numbers');
+    // L17-59: reinstating brings their numbers back too; no support detour
+    expect(left.textContent).toMatch('switches their numbers back on too');
+    expect(left.textContent).not.toMatch('not their numbers');
+    expect(left.textContent).not.toMatch(/support/);
     // the next action starts clean
     typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Prepare export' }));

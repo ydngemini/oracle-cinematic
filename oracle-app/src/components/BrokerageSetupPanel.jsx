@@ -89,6 +89,31 @@ function mlsDetail(mls) {
   return [lead.mls_name, freshness(lead.age_seconds)].filter(Boolean).join(' · ');
 }
 
+// L17-59: reinstating also switches back on the numbers a closure withdrawal
+// left off because of this member. The server lists what came back
+// (restored_routes) and what could not (routes_not_restored, with a reason);
+// only what it says is shown.
+const NOT_RESTORED_REASON = {
+  number_in_use: 'the number is now in use on another line',
+  offboarded: 'parked when they were offboarded',
+  disconnected: 'texting was disconnected',
+  brokerage_not_active: 'the brokerage is closing',
+  changed: 'it changed in the meantime',
+};
+
+function reinstatedText(result) {
+  const restored = Array.isArray(result?.restored_routes) ? result.restored_routes.length : 0;
+  const missed = Array.isArray(result?.routes_not_restored) ? result.routes_not_restored : [];
+  if (!missed.length) {
+    return restored
+      ? `Reinstated. Their numbers left off when you kept the brokerage are back on (${restored} call and text ${restored === 1 ? 'route' : 'routes'}).`
+      : 'Reinstated. Their business number answers calls and texts again.';
+  }
+  const why = missed.map((r) => `${r?.kind === 'text' ? 'text' : 'call'} route: ${NOT_RESTORED_REASON[r?.reason] || 'not switched on'}`);
+  return `Reinstated.${restored ? ` ${restored} of their ${restored === 1 ? 'routes is' : 'routes are'} back on.` : ''} `
+    + `${missed.length} ${missed.length === 1 ? 'stays' : 'stay'} off (${why.join('; ')}).`;
+}
+
 export function BrokerageSetupPanel() {
   const [setup, setSetup] = useState(null);
   const [team, setTeam] = useState(null);
@@ -173,8 +198,8 @@ export function BrokerageSetupPanel() {
     setBusy(true);
     setError('');
     try {
-      await fn();
-      setNotice(successText);
+      const result = await fn();
+      setNotice(typeof successText === 'function' ? successText(result) : successText);
       await load();
     } catch (err) {
       setError(friendlyError(err, { fallback: 'That did not work.' }));
@@ -354,7 +379,7 @@ export function BrokerageSetupPanel() {
                     <button
                       type="button" className={styles.link} disabled={busy}
                       onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/reinstate`,
-                        { reason: 'Reinstated by an owner from Settings' }), 'Reinstated. Their business number answers calls and texts again.')}
+                        { reason: 'Reinstated by an owner from Settings' }), reinstatedText)}
                     >
                       Reinstate
                     </button>

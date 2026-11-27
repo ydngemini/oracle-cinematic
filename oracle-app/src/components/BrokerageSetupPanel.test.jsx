@@ -322,6 +322,45 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     localStorage.clear();
   });
 
+  describe('reinstating a member (L17-59)', () => {
+    const reinstate = async (answer) => {
+      sessionStorage.setItem('oracle_role', 'broker_owner');
+      localStorage.setItem('oracle_user_id', 'nat@lockwood.test');
+      const team = { ...TEAM, members: [...TEAM.members, {
+        id: 'u2', agent_id: 'kim@lockwood.test', email: 'kim@lockwood.test', full_name: 'Kim',
+        role: 'agent', status: 'suspended', membership_status: 'suspended' }] };
+      api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? team : SETUP));
+      api.crmPost.mockResolvedValue(answer);
+      render(<BrokerageSetupPanel />);
+      await screen.findByText('Kim');
+      fireEvent.click(screen.getByRole('button', { name: 'Reinstate' }));
+      await waitFor(() => expect(api.crmPost).toHaveBeenCalledWith(
+        '/api/brokerage/team/u2/reinstate', { reason: 'Reinstated by an owner from Settings' }));
+      const notice = await screen.findByText(/^Reinstated\./);
+      sessionStorage.clear();
+      localStorage.clear();
+      return notice.textContent;
+    };
+
+    it('says the numbers left off after keeping the brokerage are back on', async () => {
+      expect(await reinstate({ id: 'u2', status: 'active', restored_routes: ['tr-k', 'mr-k'],
+        routes_not_restored: [] }))
+        .toBe('Reinstated. Their numbers left off when you kept the brokerage are back on (2 call and text routes).');
+    });
+
+    it('says which numbers stay off and why, without claiming the line answers', async () => {
+      const text = await reinstate({ id: 'u2', status: 'active', restored_routes: ['mr-k'],
+        routes_not_restored: [{ id: 'tr-k', kind: 'call', reason: 'number_in_use' }] });
+      expect(text).toBe('Reinstated. 1 of their routes is back on. 1 stays off (call route: the number is now in use on another line).');
+      expect(text).not.toMatch('answers calls');
+    });
+
+    it('keeps the plain answer when nothing was left off', async () => {
+      expect(await reinstate({ id: 'u2', status: 'active', restored_routes: [], routes_not_restored: [] }))
+        .toBe('Reinstated. Their business number answers calls and texts again.');
+    });
+  });
+
   it('shows agents no member actions', async () => {
     sessionStorage.setItem('oracle_role', 'agent');
     render(<BrokerageSetupPanel />);
