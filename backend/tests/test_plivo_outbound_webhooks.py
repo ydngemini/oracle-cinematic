@@ -68,7 +68,7 @@ def test_commands_api_imports_the_paths_instead_of_retyping_them():
     assert '/webhooks/plivo"' not in code and "/webhooks/plivo/status\"" not in code
 
 
-@pytest.mark.parametrize("module", ["commands_api.py", "telephony_api.py"])
+@pytest.mark.parametrize("module", ["commands_api.py", "telephony_api.py", "twilio_voice_routes.py"])
 def test_every_literal_callback_url_resolves(module):
     """The general form: any `f"{base}/api/…"` URL a module builds for a
     provider must name a mounted route. Catches the next re-typed path, not

@@ -162,39 +162,39 @@ def test_a_missing_public_base_url_falls_back_instead_of_serving_a_dead_link(mon
 
 
 def test_the_twiml_helper_emits_say_whenever_tts_declines(monkeypatch):
-    import commands_api
+    import twilio_voice_routes
 
     async def _no_url(text, *, to_number):
         return None
 
     monkeypatch.setattr(voice_tts, "play_url", _no_url)
-    element = asyncio.run(commands_api._spoken("Hello there", to_number="+1555"))
+    element = asyncio.run(twilio_voice_routes._spoken("Hello there", to_number="+1555"))
 
     assert element.startswith('<Say voice="Polly.Joanna">')
     assert "Hello there" in element
 
 
 def test_the_twiml_helper_emits_play_when_tts_answers(monkeypatch):
-    import commands_api
+    import twilio_voice_routes
 
     async def _url(text, *, to_number):
         return "https://neoh.example/api/commands/webhooks/twilio/tts/abc.mp3"
 
     monkeypatch.setattr(voice_tts, "play_url", _url)
-    element = asyncio.run(commands_api._spoken("Hello", to_number="+13025550100"))
+    element = asyncio.run(twilio_voice_routes._spoken("Hello", to_number="+13025550100"))
 
     assert element == "<Play>https://neoh.example/api/commands/webhooks/twilio/tts/abc.mp3</Play>"
 
 
 def test_spoken_text_is_xml_escaped_on_both_paths(monkeypatch):
     """A property address with an ampersand must not break the TwiML document."""
-    import commands_api
+    import twilio_voice_routes
 
     async def _no_url(text, *, to_number):
         return None
 
     monkeypatch.setattr(voice_tts, "play_url", _no_url)
-    element = asyncio.run(commands_api._spoken("Smith & Co <test>", to_number="+1555"))
+    element = asyncio.run(twilio_voice_routes._spoken("Smith & Co <test>", to_number="+1555"))
 
     assert "&amp;" in element and "&lt;test&gt;" in element
 

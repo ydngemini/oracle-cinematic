@@ -29,9 +29,10 @@ _TRANSCRIPT_NAMES = re.compile(r"\b(speech_text|transcript|speech|utterance)\b")
 
 
 # The request modules whose code these guards read: commands_api, the webhook
-# authentication moved out of it (external audit 35-02, slice 2) and the AI
-# call-notes service, which handles what callers said (slice 3).
-_MODULES = ("commands_api.py", "twilio_webhook_auth.py", "call_notes_service.py")
+# authentication moved out of it (external audit 35-02, slice 2), the AI
+# call-notes service, which handles what callers said (slice 3), and the Twilio
+# voice webhooks, whose speech turn receives the caller's words (slice 4).
+_MODULES = ("commands_api.py", "twilio_webhook_auth.py", "call_notes_service.py", "twilio_voice_routes.py")
 
 
 @pytest.mark.parametrize("module", _MODULES)
@@ -88,6 +89,10 @@ def test_request_handlers_use_the_logger_not_print(module):
 
 
 def test_the_speech_webhook_still_reports_whether_speech_arrived():
-    """The diagnostic must survive the redaction, or it will be added back."""
-    source = inspect.getsource(commands_api)
+    """The diagnostic must survive the redaction, or it will be added back.
+    The speech route moved to twilio_voice_routes (35-02 slice 4); its own
+    source is read, so the line cannot pass by sitting elsewhere."""
+    import twilio_voice_routes
+
+    source = inspect.getsource(twilio_voice_routes.twilio_speech)
     assert "speech_chars=%d" in source

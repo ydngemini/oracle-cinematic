@@ -9,6 +9,7 @@ from starlette.datastructures import FormData
 from twilio.request_validator import RequestValidator
 
 import commands_api
+import twilio_voice_routes
 import command_providers
 import qwen_omni_realtime
 import twilio_call_handler
@@ -304,7 +305,7 @@ def test_twiml_switches_approved_call_to_bidirectional_stream(monkeypatch):
     async def spoken(text, **_k):
         return f"<Say>{text}</Say>"
 
-    monkeypatch.setattr(commands_api, "_spoken", spoken)
+    monkeypatch.setattr(twilio_voice_routes, "_spoken", spoken)
     response = asyncio.run(commands_api.twilio_webhook(_FakeRequest(form, signature)))
     body = response.body.decode("utf-8")
 

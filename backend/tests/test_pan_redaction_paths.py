@@ -530,3 +530,105 @@ def test_save_note_never_keeps_a_card_and_tells_the_agent_why(monkeypatch, notes
                          f"{pan_redaction.CVV_PLACEHOLDER}", "Prefers afternoon showings"]
     _assert_no_pan(*bridge.notes, *delivered)
     assert ("ai_call_save_note", 1, 0) in _no_audit_writes
+
+
+# ── AI call notes, run for real against a fake connection (35-02 slice 3b) ─
+#
+# test_pan_redaction's write-path guard reads only the source text, and the
+# bridge test above fakes save_call_note and deliver_call_notes, so neither
+# runs the service's own redaction: a save_call_note that redacted an empty
+# string instead of the note, or a deliver_call_notes whose redact results
+# were dropped, passed both. These run the real functions and check every value
+# they hand to the database, to the sealer and to the live frame. The sealer
+# is replaced by a recorder on purpose: the real seal_body redacts again and
+# would hide a service that stopped redacting.
+
+class _CallNotesConn:
+    """The queries save_call_note and deliver_call_notes make, answered for a
+    consented call on a client with no earlier note; every argument kept."""
+
+    def __init__(self):
+        self.sent: list[tuple[str, tuple]] = []
+        self.session = {
+            "id": uuid.uuid4(), "tenant_id": TENANT, "client_id": uuid.uuid4(), "contact_id": None,
+            "lead_id": None, "command_id": uuid.uuid4(), "consent_recorded": True,
+            "created_by": "agent@x.test", "command_created_by": None,
+        }
+
+    async def execute(self, query, *args):
+        self.sent.append((query, args))
+        return "OK"
+
+    async def fetchrow(self, query, *args):
+        self.sent.append((query, args))
+        if "FROM live_call_sessions" in query:
+            return self.session
+        if "INSERT INTO client_notes" in query:
+            return {"id": uuid.uuid4()}
+        return None        # no 'ai_call_notes' timeline row yet
+
+    async def fetchval(self, query, *args):
+        self.sent.append((query, args))
+        if "INSERT INTO client_notes" in query:
+            return uuid.uuid4()
+        return None        # no assignee, no lead, the default note mode
+
+
+@pytest.fixture()
+def call_notes_service_backend(monkeypatch):
+    import call_notes_service
+    import client_note_crypto
+
+    conn = _CallNotesConn()
+    sealed: list[str] = []
+    frames: list[dict] = []
+
+    async def record_seal(_conn, _tenant, body, *, surface):
+        sealed.append(body)
+        return b"sealed"
+
+    async def record_frame(_tenant, frame, **_kw):
+        frames.append(frame)
+
+    monkeypatch.setattr(call_notes_service, "tenant_tx", _tx(conn))
+    monkeypatch.setattr(client_note_crypto, "seal_body", record_seal)
+    monkeypatch.setattr(call_notes_service.ws_hub, "broadcast_record", record_frame)
+    return conn, sealed, frames
+
+
+def test_save_call_note_itself_stores_and_streams_no_card(call_notes_service_backend, _no_audit_writes):
+    import call_notes_service
+
+    conn, sealed, frames = call_notes_service_backend
+
+    async def run():
+        out = await call_notes_service.save_call_note("CA-pan", f"Deposit by card {PAN} cvv 123",
+                                                      tool_call_id="t1")
+        await _drain()
+        return out
+
+    out = asyncio.run(run())
+    assert out.status == "saved"
+    assert len(sealed) == 1 and PAN_PLACEHOLDER in sealed[0], "the note is kept, redacted"
+    assert PAN_PLACEHOLDER in frames[0]["notes"][0]
+    _assert_no_pan(*sealed, *frames, *[arg for _q, args in conn.sent for arg in args])
+    assert ("ai_call_note", 1, 1) in _no_audit_writes
+
+
+def test_deliver_call_notes_itself_stores_and_streams_no_card(call_notes_service_backend, _no_audit_writes):
+    import call_notes_service
+
+    conn, sealed, frames = call_notes_service_backend
+
+    async def run():
+        out = await call_notes_service.deliver_call_notes(
+            "CA-pan", [f"Deposit by card {PAN} cvv 123", "Prefers afternoon showings"])
+        await _drain()
+        return out
+
+    assert asyncio.run(run()) is not None
+    assert len(sealed) == 1 and PAN_PLACEHOLDER in sealed[0], "the note is kept, redacted"
+    assert frames[0]["notes"][0].startswith(f"Deposit by card {PAN_PLACEHOLDER}")
+    assert frames[0]["notes"][1] == "Prefers afternoon showings"
+    _assert_no_pan(*sealed, *frames, *[arg for _q, args in conn.sent for arg in args])
+    assert ("ai_call_note", 1, 1) in _no_audit_writes

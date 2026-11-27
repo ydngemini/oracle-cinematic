@@ -43,6 +43,7 @@ import commands_api as ca
 import qwen_omni_realtime
 import twilio_call_handler as tch
 import twilio_webhook_auth
+import twilio_voice_routes
 import voice_provider
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -151,10 +152,13 @@ def world(monkeypatch):
 
     monkeypatch.setattr(ca, "tenant_tx", _Tx)
     # The signature check's durable fallback (_durable_twilio_call_state) reads
-    # through twilio_webhook_auth's own tenant_tx since 35-02 slice 2.
+    # through twilio_webhook_auth's own tenant_tx since 35-02 slice 2, and the
+    # status route's _twilio_call_brokerage through twilio_voice_routes' own
+    # since slice 4.
     monkeypatch.setattr(twilio_webhook_auth, "tenant_tx", _Tx)
+    monkeypatch.setattr(twilio_voice_routes, "tenant_tx", _Tx)
     monkeypatch.setattr(ca, "_load_provider_credential", load_credential)
-    monkeypatch.setattr(ca, "_spoken", spoken)
+    monkeypatch.setattr(twilio_voice_routes, "_spoken", spoken)
     monkeypatch.setattr(ca, "accept_call_outcome", accept)
     return SimpleNamespace(redis=redis, stored=stored, loads=loads, accepted=accepted, sessions=sessions,
                            session_reads=session_reads)
