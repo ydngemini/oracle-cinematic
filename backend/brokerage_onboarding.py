@@ -1038,7 +1038,8 @@ class MemberStatusChange(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-async def _record_member_change(ctx: TenantContext, action: str, row, reason: str) -> None:
+async def _record_member_change(ctx: TenantContext, action: str, row, reason: str,
+                                extra: Optional[dict[str, Any]] = None) -> None:
     from audit_ledger import AuditCategory, ledger
 
     try:
@@ -1048,7 +1049,8 @@ async def _record_member_change(ctx: TenantContext, action: str, row, reason: st
             tenant_id=ctx.tenant_id,
             user_id=ctx.agent_id,
             target_id=str(row["id"]),
-            metadata={"target_agent_id": row["agent_id"], "target_role": row["role"], "reason": reason},
+            metadata={"target_agent_id": row["agent_id"], "target_role": row["role"], "reason": reason,
+                      **(extra or {})},
         )
     except Exception:  # noqa: BLE001 — the state change already committed; never undo it over logging
         log.exception("audit record for %s failed", action)
@@ -1223,7 +1225,9 @@ async def reinstate_member(
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
     """Give a suspended member their account back. They sign in again: the
-    sessions that suspension ended stay ended."""
+    sessions that suspension ended stay ended. Numbers a closure withdrawal
+    left off because of this member come back on too (L17-59): the answer
+    lists restored_routes (ids) and routes_not_restored (id, kind, reason)."""
     require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
     import asyncpg
 
@@ -1239,6 +1243,19 @@ async def reinstate_member(
 
 async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
+        # The tenants row first, FOR UPDATE (L17-59, reviews of PR #190): it
+        # serialises this reinstatement with withdraw_closure and
+        # request_closure (both FOR UPDATE on it), so a withdrawal's
+        # skipped_routes are either committed before the candidates are read
+        # or written after this transaction. FOR UPDATE, not FOR SHARE: the
+        # users UPDATE below fires users_seat_limit (0161), which takes this
+        # same row FOR UPDATE on every activation; two reinstatements holding
+        # it FOR SHARE each waited on the other's share lock to upgrade and
+        # deadlocked (9 of 20 concurrent pairs in the re-review). Holding the
+        # strongest lock the trigger takes makes its lock a no-op. Lock order
+        # tenants then users, as in withdraw_closure.
+        lifecycle = await conn.fetchval(
+            "SELECT lifecycle_state FROM tenants WHERE id = $1::uuid FOR UPDATE", ctx.tenant_id)
         row = await conn.fetchrow(
             "UPDATE users SET is_active = true, updated_at = now() "
             " WHERE id = $1 AND tenant_id = $2::uuid AND NOT is_active "
@@ -1256,8 +1273,158 @@ async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, A
             " WHERE tenant_id = $1::uuid AND user_id = $2 AND status = 'suspended'",
             ctx.tenant_id, user_id,
         )
-    await _record_member_change(ctx, "team.member.reinstated", row, body.reason)
-    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "active"}
+        restored, not_restored = await _restore_left_off_routes(conn, ctx.tenant_id, row, lifecycle)
+    # Counts only on the audit event: the route ids are in the answer.
+    await _record_member_change(ctx, "team.member.reinstated", row, body.reason,
+                                {"restored_routes": len(restored),
+                                 "routes_not_restored": len(not_restored)})
+    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "active",
+            "restored_routes": restored, "routes_not_restored": not_restored}
+
+
+# L17-59 (owner instruction 2026-11-27, 'phone numbers back on'): reinstating
+# a member also switches back on the numbers a closure withdrawal left off
+# because that member had been suspended or offboarded since the closure
+# (privacy_lifecycle.withdraw_closure records them on the closure operation's
+# result as skipped_routes). Exactly those routes, in the reinstatement's own
+# transaction: in this brokerage, listed in one of its closures'
+# skipped_routes, held now by this member (agent_id, case-insensitive) and
+# still off. A plain suspension never switches a route off (it clears
+# forwarding), so it has nothing here to restore.
+#
+# One shot (review of PR #190): skipped_routes is permanent history, and a
+# route can be switched off on purpose after it came back (the agent's own
+# PUT /api/telephony/routes/me writes `active`; offboarding parks; a text
+# route is disconnected). So the first reinstatement that decides a route
+# consumes it: its id goes on result.reinstate_consumed of every closure that
+# listed it, in this transaction, and a consumed id is never a candidate of
+# that closure again. Restored and refused routes are consumed alike; only
+# brokerage_not_active is not (nothing was decided: a later reinstatement
+# while the brokerage is active decides it). A later withdrawal that leaves
+# the route off again lists it on its own closure, which has not consumed it.
+#
+# Never switched on, and reported in routes_not_restored instead:
+#   offboarded    the member was offboarded since that closure (an offboard
+#                 operation after it, or the closure skipped them as
+#                 offboarded): offboarding parks the number when the successor
+#                 has their own (_hand_over_routes), and a parked number stays
+#                 parked. A number offboarding moved to the successor is no
+#                 longer this member's, so it is not considered at all.
+#   disconnected  a text route its holder disconnected (messaging_data sets
+#                 disconnected_at): a deliberate stop, not the withdrawal's.
+#   brokerage_not_active  the brokerage is closing (or further): a new
+#                 closure's freeze must not be undone by a reinstatement.
+#   number_in_use a uniqueness constraint refuses it, e.g. its inbound number
+#                 is active on another route now (uq_telephony_routes_active_did
+#                 spans every brokerage, so this tenant cannot see the holder
+#                 and can only learn it from the constraint). Each route is
+#                 switched on in its own savepoint: a refusal skips that
+#                 route, never the reinstatement.
+# Caller-ID verification needs no care: the closure freeze and the
+# withdrawal's skip only set `active` (offboarding's parking is what clears
+# voice_caller_id_verified, and parked routes are refused above), and
+# uq_telephony_routes_verified_caller_id spans inactive rows, so switching a
+# route back on cannot newly collide with it.
+_LEFT_OFF_ROUTES_SQL = """
+WITH left_off AS (
+  SELECT r.route_id, min(o.requested_at) AS since,
+         bool_or(EXISTS (SELECT 1 FROM jsonb_array_elements(
+                           CASE WHEN jsonb_typeof(o.result->'skipped_users') = 'array'
+                                THEN o.result->'skipped_users' ELSE '[]'::jsonb END) su
+                          WHERE su->>'id' = $3 AND su->>'reason' = 'offboarded')) AS skipped_offboarded
+    FROM privacy_operations o
+    CROSS JOIN LATERAL jsonb_array_elements_text(
+           CASE WHEN jsonb_typeof(o.result->'skipped_routes') = 'array'
+                THEN o.result->'skipped_routes' ELSE '[]'::jsonb END) AS r(route_id)
+   WHERE o.tenant_id = $1::uuid AND o.kind = 'closure'
+     AND NOT (CASE WHEN jsonb_typeof(o.result->'reinstate_consumed') = 'array'
+                   THEN o.result->'reinstate_consumed' ELSE '[]'::jsonb END) ? r.route_id
+   GROUP BY r.route_id),
+routes AS (
+  SELECT 'telephony_routes' AS route_table, id, agent_id, active, false AS disconnected
+    FROM telephony_routes WHERE tenant_id = $1::uuid
+  UNION ALL
+  SELECT 'messaging_routes', id, agent_id, active, disconnected_at IS NOT NULL
+    FROM messaging_routes WHERE tenant_id = $1::uuid)
+SELECT r.route_table, r.id::text AS id, r.disconnected,
+       l.skipped_offboarded OR EXISTS (
+         SELECT 1 FROM privacy_operations p
+          WHERE p.tenant_id = $1::uuid AND p.kind = 'offboard' AND p.subject_ref = $3
+            AND p.requested_at > l.since) AS offboarded
+  FROM left_off l JOIN routes r ON r.id::text = l.route_id
+ WHERE NOT r.active AND lower(r.agent_id) = lower($2)
+ ORDER BY r.route_table DESC, r.id
+"""
+
+#: Literal SQL per route table (never a formatted table name). The WHERE
+#: repeats the candidate's conditions, so it switches on nothing else.
+_SWITCH_ROUTE_ON_SQL = {
+    "telephony_routes": (
+        "UPDATE telephony_routes SET active = true, updated_at = now() "
+        " WHERE tenant_id = $1::uuid AND id = $2::uuid AND NOT active AND lower(agent_id) = lower($3) "
+        "RETURNING id::text"),
+    "messaging_routes": (
+        "UPDATE messaging_routes SET active = true, updated_at = now() "
+        " WHERE tenant_id = $1::uuid AND id = $2::uuid AND NOT active AND disconnected_at IS NULL "
+        "   AND lower(agent_id) = lower($3) RETURNING id::text"),
+}
+
+
+#: Marks routes decided on every closure of the brokerage that lists them
+#: and has not consumed them yet. Each row's new value is computed from the
+#: row as it is when updated (a concurrent reinstatement of another member
+#: waits on the row lock, then appends to the committed list).
+_CONSUME_SKIPS_SQL = """
+UPDATE privacy_operations o
+   SET result = jsonb_set(COALESCE(o.result, '{}'::jsonb), '{reinstate_consumed}',
+                          (CASE WHEN jsonb_typeof(o.result->'reinstate_consumed') = 'array'
+                                THEN o.result->'reinstate_consumed' ELSE '[]'::jsonb END)
+                          || to_jsonb(ARRAY(SELECT x FROM unnest($2::text[]) AS x
+                                             WHERE jsonb_typeof(o.result->'skipped_routes') = 'array'
+                                               AND o.result->'skipped_routes' ? x
+                                               AND NOT COALESCE(o.result->'reinstate_consumed' ? x, false)))),
+       updated_at = now()
+ WHERE o.tenant_id = $1::uuid AND o.kind = 'closure'
+   AND jsonb_typeof(o.result->'skipped_routes') = 'array'
+   AND o.result->'skipped_routes' ?| $2::text[]
+"""
+
+
+async def _restore_left_off_routes(conn, tenant_id: str, row,
+                                   state: Optional[str]) -> tuple[list[str], list[dict[str, str]]]:
+    """Switch back on the reinstated member's numbers a closure withdrawal
+    left off (L17-59), once. `state` is the brokerage's lifecycle_state, read
+    FOR SHARE before anything else in this transaction. Returns (restored
+    route ids, [{id, kind, reason}])."""
+    import asyncpg
+
+    candidates = await conn.fetch(_LEFT_OFF_ROUTES_SQL, tenant_id, row["agent_id"], str(row["id"]))
+    if not candidates:
+        return [], []
+    restored: list[str] = []
+    not_restored: list[dict[str, str]] = []
+    for c in candidates:
+        kind = "call" if c["route_table"] == "telephony_routes" else "text"
+        reason = ("brokerage_not_active" if state != "active" else
+                  "offboarded" if c["offboarded"] else
+                  "disconnected" if c["disconnected"] else None)
+        if reason is None:
+            try:
+                async with conn.transaction():
+                    on = await conn.fetchval(_SWITCH_ROUTE_ON_SQL[c["route_table"]],
+                                             tenant_id, c["id"], row["agent_id"])
+            except asyncpg.UniqueViolationError:
+                reason = "number_in_use"
+            else:
+                if on:
+                    restored.append(on)
+                    continue
+                reason = "changed"
+        not_restored.append({"id": c["id"], "kind": kind, "reason": reason})
+    decided = restored + [r["id"] for r in not_restored if r["reason"] != "brokerage_not_active"]
+    if decided:
+        await conn.execute(_CONSUME_SKIPS_SQL, tenant_id, decided)
+    return restored, not_restored
 
 
 class MlsEntitlementGrant(BaseModel):

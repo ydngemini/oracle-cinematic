@@ -54,7 +54,8 @@ function renewalText(desired, state) {
 // stay signed out, and the numbers they hold stay off (L17-58). The server
 // lists them (skipped_users: id, reason and, from newer servers, the name Team
 // shows; skipped_routes: ids). Only what it says is shown: a member without a
-// name in the answer is counted, never named or guessed.
+// name in the answer is counted, never named or guessed. Reinstating someone
+// in Team switches their left-off numbers back on as well (L17-59).
 const LEFT_OFF_REASON = {
   suspended: 'suspended after you closed',
   offboarded: 'offboarded after you closed',
@@ -101,8 +102,10 @@ function LeftOffNotice({ users, routes }) {
         <p className={styles.dim}>Numbers left off: {plural(routes, 'call or text route', 'call and text routes')}.</p>
       )}
       <p className={styles.text}>
-        To bring someone back, reinstate them under Team. That gives them their sign-in back, not
-        their numbers: contact Neoh support to switch those on again.
+        To bring someone back, reinstate them under Team: that gives them their sign-in back and
+        switches back on the numbers left off here that they still hold. A number parked or handed
+        to a successor when someone was offboarded stays off; Team tells you about any number it
+        could not switch on.
       </p>
     </div>
   );
